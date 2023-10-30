@@ -24,9 +24,12 @@
 
   ToDo
   - CI-V output to serial2 for PA
-  - UDP RTTY to GPIO
+  - UDP RTTY + PTT to GPIO
   - status/live LED
+  - ON/OFF gpio output if cat data available (trx off)
   - GPIO out by band or BCD
+  - clear RIT, 21 00  00 00 00 (RIT freq to 0) new CMD UDP port?
+  - IP to CW after connect, 16 47 00 (BK-IN OFF), 16 47 01 (BK-IN ON)
   - mDNS
   - Watchdog
 //--------------------------------------------------------------------
@@ -47,7 +50,7 @@ const int CivOutBaud      = 9600;               // Baudrate optional CI-V serial
 #define MQTT
 #define HTTP
 #define UDP_TO_CW
-// #define CIV_OUT
+// #define CIV_OUT //     Serial2.write(byte);
 
 #include "BluetoothSerial.h"
 //#define DEBUG 1
@@ -150,6 +153,10 @@ void setup(){
   Serial.print("FW rev. ");
   Serial.println(REV);
 
+  #if defined(CIV_OUT)
+    Serial2.begin(CivOutBaud, SERIAL_8N1, 26, 0);
+  #endif
+
   #if defined(WIFI)
     // WiFi.disconnect(true);
     WiFi.mode(WIFI_STA);
@@ -214,9 +221,6 @@ void setup(){
       Serial.print(radio_address, HEX);
       Serial.println();
       #endif
-      #ifdef MIRRORCAT
-      Serial2.begin(MIRRORCAT_SPEED, SERIAL_8N1, 26, 0);
-      #endif
     }
   }
 
@@ -228,7 +232,7 @@ void loop(){
 
   static long requestTimer = 0;
   if(millis()-requestTimer > 1000){
-    Serial.println("req "+String(millis()/1000));
+    // Serial.println("req "+String(millis()/1000));
     sendCatRequest(CMD_READ_FREQ);
     sendCatRequest(CMD_READ_MODE);
     requestTimer=millis();
@@ -251,7 +255,7 @@ void loop(){
     // if WiFi is down, try reconnecting every CHECK_WIFI_TIME seconds
     if ((WiFi.status() != WL_CONNECTED) && (currentMillis - WifiTimer >=WifiReconnect)) {
       Serial.print(millis());
-      Serial.println(" Reconnecting to WiFi...");
+      Serial.println("WiFi - Reconnecting...");
       WiFi.disconnect();
       WiFi.reconnect();
       WifiTimer = currentMillis;
@@ -340,11 +344,11 @@ void processCatMessages(){
 #endif
   }
 
-#ifdef MIRRORCAT
-  while (Serial2.available()) {
-    CAT.print((byte)Serial2.read());
-  }
-#endif
+// #ifdef MIRRORCAT
+//   while (Serial2.available()) {
+//     CAT.print((byte)Serial2.read());
+//   }
+// #endif
 }
 //-------------------------------------------------------------------------------------------------------
 // call back to get info about connection
@@ -380,9 +384,9 @@ uint8_t readLine(void){
     ed = readtimeout;
     byte = CAT.read();
     if (byte == 0xFF)continue; //TODO skip to start byte instead
-#ifdef MIRRORCAT
-    Serial2.write(byte); // !byte
-#endif
+    // #ifdef MIRRORCAT
+    //     Serial2.write(byte); // !byte
+    // #endif
 
     read_buffer[counter++] = byte;
     if (STOP_BYTE == byte) break;
