@@ -21,13 +21,14 @@
   + BT CAT to MQTT via WiFi
   + http CAT for óm
   + UDP to BT-CAT CW
+  + UDP RTTY + PTT to GPIO
 
   ToDo
   - CI-V output to serial2 for PA
-  - UDP RTTY + PTT to GPIO
   - status/live LED
   - ON/OFF gpio output if cat data available (trx off)
   - GPIO out by band or BCD
+  - enable CI-V transceive after BT connect, 1A 01 31 01
   - clear RIT, 21 00  00 00 00 (RIT freq to 0) new CMD UDP port?
   - IP to CW after connect, 16 47 00 (BK-IN OFF), 16 47 01 (BK-IN ON)
   - mDNS
@@ -45,11 +46,12 @@ const int CivOutBaud      = 9600;               // Baudrate optional CI-V serial
 //--------------------------------------------------------------------
 //--------------------------------------------------------------------
 
-#define REV 20231029
+#define REV 20231031
 #define WIFI
 #define MQTT
 #define HTTP
 #define UDP_TO_CW
+#define UDP_TO_FSK
 // #define CIV_OUT //     Serial2.write(byte);
 
 #include "BluetoothSerial.h"
@@ -125,6 +127,27 @@ BluetoothSerial CAT;
   uint8_t CwMsg[36] = "";
 #endif
 
+#if defined(UDP_TO_FSK)
+  #define FSK_OUT  33                      // TTL LEVEL pin OUTPUT
+  #define PTT      32                      // PTT pin OUTPUT
+  #define FMARK    HIGH                    // FSK mark level [LOW/HIGH]
+  #define FSPACE   LOW                     // FSK space level [LOW/HIGH]
+  #define BaudRate 45.45                   // RTTY baud rate
+  #define StopBit  1.5                     // stop bit long
+  #define PTTlead  400                     // PTT lead delay ms
+  #define PTTtail  200                     // PTT tail delay ms
+  int     OneBit = 1/BaudRate*1000;
+  boolean d1;
+  boolean d2;
+  boolean d3;
+  boolean d4;
+  boolean d5;
+  boolean space;
+  boolean fig1;
+  int     fig2;
+  char    ch;
+#endif
+
 #if defined(MQTT)
   #include <PubSubClient.h>
   // byte mqttBroker[4]={54,38,157,134}; // MQTT broker IP address
@@ -186,6 +209,12 @@ void setup(){
 
   #if defined(UDP_TO_CW)
     udp.begin(udpPort);
+  #endif
+
+  #if defined(UDP_TO_FSK)
+    pinMode(PTT,  OUTPUT);
+    pinMode(FSK_OUT,  OUTPUT);
+    digitalWrite(FSK_OUT, LOW);
   #endif
 
   #if defined(MQTT)
@@ -654,23 +683,28 @@ void send(){
   int TheEnd = 99;
   for (int i = 30; i>-1; i--) {
     if(CwMsg[i]!=0){
-      CwMsg[i+5]=CwMsg[i];
+      if(modes=="CW"){
+        CwMsg[i+5]=CwMsg[i];
+      }
       if(TheEnd==99){
-        TheEnd=i+6;
+        if(modes=="CW"){
+          TheEnd=i+6;
+        }else{
+          TheEnd=i;
+        }
       }
     }
   }
-  CwMsg[0] = START_BYTE;
-  CwMsg[1] = START_BYTE;
-  CwMsg[2] = radio_address;
-  CwMsg[3] = CONTROLLER_ADDRESS;
-  CwMsg[4] = CMD_SEND_CW_MSG;
-  CwMsg[TheEnd] = STOP_BYTE;
-
   // Serial.print("TX cat: ");
   // Serial.println((char *)CwMsg);
 
   if(modes=="CW"){  // CAT
+    CwMsg[0] = START_BYTE;
+    CwMsg[1] = START_BYTE;
+    CwMsg[2] = radio_address;
+    CwMsg[3] = CONTROLLER_ADDRESS;
+    CwMsg[4] = CMD_SEND_CW_MSG;
+    CwMsg[TheEnd] = STOP_BYTE;
     for (uint8_t i = 0; i < sizeof(CwMsg); i++) {
       if (i <= TheEnd){
         CAT.write(CwMsg[i]);
@@ -683,7 +717,36 @@ void send(){
     }
     Serial.println();
   }else if(modes=="FSK"){ // GPIO
-    Serial.println("FSK not implemented yet ;)");
+
+    digitalWrite(PTT, HIGH);          // PTT ON
+    delay(PTTlead);                   // PTT lead delay
+    // ch = ' '; Serial.print(ch); chTable(); sendFsk();   // Space before sending
+    // while (Serial.available()) {
+    for (int i = 0; i < TheEnd; i++) {
+        ch = toUpperCase(CwMsg[i]);
+        chTable();
+        if(fig1 == 0 && fig2 == 1){
+                d1 = 1; d2 = 1; d3 = 0; d4 = 1; d5 = 1; //FIGURES
+                sendFsk();
+        }else if(fig1 == 1 && fig2 == 0){
+                d1 = 1; d2 = 1; d3 = 1; d4 = 1; d5 = 1; //LETTERS
+                sendFsk();
+        }else if(space == 1 && fig2 == 1){
+                d1 = 1; d2 = 1; d3 = 0; d4 = 1; d5 = 1; //FIGURES
+                sendFsk();
+        }
+        if(fig2 == 0 || fig2 == 1){
+                space = 0;
+                fig1 = fig2;
+        }
+        chTable();
+        sendFsk();
+        delay(5);
+    }
+    // ch = ' '; Serial.print(ch); chTable(); sendFsk();   // Space after sending
+    delay(PTTtail);
+    digitalWrite(PTT, LOW);Serial.println();
+    digitalWrite(FSK_OUT, LOW);
   }
 
 //   uint8_t req[] = {START_BYTE, START_BYTE, radio_address, CONTROLLER_ADDRESS, CMD_SEND_CW_MSG, requestCode, STOP_BYTE};
@@ -701,4 +764,98 @@ void send(){
 // #ifdef DEBUG
 //   Serial.println();
 // #endif
+}
+
+//-------------------------------------------------------------------------------------------------------
+void sendFsk(){
+  #if defined(UDP_TO_FSK)
+        #if defined(serialECHO )
+              Serial.print(d1);Serial.print(d2);Serial.print(d3);Serial.print(d4);Serial.print(d5);Serial.print(' '); // 5bit code serial echo
+        //      Serial.print(OneBit);Serial.print('|');Serial.print(OneBit*StopBit);Serial.print(' ');                  // ms
+        #endif
+        //--start bit
+        digitalWrite(FSK_OUT, FSPACE); delay(OneBit);
+        //--bit1
+        if(d1 == 1){digitalWrite(FSK_OUT, FMARK); }
+        else       {digitalWrite(FSK_OUT, FSPACE); } delay(OneBit);
+        //--bit2
+        if(d2 == 1){digitalWrite(FSK_OUT, FMARK); }
+        else       {digitalWrite(FSK_OUT, FSPACE); } delay(OneBit);
+        //--bit3
+        if(d3 == 1){digitalWrite(FSK_OUT, FMARK); }
+        else       {digitalWrite(FSK_OUT, FSPACE); } delay(OneBit);
+        //--bit4
+        if(d4 == 1){digitalWrite(FSK_OUT, FMARK); }
+        else       {digitalWrite(FSK_OUT, FSPACE); } delay(OneBit);
+        //--bit5
+        if(d5 == 1){digitalWrite(FSK_OUT, FMARK); }
+        else       {digitalWrite(FSK_OUT, FSPACE); } delay(OneBit);
+        //--stop bit
+        digitalWrite(FSK_OUT, FMARK); delay(OneBit*StopBit);
+  #endif
+}
+
+void chTable(){
+  #if defined(UDP_TO_FSK)
+
+        fig2 = -1;
+        if(ch == ' ')
+        {
+                d1 = 0; d2 = 0; d3 = 1; d4 = 0; d5 = 0;
+                space = 1;
+        }
+        else if(ch == 'A'){d1 = 1; d2 = 1; d3 = 0; d4 = 0; d5 = 0; fig2 = 0;}
+        else if(ch == 'B'){d1 = 1; d2 = 0; d3 = 0; d4 = 1; d5 = 1; fig2 = 0;}
+        else if(ch == 'C'){d1 = 0; d2 = 1; d3 = 1; d4 = 1; d5 = 0; fig2 = 0;}
+        else if(ch == 'D'){d1 = 1; d2 = 0; d3 = 0; d4 = 1; d5 = 0; fig2 = 0;}
+        else if(ch == 'E'){d1 = 1; d2 = 0; d3 = 0; d4 = 0; d5 = 0; fig2 = 0;}
+        else if(ch == 'F'){d1 = 1; d2 = 0; d3 = 1; d4 = 1; d5 = 0; fig2 = 0;}
+        else if(ch == 'G'){d1 = 0; d2 = 1; d3 = 0; d4 = 1; d5 = 1; fig2 = 0;}
+        else if(ch == 'H'){d1 = 0; d2 = 0; d3 = 1; d4 = 0; d5 = 1; fig2 = 0;}
+        else if(ch == 'I'){d1 = 0; d2 = 1; d3 = 1; d4 = 0; d5 = 0; fig2 = 0;}
+        else if(ch == 'J'){d1 = 1; d2 = 1; d3 = 0; d4 = 1; d5 = 0; fig2 = 0;}
+        else if(ch == 'K'){d1 = 1; d2 = 1; d3 = 1; d4 = 1; d5 = 0; fig2 = 0;}
+        else if(ch == 'L'){d1 = 0; d2 = 1; d3 = 0; d4 = 0; d5 = 1; fig2 = 0;}
+        else if(ch == 'M'){d1 = 0; d2 = 0; d3 = 1; d4 = 1; d5 = 1; fig2 = 0;}
+        else if(ch == 'N'){d1 = 0; d2 = 0; d3 = 1; d4 = 1; d5 = 0; fig2 = 0;}
+        else if(ch == 'O'){d1 = 0; d2 = 0; d3 = 0; d4 = 1; d5 = 1; fig2 = 0;}
+        else if(ch == 'P'){d1 = 0; d2 = 1; d3 = 1; d4 = 0; d5 = 1; fig2 = 0;}
+        else if(ch == 'Q'){d1 = 1; d2 = 1; d3 = 1; d4 = 0; d5 = 1; fig2 = 0;}
+        else if(ch == 'R'){d1 = 0; d2 = 1; d3 = 0; d4 = 1; d5 = 0; fig2 = 0;}
+        else if(ch == 'S'){d1 = 1; d2 = 0; d3 = 1; d4 = 0; d5 = 0; fig2 = 0;}
+        else if(ch == 'T'){d1 = 0; d2 = 0; d3 = 0; d4 = 0; d5 = 1; fig2 = 0;}
+        else if(ch == 'U'){d1 = 1; d2 = 1; d3 = 1; d4 = 0; d5 = 0; fig2 = 0;}
+        else if(ch == 'V'){d1 = 0; d2 = 1; d3 = 1; d4 = 1; d5 = 1; fig2 = 0;}
+        else if(ch == 'W'){d1 = 1; d2 = 1; d3 = 0; d4 = 0; d5 = 1; fig2 = 0;}
+        else if(ch == 'X'){d1 = 1; d2 = 0; d3 = 1; d4 = 1; d5 = 1; fig2 = 0;}
+        else if(ch == 'Y'){d1 = 1; d2 = 0; d3 = 1; d4 = 0; d5 = 1; fig2 = 0;}
+        else if(ch == 'Z'){d1 = 1; d2 = 0; d3 = 0; d4 = 0; d5 = 1; fig2 = 0;}
+        else if(ch == '0'){d1 = 0; d2 = 1; d3 = 1; d4 = 0; d5 = 1; fig2 = 1;}
+        else if(ch == '1'){d1 = 1; d2 = 1; d3 = 1; d4 = 0; d5 = 1; fig2 = 1;}
+        else if(ch == '2'){d1 = 1; d2 = 1; d3 = 0; d4 = 0; d5 = 1; fig2 = 1;}
+        else if(ch == '3'){d1 = 1; d2 = 0; d3 = 0; d4 = 0; d5 = 0; fig2 = 1;}
+        else if(ch == '4'){d1 = 0; d2 = 1; d3 = 0; d4 = 1; d5 = 0; fig2 = 1;}
+        else if(ch == '5'){d1 = 0; d2 = 0; d3 = 0; d4 = 0; d5 = 1; fig2 = 1;}
+        else if(ch == '6'){d1 = 1; d2 = 0; d3 = 1; d4 = 0; d5 = 1; fig2 = 1;}
+        else if(ch == '7'){d1 = 1; d2 = 1; d3 = 1; d4 = 0; d5 = 0; fig2 = 1;}
+        else if(ch == '8'){d1 = 0; d2 = 1; d3 = 1; d4 = 0; d5 = 0; fig2 = 1;}
+        else if(ch == '9'){d1 = 0; d2 = 0; d3 = 0; d4 = 1; d5 = 1; fig2 = 1;}
+        else if(ch == '-'){d1 = 1; d2 = 1; d3 = 0; d4 = 0; d5 = 0; fig2 = 1;}
+        else if(ch == '?'){d1 = 1; d2 = 0; d3 = 0; d4 = 1; d5 = 1; fig2 = 1;}
+        else if(ch == ':'){d1 = 0; d2 = 1; d3 = 1; d4 = 1; d5 = 0; fig2 = 1;}
+        else if(ch == '('){d1 = 1; d2 = 1; d3 = 1; d4 = 1; d5 = 0; fig2 = 1;}
+        else if(ch == ')'){d1 = 0; d2 = 1; d3 = 0; d4 = 0; d5 = 1; fig2 = 1;}
+        else if(ch == '.'){d1 = 0; d2 = 0; d3 = 1; d4 = 1; d5 = 1; fig2 = 1;}
+        else if(ch == ','){d1 = 0; d2 = 0; d3 = 1; d4 = 1; d5 = 0; fig2 = 1;}
+        else if(ch == '/'){d1 = 1; d2 = 0; d3 = 1; d4 = 1; d5 = 1; fig2 = 1;}
+        else if(ch == '+'){d1 = 1; d2 = 0; d3 = 0; d4 = 0; d5 = 1; fig2 = 1;} //ITA2
+        else if(ch == '\n'){d1 = 0; d2 = 1; d3 = 0; d4 = 0; d5 = 0;} //LF
+        else if(ch == '\r'){d1 = 0; d2 = 0; d3 = 0; d4 = 1; d5 = 0;} //CR
+        else
+        {
+                ch = ' ';
+                d1 = 0; d2 = 0; d3 = 1; d4 = 0; d5 = 0;
+                space = 1;
+        }
+  #endif
 }
