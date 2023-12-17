@@ -22,36 +22,47 @@
   + http CAT for óm
   + UDP to BT-CAT CW
   + UDP RTTY + PTT to GPIO
+  + Detect HW ID
+  + Status LED
+    - ON after start
+    - OFF if cononnect Wifi
+    - FLASH send MQTT + receive UDP packet
 
   ToDo
-  - CI-V output to serial2 for PA
-  - status/live LED
-  - ON/OFF gpio output if cat data available (trx off)
-  - GPIO out by band or BCD
+  - Status LED if BT connect
+  - GPIO16 CIV-MUTE
+  - GPIO12 CLOCK
+  - GPIO13 DATA
+  - GPIO14 LATCH
+  - CI-V output to serial for PA
+  - GPIO to shift register out by band or BCD
   - enable CI-V transceive after BT connect, 1A 01 31 01
   - clear RIT, 21 00  00 00 00 (RIT freq to 0) new CMD UDP port?
   - IP to CW after connect, 16 47 00 (BK-IN OFF), 16 47 01 (BK-IN ON)
   - mDNS
   - Watchdog
+  - wire ethernet
 //--------------------------------------------------------------------
 ----------------- CONFIGURE ------------------------------------------*/
-const String SSID         = "";                // Wifi SSID
-const String PSWD         = "";       // Wifi password
-const byte mqttBroker[4]  = {192,168,1,200};    // MQTT broker IP address (54.38.157.134 public broker RemoteQTH.com)
+const String SSID         = "SSID";             // Wifi SSID
+const String PSWD         = "PASSWORD";         // Wifi password
+const byte mqttBroker[4]  = {54.38.157.134};    // MQTT broker IP address (54.38.157.134 public broker RemoteQTH.com)
 const int MQTT_PORT       = 1883;               // MQTT broker port
-const String MQTT_TOPIC   = "OK1HRA/OI3/1/hz";  // MQTT topic for send frequency
-const int HTTP_CAT_PORT   = 81;                 // http IP port for send frequency and mode
-const int udpPort         = 89;                 // UDP port | echo -n "cq de ok1hra ok1hra test k;" | nc -u -w1 192.168.1.19 89
-const int CivOutBaud      = 9600;               // Baudrate optional CI-V serial output
+const String MQTT_TOPIC   = "CALL/IC705/1/hz";  // MQTT topic for send frequency
+const int HTTP_CAT_PORT   = 81;                 // http IP port for get frequency and mode
+const int udpPort         = 89;                 // UDP port CW | echo -n "cq de ok1hra ok1hra test k;" | nc -u -w1 192.168.1.19 89
+const int udpCatPort      = 90;                 // UDP port for CAT command
+const int CivOutBaud      = 9600;               // Baudrate terminal and CI-V serial output
 //--------------------------------------------------------------------
 //--------------------------------------------------------------------
 
-#define REV 20231031
+#define REV 20231217
 #define WIFI
 #define MQTT
 #define HTTP
 #define UDP_TO_CW
 #define UDP_TO_FSK
+// #define UDP_TO_CAT
 // #define CIV_OUT //     Serial2.write(byte);
 
 #include "BluetoothSerial.h"
@@ -103,6 +114,13 @@ const char* mode[] = {"LSB", "USB", "AM", "CW", "FSK", "FM", "WFM"};
 String modes;
 BluetoothSerial CAT;
 
+short HardwareRev = 99;
+const int HWidPin       = 34;  // analog
+int HWidValue           = 0;
+
+const int StatusPin     = 5;
+const int PowerOnPin    = 4;
+
 #if defined(WIFI)
   #include <WiFi.h>
   // #include <ETH.h>
@@ -124,8 +142,9 @@ BluetoothSerial CAT;
 #if defined(UDP_TO_CW)
   #include <WiFiUdp.h>
   WiFiUDP udp;
-  uint8_t CwMsg[36] = "";
 #endif
+
+uint8_t CwMsg[36] = "";
 
 #if defined(UDP_TO_FSK)
   #define FSK_OUT  33                      // TTL LEVEL pin OUTPUT
@@ -146,6 +165,10 @@ BluetoothSerial CAT;
   boolean fig1;
   int     fig2;
   char    ch;
+#endif
+
+#if defined(UDP_TO_CAT)
+  uint8_t CatMsg[36] = "";
 #endif
 
 #if defined(MQTT)
@@ -171,10 +194,34 @@ BluetoothSerial CAT;
 //-------------------------------------------------------------------------------------------------------
 
 void setup(){
-  Serial.begin(115200);
+  Serial.begin(CivOutBaud);
   Serial.println();
   Serial.print("FW rev. ");
   Serial.println(REV);
+
+  pinMode(HWidPin, INPUT);
+    // HWidValue = readADC_Cal(analogRead(HWidPin));
+    HWidValue = analogRead(HWidPin);
+    if(HWidValue<=150){
+      HardwareRev=0;
+    // }else if(HWidValue>150 && HWidValue<=450){
+    //   HardwareRev=3;  // 319
+    // }else if(HWidValue>450 && HWidValue<=700){
+    //   HardwareRev=4;  // 604
+    // }else if(HWidValue>700 && HWidValue<=900){
+    //   HardwareRev=5;  // 807
+    // }else if(HWidValue>900){
+    //   HardwareRev=6;  // 1036
+    }
+  Serial.print("HW rev. [");
+  Serial.print(HWidValue);
+  Serial.print("] ");
+  Serial.println(HardwareRev);
+
+  pinMode(StatusPin, OUTPUT);
+    digitalWrite(StatusPin, LOW);
+  pinMode(PowerOnPin, OUTPUT);
+    digitalWrite(PowerOnPin, HIGH);
 
   #if defined(CIV_OUT)
     Serial2.begin(CivOutBaud, SERIAL_8N1, 26, 0);
@@ -186,7 +233,7 @@ void setup(){
     WiFi.begin(SSID.c_str(), PSWD.c_str());
     Serial.print("WIFI-Connecting ssid "+String(SSID)+" ");
     int count_try = 0;
-    while(WiFi.status() != WL_CONNECTED) {
+    while(WiFi.status() != WL_CONNECTED){
       delay(500);
       Serial.print(".");
       count_try++;    // Increase try counter
@@ -201,6 +248,8 @@ void setup(){
     Serial.println(WiFi.localIP());
     Serial.print("WIFI-dBm: ");
     Serial.println(WiFi.RSSI());
+    digitalWrite(StatusPin, HIGH);
+
   #endif
 
   #if defined(HTTP)
@@ -211,10 +260,15 @@ void setup(){
     udp.begin(udpPort);
   #endif
 
+  #if defined(UDP_TO_CAT)
+    udpCat.begin(udpCatPort);
+  #endif
+
   #if defined(UDP_TO_FSK)
     pinMode(PTT,  OUTPUT);
+      digitalWrite(PTT, LOW);
     pinMode(FSK_OUT,  OUTPUT);
-    digitalWrite(FSK_OUT, LOW);
+      digitalWrite(FSK_OUT, LOW);
   #endif
 
   #if defined(MQTT)
@@ -231,11 +285,9 @@ void setup(){
 
         char charbuf[50];
         WiFi.macAddress().toCharArray(charbuf, 17);
-        if (mqttClient.connect(charbuf)){
           Serial.print("MQTT-maccharbuf ");
           Serial.println(charbuf);
           mqttReconnect();
-        }
     }
   #endif
 
@@ -259,6 +311,7 @@ void setup(){
 void loop(){
   double qrg = 0;
 
+  // BT CAT
   static long requestTimer = 0;
   if(millis()-requestTimer > 1000){
     // Serial.println("req "+String(millis()/1000));
@@ -268,6 +321,7 @@ void loop(){
   }
   processCatMessages();
 
+  // MQTT
   static long catTimer = 0;
   if(millis()-catTimer > 2000 && frequencyTmp!=frequency){
     // Serial.print(frequency);
@@ -279,6 +333,7 @@ void loop(){
     catTimer=millis();
   }
 
+  // WIFI status
   #if defined(WIFI)
     unsigned long currentMillis = millis();
     // if WiFi is down, try reconnecting every CHECK_WIFI_TIME seconds
@@ -291,11 +346,42 @@ void loop(){
     }
   #endif
 
+  // static int StatusTmp = -1;
+  // static long StatusWatchdog = 0;
+  // if(millis()-StatusWatchdog > 3000){
+  //   if (!CAT.isConnected()) {
+  //     if(StatusTmp!=0){
+  //       Serial.println(" BT -Offline");
+  //       digitalWrite(StatusPin, LOW);
+  //       StatusTmp=0;
+  //     }
+  //   } else {
+  //     if(StatusTmp!=1){
+  //       Serial.println(" BT -Online");
+  //       digitalWrite(StatusPin, LOW);
+  //       StatusTmp=1;
+  //     }
+  //   }
+  //   StatusWatchdog=millis();
+  // }
+
   Mqtt();
   httpCAT();
   UdpToCwFsk();
+  //UdpToCat();
 
 }
+
+// SUBROUTINES -------------------------------------------------------------------------------------------------------
+
+// uint32_t readADC_Cal(int ADC_Raw)
+// {
+//   esp_adc_cal_characteristics_t adc_chars;
+
+//   esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_11, ADC_WIDTH_BIT_12, 1100, &adc_chars);
+//   return(esp_adc_cal_raw_to_voltage(ADC_Raw, &adc_chars));
+// }
+
 //-------------------------------------------------------------------------------------------------------
 void print_wifi_error(){
   switch(WiFi.status())
@@ -581,6 +667,7 @@ void MqttRx(char *topic, byte *payload, unsigned int length) {
 //-----------------------------------------------------------------------------------
 void MqttPubString(String TOPICEND, String DATA, bool RETAIN){
   #if defined(MQTT)
+    digitalWrite(StatusPin, LOW);
     char charbuf[50];
      // memcpy( charbuf, mac, 6);
      WiFi.macAddress().toCharArray(charbuf, 17);
@@ -597,6 +684,7 @@ void MqttPubString(String TOPICEND, String DATA, bool RETAIN){
         Serial.println(mqttTX);
       }
     }
+    digitalWrite(StatusPin, HIGH);
   #endif
 }
 //-----------------------------------------------------------------------------------
@@ -671,6 +759,7 @@ void UdpToCwFsk(){
     udp.parsePacket();
     //receive response from server, it will be HELLO WORLD
     if(udp.read(CwMsg, 36) > 0){
+      digitalWrite(StatusPin, LOW);
       Serial.print("UDP rx: ");
       Serial.println((char *)CwMsg);
       send();
@@ -698,7 +787,7 @@ void send(){
   // Serial.print("TX cat: ");
   // Serial.println((char *)CwMsg);
 
-  if(modes=="CW"){  // CAT
+  if(modes=="CW"){  // CAT -----------------
     CwMsg[0] = START_BYTE;
     CwMsg[1] = START_BYTE;
     CwMsg[2] = radio_address;
@@ -716,14 +805,16 @@ void send(){
       }
     }
     Serial.println();
-  }else if(modes=="FSK"){ // GPIO
-
+    digitalWrite(StatusPin, HIGH);
+  }else if(modes=="FSK"){ // GPIO -----------------
     digitalWrite(PTT, HIGH);          // PTT ON
     delay(PTTlead);                   // PTT lead delay
     // ch = ' '; Serial.print(ch); chTable(); sendFsk();   // Space before sending
     // while (Serial.available()) {
-    for (int i = 0; i < TheEnd; i++) {
-        ch = toUpperCase(CwMsg[i]);
+    for (int i = 0; i < TheEnd+1; i++) {
+        ch = toUpperCase(static_cast<char>(CwMsg[i]));
+        // Serial.print(String(ch));
+        // Serial.print("|");
         chTable();
         if(fig1 == 0 && fig2 == 1){
                 d1 = 1; d2 = 1; d3 = 0; d4 = 1; d5 = 1; //FIGURES
@@ -743,10 +834,12 @@ void send(){
         sendFsk();
         delay(5);
     }
+    Serial.println();
     // ch = ' '; Serial.print(ch); chTable(); sendFsk();   // Space after sending
     delay(PTTtail);
     digitalWrite(PTT, LOW);Serial.println();
     digitalWrite(FSK_OUT, LOW);
+    digitalWrite(StatusPin, HIGH);
   }
 
 //   uint8_t req[] = {START_BYTE, START_BYTE, radio_address, CONTROLLER_ADDRESS, CMD_SEND_CW_MSG, requestCode, STOP_BYTE};

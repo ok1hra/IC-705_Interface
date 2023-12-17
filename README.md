@@ -5,7 +5,10 @@ Functionality
 - Connect to **MQTT** broker
 - Send **frequency to MQTT**
 - Show CAT **frequency and mode on http** port 81
+<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/http-cat.png">
 - Transfer message **from open UDP port 89 to CW** (via CAT)
+
+<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/hw/IC-705-interface-01.png" height="200">
 
 # Configure
 - In head of .ino file
