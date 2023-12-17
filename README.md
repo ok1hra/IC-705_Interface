@@ -5,9 +5,11 @@ Functionality
 - Connect to **WiFi**
 - Connect to **MQTT** broker
 - Send **frequency to MQTT**
-- Show CAT **frequency and mode on http** port 81
+- Get CAT **frequency and mode on http** port 81
+
   <img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/http-cat.png" height="100">
-- Transfer message **from open UDP port 89 to CW** (via CAT)
+  
+- Transfer message **from open UDP port 89 to CW/FSK**
 
 # PCB
 <img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/hw/IC-705-interface-01.png" height="400">
