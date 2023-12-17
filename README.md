@@ -1,5 +1,6 @@
-# IC-705_Interface
-Functionality
+# IC-705 IP Interface
+
+## Functionality
 - Support [Óm - simple contest PHP log](https://github.com/ok1hra/Om)
 - Connect to IC-705 via **Bluetooth**
 - Connect to **WiFi**
