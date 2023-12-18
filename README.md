@@ -15,6 +15,10 @@
 # PCB
 <img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/hw/IC-705-interface-01.png" height="400">
 
+# 3D prit
+<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/3Dprint/preview.png" height="400">
+
+
 # Configure
 - In head of .ino file
   - Variables
