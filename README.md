@@ -12,19 +12,24 @@
   
 - Transfer message **from open UDP port 89 to CW/FSK**
 
-# PCB
+## PCB
 <img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/hw/IC-705-interface-01.png" height="400">
 
-# 3D prit
-<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/3Dprint/preview.png" height="400">
+## 3D prit
+<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/3Dprint/preview.png" height="300">
+
+## Block diagram
+<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/hw/hw-block.png" height="200">
+
+<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/hw/sw-block.png" height="200">
 
 
-# Configure
+## Configure
 - In head of .ino file
   - Variables
   - You can disable non use functionality with add // before #define ..
 
-# Compile and upload
+## Compile and upload
 1.  **Install [Arduino IDE](https://www.arduino.cc/en/software)** rev 1.8.19
 1.  **Install support [for ESP32](https://docs.espressif.com/projects/arduino-esp32/en/latest/installing.html)**
 1.  **Install** these **libraries** in the versions listed
@@ -35,7 +40,7 @@
 1. **Connect** the ESP32 with a **USB** cable and select the corresponding port in the arduino IDE
 1. Now you can **compile and upload** code using USB
 
-# Connect and debug
+## Connect and debug
 - Open terminal in Arduino IDE
 - Set Baudrate to 115200
 - Reset ESP32
