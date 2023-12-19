@@ -13,15 +13,15 @@
 - Transfer message **from open UDP port 89 to CW/FSK**
 
 ## PCB
-<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/hw/IC-705-interface-01.png" height="400">
+<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/hw/IC-705-interface-01.png" height="300">
 
 ## 3D prit
-<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/3Dprint/preview.png" height="300">
+<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/3Dprint/preview.png" height="200">
 
 ## Block diagram
-<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/hw/hw-block.png" height="200">
+<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/hw/hw-block.png" height="250">
 
-<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/hw/sw-block.png" height="200">
+<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/hw/sw-block.png">
 
 
 ## Configure
