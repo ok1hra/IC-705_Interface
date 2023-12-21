@@ -14,9 +14,10 @@
   along with this program.  If not, see <http://www.gnu.org/licenses/>.
   -----------------------------------------------------------
 
-  Použití knihovny BluetoothSerial ve verzi 2.0.0 v adresáři: /home/dan/Arduino/hardware/espressif/esp32/libraries/BluetoothSerial
-  Použití knihovny WiFi ve verzi 2.0.0 v adresáři: /home/dan/Arduino/hardware/espressif/esp32/libraries/WiFi
-  Použití knihovny PubSubClient ve verzi 2.8 v adresáři: /home/dan/Arduino/libraries/PubSubClient
+  Using library BluetoothSerial at version 2.0.0 in folder: /home/dan/Arduino/hardware/espressif/esp32/libraries/BluetoothSerial 
+  Using library WiFi at version 2.0.0 in folder: /home/dan/Arduino/hardware/espressif/esp32/libraries/WiFi 
+  Using library ESPmDNS at version 2.0.0 in folder: /home/dan/Arduino/hardware/espressif/esp32/libraries/ESPmDNS 
+  Using library PubSubClient at version 2.8 in folder: /home/dan/Arduino/libraries/PubSubClient 
 
   + BT CAT to MQTT via WiFi
   + http CAT for óm
@@ -26,22 +27,21 @@
   + Status LED
     - ON after start
     - OFF if cononnect Wifi
-    - FLASH send MQTT + receive UDP packet
+    - FLASH send MQTT freq
+    - DOUBLE FLASH receive CW via UDP
+    - FLASH+PTT receive RTTY via UDP
+  + external shift register control switch by frequency
+  + mDNS http://ic705.local
+  + GPIO16 CIV-MUTE always on
+  + Watchdog
+  + Power OUT+LED if BT connect (Enable your hamshack)
 
   ToDo
-  - Status LED if BT connect
-  - GPIO16 CIV-MUTE
-  - GPIO12 CLOCK
-  - GPIO13 DATA
-  - GPIO14 LATCH
   - CI-V output to serial for PA
-  - GPIO to shift register out by band or BCD
   - enable CI-V transceive after BT connect, 1A 01 31 01
   - clear RIT, 21 00  00 00 00 (RIT freq to 0) new CMD UDP port?
   - IP to CW after connect, 16 47 00 (BK-IN OFF), 16 47 01 (BK-IN ON)
-  - mDNS
-  - Watchdog
-  - wire ethernet
+
 //--------------------------------------------------------------------
 ----------------- CONFIGURE ------------------------------------------*/
 const String SSID         = "SSID";             // Wifi SSID
@@ -56,14 +56,36 @@ const int CivOutBaud      = 9600;               // Baudrate terminal and CI-V se
 //--------------------------------------------------------------------
 //--------------------------------------------------------------------
 
-#define REV 20231217
+#define REV 20231221
 #define WIFI
 #define MQTT
 #define HTTP
 #define UDP_TO_CW
 #define UDP_TO_FSK
+#define SELECT_ANT  // enable external shift registrer antenna switching
+#define HTTP
+#define WDT
 // #define UDP_TO_CAT
 // #define CIV_OUT //     Serial2.write(byte);
+
+#if defined(SELECT_ANT)
+  unsigned long ANTrange[8][2] = {/* TRXfreq[0]
+  Freq Hz from       to        ANT
+  */  {1810000,   2000000},  // #1
+      {3500000,   3800000},  // #2
+      {7000000,   7200000},  // #3
+      {10100000, 10150000},  // #4
+      {14000000, 14350000},  // #5
+      {21000000, 21450000},  // #6
+      {28000000, 29700000},  // #7
+      {50000000, 52000000}   // #8
+  };
+  int TRXselectANT = 42; // how antenna selcted - blocked for second TRX - don't be the same!
+  const int ShiftOutClockPin = 12;
+  const int ShiftOutDataPin  = 13;
+  const int ShiftOutLatchPin = 14;
+  byte ShiftOutByte;
+#endif
 
 #include "BluetoothSerial.h"
 //#define DEBUG 1
@@ -120,6 +142,16 @@ int HWidValue           = 0;
 
 const int StatusPin     = 5;
 const int PowerOnPin    = 4;
+long powerTimer         = 0;
+bool statusPower        = 1;
+const int CIVmutePin    = 16;
+
+#if defined(WDT)
+  // 73 seconds WDT (WatchDogTimer)
+  #include <esp_task_wdt.h>
+  #define WDT_TIMEOUT 73
+  long WdtTimer=0;
+#endif
 
 #if defined(WIFI)
   #include <WiFi.h>
@@ -131,6 +163,8 @@ const int PowerOnPin    = 4;
   unsigned long WifiReconnect = 30000;
   // String SSID="";                // (all) Wifi SSID (max 20 characters)
   // String PSWD="";       // (all) Wifi password (max 20 characters)
+
+  #include <ESPmDNS.h>
 #endif
 
 #if defined(HTTP)
@@ -221,7 +255,9 @@ void setup(){
   pinMode(StatusPin, OUTPUT);
     digitalWrite(StatusPin, LOW);
   pinMode(PowerOnPin, OUTPUT);
-    digitalWrite(PowerOnPin, HIGH);
+    digitalWrite(PowerOnPin, LOW);
+  pinMode(CIVmutePin, OUTPUT);
+    digitalWrite(CIVmutePin, LOW);
 
   #if defined(CIV_OUT)
     Serial2.begin(CivOutBaud, SERIAL_8N1, 26, 0);
@@ -250,10 +286,25 @@ void setup(){
     Serial.println(WiFi.RSSI());
     digitalWrite(StatusPin, HIGH);
 
+    // Set up mDNS responder:
+    // - first argument is the domain name, in this example
+    //   the fully-qualified domain name is "esp32.local"
+    // - second argument is the IP address to advertise
+    //   we send our IP address on the WiFi network
+    if (!MDNS.begin("ic705")) {
+        Serial.println("Error setting up MDNS responder!");
+        while(1) {
+            delay(1000);
+        }
+    }
+    Serial.println("mDNS responder started");
   #endif
 
   #if defined(HTTP)
     server.begin();
+
+    // Add service to MDNS-SD
+    MDNS.addService("http", "tcp", 81);
   #endif
 
   #if defined(UDP_TO_CW)
@@ -305,6 +356,13 @@ void setup(){
     }
   }
 
+  #if defined(WDT)
+    // WDT
+    esp_task_wdt_init(WDT_TIMEOUT, true); //enable panic so ESP32 restarts
+    esp_task_wdt_add(NULL); //add current thread to WDT watch
+    WdtTimer=millis();
+  #endif
+
 }
 //-------------------------------------------------------------------------------------------------------
 
@@ -321,6 +379,21 @@ void loop(){
   }
   processCatMessages();
 
+  // Power OUT/LED
+  if(millis()-powerTimer > 3000){
+    if(statusPower==1){
+      digitalWrite(PowerOnPin, LOW);
+      Serial.println(" PWR OFF");
+      statusPower = 0;
+    }
+  }else{
+    if(statusPower==0){
+      digitalWrite(PowerOnPin, HIGH);
+      Serial.println(" PWR ON");
+      statusPower = 1;
+    }
+  }
+
   // MQTT
   static long catTimer = 0;
   if(millis()-catTimer > 2000 && frequencyTmp!=frequency){
@@ -331,6 +404,9 @@ void loop(){
     MqttPubString(MQTT_TOPIC, String(frequency), 0);
     frequencyTmp=frequency;
     catTimer=millis();
+    #if defined(SELECT_ANT)
+      SelectANT();
+    #endif
   }
 
   // WIFI status
@@ -343,6 +419,14 @@ void loop(){
       WiFi.disconnect();
       WiFi.reconnect();
       WifiTimer = currentMillis;
+    }
+  #endif
+
+  #if defined(WDT)
+    // WDT
+    if(millis()-WdtTimer > 60000){
+      esp_task_wdt_reset();
+      WdtTimer=millis();
     }
   #endif
 
@@ -374,6 +458,24 @@ void loop(){
 
 // SUBROUTINES -------------------------------------------------------------------------------------------------------
 
+void SelectANT(){
+  #if defined(SELECT_ANT)
+    TRXselectANT = 42;
+    for(int ant=0; ant<8; ant++){
+      if(ANTrange[ant][0]<frequency && frequency<ANTrange[ant][1]){
+        TRXselectANT=ant;
+      }else{
+      }
+    }
+    ShiftOutByte=0x00;
+    bitSet(ShiftOutByte, TRXselectANT);
+    digitalWrite(ShiftOutLatchPin, LOW);
+      shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, ShiftOutByte);
+    digitalWrite(ShiftOutLatchPin, HIGH);
+  #endif
+}
+
+//-------------------------------------------------------------------------------------------------------
 // uint32_t readADC_Cal(int ADC_Raw)
 // {
 //   esp_adc_cal_characteristics_t adc_chars;
@@ -437,12 +539,14 @@ void processCatMessages(){
             }
           }
         } else {
-#ifdef DEBUG
-          Serial.print(read_buffer[3]);
-          Serial.println(" also on-line?!");
-#endif
+          #ifdef DEBUG
+            Serial.print(read_buffer[3]);
+            Serial.println(" also on-line?!");
+          #endif
         }
       }
+      powerTimer=millis(); // RX BT
+
     }
 
 #ifdef DEBUG
@@ -470,6 +574,7 @@ void processCatMessages(){
 void callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param) {
   if (event == ESP_SPP_SRV_OPEN_EVT) {
     Serial.println("Client Connected");
+    frequencyTmp=0;
   }
 
 }
@@ -684,6 +789,7 @@ void MqttPubString(String TOPICEND, String DATA, bool RETAIN){
         Serial.println(mqttTX);
       }
     }
+    delay(100);
     digitalWrite(StatusPin, HIGH);
   #endif
 }
@@ -715,8 +821,11 @@ void httpCAT(){
             webCatClient.println(F("Content-Type: text/html"));
             webCatClient.println(F("Connection: close"));  // the connection will be closed after completion of the response
             webCatClient.println();
-
-            webCatClient.print(String(frequency)+"|"+String(modes)+"|");
+            if(statusPower==1){
+              webCatClient.print(String(frequency)+"|"+String(modes)+"|");
+            }else{
+              webCatClient.print("0|OFF|");
+            }
             break;
           }
           if (c == '\n') {
@@ -762,7 +871,9 @@ void UdpToCwFsk(){
       digitalWrite(StatusPin, LOW);
       Serial.print("UDP rx: ");
       Serial.println((char *)CwMsg);
-      send();
+      if(statusPower==1){
+        send();
+      }
     }
 
   #endif
@@ -805,6 +916,11 @@ void send(){
       }
     }
     Serial.println();
+    delay(100);
+    digitalWrite(StatusPin, HIGH);
+    delay(100);
+    digitalWrite(StatusPin, LOW);
+    delay(100);
     digitalWrite(StatusPin, HIGH);
   }else if(modes=="FSK"){ // GPIO -----------------
     digitalWrite(PTT, HIGH);          // PTT ON
