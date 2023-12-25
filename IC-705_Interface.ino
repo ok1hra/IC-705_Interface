@@ -31,32 +31,32 @@
     - DOUBLE FLASH receive CW via UDP
     - FLASH+PTT receive RTTY via UDP
   + external shift register control switch by frequency
-  + mDNS http://ic705.local
-  + GPIO16 CIV-MUTE always on
+  + mDNS http://ic705.local:81
   + Watchdog
   + Power OUT+LED if BT connect (Enable your hamshack)
+  + CI-V output frequency for PA or any other devices
+  + GPIO16 CIV-MUTE wok fine
 
   ToDo
-  - CI-V output to serial for PA
   - enable CI-V transceive after BT connect, 1A 01 31 01
   - clear RIT, 21 00  00 00 00 (RIT freq to 0) new CMD UDP port?
   - IP to CW after connect, 16 47 00 (BK-IN OFF), 16 47 01 (BK-IN ON)
 
 //--------------------------------------------------------------------
 ----------------- CONFIGURE ------------------------------------------*/
-const String SSID         = "SSID";             // Wifi SSID
-const String PSWD         = "PASSWORD";         // Wifi password
-const byte mqttBroker[4]  = {54.38.157.134};    // MQTT broker IP address (54.38.157.134 public broker RemoteQTH.com)
-const int MQTT_PORT       = 1883;               // MQTT broker port
-const String MQTT_TOPIC   = "CALL/IC705/1/hz";  // MQTT topic for send frequency
-const int HTTP_CAT_PORT   = 81;                 // http IP port for get frequency and mode
-const int udpPort         = 89;                 // UDP port CW | echo -n "cq de ok1hra ok1hra test k;" | nc -u -w1 192.168.1.19 89
-const int udpCatPort      = 90;                 // UDP port for CAT command
-const int CivOutBaud      = 9600;               // Baudrate terminal and CI-V serial output
+// const String SSID         = "SSID";             // Wifi SSID
+// const String PSWD         = "PASSWORD";         // Wifi password
+// const byte mqttBroker[4]  = {54.38.157.134};    // MQTT broker IP address (54.38.157.134 public broker RemoteQTH.com)
+// const int MQTT_PORT       = 1883;               // MQTT broker port
+// const String MQTT_TOPIC   = "CALL/IC705/1/hz";  // MQTT topic for send frequency
+// const int HTTP_CAT_PORT   = 81;                 // http IP port for get frequency and mode
+// const int udpPort         = 89;                 // UDP port CW | echo -n "cq de ok1hra ok1hra test k;" | nc -u -w1 192.168.1.19 89
+// const int udpCatPort      = 90;                 // UDP port for CAT command
+// const int CivOutBaud      = 9600;               // Baudrate terminal and CI-V output (in range 9600 4800 2400 1200)
 //--------------------------------------------------------------------
 //--------------------------------------------------------------------
 
-#define REV 20231221
+#define REV 20231223
 #define WIFI
 #define MQTT
 #define HTTP
@@ -121,6 +121,7 @@ uint8_t  radio_address;     //Transiever address
 uint16_t  baud_rate;        //Current baud speed
 uint32_t  readtimeout;      //Serial port read timeout
 uint8_t  read_buffer[12];   //Read buffer
+// uint8_t  read_buffer_snapshot[12];   //Buffer snapshot
 uint32_t  frequency;        //Current frequency in Hz
 uint32_t  frequencyTmp;        //Current frequency in Hz
 uint32_t  timer;
@@ -257,7 +258,21 @@ void setup(){
   pinMode(PowerOnPin, OUTPUT);
     digitalWrite(PowerOnPin, LOW);
   pinMode(CIVmutePin, OUTPUT);
-    digitalWrite(CIVmutePin, LOW);
+    digitalWrite(CIVmutePin, HIGH);
+
+  #if defined(SELECT_ANT)
+    pinMode(ShiftOutLatchPin, OUTPUT);
+      digitalWrite(ShiftOutLatchPin, HIGH);
+    pinMode(ShiftOutClockPin, OUTPUT);
+      digitalWrite(ShiftOutClockPin, LOW);
+    pinMode(ShiftOutDataPin, OUTPUT);
+      digitalWrite(ShiftOutDataPin, LOW);
+
+    digitalWrite(ShiftOutLatchPin, LOW);
+    shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, B10000000);
+    shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, B00000000);
+    digitalWrite(ShiftOutLatchPin, HIGH);
+  #endif
 
   #if defined(CIV_OUT)
     Serial2.begin(CivOutBaud, SERIAL_8N1, 26, 0);
@@ -407,6 +422,49 @@ void loop(){
     #if defined(SELECT_ANT)
       SelectANT();
     #endif
+
+    // CAT out
+    // fefe560e03fd fefe0e56038079022800fd fefe560e04fd fefe0e56040301fd    request
+    // fefe005600 90 79 02 28 00 fd fefe0056000080022800fd    CIV-TX-ON
+    // FEFEE04203 00 00 58 45 01 FD  -145.580.000
+    byte buffer[12];
+    String StrFreq;
+      StrFreq=IntToTenString(frequency);
+      // Serial.println(StrFreq);
+    String SplitStrFreq[5];
+      SplitString(StrFreq, SplitStrFreq);
+
+    buffer[0]=0xFE;
+    buffer[1]=0xFE;
+    buffer[2]=0x00;
+    buffer[3]=0x42;
+    buffer[4]=0x00;    
+    for (int i = 5; i < 11; i++) {
+      buffer[i] = stringToByte(SplitStrFreq[4-(i-5)]);
+    }
+    buffer[10]=0xFD;
+
+    digitalWrite(CIVmutePin, LOW);
+    delay(2);
+    for (int i = 0; i < 11; i++) {
+      Serial.write(buffer[i]);
+    }
+    Serial.flush();
+    delay(2);
+    digitalWrite(CIVmutePin, HIGH);
+    delay(2);
+    Serial.println();
+
+    // for (int i = 0; i < 11; i++) {
+    //   Serial.print(buffer[i], HEX);
+    //   Serial.print(" ");
+    // }
+    // Serial.println();
+    /*
+    TXmqtt > OK1HRA/OI3/1/hz 21243820
+    FE FE 0 42 0 20 38 24 21 0 FD 
+    */
+
   }
 
   // WIFI status
@@ -458,6 +516,38 @@ void loop(){
 
 // SUBROUTINES -------------------------------------------------------------------------------------------------------
 
+String IntToTenString(int NR) {
+  String str = String(NR);
+  while (str.length() < 10) {
+    str = "0" + str;
+  }
+  return str;
+}
+
+//-------------------------------------------------------------------------------------------------------
+void SplitString(String ORIGINAL, String* SplitStrFreq) {
+  for (int i = 0; i < 5; i++) {
+    SplitStrFreq[i] = ORIGINAL.substring(i * 2, i * 2 + 2);
+    // Serial.println(SplitStrFreq[i]);
+  }
+}
+
+//-------------------------------------------------------------------------------------------------------
+
+byte stringToByte(String str) {
+  // Převod prvního znaku na číslo
+  byte prvniZnak = str.charAt(0) - '0';
+
+  // Převod druhého znaku na číslo a posun do vyššího číselného řádu
+  byte druhyZnak = str.charAt(1) - '0';
+
+  // Sestavení výsledné hodnoty
+  byte vysledek = (prvniZnak << 4) | druhyZnak;
+
+  return vysledek;
+}
+
+//-------------------------------------------------------------------------------------------------------
 void SelectANT(){
   #if defined(SELECT_ANT)
     TRXselectANT = 42;
@@ -549,18 +639,21 @@ void processCatMessages(){
 
     }
 
-#ifdef DEBUG
+// #ifdef DEBUG
     //if(!knowncommand){
-    Serial.print("<");
-    for (uint8_t i = 0; i < sizeof(read_buffer); i++) {
-      if (read_buffer[i] < 16)Serial.print("0");
-      Serial.print(read_buffer[i], HEX);
-      Serial.print(" ");
-      if (read_buffer[i] == STOP_BYTE)break;
-    }
-    Serial.println();
+    // Serial.print("<");
+    // if(read_buffer[10] == STOP_BYTE){
+    //     memcpy(read_buffer_snapshot, read_buffer, sizeof(read_buffer));
+      // for (uint8_t i = 0; i < sizeof(read_buffer); i++){
+      //   if (read_buffer[i] < 16)Serial.print("0");
+      //   Serial.print(read_buffer[i], HEX);
+      //   Serial.print(" ");
+      //   if (read_buffer[i] == STOP_BYTE)break;
+      // }
+      // Serial.println();
+    // }
     //}
-#endif
+// #endif
   }
 
 // #ifdef MIRRORCAT
@@ -595,6 +688,7 @@ uint8_t readLine(void){
   uint8_t byte;
   uint8_t counter = 0;
   uint32_t ed = readtimeout;
+  read_buffer[10] = 0x00;
 
   while (true)
   {
