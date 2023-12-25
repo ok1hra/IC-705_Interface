@@ -42,6 +42,6 @@
 
 ## Connect and debug
 - Open terminal in Arduino IDE
-- Set Baudrate to 115200
+- Set Baudrate to 9600
 - Reset ESP32
 - Read IP address from terminal debug
