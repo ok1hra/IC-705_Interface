@@ -3,14 +3,14 @@
 ## Functionality
 - Support [Óm - simple contest PHP log](https://github.com/ok1hra/Om)
 - Connect to IC-705 via **Bluetooth**
-- Connect to **WiFi**
-- Connect to **MQTT** broker
-- Send **frequency to MQTT**
-- Get CAT **frequency and mode on http** port 81
+- Connect to **WiFi** AP
+- Connect to **MQTT** broker and send **frequency**
+- CAT **frequency and mode available on http** port 81
 
   <img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/http-cat.png" height="100">
   
-- Transfer message **from open UDP port 89 to CW/FSK**
+- Transfer message **from UDP port 89 to CW/FSK**
+- **CI-V isolated output** for PA or other devices
 
 ## PCB
 <img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/hw/IC-705-interface-01.png" height="300">
