@@ -9,7 +9,7 @@
 - UDP port 89 receives ascii characters, which it sends via Bluetooth to the IC-705, and transmit them as a CW message
 - UDP port 89 receives ascii characters, which it sends in RTTY mode by keying FSK and PTT TRX inputs
 
-    [![RTTY + PTT keying](https://youtube.com/shorts/b0uTiIwEsbw/0.jpg)](https://youtube.com/shorts/b0uTiIwEsbw)
+    [![RTTY + PTT keying](https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/hw/rtty-key.png)](https://youtube.com/shorts/b0uTiIwEsbw)
 
 - Status LED
     - ON after start
