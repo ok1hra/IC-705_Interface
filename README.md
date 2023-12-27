@@ -1,33 +1,33 @@
 # IC-705 IP Interface
 
 ## Functionality
-- Connecting the IC-705 via Bluetooth and sending the frequency to MQTT
-- Frequency and mode for [Óm - simple contest PHP log](https://github.com/ok1hra/Om) available on http port 81 (address http://ic705.local:81)
+- Connecting the IC-705 via Bluetooth and **sending the frequency to MQTT**
+- **Frequency and mode** for [Óm - simple contest PHP log](https://github.com/ok1hra/Om) available on **http port 81** (address http://ic705.local:81)
 
     <img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/http-cat.png" height="100">
 
-- UDP port 89 receives ascii characters, which it sends via Bluetooth to the IC-705, and transmit them as a CW message
-- UDP port 89 receives ascii characters, which it sends in RTTY mode by keying FSK and PTT TRX inputs
+- **UDP port 89** receives ascii characters, which it sends via Bluetooth to the IC-705, and *transmit them as a CW message**
+- **UDP port 89** receives ascii characters, which it sends **in RTTY mode by keying FSK and PTT TRX inputs**
 
     [![RTTY + PTT keying](https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/hw/rtty-key.png)](https://youtube.com/shorts/b0uTiIwEsbw)
 
-- Status LED
+- **Status LED**
     - ON after start
     - OFF if cononnect Wifi
     - FLASH send MQTT freq
     - DOUBLE FLASH receive CW via UDP
     - FLASH+PTT receive RTTY via UDP
-- mDNS - to easily find IP devices in the network, using the command "ping ic705.local"
-- Watchdog - resets the device after more than 73 seconds of inactivity
-- Output signal POWER-OUT (13.8V/0.5A) with LED activates after connecting BT (can turn on your hamshack)
-- Galvanically isolated CI-V output for connecting PA or other devices
+- **mDNS** - to easily find IP devices in the network, using the command **"ping ic705.local"**
+- **Watchdog -** resets the device after more than 73 seconds of inactivity
+- **Output signal POWER-OUT** (13.8V/0.5A) with LED activates after connecting BT (can turn on your hamshack)
+- **Galvanically isolated CI-V output** for connecting PA or other devices
 
     <img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/hw/IC-705-interface-01-CAT.jpg" height="400">
 
-- CIV-MUTE on gpio16 allow send to CI-V output only commands with frequency (not debug messages)
-- UDP port for CAT command (clear RIT) from log
-- after BT connect, set TRX to enable: CI-V transceive + enable RIT + enable BK-IN
-- support external shift register control switch by frequency (not tested)
+- **CIV-MUTE** on gpio16 allow send to CI-V output only commands with frequency (not debug messages)
+- **UDP port for CAT command (clear RIT) from log**
+- After BT connect, **set TRX to enable: CI-V transceive + enable RIT + enable BK-IN**
+- Support external shift register control switch by frequency (not tested)
 - Detect PCB hardware ID
 
 ## PCB
