@@ -14,33 +14,33 @@
   along with this program.  If not, see <http://www.gnu.org/licenses/>.
   -----------------------------------------------------------
 
+  Compile for "ESP32 Dev Module" board with Partition Scheme: "No OTA (2MB APP/2MB SPIFFS)"
+  With libraries
   Using library BluetoothSerial at version 2.0.0 in folder: /home/dan/Arduino/hardware/espressif/esp32/libraries/BluetoothSerial 
   Using library WiFi at version 2.0.0 in folder: /home/dan/Arduino/hardware/espressif/esp32/libraries/WiFi 
   Using library ESPmDNS at version 2.0.0 in folder: /home/dan/Arduino/hardware/espressif/esp32/libraries/ESPmDNS 
   Using library PubSubClient at version 2.8 in folder: /home/dan/Arduino/libraries/PubSubClient 
 
-  + BT CAT to MQTT via WiFi
-  + http CAT for óm
-  + UDP to BT-CAT CW
-  + UDP RTTY + PTT to GPIO
-  + Detect HW ID
+  Features
+  + Connecting the IC-705 via Bluetooth and sending the frequency to MQTT
+  + Frequency and mode for PHP log available on http port 81 (address http://ic705.local:81)
+  + UDP port 89 receives ascii characters, which it sends via Bluetooth to the IC-705, and transmit them as a CW message
+  + UDP port 89 receives ascii characters, which it sends in RTTY mode by keying FSK and PTT TRX inputs
   + Status LED
     - ON after start
     - OFF if cononnect Wifi
     - FLASH send MQTT freq
     - DOUBLE FLASH receive CW via UDP
     - FLASH+PTT receive RTTY via UDP
-  + external shift register control switch by frequency
-  + mDNS http://ic705.local:81
-  + Watchdog
-  + Power OUT+LED if BT connect (Enable your hamshack)
-  + CI-V output frequency for PA or any other devices
-  + GPIO16 CIV-MUTE wok fine
-
-  ToDo
-  - enable CI-V transceive after BT connect, 1A 01 31 01
-  - clear RIT, 21 00  00 00 00 (RIT freq to 0) new CMD UDP port?
-  - IP to CW after connect, 16 47 00 (BK-IN OFF), 16 47 01 (BK-IN ON)
+  + mDNS - to easily find IP devices in the network, using the command "ping ic705.local"
+  + Watchdog - resets the device after more than 73 seconds of inactivity
+  + Output signal POWER-OUT (13.8V/0.5A) with LED activates after connecting BT (can turn on your hamshack)
+  + Galvanically isolated CI-V output for connecting PA or other devices
+  + CIV-MUTE on gpio16 allow send to CI-V output only commands with frequency (not debug messages)
+  + UDP port for CAT command (clear RIT) from log
+  + after BT connect, set TRX to enable: CI-V transceive + enable RIT + enable BK-IN
+  + support external shift register control switch by frequency (not tested)
+  + Detect PCB hardware ID
 
 //--------------------------------------------------------------------
 ----------------- CONFIGURE ------------------------------------------*/
@@ -56,17 +56,16 @@
 //--------------------------------------------------------------------
 //--------------------------------------------------------------------
 
-#define REV 20231225
+#define REV 20231227
 #define WIFI
 #define MQTT
-#define HTTP
 #define UDP_TO_CW
 #define UDP_TO_FSK
-#define SELECT_ANT  // enable external shift registrer antenna switching
-#define HTTP
-#define WDT
-// #define UDP_TO_CAT
-// #define CIV_OUT //     Serial2.write(byte);
+#define SELECT_ANT  // enable external shift registrer antenna switching (not tested)
+#define HTTP        // http propagation freq|mode|
+#define WDT         // watchdog timer
+#define CIV_OUT     // send freq to CIV out with CivOutBaud
+#define UDP_TO_CAT  // data command from udpCatPort send to TRX | FE FE A4 E0 <command> FD
 
 #if defined(SELECT_ANT)
   unsigned long ANTrange[8][2] = {/* TRXfreq[0]
@@ -146,6 +145,7 @@ const int PowerOnPin    = 4;
 long powerTimer         = 0;
 bool statusPower        = 1;
 const int CIVmutePin    = 16;
+bool TrxNeedSet         = 0;
 
 #if defined(WDT)
   // 73 seconds WDT (WatchDogTimer)
@@ -179,7 +179,12 @@ const int CIVmutePin    = 16;
   WiFiUDP udp;
 #endif
 
+#if defined(UDP_TO_CAT)
+  WiFiUDP udpCat;
+#endif
+
 uint8_t CwMsg[36] = "";
+uint8_t CwCat[36] = "";
 
 #if defined(UDP_TO_FSK)
   #define FSK_OUT  33                      // TTL LEVEL pin OUTPUT
@@ -203,7 +208,8 @@ uint8_t CwMsg[36] = "";
 #endif
 
 #if defined(UDP_TO_CAT)
-  uint8_t CatMsg[36] = "";
+  // uint8_t CatMsg[11] = "";
+  byte CatMsg[10];
 #endif
 
 #if defined(MQTT)
@@ -272,10 +278,6 @@ void setup(){
     shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, B10000000);
     shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, B00000000);
     digitalWrite(ShiftOutLatchPin, HIGH);
-  #endif
-
-  #if defined(CIV_OUT)
-    Serial2.begin(CivOutBaud, SERIAL_8N1, 26, 0);
   #endif
 
   #if defined(WIFI)
@@ -382,7 +384,58 @@ void setup(){
 //-------------------------------------------------------------------------------------------------------
 
 void loop(){
-  double qrg = 0;
+  Watchdog();
+  Mqtt();
+  httpCAT();
+  UdpToCwFsk();
+  UdpToCat();
+}
+
+// SUBROUTINES -------------------------------------------------------------------------------------------------------
+
+void Watchdog(){
+
+  // set TRX after BT connect
+  if(TrxNeedSet==1){
+    TrxNeedSet=0;
+    /*
+    FE FE A4 E0 <command> FD
+      - enable CI-V transceive after BT connect, 1A 05 01 31 01
+      - enable RIT 21 01 01|clear RIT 21 00 00 00 00 (RIT freq to 0)
+      - IP to CW after connect, 16 47 00 (BK-IN OFF), 16 47 01 (BK-IN ON)
+    */
+
+    // Enable CI-V transceive
+    Serial.print("Enable| CI-V transceive");
+    memset(CatMsg, 0xff, 10);
+    CatMsg[0] = 0x1A;
+    CatMsg[1] = 0x05;
+    CatMsg[2] = 0x01;
+    CatMsg[3] = 0x31;
+    CatMsg[4] = 0x01;
+    sendCat();
+    delay(500);
+
+    // Enable RIT
+    Serial.print(" | RIT");
+    memset(CatMsg, 0xff, 10);
+    CatMsg[0] = 0x21;
+    CatMsg[1] = 0x01;
+    CatMsg[2] = 0x01;
+    sendCat();
+    delay(500);
+
+    // Enable BK-IN
+    Serial.print(" | BK-IN");
+    memset(CatMsg, 0xff, 10);
+    CatMsg[0] = 0x16;
+    CatMsg[1] = 0x47;
+    CatMsg[2] = 0x01;
+    sendCat();
+    delay(500);
+
+    Serial.println();
+  }
 
   // BT CAT
   static long requestTimer = 0;
@@ -409,9 +462,9 @@ void loop(){
     }
   }
 
-  // MQTT
   static long catTimer = 0;
   if(millis()-catTimer > 2000 && frequencyTmp!=frequency){
+  // MQTT
     // Serial.print(frequency);
     // Serial.print("|");
     // Serial.print(modes);
@@ -424,47 +477,48 @@ void loop(){
     #endif
 
     // CAT out
-    // fefe560e03fd fefe0e56038079022800fd fefe560e04fd fefe0e56040301fd    request
-    // fefe005600 90 79 02 28 00 fd fefe0056000080022800fd    CIV-TX-ON
-    // FEFEE04203 00 00 58 45 01 FD  -145.580.000
-    byte buffer[12];
-    String StrFreq;
-      StrFreq=IntToTenString(frequency);
-      // Serial.println(StrFreq);
-    String SplitStrFreq[5];
-      SplitString(StrFreq, SplitStrFreq);
+    #if defined(CIV_OUT)
+      // fefe560e03fd fefe0e56038079022800fd fefe560e04fd fefe0e56040301fd    request
+      // fefe005600 90 79 02 28 00 fd fefe0056000080022800fd    CIV-TX-ON
+      // FEFEE04203 00 00 58 45 01 FD  -145.580.000
+      byte buffer[12];
+      String StrFreq;
+        StrFreq=IntToTenString(frequency);
+        // Serial.println(StrFreq);
+      String SplitStrFreq[5];
+        SplitString(StrFreq, SplitStrFreq);
 
-    buffer[0]=0xFE;
-    buffer[1]=0xFE;
-    buffer[2]=0x00;
-    buffer[3]=0x42;
-    buffer[4]=0x00;    
-    for (int i = 5; i < 11; i++) {
-      buffer[i] = stringToByte(SplitStrFreq[4-(i-5)]);
-    }
-    buffer[10]=0xFD;
+      buffer[0]=0xFE;
+      buffer[1]=0xFE;
+      buffer[2]=0x00;
+      buffer[3]=0x42;
+      buffer[4]=0x00;    
+      for (int i = 5; i < 11; i++) {
+        buffer[i] = stringToByte(SplitStrFreq[4-(i-5)]);
+      }
+      buffer[10]=0xFD;
 
-    digitalWrite(CIVmutePin, LOW);
-    delay(2);
-    for (int i = 0; i < 11; i++) {
-      Serial.write(buffer[i]);
-    }
-    Serial.flush();
-    delay(2);
-    digitalWrite(CIVmutePin, HIGH);
-    delay(2);
-    Serial.println();
+      digitalWrite(CIVmutePin, LOW);
+      delay(2);
+      for (int i = 0; i < 11; i++) {
+        Serial.write(buffer[i]);
+      }
+      Serial.flush();
+      delay(2);
+      digitalWrite(CIVmutePin, HIGH);
+      delay(2);
+      Serial.println();
 
-    // for (int i = 0; i < 11; i++) {
-    //   Serial.print(buffer[i], HEX);
-    //   Serial.print(" ");
-    // }
-    // Serial.println();
-    /*
-    TXmqtt > OK1HRA/OI3/1/hz 21243820
-    FE FE 0 42 0 20 38 24 21 0 FD 
-    */
-
+      // for (int i = 0; i < 11; i++) {
+      //   Serial.print(buffer[i], HEX);
+      //   Serial.print(" ");
+      // }
+      // Serial.println();
+      /*
+      TXmqtt > OK1HRA/OI3/1/hz 21243820
+      FE FE 0 42 0 20 38 24 21 0 FD 
+      */
+     #endif
   }
 
   // WIFI status
@@ -480,41 +534,17 @@ void loop(){
     }
   #endif
 
+  // WDT
   #if defined(WDT)
-    // WDT
     if(millis()-WdtTimer > 60000){
       esp_task_wdt_reset();
       WdtTimer=millis();
     }
   #endif
 
-  // static int StatusTmp = -1;
-  // static long StatusWatchdog = 0;
-  // if(millis()-StatusWatchdog > 3000){
-  //   if (!CAT.isConnected()) {
-  //     if(StatusTmp!=0){
-  //       Serial.println(" BT -Offline");
-  //       digitalWrite(StatusPin, LOW);
-  //       StatusTmp=0;
-  //     }
-  //   } else {
-  //     if(StatusTmp!=1){
-  //       Serial.println(" BT -Online");
-  //       digitalWrite(StatusPin, LOW);
-  //       StatusTmp=1;
-  //     }
-  //   }
-  //   StatusWatchdog=millis();
-  // }
-
-  Mqtt();
-  httpCAT();
-  UdpToCwFsk();
-  //UdpToCat();
-
 }
 
-// SUBROUTINES -------------------------------------------------------------------------------------------------------
+//-------------------------------------------------------------------------------------------------------
 
 String IntToTenString(int NR) {
   String str = String(NR);
@@ -668,6 +698,7 @@ void callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param) {
   if (event == ESP_SPP_SRV_OPEN_EVT) {
     Serial.println("Client Connected");
     frequencyTmp=0;
+    TrxNeedSet=1;
   }
 
 }
@@ -948,6 +979,26 @@ void httpCAT(){
 }
 //-----------------------------------------------------------------------------------
 
+void UdpToCat(){
+  #if defined(UDP_TO_CAT)
+    memset(CatMsg, 0xff, 10);
+
+    udpCat.parsePacket();
+    // int packetSize = udp.parsePacket();
+    if(udpCat.read(CatMsg, 10) > 0){
+      // Serial.print("UDPcat rx: ");
+      // Serial.println((char *)CatMsg);
+
+      // clear RIT only - SECURITY FEATURE
+      if(statusPower==1 && CatMsg[0]==0x21){
+        sendCat();
+      }
+    }
+
+  #endif
+}
+//-----------------------------------------------------------------------------------
+
 void UdpToCwFsk(){
   #if defined(UDP_TO_CW)
     // //data will be sent to server
@@ -963,13 +1014,53 @@ void UdpToCwFsk(){
     //receive response from server, it will be HELLO WORLD
     if(udp.read(CwMsg, 36) > 0){
       digitalWrite(StatusPin, LOW);
-      Serial.print("UDP rx: ");
-      Serial.println((char *)CwMsg);
+      // Serial.print("UDP rx: ");
+      // Serial.println((char *)CwMsg);
       if(statusPower==1){
         send();
       }
     }
 
+  #endif
+}
+//-------------------------------------------------------------------------------------------------------
+void sendCat(){
+  #if defined(UDP_TO_CAT)
+
+    int TheEnd = 99;
+    for (int i = 9; i>-1; i--) {
+      if(CatMsg[i]!=0xff){
+          CatMsg[i+4]=CatMsg[i];
+        if(TheEnd==99){
+          TheEnd=i+5;
+        }
+      }
+    }
+
+    // Serial.print("TheEnd: ");
+    // Serial.println(TheEnd);
+    // Serial.print("To CAT: ");
+    // Serial.println((char *)CwMsg);
+
+    // CAT -----------------
+    CatMsg[0] = START_BYTE;
+    CatMsg[1] = START_BYTE;
+    CatMsg[2] = radio_address;
+    CatMsg[3] = CONTROLLER_ADDRESS;
+
+    CatMsg[TheEnd] = STOP_BYTE;
+    for (uint8_t i = 0; i < sizeof(CatMsg); i++) {
+      if (i <= TheEnd){
+        CAT.write(CatMsg[i]);
+
+        // if (CatMsg[i] < 16){
+        //   Serial.print("0");
+        // }
+        // Serial.print(CatMsg[i], HEX);
+        // Serial.print(" ");
+      }
+    }
+    // Serial.println();  
   #endif
 }
 //-------------------------------------------------------------------------------------------------------
@@ -1002,14 +1093,14 @@ void send(){
     for (uint8_t i = 0; i < sizeof(CwMsg); i++) {
       if (i <= TheEnd){
         CAT.write(CwMsg[i]);
-        if (CwMsg[i] < 16){
-          Serial.print("0");
-        }
-        Serial.print(CwMsg[i], HEX);
-        Serial.print(" ");
+        // if (CwMsg[i] < 16){
+        //   Serial.print("0");
+        // }
+        // Serial.print(CwMsg[i], HEX);
+        // Serial.print(" ");
       }
     }
-    Serial.println();
+    // Serial.println();
     delay(100);
     digitalWrite(StatusPin, HIGH);
     delay(100);
