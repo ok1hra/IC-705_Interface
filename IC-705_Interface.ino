@@ -143,7 +143,7 @@ int HWidValue           = 0;
 const int StatusPin     = 5;
 const int PowerOnPin    = 4;
 long powerTimer         = 0;
-bool statusPower        = 1;
+bool statusPower        = 0;
 const int CIVmutePin    = 16;
 bool TrxNeedSet         = 0;
 
