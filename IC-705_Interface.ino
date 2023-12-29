@@ -41,6 +41,7 @@
   + after BT connect, set TRX to enable: CI-V transceive + enable RIT + enable BK-IN
   + support external shift register control switch by frequency (not tested)
   + Detect PCB hardware ID
+  + postponed MQTT
 
 //--------------------------------------------------------------------
 ----------------- CONFIGURE ------------------------------------------*/
@@ -56,7 +57,7 @@
 //--------------------------------------------------------------------
 //--------------------------------------------------------------------
 
-#define REV 20231227
+#define REV 20231229
 #define WIFI
 #define MQTT
 #define UDP_TO_CW
@@ -146,6 +147,8 @@ long powerTimer         = 0;
 bool statusPower        = 0;
 const int CIVmutePin    = 16;
 bool TrxNeedSet         = 0;
+long mqttPostponeTimer  = 0;
+bool mqttPostponeStatus = 1;
 
 #if defined(WDT)
   // 73 seconds WDT (WatchDogTimer)
@@ -459,7 +462,15 @@ void Watchdog(){
       digitalWrite(PowerOnPin, HIGH);
       Serial.println(" PWR ON");
       statusPower = 1;
+      mqttPostponeTimer = millis();
+      mqttPostponeStatus = 0;
     }
+  }
+
+  // postponed MQTT
+  if(millis()-mqttPostponeTimer > 11000 && mqttPostponeStatus==0){
+    mqttPostponeStatus = 1;
+    MqttPubString(MQTT_TOPIC, String(frequency), 0);
   }
 
   static long catTimer = 0;
