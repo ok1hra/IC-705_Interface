@@ -43,6 +43,9 @@
   + Detect PCB hardware ID
   + postponed MQTT
 
+  ToDo
+  - CLI for setting wifi
+
 //--------------------------------------------------------------------
 ----------------- CONFIGURE ------------------------------------------*/
 // const String SSID         = "SSID";             // Wifi SSID
@@ -57,7 +60,7 @@
 //--------------------------------------------------------------------
 //--------------------------------------------------------------------
 
-#define REV 20231229
+#define REV 20240106
 #define WIFI
 #define MQTT
 #define UDP_TO_CW
@@ -192,8 +195,8 @@ uint8_t CwCat[36] = "";
 #if defined(UDP_TO_FSK)
   #define FSK_OUT  33                      // TTL LEVEL pin OUTPUT
   #define PTT      32                      // PTT pin OUTPUT
-  #define FMARK    HIGH                    // FSK mark level [LOW/HIGH]
-  #define FSPACE   LOW                     // FSK space level [LOW/HIGH]
+  #define FMARK    LOW                    // FSK mark level [LOW/HIGH]
+  #define FSPACE   HIGH                     // FSK space level [LOW/HIGH]
   #define BaudRate 45.45                   // RTTY baud rate
   #define StopBit  1.5                     // stop bit long
   #define PTTlead  400                     // PTT lead delay ms
@@ -1152,6 +1155,7 @@ void send(){
     digitalWrite(PTT, LOW);Serial.println();
     digitalWrite(FSK_OUT, LOW);
     digitalWrite(StatusPin, HIGH);
+    powerTimer=millis();
   }
 
 //   uint8_t req[] = {START_BYTE, START_BYTE, radio_address, CONTROLLER_ADDRESS, CMD_SEND_CW_MSG, requestCode, STOP_BYTE};
