@@ -42,25 +42,27 @@
   + support external shift register control switch by frequency (not tested)
   + Detect PCB hardware ID
   + postponed MQTT
+  + BT name to configure
 
   ToDo
   - CLI for setting wifi
 
 //--------------------------------------------------------------------
 ----------------- CONFIGURE ------------------------------------------*/
-// const String SSID         = "SSID";             // Wifi SSID
-// const String PSWD         = "PASSWORD";         // Wifi password
-// const byte mqttBroker[4]  = {54.38.157.134};    // MQTT broker IP address (54.38.157.134 public broker RemoteQTH.com)
-// const int MQTT_PORT       = 1883;               // MQTT broker port
-// const String MQTT_TOPIC   = "CALL/IC705/1/hz";  // MQTT topic for send frequency
-// const int HTTP_CAT_PORT   = 81;                 // http IP port for get frequency and mode
-// const int udpPort         = 89;                 // UDP port CW | echo -n "cq de ok1hra ok1hra test k;" | nc -u -w1 192.168.1.19 89
-// const int udpCatPort      = 90;                 // UDP port for CAT command
-// const int CivOutBaud      = 9600;               // Baudrate terminal and CI-V output (in range 9600 4800 2400 1200)
+const String SSID         = "SSID";             // Wifi SSID
+const String PSWD         = "PASSWORD";         // Wifi password
+const byte mqttBroker[4]  = {54.38.157.134};    // MQTT broker IP address (54.38.157.134 public broker RemoteQTH.com)
+const int MQTT_PORT       = 1883;               // MQTT broker port
+const String MQTT_TOPIC   = "CALL/IC705/1/hz";  // MQTT topic for send frequency
+const int HTTP_CAT_PORT   = 81;                 // http IP port for get frequency and mode
+const int udpPort         = 89;                 // UDP port CW | echo -n "cq de ok1hra ok1hra test k;" | nc -u -w1 192.168.1.19 89
+const int udpCatPort      = 90;                 // UDP port for CAT command
+const int CivOutBaud      = 9600;               // Baudrate terminal and CI-V output (in range 9600 4800 2400 1200)
+const char* BTname        = "IC-705-CAT";       //Bluetooth device name
 //--------------------------------------------------------------------
 //--------------------------------------------------------------------
 
-#define REV 20240106
+#define REV 20240111
 #define WIFI
 #define MQTT
 #define UDP_TO_CW
@@ -718,7 +720,7 @@ void callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param) {
 }
 //-------------------------------------------------------------------------------------------------------
 void configRadioBaud(uint16_t  baudrate){
-  if (!CAT.begin("IC-705-CAT")) //Bluetooth device name
+  if (!CAT.begin(BTname)) //Bluetooth device name
   {
     Serial.println(" BT -An error occurred initializing Bluetooth");
 
