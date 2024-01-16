@@ -43,6 +43,9 @@
   + Detect PCB hardware ID
   + postponed MQTT
   + BT name to configure
+  + detect HW rev 02
+  + after connect WiFi, send assigned IP address with CW on TRX
+  + send ? in serial terminal, answer interface status
 
   ToDo
   - CLI for setting wifi
@@ -62,7 +65,7 @@ const char* BTname        = "IC-705-CAT";       //Bluetooth device name
 //--------------------------------------------------------------------
 //--------------------------------------------------------------------
 
-#define REV 20240111
+#define REV 20240116
 #define WIFI
 #define MQTT
 #define UDP_TO_CW
@@ -191,7 +194,8 @@ bool mqttPostponeStatus = 1;
   WiFiUDP udpCat;
 #endif
 
-uint8_t CwMsg[36] = "";
+// uint8_t CwMsg[36] = "";
+char CwMsg[36] = "";
 uint8_t CwCat[36] = "";
 
 #if defined(UDP_TO_FSK)
@@ -240,21 +244,23 @@ uint8_t CwCat[36] = "";
   long MqttStatusTimer[2]{1500,1000};
 #endif
 
+int incomingByte = 0;   // for incoming serial data
+
 //-------------------------------------------------------------------------------------------------------
 
 void setup(){
   Serial.begin(CivOutBaud);
   Serial.println();
-  Serial.print("FW rev. ");
+  Serial.print(" FW -");
   Serial.println(REV);
 
   pinMode(HWidPin, INPUT);
     // HWidValue = readADC_Cal(analogRead(HWidPin));
     HWidValue = analogRead(HWidPin);
     if(HWidValue<=150){
-      HardwareRev=0;
-    // }else if(HWidValue>150 && HWidValue<=450){
-    //   HardwareRev=3;  // 319
+      HardwareRev=1;
+    }else if(HWidValue>150 && HWidValue<=350){
+      HardwareRev=2;  // 253
     // }else if(HWidValue>450 && HWidValue<=700){
     //   HardwareRev=4;  // 604
     // }else if(HWidValue>700 && HWidValue<=900){
@@ -262,10 +268,11 @@ void setup(){
     // }else if(HWidValue>900){
     //   HardwareRev=6;  // 1036
     }
-  Serial.print("HW rev. [");
+  Serial.print(" HW -");
+  Serial.print(HardwareRev);
+  Serial.print(" [");
   Serial.print(HWidValue);
-  Serial.print("] ");
-  Serial.println(HardwareRev);
+  Serial.println("raw]");
 
   pinMode(StatusPin, OUTPUT);
     digitalWrite(StatusPin, LOW);
@@ -397,6 +404,7 @@ void loop(){
   httpCAT();
   UdpToCwFsk();
   UdpToCat();
+  CLI();
 }
 
 // SUBROUTINES -------------------------------------------------------------------------------------------------------
@@ -414,7 +422,7 @@ void Watchdog(){
     */
 
     // Enable CI-V transceive
-    Serial.print("Enable| CI-V transceive");
+    Serial.print("SET -CIV-tx-ON");
     memset(CatMsg, 0xff, 10);
     CatMsg[0] = 0x1A;
     CatMsg[1] = 0x05;
@@ -425,7 +433,7 @@ void Watchdog(){
     delay(500);
 
     // Enable RIT
-    Serial.print(" | RIT");
+    Serial.print("|RIT-ON");
     memset(CatMsg, 0xff, 10);
     CatMsg[0] = 0x21;
     CatMsg[1] = 0x01;
@@ -433,12 +441,68 @@ void Watchdog(){
     sendCat();
     delay(500);
 
+    // Disable BK-IN
+    Serial.print("|BK-IN-OFF");
+    memset(CatMsg, 0xff, 10);
+    CatMsg[0] = 0x16;
+    CatMsg[1] = 0x47;
+    CatMsg[2] = 0x00;
+    sendCat();
+    delay(500);
+
+    // Set mode CW
+    Serial.print("|MODE-CW");
+    memset(CatMsg, 0xff, 10);
+    CatMsg[0] = 0x06;
+    CatMsg[1] = 0x03;
+    CatMsg[2] = 0x03;
+    sendCat();
+    delay(500);
+
+    // Set AFgain to 10
+    Serial.print("|AFgain-10");
+    memset(CatMsg, 0xff, 10);
+    CatMsg[0] = 0x14;
+    CatMsg[1] = 0x01;
+    CatMsg[2] = 0x00;
+    CatMsg[3] = 0x25;
+    sendCat();
+    delay(500);
+
+    // Set RFgain to 0
+    Serial.print("|RFgain-0");
+    memset(CatMsg, 0xff, 10);
+    CatMsg[0] = 0x14;
+    CatMsg[1] = 0x02;
+    CatMsg[2] = 0x00;
+    CatMsg[3] = 0x00;
+    sendCat();
+    delay(500);
+
+    // CW send IP
+    Serial.print("|CWsend-IP..");
+    String StrBuf = String(WiFi.localIP()[0])+"."+String(WiFi.localIP()[1])+"."+String(WiFi.localIP()[2])+"."+String(WiFi.localIP()[3]) ;
+    StrBuf.toCharArray(CwMsg, StrBuf.length()+1);
+    modes="CW";
+    sendCW();
+    delay(9000);
+
     // Enable BK-IN
-    Serial.print(" | BK-IN");
+    Serial.print("|BK-IN-ON");
     memset(CatMsg, 0xff, 10);
     CatMsg[0] = 0x16;
     CatMsg[1] = 0x47;
     CatMsg[2] = 0x01;
+    sendCat();
+    delay(500);
+
+    // Set RFgain to 100
+    Serial.print("|RFgain-100");
+    memset(CatMsg, 0xff, 10);
+    CatMsg[0] = 0x14;
+    CatMsg[1] = 0x02;
+    CatMsg[2] = 0x02;
+    CatMsg[3] = 0x55;
     sendCat();
     delay(500);
 
@@ -712,7 +776,7 @@ void processCatMessages(){
 // call back to get info about connection
 void callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param) {
   if (event == ESP_SPP_SRV_OPEN_EVT) {
-    Serial.println("Client Connected");
+    Serial.println(" BT -Client Connected");
     frequencyTmp=0;
     TrxNeedSet=1;
   }
@@ -850,7 +914,7 @@ void Mqtt(){
         long now = millis();
         if (now - lastMqttReconnectAttempt > 10000) {
           lastMqttReconnectAttempt = now;
-          Serial.print("Attempt to MQTT reconnect | ");
+          Serial.print("MQTT-Attempt to MQTT reconnect | ");
           Serial.println(millis()/1000);
           if (mqttReconnect()) {
             lastMqttReconnectAttempt = 0;
@@ -1033,7 +1097,7 @@ void UdpToCwFsk(){
       // Serial.print("UDP rx: ");
       // Serial.println((char *)CwMsg);
       if(statusPower==1){
-        send();
+        sendCW();
       }
     }
 
@@ -1080,7 +1144,7 @@ void sendCat(){
   #endif
 }
 //-------------------------------------------------------------------------------------------------------
-void send(){
+void sendCW(){
   int TheEnd = 99;
   for (int i = 30; i>-1; i--) {
     if(CwMsg[i]!=0){
@@ -1269,4 +1333,94 @@ void chTable(){
                 space = 1;
         }
   #endif
+}
+
+//-------------------------------------------------------------------------------------------------------
+void CLI(){
+  if (Serial.available() > 0) {
+    incomingByte = Serial.read();
+    // ?
+    if(incomingByte==63){
+      ListCommands();
+
+    // +
+    }else if(incomingByte==43){
+      // Serial.println("  enter MQTT broker IP address by four number (0-255) and press [enter] after each");
+      // Serial.println("  NOTE: public remoteqth broker 54.38.157.134:1883");
+      // for (int i=0; i<5; i++){
+      //   if(i==4){
+      //     Serial.print("enter IP port (1-65535) and press [");
+      //   }
+      //   if(TelnetAuthorized==true){
+      //     Serial.println("enter]");
+      //   }else{
+      //     Serial.println(";]");
+      //   }
+      //   Enter();
+      //   int intBuf=0;
+      //   int mult=1;
+      //   for (int j=InputByte[0]; j>0; j--){
+      //     intBuf = intBuf + ((InputByte[j]-48)*mult);
+      //     mult = mult*10;
+      //   }
+      //   if( (i<4 && intBuf>=0 && intBuf<=255) || (i==4 && intBuf>=1 && intBuf<=65535) ){
+      //     if(i==4){
+      //       EEPROM.writeInt(165, intBuf);
+      //     }else{
+      //       EEPROM.writeByte(161+i, intBuf);
+      //     }
+      //     // Serial.println("EEPROMcomit");
+      //     EEPROM.commit();
+      //   }else{
+      //     Serial.println("Out of range.");
+      //     break;
+      //   }
+      // }
+      // Serial.print("** device will be restarted **");
+      // delay(1000);
+      // TelnetServerClients[0].stop();
+      // ESP.restart();
+
+    // CR/LF
+    }else if(incomingByte==13||incomingByte==10){
+      // anykey
+    }else{
+      Serial.print(" [");
+      Serial.print( String(incomingByte) ); //, DEC);
+      Serial.println("] unknown command");
+    }
+    incomingByte=0;
+  }
+}
+
+//-------------------------------------------------------------------------------------------------------
+void ListCommands(){
+  Serial.println("");
+  Serial.println("-------- DivaDroid International | IC-705 IP interface status  --------");
+  Serial.print("  Uptime: ");
+  if(millis() < 60000){
+    Serial.print( String(millis()/1000) );
+    Serial.println(" second");
+  }else if(millis() > 60000 && millis() < 3600000){
+    Serial.print( String(millis()/60000) );
+    Serial.println(" minutes");
+  }else if(millis() > 3600000 && millis() < 86400000){
+    Serial.print( String(millis()/3600000) );
+    Serial.println(" hours");
+  }else{
+    Serial.print( String(millis()/86400000) );
+    Serial.println(" days");
+  }
+  Serial.println("  FW "+String(REV)+" | HW "+String(HardwareRev)+" ["+String(HWidValue)+"raw]" );
+  Serial.println("  Bluetooth: "+String(BTname) );
+  Serial.println("  WIFI-connected with IP "+String(WiFi.localIP()) );
+  Serial.println("  WIFI-dBm: "+String(WiFi.RSSI()) );
+  Serial.println("  IP http-cat  http://"+String(WiFi.localIP()[0])+"."+String(WiFi.localIP()[1])+"."+String(WiFi.localIP()[2])+"."+String(WiFi.localIP()[3])+":"+String(HTTP_CAT_PORT) );
+  Serial.println("  IP udp cw/rtty port: "+String(udpPort) );
+  Serial.println("  IP udp cat port: "+String(udpCatPort) );
+  Serial.println("  IP MqttSubscribe: "+String(mqttBroker[0])+"."+String(mqttBroker[1])+"."+String(mqttBroker[2])+"."+String(mqttBroker[3])+":"+String(MQTT_PORT)+"/");
+  Serial.println("  IP MqttTopic: "+String(MQTT_TOPIC));
+  Serial.println("------------------  SETTINGS | press key to select -------------------");
+  Serial.println("      ?  list refresh");
+  Serial.print( " > " );
 }
