@@ -16,10 +16,13 @@
 
   Compile for "ESP32 Dev Module" board with Partition Scheme: "No OTA (2MB APP/2MB SPIFFS)"
   With libraries
+  Using library EEPROM at version 2.0.0 in folder: /home/dan/Arduino/hardware/espressif/esp32/libraries/EEPROM 
   Using library BluetoothSerial at version 2.0.0 in folder: /home/dan/Arduino/hardware/espressif/esp32/libraries/BluetoothSerial 
   Using library WiFi at version 2.0.0 in folder: /home/dan/Arduino/hardware/espressif/esp32/libraries/WiFi 
   Using library ESPmDNS at version 2.0.0 in folder: /home/dan/Arduino/hardware/espressif/esp32/libraries/ESPmDNS 
+  Using library WebServer at version 2.0.0 in folder: /home/dan/Arduino/hardware/espressif/esp32/libraries/WebServer 
   Using library PubSubClient at version 2.8 in folder: /home/dan/Arduino/libraries/PubSubClient 
+  Using library FS at version 2.0.0 in folder: /home/dan/Arduino/hardware/espressif/esp32/libraries/FS 
 
   Features
   + Connecting the IC-705 via Bluetooth and sending the frequency to MQTT
@@ -46,26 +49,23 @@
   + detect HW rev 02
   + after connect WiFi, send assigned IP address with CW on TRX
   + send ? in serial terminal, answer interface status
+  + add AP mode - status LED signal AP mode by slowly turning on and off (fade in / fade out)
+  + add setup http web form on port 80 (not work - BTname, BaudRate?)
 
-  ToDo
-  - CLI for setting wifi
+//--------------------------------------------------------------------*/
 
-//--------------------------------------------------------------------
------------------ CONFIGURE ------------------------------------------*/
-const String SSID         = "SSID";             // Wifi SSID
-const String PSWD         = "PASSWORD";         // Wifi password
-const byte mqttBroker[4]  = {54.38.157.134};    // MQTT broker IP address (54.38.157.134 public broker RemoteQTH.com)
-const int MQTT_PORT       = 1883;               // MQTT broker port
-const String MQTT_TOPIC   = "CALL/IC705/1/hz";  // MQTT topic for send frequency
-const int HTTP_CAT_PORT   = 81;                 // http IP port for get frequency and mode
-const int udpPort         = 89;                 // UDP port CW | echo -n "cq de ok1hra ok1hra test k;" | nc -u -w1 192.168.1.19 89
-const int udpCatPort      = 90;                 // UDP port for CAT command
-const int CivOutBaud      = 9600;               // Baudrate terminal and CI-V output (in range 9600 4800 2400 1200)
-const char* BTname        = "IC-705-CAT";       //Bluetooth device name
-//--------------------------------------------------------------------
-//--------------------------------------------------------------------
+String SSID         = "";
+String PSWD         = "";
+byte mqttBroker[4]  = {0,0,0,0};
+int MQTT_PORT       = 0;
+String MQTT_TOPIC   = "";
+int HTTP_CAT_PORT   = 0;
+int udpPort         = 0; // UDP port | echo -n "cq de ok1hra ok1hra test k;" | nc -u -w1 192.168.1.19 89
+int udpCatPort      = 0;
+int BaudRate        = 9600;
+char* BTname        = "";
 
-#define REV 20240116
+#define REV 20240128
 #define WIFI
 #define MQTT
 #define UDP_TO_CW
@@ -73,8 +73,42 @@ const char* BTname        = "IC-705-CAT";       //Bluetooth device name
 #define SELECT_ANT  // enable external shift registrer antenna switching (not tested)
 #define HTTP        // http propagation freq|mode|
 #define WDT         // watchdog timer
-#define CIV_OUT     // send freq to CIV out with CivOutBaud
+#define CIV_OUT     // send freq to CIV out with BaudRate
 #define UDP_TO_CAT  // data command from udpCatPort send to TRX | FE FE A4 E0 <command> FD
+#define BLUETOOTH   // not work
+
+#include "EEPROM.h"
+#define EEPROM_SIZE 97
+/*
+  0|Byte    1|128
+  1|Char    1|A
+  2|UChar   1|255
+  3|Short   2|-32768
+  5|UShort  2|65535
+  7|Int     4|-2147483648
+  11|Uint    4|4294967295
+  15|Long    4|-2147483648
+  19|Ulong   4|4294967295
+  23|Long64  8|0x00FFFF8000FF4180
+  31|Ulong64 8|0x00FFFF8000FF4180
+  39|Float   4|1234.1234
+  43|Double  8|123456789.12345679
+  51|Bool    1|1
+
+  0 APmode
+  1-21 - SSID
+  22-40 - PSWD
+  41-44 mqttBroker[4]
+  45-46 MQTT_PORT
+  47-67 MQTT_TOPIC
+  68-69 HTTP_CAT_PORT
+  70-71 udpPort
+  72-73 udpCatPort
+  74-75 BaudRate
+  76-96 BTname
+
+  !! Increment EEPROM_SIZE #define !!
+*/
 
 #if defined(SELECT_ANT)
   unsigned long ANTrange[8][2] = {/* TRXfreq[0]
@@ -95,59 +129,65 @@ const char* BTname        = "IC-705-CAT";       //Bluetooth device name
   byte ShiftOutByte;
 #endif
 
-#include "BluetoothSerial.h"
-//#define DEBUG 1
-//#define MIRRORCAT 1
-//#define MIRRORCAT_SPEED 9600
-#define BROADCAST_ADDRESS    0x00 //Broadcast address
-#define CONTROLLER_ADDRESS   0xE0 //Controller address
+#if defined(BLUETOOTH)
+  #include "BluetoothSerial.h"
+  //#define DEBUG 1
+  //#define MIRRORCAT 1
+  //#define MIRRORCAT_SPEED 9600
+  #define BROADCAST_ADDRESS    0x00 //Broadcast address
+  #define CONTROLLER_ADDRESS   0xE0 //Controller address
 
-#define START_BYTE           0xFE //Start byte
-#define STOP_BYTE            0xFD //Stop byte
+  #define START_BYTE           0xFE //Start byte
+  #define STOP_BYTE            0xFD //Stop byte
 
-#define CMD_TRANS_FREQ       0x00 //Transfers operating frequency data
-#define CMD_TRANS_MODE       0x01 //Transfers operating mode data
+  #define CMD_TRANS_FREQ       0x00 //Transfers operating frequency data
+  #define CMD_TRANS_MODE       0x01 //Transfers operating mode data
 
-#define CMD_READ_FREQ        0x03 //Read operating frequency data
-#define CMD_READ_MODE        0x04 //Read operating mode data
+  #define CMD_READ_FREQ        0x03 //Read operating frequency data
+  #define CMD_READ_MODE        0x04 //Read operating mode data
 
-#define CMD_WRITE_FREQ       0x05 //Write operating frequency data
-#define CMD_WRITE_MODE       0x06 //Write operating mode data
+  #define CMD_WRITE_FREQ       0x05 //Write operating frequency data
+  #define CMD_WRITE_MODE       0x06 //Write operating mode data
 
-#define CMD_SEND_CW_MSG      0x17 //Write operating mode data
+  #define CMD_SEND_CW_MSG      0x17 //Write operating mode data
 
-#define IF_PASSBAND_WIDTH_WIDE   0x01
-#define IF_PASSBAND_WIDTH_MEDIUM   0x02
-#define IF_PASSBAND_WIDTH_NARROW   0x03
+  #define IF_PASSBAND_WIDTH_WIDE   0x01
+  #define IF_PASSBAND_WIDTH_MEDIUM   0x02
+  #define IF_PASSBAND_WIDTH_NARROW   0x03
 
-const uint32_t decMulti[]    = {1000000000, 100000000, 10000000, 1000000, 100000, 10000, 1000, 100, 10, 1};
+  const uint32_t decMulti[]    = {1000000000, 100000000, 10000000, 1000000, 100000, 10000, 1000, 100, 10, 1};
 
-#define BAUD_RATES_SIZE 4
-const uint16_t baudRates[BAUD_RATES_SIZE]       = {19200, 9600, 4800, 1200};
+  #define BAUD_RATES_SIZE 4
+  const uint16_t baudRates[BAUD_RATES_SIZE]       = {19200, 9600, 4800, 1200};
 
-uint8_t  radio_address;     //Transiever address
-uint16_t  baud_rate;        //Current baud speed
-uint32_t  readtimeout;      //Serial port read timeout
-uint8_t  read_buffer[12];   //Read buffer
-// uint8_t  read_buffer_snapshot[12];   //Buffer snapshot
-uint32_t  frequency;        //Current frequency in Hz
-uint32_t  frequencyTmp;        //Current frequency in Hz
-uint32_t  timer;
+  uint8_t  radio_address;     //Transiever address
+  uint16_t  baud_rate;        //Current baud speed
+  uint32_t  readtimeout;      //Serial port read timeout
+  uint8_t  read_buffer[12];   //Read buffer
+  // uint8_t  read_buffer_snapshot[12];   //Buffer snapshot
+  uint32_t  frequency;        //Current frequency in Hz
+  uint32_t  frequencyTmp;        //Current frequency in Hz
+  uint32_t  timer;
 
-const char* mode[] = {"LSB", "USB", "AM", "CW", "FSK", "FM", "WFM"};
-#define MODE_TYPE_LSB   0x00
-#define MODE_TYPE_USB   0x01
-#define MODE_TYPE_AM    0x02
-#define MODE_TYPE_CW    0x03
-#define MODE_TYPE_RTTY  0x04
-#define MODE_TYPE_FM    0x05
+  const char* mode[] = {"LSB", "USB", "AM", "CW", "FSK", "FM", "WFM"};
+  #define MODE_TYPE_LSB   0x00
+  #define MODE_TYPE_USB   0x01
+  #define MODE_TYPE_AM    0x02
+  #define MODE_TYPE_CW    0x03
+  #define MODE_TYPE_RTTY  0x04
+  #define MODE_TYPE_FM    0x05
 
-String modes;
-BluetoothSerial CAT;
+  String modes;
+  BluetoothSerial CAT;
+#endif
 
 short HardwareRev = 99;
 const int HWidPin       = 34;  // analog
 int HWidValue           = 0;
+
+int pwmChannel          = 0; // Selects channel 0
+int frequence           = 1000; // PWM frequency of 1 KHz
+int resolution          = 8; // 8-bit resolution, 256 possible values
 
 const int StatusPin     = 5;
 const int PowerOnPin    = 4;
@@ -170,19 +210,27 @@ bool mqttPostponeStatus = 1;
   // #include <ETH.h>
   // int SsidPassSize = (sizeof(SsidPass)/sizeof(char *))/2; //array size
   // int SelectSsidPass = -1;
-  #define wifi_max_try 1000             // Number of try
+  #define wifi_max_try 20             // Number of try
   unsigned long WifiTimer = 0;
   unsigned long WifiReconnect = 30000;
-  // String SSID="";                // (all) Wifi SSID (max 20 characters)
-  // String PSWD="";       // (all) Wifi password (max 20 characters)
+  String MACString;
 
   #include <ESPmDNS.h>
+
+  const char* ssidAP     = "IC705-if-AP";
+  const char* passwordAP = "remoteqth";
+  bool APmode = false;
+  #include <WebServer.h>
+  WebServer ajaxserver(80);
 #endif
 
 #if defined(HTTP)
-  WiFiServer server(HTTP_CAT_PORT);
+  WiFiServer server; //(HTTP_CAT_PORT);
   char linebuf[80];
   int charcount=0;
+
+  WiFiServer serverForm(80);
+  String header;
 #endif
 
 #if defined(UDP_TO_CW)
@@ -203,11 +251,11 @@ uint8_t CwCat[36] = "";
   #define PTT      32                      // PTT pin OUTPUT
   #define FMARK    LOW                    // FSK mark level [LOW/HIGH]
   #define FSPACE   HIGH                     // FSK space level [LOW/HIGH]
-  #define BaudRate 45.45                   // RTTY baud rate
+  #define BaudRateFSK 45.45                   // RTTY baud rate
   #define StopBit  1.5                     // stop bit long
   #define PTTlead  400                     // PTT lead delay ms
   #define PTTtail  200                     // PTT tail delay ms
-  int     OneBit = 1/BaudRate*1000;
+  int     OneBit = 1/BaudRateFSK*1000;
   boolean d1;
   boolean d2;
   boolean d3;
@@ -225,10 +273,8 @@ uint8_t CwCat[36] = "";
 #endif
 
 #if defined(MQTT)
+  bool mqttEnable = true;
   #include <PubSubClient.h>
-  // byte mqttBroker[4]={54,38,157,134}; // MQTT broker IP address
-  // byte mqttBroker[4]={192,168,1,200}; // MQTT broker IP address
-  // int MQTT_PORT = 1883;         // MQTT broker port
   IPAddress mqtt_server_ip(mqttBroker[0], mqttBroker[1], mqttBroker[2], mqttBroker[3]);       // MQTT broker IP address
   // #include "PubSubClient.h" // lokalni verze s upravou #define MQTT_MAX_PACKET_SIZE 128
   WiFiClient espClient;
@@ -249,11 +295,136 @@ int incomingByte = 0;   // for incoming serial data
 //-------------------------------------------------------------------------------------------------------
 
 void setup(){
-  Serial.begin(CivOutBaud);
-  Serial.println();
-  Serial.print(" FW -");
-  Serial.println(REV);
 
+  if (!EEPROM.begin(EEPROM_SIZE)){
+    Serial.begin(BaudRate);
+    Serial.println("EEPROM failed to initialise");
+    delay(1);
+  }else{
+
+    // // clear eeprom
+    // if(EEPROM.read(0)==0x00){
+    //   for (int i=0; i<EEPROM_SIZE; i++){
+    //     EEPROM.writeByte(i, 0xff);
+    //     EEPROM.commit();
+    //     Serial.println("Clear eeprom with 0xff and reboot...");
+    //     ESP.restart();
+    //   }
+    // }
+
+    // 74-75 BaudRate
+    if(EEPROM.read(74)==0xff){
+      BaudRate=9600;
+    }else{
+      BaudRate = EEPROM.readUShort(74);
+    }
+    Serial.begin(BaudRate);
+
+    // 0 APmode
+    if(EEPROM.read(0)==0xff){
+      APmode=true;
+    }else{
+      if(EEPROM.readBool(0)==1){
+        APmode=true;
+      }else{
+        APmode=false;
+      }
+    }
+
+    // 1-21 - SSID
+    if(EEPROM.read(1)==0xff){
+      // APmode=true;
+    }else{
+      for (int i=1; i<21; i++){
+        if(EEPROM.read(i)!=0xff){
+          SSID=SSID+char(EEPROM.read(i));
+        }
+      }
+    }
+
+    // 22-40 - PSWD
+    if(EEPROM.read(22)==0xff){
+      // nil
+    }else{
+      for (int i=22; i<40; i++){
+        if(EEPROM.read(i)!=0xff){
+          PSWD=PSWD+char(EEPROM.read(i));
+        }
+      }
+    }
+
+    // 41-44 mqttBroker[4]
+    #if defined(MQTT)
+      mqttBroker[0]=EEPROM.readByte(41);
+      mqttBroker[1]=EEPROM.readByte(42);
+      mqttBroker[2]=EEPROM.readByte(43);
+      mqttBroker[3]=EEPROM.readByte(44);
+      if(mqttBroker[0]==0x00){
+        mqttEnable = false;
+      }
+      if(EEPROM.read(41)==0xff && EEPROM.read(42)==0xff && EEPROM.read(43)==0xff && EEPROM.read(44)==0xff){
+        mqttBroker[0]=0; // default disable //54;
+        mqttBroker[1]=38;
+        mqttBroker[2]=157;
+        mqttBroker[3]=134;
+      }
+    #endif
+
+    // 45-46 MQTT_PORT
+    if(EEPROM.read(45)==0xff){
+      MQTT_PORT=1883;
+    }else{
+      MQTT_PORT = EEPROM.readUShort(45);
+    }
+
+    // 47-67 MQTT_TOPIC
+    if(EEPROM.read(47)==0xff){
+      MQTT_TOPIC="CALL/IC705/1/hz";
+    }else{
+      for (int i=47; i<68; i++){
+        if(EEPROM.read(i)!=0xff){
+          MQTT_TOPIC=MQTT_TOPIC+char(EEPROM.read(i));
+        }
+      }
+    }
+
+    // 68-69 HTTP_CAT_PORT
+    if(EEPROM.read(68)==0xff){
+      HTTP_CAT_PORT=81;
+    }else{
+      HTTP_CAT_PORT = EEPROM.readUShort(68);
+    }
+
+    // 70-71 udpPort
+    if(EEPROM.read(70)==0xff){
+      udpPort=89;
+    }else{
+      udpPort = EEPROM.readUShort(70);
+    }
+
+    // 72-73 udpCatPort
+    if(EEPROM.read(72)==0xff){
+      udpCatPort=90;
+    }else{
+      udpCatPort = EEPROM.readUShort(72);
+    }
+
+    // 76-96 BTname
+    if(EEPROM.read(76)==0xff){
+      BTname="IC705-interface";
+    }else{
+      for (int i=76; i<97; i++){
+        if(EEPROM.read(i)!=0xff){
+          BTname=BTname+char(EEPROM.read(i));
+        }
+      }
+    }
+  }
+//------------------------------------------
+
+  Serial.println();
+  Serial.print(" FW | ");
+  Serial.println(REV);
   pinMode(HWidPin, INPUT);
     // HWidValue = readADC_Cal(analogRead(HWidPin));
     HWidValue = analogRead(HWidPin);
@@ -268,14 +439,21 @@ void setup(){
     // }else if(HWidValue>900){
     //   HardwareRev=6;  // 1036
     }
-  Serial.print(" HW -");
+  Serial.print(" HW | ");
   Serial.print(HardwareRev);
   Serial.print(" [");
   Serial.print(HWidValue);
-  Serial.println("raw]");
+  Serial.println(" raw]");
 
-  pinMode(StatusPin, OUTPUT);
+  if(APmode==true){
+    ledcSetup(pwmChannel, frequence, resolution);
+    ledcAttachPin(StatusPin, pwmChannel);
+    ledcWrite(pwmChannel, 0);
+  }else{    
+    pinMode(StatusPin, OUTPUT);
     digitalWrite(StatusPin, LOW);
+  }
+
   pinMode(PowerOnPin, OUTPUT);
     digitalWrite(PowerOnPin, LOW);
   pinMode(CIVmutePin, OUTPUT);
@@ -296,115 +474,203 @@ void setup(){
   #endif
 
   #if defined(WIFI)
-    // WiFi.disconnect(true);
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(SSID.c_str(), PSWD.c_str());
-    Serial.print("WIFI-Connecting ssid "+String(SSID)+" ");
-    int count_try = 0;
-    while(WiFi.status() != WL_CONNECTED){
-      delay(500);
-      Serial.print(".");
-      count_try++;    // Increase try counter
-      if ( count_try >= wifi_max_try ) {
-        Serial.println("\n");
-        Serial.println("Impossible to establish WiFi connexion");
-        print_wifi_error();
-      }
-    }
-    Serial.println("");
-    Serial.print("WIFI-connected with IP ");
-    Serial.println(WiFi.localIP());
-    Serial.print("WIFI-dBm: ");
-    Serial.println(WiFi.RSSI());
-    digitalWrite(StatusPin, HIGH);
+    if(APmode==true){
+      // WiFi.softAP(ssid, password); remove the password parameter, if you want the AP (Access Point) to be open
+      WiFi.softAP(ssidAP, passwordAP);
+      IPAddress IP = WiFi.softAPIP();
+      Serial.print(" AP | IP address: ");
+      Serial.println(IP);
 
-    // Set up mDNS responder:
-    // - first argument is the domain name, in this example
-    //   the fully-qualified domain name is "esp32.local"
-    // - second argument is the IP address to advertise
-    //   we send our IP address on the WiFi network
-    if (!MDNS.begin("ic705")) {
+      // serverForm.begin();
+
+      // ajax
+      // ajaxserver.on("/",HTTP_POST, handlePostRot);
+      ajaxserver.on("/", handleSet);      //This is display page
+      // ajaxserver.on("/", handleRoot);      //This is display page
+      // ajaxserver.on("/set", handleSet);
+      ajaxserver.begin();                  //Start server
+      Serial.println("HTTP| ajax server started");
+
+      if (!MDNS.begin("ic705")) {
         Serial.println("Error setting up MDNS responder!");
         while(1) {
-            delay(1000);
+          delay(1000);
         }
-    }
-    Serial.println("mDNS responder started");
-  #endif
+      }
+      MDNS.addService("http", "tcp", 80);
 
-  #if defined(HTTP)
-    server.begin();
+      Serial.println("mDNS| responder started");
+      APcliAlert();
+      Serial.println("SETTINGS  press key to select");
+      Serial.println("       ?  list refresh");
+      Serial.println("       E  erase whole eeprom and restart");
+      Serial.println("       @  restart device");
+      Serial.print( " > " );
 
-    // Add service to MDNS-SD
-    MDNS.addService("http", "tcp", 81);
-  #endif
-
-  #if defined(UDP_TO_CW)
-    udp.begin(udpPort);
-  #endif
-
-  #if defined(UDP_TO_CAT)
-    udpCat.begin(udpCatPort);
-  #endif
-
-  #if defined(UDP_TO_FSK)
-    pinMode(PTT,  OUTPUT);
-      digitalWrite(PTT, LOW);
-    pinMode(FSK_OUT,  OUTPUT);
-      digitalWrite(FSK_OUT, LOW);
-  #endif
-
-  #if defined(MQTT)
-    if (MQTT_LOGIN == true){
-    // if (mqttClient.connect("esp32gwClient", MQTT_USER, MQTT_PASS)){
-      //   AfterMQTTconnect();
-      // }
     }else{
-        mqttClient.setServer(mqtt_server_ip, MQTT_PORT);
-        Serial.println("MQTT-Client");
-        mqttClient.setCallback(MqttRx);
-        Serial.println("MQTT-Callback");
-        lastMqttReconnectAttempt = 0;
+      // WiFi.disconnect(true);
+      WiFi.mode(WIFI_STA);
+      WiFi.begin(SSID.c_str(), PSWD.c_str());
+      Serial.print("WIFI| Connecting ssid "+String(SSID)+" ");
+      int count_try = 0;
+      while(WiFi.status() != WL_CONNECTED){
+        delay(500);
+        Serial.print(".");
+        count_try++;    // Increase try counter
+        if ( count_try >= wifi_max_try ) {
+          Serial.println("\n");
+          Serial.println("Impossible to establish WiFi connexion");
+          print_wifi_error();
 
-        char charbuf[50];
-        WiFi.macAddress().toCharArray(charbuf, 17);
-          Serial.print("MQTT-maccharbuf ");
-          Serial.println(charbuf);
-          mqttReconnect();
+          EEPROM.writeBool(0, true);
+          EEPROM.commit();
+          Serial.println("Interface will be restarted to AP mode...");
+          delay(3000);
+          ESP.restart();
+        }
+      }
+      Serial.println("");
+      Serial.print("WIFI| connected with IP ");
+      Serial.println(WiFi.localIP());
+      Serial.print("WIFI| ");
+      Serial.print(WiFi.RSSI());
+      if(APmode==true){
+        ledcWrite(pwmChannel, 255);
+      }else{
+        digitalWrite(StatusPin, HIGH);
+      }
+      MACString=WiFi.macAddress();
+      Serial.print(" dBm, MAC ");
+      Serial.println(MACString);
+
+      // ajax
+      // ajaxserver.on("/",HTTP_POST, handlePostRot);
+      ajaxserver.on("/", handleSet);      //This is display page
+      ajaxserver.begin();                  //Start server
+      Serial.println("HTTP| ajax server started");
+
+      // Set up mDNS responder:
+      // - first argument is the domain name, in this example
+      //   the fully-qualified domain name is "esp32.local"
+      // - second argument is the IP address to advertise
+      //   we send our IP address on the WiFi network
+      if (!MDNS.begin("ic705")) {
+          Serial.println("Error setting up MDNS responder!");
+          while(1) {
+              delay(1000);
+          }
+      }
+      Serial.println("mDNS| responder started");
     }
   #endif
 
-  while (radio_address == 0x00) {
-    if (!searchRadio()) {
-      #ifdef DEBUG
-      Serial.println("Radio not found");
-      #endif
-    } else {
-      #ifdef DEBUG
-      Serial.print("Radio found at ");
-      Serial.print(radio_address, HEX);
-      Serial.println();
-      #endif
-    }
+  if(APmode==false){
+
+    #if defined(HTTP)
+      server = WiFiServer(HTTP_CAT_PORT);
+      server.begin();
+
+      // Add service to MDNS-SD
+      MDNS.addService("http", "tcp", 81);
+      MDNS.addService("http", "tcp", 80);
+    #endif
+
+    #if defined(UDP_TO_CW)
+      udp.begin(udpPort);
+    #endif
+
+    #if defined(UDP_TO_CAT)
+      udpCat.begin(udpCatPort);
+    #endif
+
+    #if defined(UDP_TO_FSK)
+      pinMode(PTT,  OUTPUT);
+        digitalWrite(PTT, LOW);
+      pinMode(FSK_OUT,  OUTPUT);
+        digitalWrite(FSK_OUT, LOW);
+    #endif
+
+    #if defined(MQTT)
+      if(mqttEnable==true){
+        if (MQTT_LOGIN == true){
+        // if (mqttClient.connect("esp32gwClient", MQTT_USER, MQTT_PASS)){
+          //   AfterMQTTconnect();
+          // }
+        }else{
+            mqttClient.setServer(mqtt_server_ip, MQTT_PORT);
+            Serial.println("MQTT| Client");
+            mqttClient.setCallback(MqttRx);
+            Serial.println("MQTT| Callback");
+            lastMqttReconnectAttempt = 0;
+
+            char charbuf[50];
+            WiFi.macAddress().toCharArray(charbuf, 17);
+              Serial.print("MQTT| maccharbuf ");
+              Serial.println(charbuf);
+              mqttReconnect();
+        }
+      }
+    #endif
+
+    #if defined(BLUETOOTH)
+      while (radio_address == 0x00) {
+        if (!searchRadio()) {
+          #ifdef DEBUG
+          Serial.println("Radio not found");
+          #endif
+        } else {
+          #ifdef DEBUG
+          Serial.print("Radio found at ");
+          Serial.print(radio_address, HEX);
+          Serial.println();
+          #endif
+        }
+      }
+    #endif
+
+    #if defined(WDT)
+      // WDT
+      esp_task_wdt_init(WDT_TIMEOUT, true); //enable panic so ESP32 restarts
+      esp_task_wdt_add(NULL); //add current thread to WDT watch
+      WdtTimer=millis();
+    #endif
   }
-
-  #if defined(WDT)
-    // WDT
-    esp_task_wdt_init(WDT_TIMEOUT, true); //enable panic so ESP32 restarts
-    esp_task_wdt_add(NULL); //add current thread to WDT watch
-    WdtTimer=millis();
-  #endif
-
 }
 //-------------------------------------------------------------------------------------------------------
 
 void loop(){
-  Watchdog();
-  Mqtt();
-  httpCAT();
-  UdpToCwFsk();
-  UdpToCat();
-  CLI();
+  if(APmode==true){
+    ajaxserver.handleClient();
+    CLI();
+
+    // Status LED
+    static int PwmValue = 0;
+    static bool PwmDir = true;
+    static long pwmTimer = 0;
+    if(millis()-pwmTimer>3){
+      if(PwmDir==true){
+        PwmValue++;
+        if(PwmValue>254){
+          PwmDir=false;
+        }
+      }else{
+        PwmValue--;
+        if(PwmValue<1){
+          PwmDir=true;
+        }
+      }
+      ledcWrite(pwmChannel, PwmValue);
+      pwmTimer=millis();
+    }
+  }else{
+    Watchdog();
+    Mqtt();
+    httpCAT();
+    UdpToCwFsk();
+    UdpToCat();
+    CLI();
+    ajaxserver.handleClient();
+  }
 }
 
 // SUBROUTINES -------------------------------------------------------------------------------------------------------
@@ -422,7 +688,7 @@ void Watchdog(){
     */
 
     // Enable CI-V transceive
-    Serial.print("SET -CIV-tx-ON");
+    Serial.print("SET |CIV-tx-ON");
     memset(CatMsg, 0xff, 10);
     CatMsg[0] = 0x1A;
     CatMsg[1] = 0x05;
@@ -481,11 +747,11 @@ void Watchdog(){
 
     // CW send IP
     Serial.print("|CWsend-IP..");
-    String StrBuf = String(WiFi.localIP()[0])+"."+String(WiFi.localIP()[1])+"."+String(WiFi.localIP()[2])+"."+String(WiFi.localIP()[3]) ;
+    String StrBuf = "IP=  "+String(WiFi.localIP()[0])+"."+String(WiFi.localIP()[1])+"."+String(WiFi.localIP()[2])+"."+String(WiFi.localIP()[3]) ;
     StrBuf.toCharArray(CwMsg, StrBuf.length()+1);
     modes="CW";
     sendCW();
-    delay(9000);
+    delay(11000);
 
     // Enable BK-IN
     Serial.print("|BK-IN-ON");
@@ -523,13 +789,13 @@ void Watchdog(){
   if(millis()-powerTimer > 3000){
     if(statusPower==1){
       digitalWrite(PowerOnPin, LOW);
-      Serial.println(" PWR OFF");
+      Serial.println(" PWR| OFF");
       statusPower = 0;
     }
   }else{
     if(statusPower==0){
       digitalWrite(PowerOnPin, HIGH);
-      Serial.println(" PWR ON");
+      Serial.println(" PWR| ON");
       statusPower = 1;
       mqttPostponeTimer = millis();
       mqttPostponeStatus = 0;
@@ -545,11 +811,10 @@ void Watchdog(){
   static long catTimer = 0;
   if(millis()-catTimer > 2000 && frequencyTmp!=frequency){
   // MQTT
-    // Serial.print(frequency);
-    // Serial.print("|");
-    // Serial.print(modes);
-    // Serial.println("|");
-    MqttPubString(MQTT_TOPIC, String(frequency), 0);
+    if(mqttEnable==true){
+      Serial.println("MQTT>"+String(frequency)+"Hz "+String(modes) );
+      MqttPubString(MQTT_TOPIC, String(frequency), 0);
+    }
     frequencyTmp=frequency;
     catTimer=millis();
     #if defined(SELECT_ANT)
@@ -574,7 +839,7 @@ void Watchdog(){
       buffer[3]=0x42;
       buffer[4]=0x00;    
       for (int i = 5; i < 11; i++) {
-        buffer[i] = stringToByte(SplitStrFreq[4-(i-5)]);
+        // buffer[i] = stringToByte(SplitStrFreq[4-(i-5)]);   // PANIC
       }
       buffer[10]=0xFD;
 
@@ -588,16 +853,6 @@ void Watchdog(){
       digitalWrite(CIVmutePin, HIGH);
       delay(2);
       Serial.println();
-
-      // for (int i = 0; i < 11; i++) {
-      //   Serial.print(buffer[i], HEX);
-      //   Serial.print(" ");
-      // }
-      // Serial.println();
-      /*
-      TXmqtt > OK1HRA/OI3/1/hz 21243820
-      FE FE 0 42 0 20 38 24 21 0 FD 
-      */
      #endif
   }
 
@@ -607,7 +862,7 @@ void Watchdog(){
     // if WiFi is down, try reconnecting every CHECK_WIFI_TIME seconds
     if ((WiFi.status() != WL_CONNECTED) && (currentMillis - WifiTimer >=WifiReconnect)) {
       Serial.print(millis());
-      Serial.println("WiFi - Reconnecting...");
+      Serial.println("cReconnecting...");
       WiFi.disconnect();
       WiFi.reconnect();
       WifiTimer = currentMillis;
@@ -688,243 +943,265 @@ void SelectANT(){
 void print_wifi_error(){
   switch(WiFi.status())
   {
-    case WL_IDLE_STATUS : Serial.println("WL_IDLE_STATUS"); break;
-    case WL_NO_SSID_AVAIL : Serial.println("WL_NO_SSID_AVAIL"); break;
-    case WL_CONNECT_FAILED : Serial.println("WL_CONNECT_FAILED"); break;
-    case WL_DISCONNECTED : Serial.println("WL_DISCONNECTED"); break;
-    default : Serial.printf("No know WiFi error"); break;
+    case WL_IDLE_STATUS : Serial.println("WiFi| WL_IDLE_STATUS"); break;
+    case WL_NO_SSID_AVAIL : Serial.println("WiFi| WL_NO_SSID_AVAIL"); break;
+    case WL_CONNECT_FAILED : Serial.println("WiFi| WL_CONNECT_FAILED"); break;
+    case WL_DISCONNECTED : Serial.println("WiFi| WL_DISCONNECTED"); break;
+    default : Serial.printf("WiFi| No know WiFi error"); break;
   }
 }
 //-------------------------------------------------------------------------------------------------------
 void processCatMessages(){
-  /*
-    <FE FE E0 42 04 00 01 FD  - LSB
-    <FE FE E0 42 03 00 00 58 45 01 FD  -145.580.000
+  #if defined(BLUETOOTH)
+    /*
+      <FE FE E0 42 04 00 01 FD  - LSB
+      <FE FE E0 42 03 00 00 58 45 01 FD  -145.580.000
 
-    FE FE - start bytes
-    00/E0 - target address (broadcast/controller)
-    42 - source address
-    00/03 - data type
-    <data>
-    FD - stop byte
-  */
+      FE FE - start bytes
+      00/E0 - target address (broadcast/controller)
+      42 - source address
+      00/03 - data type
+      <data>
+      FD - stop byte
+    */
 
-  while (CAT.available()) {
-    uint8_t knowncommand = 1;
-    uint8_t r;
-    if (readLine() > 0) {
-      if (read_buffer[0] == START_BYTE && read_buffer[1] == START_BYTE) {
-        if (read_buffer[3] == radio_address) {
-          if (read_buffer[2] == BROADCAST_ADDRESS) {
-            switch (read_buffer[4]) {
-              case CMD_TRANS_FREQ:
-                printFrequency();
-                break;
-              case CMD_TRANS_MODE:
-                printMode();
-                break;
-              default:
-                knowncommand = false;
+    while (CAT.available()) {
+      uint8_t knowncommand = 1;
+      uint8_t r;
+      if (readLine() > 0) {
+        if (read_buffer[0] == START_BYTE && read_buffer[1] == START_BYTE) {
+          if (read_buffer[3] == radio_address) {
+            if (read_buffer[2] == BROADCAST_ADDRESS) {
+              switch (read_buffer[4]) {
+                case CMD_TRANS_FREQ:
+                  printFrequency();
+                  break;
+                case CMD_TRANS_MODE:
+                  printMode();
+                  break;
+                default:
+                  knowncommand = false;
+              }
+            } else if (read_buffer[2] == CONTROLLER_ADDRESS) {
+              switch (read_buffer[4]) {
+                case CMD_READ_FREQ:
+                  printFrequency();
+                  break;
+                case CMD_READ_MODE:
+                  printMode();
+                  break;
+                default:
+                  knowncommand = false;
+              }
             }
-          } else if (read_buffer[2] == CONTROLLER_ADDRESS) {
-            switch (read_buffer[4]) {
-              case CMD_READ_FREQ:
-                printFrequency();
-                break;
-              case CMD_READ_MODE:
-                printMode();
-                break;
-              default:
-                knowncommand = false;
-            }
+          } else {
+            #ifdef DEBUG
+              Serial.print(read_buffer[3]);
+              Serial.println(" also on-line?!");
+            #endif
           }
-        } else {
-          #ifdef DEBUG
-            Serial.print(read_buffer[3]);
-            Serial.println(" also on-line?!");
-          #endif
         }
-      }
-      powerTimer=millis(); // RX BT
+        powerTimer=millis(); // RX BT
 
+      }
+
+  // #ifdef DEBUG
+      //if(!knowncommand){
+      // Serial.print("<");
+      // if(read_buffer[10] == STOP_BYTE){
+      //     memcpy(read_buffer_snapshot, read_buffer, sizeof(read_buffer));
+        // for (uint8_t i = 0; i < sizeof(read_buffer); i++){
+        //   if (read_buffer[i] < 16)Serial.print("0");
+        //   Serial.print(read_buffer[i], HEX);
+        //   Serial.print(" ");
+        //   if (read_buffer[i] == STOP_BYTE)break;
+        // }
+        // Serial.println();
+      // }
+      //}
+  // #endif
     }
 
-// #ifdef DEBUG
-    //if(!knowncommand){
-    // Serial.print("<");
-    // if(read_buffer[10] == STOP_BYTE){
-    //     memcpy(read_buffer_snapshot, read_buffer, sizeof(read_buffer));
-      // for (uint8_t i = 0; i < sizeof(read_buffer); i++){
-      //   if (read_buffer[i] < 16)Serial.print("0");
-      //   Serial.print(read_buffer[i], HEX);
-      //   Serial.print(" ");
-      //   if (read_buffer[i] == STOP_BYTE)break;
-      // }
-      // Serial.println();
-    // }
-    //}
-// #endif
-  }
-
-// #ifdef MIRRORCAT
-//   while (Serial2.available()) {
-//     CAT.print((byte)Serial2.read());
-//   }
-// #endif
+  // #ifdef MIRRORCAT
+  //   while (Serial2.available()) {
+  //     CAT.print((byte)Serial2.read());
+  //   }
+  // #endif
+  #endif
 }
 //-------------------------------------------------------------------------------------------------------
 // call back to get info about connection
 void callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param) {
-  if (event == ESP_SPP_SRV_OPEN_EVT) {
-    Serial.println(" BT -Client Connected");
-    frequencyTmp=0;
-    TrxNeedSet=1;
-  }
-
+  #if defined(BLUETOOTH)
+    if (event == ESP_SPP_SRV_OPEN_EVT) {
+      Serial.println("    | Client Connected");
+      Serial.println("    | CHANGE frequency on IC-705, for initialize CAT");
+      Serial.println("    | -----------------------------------------------------------------------------");
+      frequencyTmp=0;
+      TrxNeedSet=1;
+    }
+  #endif
 }
 //-------------------------------------------------------------------------------------------------------
 void configRadioBaud(uint16_t  baudrate){
-  if (!CAT.begin(BTname)) //Bluetooth device name
-  {
-    Serial.println(" BT -An error occurred initializing Bluetooth");
+  #if defined(BLUETOOTH)
+    if (!CAT.begin(BTname)) //Bluetooth device name
+    {
+      Serial.println(" BT | An error occurred initializing Bluetooth");
 
-  } else {
-    CAT.register_callback(callback);
-    Serial.println(" BT -Initialized");
-    Serial.println(" BT -The device started, now you can pair it with bluetooth");
-  }
+    } else {
+      CAT.register_callback(callback);
+      Serial.println(" BT | Initialized");
+      Serial.println("    | -----------------------------------------------------------------------------");
+      Serial.println(" BT | The device started, now you MUST PAIR it with Bluetooth name "+String(BTname));
+    }
+  #endif
 }
 //-------------------------------------------------------------------------------------------------------
 uint8_t readLine(void){
-  uint8_t byte;
-  uint8_t counter = 0;
-  uint32_t ed = readtimeout;
-  read_buffer[10] = 0x00;
+  #if defined(BLUETOOTH)
+    uint8_t byte;
+    uint8_t counter = 0;
+    uint32_t ed = readtimeout;
+    read_buffer[10] = 0x00;
 
-  while (true)
-  {
-    while (!CAT.available()) {
-      if (--ed == 0)return 0;
+    while (true)
+    {
+      while (!CAT.available()) {
+        if (--ed == 0)return 0;
+      }
+      ed = readtimeout;
+      byte = CAT.read();
+      if (byte == 0xFF)continue; //TODO skip to start byte instead
+      // #ifdef MIRRORCAT
+      //     Serial2.write(byte); // !byte
+      // #endif
+
+      read_buffer[counter++] = byte;
+      if (STOP_BYTE == byte) break;
+
+      if (counter >= sizeof(read_buffer))return 0;
     }
-    ed = readtimeout;
-    byte = CAT.read();
-    if (byte == 0xFF)continue; //TODO skip to start byte instead
-    // #ifdef MIRRORCAT
-    //     Serial2.write(byte); // !byte
-    // #endif
-
-    read_buffer[counter++] = byte;
-    if (STOP_BYTE == byte) break;
-
-    if (counter >= sizeof(read_buffer))return 0;
-  }
-  return counter;
+    return counter;
+  #endif
 }
 //-------------------------------------------------------------------------------------------------------
 void radioSetMode(uint8_t modeid, uint8_t modewidth){
-  uint8_t req[] = {START_BYTE, START_BYTE, radio_address, CONTROLLER_ADDRESS, CMD_WRITE_MODE, modeid, modewidth, STOP_BYTE};
-#ifdef DEBUG
-  Serial.print(">");
-#endif
-  for (uint8_t i = 0; i < sizeof(req); i++) {
-    CAT.write(req[i]);
-#ifdef DEBUG
-    if (req[i] < 16)Serial.print("0");
-    Serial.print(req[i], HEX);
-    Serial.print(" ");
-#endif
-  }
-#ifdef DEBUG
-  Serial.println();
-#endif
+  #if defined(BLUETOOTH)
+      uint8_t req[] = {START_BYTE, START_BYTE, radio_address, CONTROLLER_ADDRESS, CMD_WRITE_MODE, modeid, modewidth, STOP_BYTE};
+    #ifdef DEBUG
+      Serial.print(">");
+    #endif
+      for (uint8_t i = 0; i < sizeof(req); i++) {
+        CAT.write(req[i]);
+    #ifdef DEBUG
+        if (req[i] < 16)Serial.print("0");
+        Serial.print(req[i], HEX);
+        Serial.print(" ");
+    #endif
+      }
+    #ifdef DEBUG
+      Serial.println();
+    #endif
+  #endif
 }
 //-------------------------------------------------------------------------------------------------------
 void sendCatRequest(uint8_t requestCode){
-  uint8_t req[] = {START_BYTE, START_BYTE, radio_address, CONTROLLER_ADDRESS, requestCode, STOP_BYTE};
-#ifdef DEBUG
-  Serial.print(">");
-#endif
-  for (uint8_t i = 0; i < sizeof(req); i++) {
-    CAT.write(req[i]);
-#ifdef DEBUG
-    if (req[i] < 16)Serial.print("0");
-    Serial.print(req[i], HEX);
-    Serial.print(" ");
-#endif
-  }
-#ifdef DEBUG
-  Serial.println();
-#endif
+  #if defined(BLUETOOTH)
+      uint8_t req[] = {START_BYTE, START_BYTE, radio_address, CONTROLLER_ADDRESS, requestCode, STOP_BYTE};
+    #ifdef DEBUG
+      Serial.print(">");
+    #endif
+      for (uint8_t i = 0; i < sizeof(req); i++) {
+        CAT.write(req[i]);
+    #ifdef DEBUG
+        if (req[i] < 16)Serial.print("0");
+        Serial.print(req[i], HEX);
+        Serial.print(" ");
+    #endif
+      }
+    #ifdef DEBUG
+      Serial.println();
+    #endif
+  #endif
 }
 //-------------------------------------------------------------------------------------------------------
 bool searchRadio(){
-  for (uint8_t baud = 0; baud < BAUD_RATES_SIZE; baud++) {
-#ifdef DEBUG
-    Serial.print("Try baudrate ");
-    Serial.println(baudRates[baud]);
-#endif
-    configRadioBaud(baudRates[baud]);
-    sendCatRequest(CMD_READ_FREQ);
+  #if defined(BLUETOOTH)
+      for (uint8_t baud = 0; baud < BAUD_RATES_SIZE; baud++) {
+    #ifdef DEBUG
+        Serial.print("Try baudrate ");
+        Serial.println(baudRates[baud]);
+    #endif
+        configRadioBaud(baudRates[baud]);
+        sendCatRequest(CMD_READ_FREQ);
 
-    if (readLine() > 0)
-    {
-      if (read_buffer[0] == START_BYTE && read_buffer[1] == START_BYTE) {
-        radio_address = read_buffer[3];
+        if (readLine() > 0)
+        {
+          if (read_buffer[0] == START_BYTE && read_buffer[1] == START_BYTE) {
+            radio_address = read_buffer[3];
+          }
+          return true;
+        }
       }
-      return true;
-    }
-  }
 
-  radio_address = 0xFF;
-  return false;
+      radio_address = 0xFF;
+      return false;
+  #endif
 }
 //-------------------------------------------------------------------------------------------------------
 void printFrequency(void){
-  frequency = 0;
-  //FE FE E0 42 03 <00 00 58 45 01> FD ic-820
-  //FE FE 00 40 00 <00 60 06 14> FD ic-732
-  for (uint8_t i = 0; i < 5; i++) {
-    if (read_buffer[9 - i] == 0xFD)continue; //spike
-#ifdef DEBUG
-    if (read_buffer[9 - i] < 16)Serial.print("0");
-    Serial.print(read_buffer[9 - i], HEX);
-#endif
+  #if defined(BLUETOOTH)
+      frequency = 0;
+      //FE FE E0 42 03 <00 00 58 45 01> FD ic-820
+      //FE FE 00 40 00 <00 60 06 14> FD ic-732
+      for (uint8_t i = 0; i < 5; i++) {
+        if (read_buffer[9 - i] == 0xFD)continue; //spike
+    #ifdef DEBUG
+        if (read_buffer[9 - i] < 16)Serial.print("0");
+        Serial.print(read_buffer[9 - i], HEX);
+    #endif
 
-    frequency += (read_buffer[9 - i] >> 4) * decMulti[i * 2];
-    frequency += (read_buffer[9 - i] & 0x0F) * decMulti[i * 2 + 1];
-  }
-#ifdef DEBUG
-  Serial.println();
-#endif
+        frequency += (read_buffer[9 - i] >> 4) * decMulti[i * 2];
+        frequency += (read_buffer[9 - i] & 0x0F) * decMulti[i * 2 + 1];
+      }
+    #ifdef DEBUG
+      Serial.println();
+    #endif
+  #endif
 }
 //-------------------------------------------------------------------------------------------------------
 void printMode(void){
-  //FE FE E0 42 04 <00 01> FD
-#ifdef DEBUG
-  Serial.println(mode[read_buffer[5]]);
-#endif
-  modes = mode[read_buffer[5]];
-  //read_buffer[6] -> 01 - Wide, 02 - Medium, 03 - Narrow
+  #if defined(BLUETOOTH)
+      //FE FE E0 42 04 <00 01> FD
+    #ifdef DEBUG
+      Serial.println(mode[read_buffer[5]]);
+    #endif
+      modes = mode[read_buffer[5]];
+      //read_buffer[6] -> 01 - Wide, 02 - Medium, 03 - Narrow
+  #endif
 }
 //-------------------------------------------------------------------------------------------------------
 void Mqtt(){
   #if defined(MQTT)
-    if (millis()-MqttStatusTimer[0]>MqttStatusTimer[1]){
-      if(!mqttClient.connected()){
-        long now = millis();
-        if (now - lastMqttReconnectAttempt > 10000) {
-          lastMqttReconnectAttempt = now;
-          Serial.print("MQTT-Attempt to MQTT reconnect | ");
-          Serial.println(millis()/1000);
-          if (mqttReconnect()) {
-            lastMqttReconnectAttempt = 0;
+    if(mqttEnable==true){
+      if (millis()-MqttStatusTimer[0]>MqttStatusTimer[1]){
+        if(!mqttClient.connected()){
+          long now = millis();
+          if (now - lastMqttReconnectAttempt > 10000) {
+            lastMqttReconnectAttempt = now;
+            Serial.print("MQTT| Attempt to MQTT reconnect | ");
+            Serial.println(millis()/1000);
+            if (mqttReconnect()) {
+              lastMqttReconnectAttempt = 0;
+            }
           }
+        }else{
+          // Client connected
+          mqttClient.loop();
         }
-      }else{
-        // Client connected
-        mqttClient.loop();
+        MqttStatusTimer[0]=millis();
       }
-      MqttStatusTimer[0]=millis();
     }
   #endif
 }
@@ -932,70 +1209,83 @@ void Mqtt(){
 //-------------------------------------------------------------------------------------------------------
 
 #if defined(MQTT)
-bool mqttReconnect() {
-    char charbuf[50];
-    WiFi.macAddress().toCharArray(charbuf, 17);
-    if (mqttClient.connect(charbuf)) {
-      Serial.println("MQTT-mqttReconnect-connected");
+  // if(mqttEnable==true){
+    bool mqttReconnect() {
+        char charbuf[50];
+        WiFi.macAddress().toCharArray(charbuf, 17);
+        if (mqttClient.connect(charbuf)) {
+          Serial.println("MQTT| mqttReconnect-connected");
 
-      // String topic = String(ROT_TOPIC) + "mainHWdeviceSelect";
-      // topic.reserve(50);
-      // const char *cstrr = topic.c_str();
-      // if(mqttClient.subscribe(cstrr)==true){
-      //   Serial.print("mqttReconnect-subscribe ");
-      //   Serial.println(String(cstrr));
-      // }
+          // String topic = String(ROT_TOPIC) + "mainHWdeviceSelect";
+          // topic.reserve(50);
+          // const char *cstrr = topic.c_str();
+          // if(mqttClient.subscribe(cstrr)==true){
+          //   Serial.print("mqttReconnect-subscribe ");
+          //   Serial.println(String(cstrr));
+          // }
 
+        }
+        return mqttClient.connected();
     }
-    return mqttClient.connected();
-}
+  // }
 #endif
 //------------------------------------------------------------------------------------
 void MqttRx(char *topic, byte *payload, unsigned int length) {
   #if defined(MQTT)
-    String CheckTopicBase;
-    CheckTopicBase.reserve(100);
-    byte* p = (byte*)malloc(length);
-    memcpy(p,payload,length);
-    // static bool HeardBeatStatus;
-    Serial.print("RXmqtt < ");
+    if(mqttEnable==true){
+      String CheckTopicBase;
+      CheckTopicBase.reserve(100);
+      byte* p = (byte*)malloc(length);
+      memcpy(p,payload,length);
+      // static bool HeardBeatStatus;
+      Serial.print("RXmqtt < ");
 
-      // CheckTopicBase = String(ROT_TOPIC) + "AzimuthStop";
-      // if ( CheckTopicBase.equals( String(topic) )){
-      //   Azimuth=(int)payloadToFloat(payload, length);
-      //   Serial.println(String(Azimuth)+"°");
-      //   RxMqttTimer=millis();
-      //   if( (AzimuthTmp!=Azimuth && abs(Azimuth-AzimuthTmp)>3) || eInkOfflineDetect==true){
-      //     eInkNeedRefresh=true;
-      //     AzimuthTmp=Azimuth;
-      //   }
-      //   WDTimer();
-      // }
-
+        // CheckTopicBase = String(ROT_TOPIC) + "AzimuthStop";
+        // if ( CheckTopicBase.equals( String(topic) )){
+        //   Azimuth=(int)payloadToFloat(payload, length);
+        //   Serial.println(String(Azimuth)+"°");
+        //   RxMqttTimer=millis();
+        //   if( (AzimuthTmp!=Azimuth && abs(Azimuth-AzimuthTmp)>3) || eInkOfflineDetect==true){
+        //     eInkNeedRefresh=true;
+        //     AzimuthTmp=Azimuth;
+        //   }
+        //   WDTimer();
+        // }
+    }
   #endif
 } // MqttRx END
 //-----------------------------------------------------------------------------------
 void MqttPubString(String TOPICEND, String DATA, bool RETAIN){
   #if defined(MQTT)
-    digitalWrite(StatusPin, LOW);
-    char charbuf[50];
-     // memcpy( charbuf, mac, 6);
-     WiFi.macAddress().toCharArray(charbuf, 17);
-    // if(EnableEthernet==1 && MQTT_ENABLE==1 && EthLinkStatus==1 && mqttClient.connected()==true){
-    if(mqttClient.connected()==true){
-      if (mqttClient.connect(charbuf)) {
-        Serial.print("TXmqtt > ");
-        String topic = String(TOPICEND);
-        topic.toCharArray( mqttPath, 50 );
-        DATA.toCharArray( mqttTX, 50 );
-        mqttClient.publish(mqttPath, mqttTX, RETAIN);
-        Serial.print(mqttPath);
-        Serial.print(" ");
-        Serial.println(mqttTX);
+    if(mqttEnable==true){
+      if(APmode==true){
+        ledcWrite(pwmChannel, 0);
+      }else{
+        digitalWrite(StatusPin, LOW);
+      }
+      char charbuf[50];
+      // memcpy( charbuf, mac, 6);
+      WiFi.macAddress().toCharArray(charbuf, 17);
+      // if(EnableEthernet==1 && MQTT_ENABLE==1 && EthLinkStatus==1 && mqttClient.connected()==true){
+      if(mqttClient.connected()==true){
+        if (mqttClient.connect(charbuf)) {
+          Serial.print("TXmqtt > ");
+          String topic = String(TOPICEND);
+          topic.toCharArray( mqttPath, 50 );
+          DATA.toCharArray( mqttTX, 50 );
+          mqttClient.publish(mqttPath, mqttTX, RETAIN);
+          Serial.print(mqttPath);
+          Serial.print(" ");
+          Serial.println(mqttTX);
+        }
+      }
+      delay(100);
+      if(APmode==true){
+        ledcWrite(pwmChannel, 255);
+      }else{
+        digitalWrite(StatusPin, HIGH);
       }
     }
-    delay(100);
-    digitalWrite(StatusPin, HIGH);
   #endif
 }
 //-----------------------------------------------------------------------------------
@@ -1093,7 +1383,11 @@ void UdpToCwFsk(){
     udp.parsePacket();
     //receive response from server, it will be HELLO WORLD
     if(udp.read(CwMsg, 36) > 0){
-      digitalWrite(StatusPin, LOW);
+      if(APmode==true){
+        ledcWrite(pwmChannel, 0);
+      }else{
+        digitalWrite(StatusPin, LOW);
+      }
       // Serial.print("UDP rx: ");
       // Serial.println((char *)CwMsg);
       if(statusPower==1){
@@ -1182,11 +1476,19 @@ void sendCW(){
     }
     // Serial.println();
     delay(100);
-    digitalWrite(StatusPin, HIGH);
-    delay(100);
-    digitalWrite(StatusPin, LOW);
-    delay(100);
-    digitalWrite(StatusPin, HIGH);
+    if(APmode==true){
+      ledcWrite(pwmChannel, 255);
+      delay(100);
+      ledcWrite(pwmChannel, 0);
+      delay(100);
+      ledcWrite(pwmChannel, 255);
+    }else{
+      digitalWrite(StatusPin, HIGH);
+      delay(100);
+      digitalWrite(StatusPin, LOW);
+      delay(100);
+      digitalWrite(StatusPin, HIGH);
+    }
   }else if(modes=="FSK"){ // GPIO -----------------
     digitalWrite(PTT, HIGH);          // PTT ON
     delay(PTTlead);                   // PTT lead delay
@@ -1220,7 +1522,11 @@ void sendCW(){
     delay(PTTtail);
     digitalWrite(PTT, LOW);Serial.println();
     digitalWrite(FSK_OUT, LOW);
-    digitalWrite(StatusPin, HIGH);
+    if(APmode==true){
+      ledcWrite(pwmChannel, 255);
+    }else{
+      digitalWrite(StatusPin, HIGH);
+    }
     powerTimer=millis();
   }
 
@@ -1343,54 +1649,77 @@ void CLI(){
     if(incomingByte==63){
       ListCommands();
 
-    // +
-    }else if(incomingByte==43){
-      // Serial.println("  enter MQTT broker IP address by four number (0-255) and press [enter] after each");
-      // Serial.println("  NOTE: public remoteqth broker 54.38.157.134:1883");
-      // for (int i=0; i<5; i++){
-      //   if(i==4){
-      //     Serial.print("enter IP port (1-65535) and press [");
-      //   }
-      //   if(TelnetAuthorized==true){
-      //     Serial.println("enter]");
-      //   }else{
-      //     Serial.println(";]");
-      //   }
-      //   Enter();
-      //   int intBuf=0;
-      //   int mult=1;
-      //   for (int j=InputByte[0]; j>0; j--){
-      //     intBuf = intBuf + ((InputByte[j]-48)*mult);
-      //     mult = mult*10;
-      //   }
-      //   if( (i<4 && intBuf>=0 && intBuf<=255) || (i==4 && intBuf>=1 && intBuf<=65535) ){
-      //     if(i==4){
-      //       EEPROM.writeInt(165, intBuf);
-      //     }else{
-      //       EEPROM.writeByte(161+i, intBuf);
-      //     }
-      //     // Serial.println("EEPROMcomit");
-      //     EEPROM.commit();
-      //   }else{
-      //     Serial.println("Out of range.");
-      //     break;
-      //   }
-      // }
-      // Serial.print("** device will be restarted **");
-      // delay(1000);
-      // TelnetServerClients[0].stop();
-      // ESP.restart();
+    // E
+    }else if(incomingByte==69){
+      Serial.println("   Erase whole eeprom? (y/n)");
+      EnterChar();
+      if(incomingByte==89 || incomingByte==121){
+        Serial.println("   Stop erase? (y/n)");
+        EnterChar();
+        if(incomingByte==78 || incomingByte==110){
+          for(int i=0; i<EEPROM_SIZE; i++){
+            EEPROM.write(i, 0xff);
+            Serial.print(".");
+          }
+          EEPROM.commit();
+          Serial.println("");
+          Serial.println("   Eeprom erased done");
+          Serial.println("** Interface will be restarted **");
+          delay(3000);
+          ESP.restart();
+        }else{
+          Serial.println("   Erase aborted");
+        }
+      }else{
+        Serial.println("   Erase aborted");
+      }
+
+    // @
+    }else if(incomingByte==64){
+      Serial.println("   Restart Interface? (y/n)");
+      EnterChar();
+      if(incomingByte==89 || incomingByte==121){
+        Serial.println("   Stop Restart? (y/n)");
+        EnterChar();
+        if(incomingByte==78 || incomingByte==110){
+          Serial.println("** Interface will be restarted **");
+          delay(3000);
+          ESP.restart();
+        }else{
+          Serial.println("   Restart aborted");
+        }
+      }else{
+        Serial.println("   Restart aborted");
+      }
 
     // CR/LF
     }else if(incomingByte==13||incomingByte==10){
       // anykey
     }else{
-      Serial.print(" [");
-      Serial.print( String(incomingByte) ); //, DEC);
-      Serial.println("] unknown command");
+      // Serial.print(" [");
+      // Serial.print( String(incomingByte) ); //, DEC);
+      // Serial.println("] unknown command");
     }
     incomingByte=0;
   }
+}
+
+//-------------------------------------------------------------------------------------------------------
+void EnterChar(){
+  incomingByte = 0;
+  static byte byteBuf = 0x00;
+  Serial.print(" > ");
+  while (Serial.available() == 0) {
+    // Wait
+  }
+  // byteBuf = Serial.read();
+  // // CR/LF
+  // if(byteBuf==13||byteBuf==10){
+  //   //nil
+  // }else{
+    incomingByte = Serial.read();
+    Serial.println( String(char(incomingByte)) );
+  // }
 }
 
 //-------------------------------------------------------------------------------------------------------
@@ -1411,16 +1740,449 @@ void ListCommands(){
     Serial.print( String(millis()/86400000) );
     Serial.println(" days");
   }
-  Serial.println("  FW "+String(REV)+" | HW "+String(HardwareRev)+" ["+String(HWidValue)+"raw]" );
-  Serial.println("  Bluetooth: "+String(BTname) );
-  Serial.println("  WIFI-connected with IP "+String(WiFi.localIP()) );
-  Serial.println("  WIFI-dBm: "+String(WiFi.RSSI()) );
-  Serial.println("  IP http-cat  http://"+String(WiFi.localIP()[0])+"."+String(WiFi.localIP()[1])+"."+String(WiFi.localIP()[2])+"."+String(WiFi.localIP()[3])+":"+String(HTTP_CAT_PORT) );
-  Serial.println("  IP udp cw/rtty port: "+String(udpPort) );
-  Serial.println("  IP udp cat port: "+String(udpCatPort) );
-  Serial.println("  IP MqttSubscribe: "+String(mqttBroker[0])+"."+String(mqttBroker[1])+"."+String(mqttBroker[2])+"."+String(mqttBroker[3])+":"+String(MQTT_PORT)+"/");
-  Serial.println("  IP MqttTopic: "+String(MQTT_TOPIC));
-  Serial.println("------------------  SETTINGS | press key to select -------------------");
-  Serial.println("      ?  list refresh");
+  Serial.println("  FW "+String(REV)+" | HW "+String(HardwareRev)+" ["+String(HWidValue)+" raw]" );
+  if(APmode==true){
+    Serial.println("  WIFI-AP mode ON" );
+    APcliAlert();
+  }else{
+    Serial.println("  Bluetooth: "+String(BTname) );
+    Serial.println("  WIFI-AP mode OFF" );
+    Serial.println("  WIFI-connected with IP "+String(WiFi.localIP()[0])+"."+String(WiFi.localIP()[1])+"."+String(WiFi.localIP()[2])+"."+String(WiFi.localIP()[3]) );
+    Serial.println("  WIFI-MAC "+String(MACString) );
+    Serial.println("  WIFI-dBm: "+String(WiFi.RSSI()) );
+    Serial.println("----------------------------------------------------------------------------" );
+    Serial.println("  For setup OPEN url http://ic705.local or http://"+String(WiFi.localIP()[0])+"."+String(WiFi.localIP()[1])+"."+String(WiFi.localIP()[2])+"."+String(WiFi.localIP()[3]) );
+    Serial.println("----------------------------------------------------------------------------" );
+    Serial.println("  IP http-cat  http://"+String(WiFi.localIP()[0])+"."+String(WiFi.localIP()[1])+"."+String(WiFi.localIP()[2])+"."+String(WiFi.localIP()[3])+":"+String(HTTP_CAT_PORT) );
+    Serial.println("  IP udp cw/rtty port: "+String(udpPort) );
+    Serial.println("  IP udp cat port: "+String(udpCatPort) );
+    if(mqttEnable==true){
+      Serial.println("  IP MqttSubscribe: "+String(mqttBroker[0])+"."+String(mqttBroker[1])+"."+String(mqttBroker[2])+"."+String(mqttBroker[3])+":"+String(MQTT_PORT)+"/");
+      Serial.println("  IP MqttTopic: "+String(MQTT_TOPIC));
+    }else{
+      Serial.println("  IP mqtt DISABLE" );
+    }
+    Serial.println(" CAT "+String(frequency)+"Hz "+String(modes) );
+  }
+  Serial.println("SETTINGS  press key to select");
+  Serial.println("       ?  list refresh");
+  Serial.println("       E  erase whole eeprom and restart");
+  Serial.println("       @  restart device");
   Serial.print( " > " );
+}
+
+//-------------------------------------------------------------------------------------------------------
+void APcliAlert(){
+  IPAddress IP = WiFi.softAPIP();
+  Serial.println();
+  Serial.println("---------------------------------------------------------------");
+  Serial.println("  PLEASE connect your PC to '"+String(ssidAP)+"' WiFi access-point");
+  Serial.println("  with password 'remoteqth'");
+  Serial.println("  and OPEN url http://ic705.local or http://"+String(IP[0])+"."+String(IP[1])+"."+String(IP[2])+"."+String(IP[3]) );
+  Serial.println("---------------------------------------------------------------");
+  Serial.println();
+}
+
+//-------------------------------------------------------------------------------------------------------
+
+// ajax rx
+void handleSet() {
+
+  String ssidERR="red;'>";
+  String pswdERR="red;'>";
+  String baudSELECT0= "";
+  String baudSELECT1= "";
+  String baudSELECT2= "";
+  String baudSELECT3= "";
+  String baudSELECT4= "";
+  String mqttERR= "";
+  String mqttERR1= "";
+  String mqttERR2= "";
+  String mqttERR3= "";
+  String mqttERR4= "";
+  String mqttportERR= "";
+  String mqtttopicERR= "";
+  String httpcatportERR= "";
+  String udpportERR= "";
+  String udpcatportERR= "";
+  String btnameERR= "";
+  bool ERRdetect=0;
+
+  if(mqttEnable==false){
+    mqttERR= " MQTT disabled";
+  }
+
+  if ( ajaxserver.hasArg("ssid") == false \
+    && ajaxserver.hasArg("pswd") == false \
+  ) {
+    // Serial.println("Form NOT valid");
+  }else{
+    // Serial.println("Form VALID");
+
+    // 1-21 - SSID*
+    if ( ajaxserver.arg("ssid").length()<1 || ajaxserver.arg("ssid").length()>20){
+      ssidERR= "red;'> Out of range 1-20 characters";
+      ERRdetect=1;
+    }else{
+      String str = String(ajaxserver.arg("ssid"));
+      if(SSID == str){
+        ssidERR="red;'>";
+      }else{
+        ssidERR="orange;'> Warning: SSID has changed.";
+        SSID = String(ajaxserver.arg("ssid"));
+
+        int str_len = str.length();
+        char char_array[str_len];
+        str.toCharArray(char_array, str_len+1);
+        for (int i=0; i<20; i++){
+          if(i < str_len){
+            EEPROM.write(1+i, char_array[i]);
+          }else{
+            EEPROM.write(1+i, 0xff);
+          }
+        }
+        // EEPROM.commit();
+      }
+    }
+
+    // 22-40 - PSWD*
+    if ( ajaxserver.arg("pswd").length()<1 || ajaxserver.arg("pswd").length()>18){
+      pswdERR= "red;'> Out of range 1-18 characters";
+      ERRdetect=1;
+    }else{
+      String str = String(ajaxserver.arg("pswd"));
+      if(PSWD == str){
+        pswdERR="red;'>";
+      }else{
+        pswdERR="orange;'> Warning: PSWD has changed.";
+        PSWD = String(ajaxserver.arg("pswd"));
+
+        int str_len = str.length();
+        char char_array[str_len];
+        str.toCharArray(char_array, str_len+1);
+        for (int i=0; i<18; i++){
+          if(i < str_len){
+            EEPROM.write(22+i, char_array[i]);
+          }else{
+            EEPROM.write(22+i, 0xff);
+          }
+        }
+        // EEPROM.commit();
+      }
+    }
+
+    // 76-96 BTname
+    if ( ajaxserver.arg("btname").length()<1 || ajaxserver.arg("btname").length()>20){
+      btnameERR= " Out of range 1-20 characters";
+      ERRdetect=1;
+    }else{
+      String str = String(ajaxserver.arg("btname"));
+      if(String(BTname) == str){
+        btnameERR="";
+      }else{
+        btnameERR="";
+
+        int str_len = str.length();
+        char char_array[str_len];
+        str.toCharArray(char_array, str_len+1);
+
+        // BTname = String(ajaxserver.arg("btname"));
+        str.toCharArray(BTname, str_len+1);
+        for (int i=0; i<20; i++){
+          if(i < str_len){
+            EEPROM.write(76+i, char_array[i]);
+          }else{
+            EEPROM.write(76+i, 0xff);
+          }
+        }
+        // EEPROM.commit();
+      }
+    }
+
+    // 68-69 HTTP_CAT_PORT
+    if ( ajaxserver.arg("httpcatport").length()<1 || ajaxserver.arg("httpcatport").toInt()<1 || ajaxserver.arg("httpcatport").toInt()>65534){
+      httpcatportERR= " Out of range number 1-65534";
+      ERRdetect=1;
+    }else{
+      if(HTTP_CAT_PORT == ajaxserver.arg("httpcatport").toInt()){
+        httpcatportERR="";
+      }else{
+        httpcatportERR="";
+        HTTP_CAT_PORT = ajaxserver.arg("httpcatport").toInt();
+        EEPROM.writeUShort(68, HTTP_CAT_PORT);
+      }
+    }
+
+    // 70-71 udpPort
+    if ( ajaxserver.arg("udpport").length()<1 || ajaxserver.arg("udpport").toInt()<1 || ajaxserver.arg("udpport").toInt()>65534){
+      udpportERR= " Out of range number 1-65534";
+      ERRdetect=1;
+    }else{
+      if(udpPort == ajaxserver.arg("udpport").toInt()){
+        udpportERR="";
+      }else{
+        udpportERR="";
+        udpPort = ajaxserver.arg("udpport").toInt();
+        EEPROM.writeUShort(70, udpPort);
+      }
+    }
+
+    // 72-73 udpCatPort
+    if ( ajaxserver.arg("udpcatport").length()<1 || ajaxserver.arg("udpcatport").toInt()<1 || ajaxserver.arg("udpcatport").toInt()>65534){
+      udpcatportERR= " Out of range number 1-65534";
+      ERRdetect=1;
+    }else{
+      if(41 == ajaxserver.arg("udpcatport").toInt()){
+        udpcatportERR="";
+      }else{
+        udpcatportERR="";
+        udpCatPort = ajaxserver.arg("udpcatport").toInt();
+        EEPROM.writeUShort(72, udpCatPort);
+      }
+    }
+
+    // 41-44 mqttBroker[4]
+    if ( ajaxserver.arg("mqttip0").length()<1 || ajaxserver.arg("mqttip0").toInt()>255){
+      mqttERR1= " IP1: Out of range 0-255";
+      ERRdetect=1;
+    }else{
+      if(mqttBroker[0] == byte(ajaxserver.arg("mqttip0").toInt()) ){
+        mqttERR1="";
+      }else{
+        mqttERR1="";
+        mqttBroker[0] = byte(ajaxserver.arg("mqttip0").toInt()) ;
+        EEPROM.writeByte(41, mqttBroker[0]);
+      }
+      if(mqttBroker[0]==0x00){
+        mqttEnable = false;
+      }else{
+        mqttEnable = true;
+      }
+    }
+
+    if ( ajaxserver.arg("mqttip1").length()<1 || ajaxserver.arg("mqttip1").toInt()>255){
+      mqttERR2= " IP2: Out of range 0-255";
+      ERRdetect=1;
+    }else{
+      if(mqttBroker[1] == byte(ajaxserver.arg("mqttip1").toInt()) ){
+        mqttERR2="";
+      }else{
+        mqttERR2="";
+        mqttBroker[1] = byte(ajaxserver.arg("mqttip1").toInt()) ;
+        EEPROM.writeByte(42, mqttBroker[1]);
+      }
+    }
+
+    if ( ajaxserver.arg("mqttip2").length()<1 || ajaxserver.arg("mqttip2").toInt()>255){
+      mqttERR3= " IP3: Out of range 0-255";
+      ERRdetect=1;
+    }else{
+      if(mqttBroker[2] == byte(ajaxserver.arg("mqttip2").toInt()) ){
+        mqttERR3="";
+      }else{
+        mqttERR3="";
+        mqttBroker[2] = byte(ajaxserver.arg("mqttip2").toInt()) ;
+        EEPROM.writeByte(43, mqttBroker[2]);
+      }
+    }
+
+    if ( ajaxserver.arg("mqttip3").length()<1 || ajaxserver.arg("mqttip3").toInt()>255){
+      mqttERR4= " IP4: Out of range 0-255";
+      ERRdetect=1;
+    }else{
+      if(mqttBroker[3] == byte(ajaxserver.arg("mqttip3").toInt()) ){
+        mqttERR4="";
+      }else{
+        mqttERR4="";
+        mqttBroker[3] = byte(ajaxserver.arg("mqttip3").toInt()) ;
+        EEPROM.writeByte(44, mqttBroker[3]);
+      }
+    }
+
+    // 45-46 MQTT_PORT
+    if ( ajaxserver.arg("mqttport").length()<1 || ajaxserver.arg("mqttport").toInt()<1 || ajaxserver.arg("mqttport").toInt()>65534){
+      mqttportERR= " Out of range number 1-65534";
+      ERRdetect=1;
+    }else{
+      if(MQTT_PORT == ajaxserver.arg("mqttport").toInt()){
+        mqttportERR="";
+      }else{
+        mqttportERR="";
+        MQTT_PORT = ajaxserver.arg("mqttport").toInt();
+        EEPROM.writeUShort(45, MQTT_PORT);
+      }
+    }
+
+    // 47-67 MQTT_TOPIC
+    if ( ajaxserver.arg("mqtttopic").length()<1 || ajaxserver.arg("mqtttopic").length()>20){
+      mqtttopicERR= " Out of range 1-20 characters";
+      ERRdetect=1;
+    }else{
+      String str = String(ajaxserver.arg("mqtttopic"));
+      if(MQTT_TOPIC == str){
+        mqtttopicERR="";
+      }else{
+        mqtttopicERR="";
+        MQTT_TOPIC = String(ajaxserver.arg("mqtttopic"));
+
+        int str_len = str.length();
+        char char_array[str_len];
+        str.toCharArray(char_array, str_len+1);
+        for (int i=0; i<20; i++){
+          if(i < str_len){
+            EEPROM.write(47+i, char_array[i]);
+          }else{
+            EEPROM.write(47+i, 0xff);
+          }
+        }
+        // EEPROM.commit();
+      }
+    }
+
+    // 74-75 BaudRate *
+    static int BaudRateTmp=115200;
+    switch (ajaxserver.arg("baud").toInt()) {
+      case 0: {BaudRateTmp= 1200; break; }
+      case 1: {BaudRateTmp= 2400; break; }
+      case 2: {BaudRateTmp= 4800; break; }
+      case 3: {BaudRateTmp= 9600; break; }
+      case 4: {BaudRateTmp= 115200; break; }
+    }
+    if(BaudRateTmp!=BaudRate){
+      BaudRate=(int)BaudRateTmp;
+      EEPROM.writeUShort(74, BaudRate);
+      // MqttPubString("USB-BaudRate", String(BaudRate), true);
+      Serial.println("Baudrate change to "+String(BaudRate)+"...");
+      Serial.flush();
+      // Serial.end();
+      delay(1000);
+      Serial.begin(BaudRate);
+      delay(500);
+      Serial.println();
+      Serial.println();
+      Serial.println("New Baudrate "+String(BaudRate));
+    }
+
+
+    // // APmode
+    EEPROM.writeBool(0, false);
+    EEPROM.commit();
+    // Serial.println("Interface will be restarted...");
+    // delay(3000);
+    // ESP.restart();
+    // Serial.println("ERRdetect = "+String(ERRdetect) );
+
+  } // else form valid
+
+  baudSELECT0= "";
+  baudSELECT1= "";
+  baudSELECT2= "";
+  baudSELECT3= "";
+  baudSELECT4= "";
+  switch (BaudRate) {
+    case 1200: {baudSELECT0= " selected"; break; }
+    case 2400: {baudSELECT1= " selected"; break; }
+    case 4800: {baudSELECT2= " selected"; break; }
+    case 9600: {baudSELECT3= " selected"; break; }
+    case 115200: {baudSELECT4= " selected"; break; }
+  }
+
+  String HtmlSrc = "<!DOCTYPE html><html><head><title>SETUP IC705 IP interface</title>\n";
+  HtmlSrc +="<meta http-equiv='Content-Type' content='text/html; charset=UTF-8'>\n";
+  // <meta http-equiv = 'refresh' content = '600; url = /'>\n";
+  HtmlSrc +="<style type='text/css'> button#go {background-color: #ccc; padding: 5px 20px 5px 20px; border: none; -webkit-border-radius: 5px; -moz-border-radius: 5px; border-radius: 5px;} button#go:hover {background-color: orange;} table, th, td {color: #fff; border-collapse: collapse; border:0px } .tdr {color: #0c0; height: 40px; text-align: right; vertical-align: middle; padding-right: 15px} html,body {background-color: #333; text-color: #ccc; font-family: sans-serif,Arial,Tahoma,Verdana;} a:hover {color: #fff;} a { color: #ccc; text-decoration: underline; } ";
+  HtmlSrc +=".b {border-top: 1px dotted #666;} .tooltip-text {visibility: hidden; position: absolute; z-index: 1; width: 300px; color: white; font-size: 12px; background-color: #DE3163; border-radius: 10px; padding: 10px 15px 10px 15px; } .hover-text:hover .tooltip-text { visibility: visible; } #right { top: -30px; left: 200%; } #top { top: -60px; left: -150%; } #left { top: -8px; right: 120%;} ";
+  HtmlSrc +=".hover-text {position: relative; background: #888; padding: 5px 12px; margin: 5px; font-size: 15px; border-radius: 100%; color: #FFF; display: inline-block; text-align: center; }</style>\n";
+  HtmlSrc +="</head><body>\n";
+  HtmlSrc +="<H1 style='color: #666; text-align: center;'>Setup<br>IC-705 IP interface<br><span style='font-size: 42%;'>(";
+  if(APmode==true){
+    HtmlSrc +="<span style='color: #0c0; '>AP mode ON</span>";
+  }else{
+    HtmlSrc +="AP mode OFF";
+  }
+  HtmlSrc +="|MAC ";
+  HtmlSrc +=MACString;
+  HtmlSrc +="|FW ";
+  HtmlSrc +=REV;
+  HtmlSrc +="|HW ";
+  HtmlSrc +=String(HardwareRev);
+  HtmlSrc +=")<span style='color: #333;'>";
+  HtmlSrc +=String(HWidValue);
+  HtmlSrc +="</span></span></H1><div style='display: flex; justify-content: center;'><table><form action='/' method='post' style='color: #ccc; margin: 50 0 0 0; text-align: center;'>\n";
+
+  HtmlSrc +="<tr class='b'><td class='tdr'><label for='ssid'>Conect to WiFi SSID:</label></td><td><input type='text' id='ssid' name='ssid' size='20' value='";
+  HtmlSrc += SSID;
+  HtmlSrc +="'><span style='color:";
+  HtmlSrc += ssidERR;
+  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 200px;'>After reboot IC705 interface<br>connect to this WiFi SSID</span></td></tr>\n";
+  HtmlSrc +="<tr><td class='tdr'><label for='pswd'>WiFi Password:</label></td><td><input type='text' id='pswd' name='pswd' size='18' value='";
+  HtmlSrc += PSWD;
+  HtmlSrc +="'><span style='color:";
+  HtmlSrc += pswdERR;
+  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 200px;'>WiFi acces password</span></td></tr>\n";
+
+  HtmlSrc +="<tr class='b'><td class='tdr'><label for='btname'>Bluetooth name:</label></td><td><input type='text' id='btname' name='btname' size='20' value='";
+  HtmlSrc += BTname;
+  HtmlSrc +="'><span style='color:red;'>";
+  HtmlSrc += btnameERR;
+  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 200px;'>For pairing bluetooth</span></td></tr>\n";
+
+  HtmlSrc +="<tr class='b'><td class='tdr'><label for='httpcatport'>http CAT ip port:</label></td><td>";
+  HtmlSrc +="<input type='text' id='httpcatport' name='httpcatport' size='4' value='" + String(HTTP_CAT_PORT) + "'>\n";
+  HtmlSrc +="<span style='color:red;'>";
+  HtmlSrc += httpcatportERR;
+  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 150px;'>Default http port 81</span></span></td></tr>\n";
+  HtmlSrc +="<tr><td class='tdr'><label for='udpport'>CW/FSK udp port:</label></td><td>";
+  HtmlSrc +="<input type='text' id='udpport' name='udpport' size='4' value='" + String(udpPort) + "'>\n";
+  HtmlSrc +="<span style='color:red;'>";
+  HtmlSrc += udpportERR;
+  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 150px;'>Default udp port 89</span></span></td></tr>\n";
+  HtmlSrc +="<tr><td class='tdr'><label for='udpcatport'>CAT udp port:</label></td><td>";
+  HtmlSrc +="<input type='text' id='udpcatport' name='udpcatport' size='4' value='" + String(udpCatPort) + "'>\n";
+  HtmlSrc +="<span style='color:red;'>";
+  HtmlSrc += udpcatportERR;
+  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 250px;'>Default udp port 90<br><hr>Send only the data part<br>of the CI-V packet to the UDP port,<br>Interface will add addresses,<br>start and stop bytes</span></span></td></tr>\n";
+
+  HtmlSrc +="<tr class='b'><td class='tdr'><label for='mqttip0'>MQTT broker IP:</label></td><td>";
+  HtmlSrc +="<input type='text' id='mqttip0' name='mqttip0' size='1' value='" + String(mqttBroker[0]) + "'>&nbsp;.&nbsp;<input type='text' id='mqttip1' name='mqttip1' size='1' value='" + String(mqttBroker[1]) + "'>&nbsp;.&nbsp;<input type='text' id='mqttip2' name='mqttip2' size='1' value='" + String(mqttBroker[2]) + "'>&nbsp;.&nbsp;<input type='text' id='mqttip3' name='mqttip3' size='1' value='" + String(mqttBroker[3]) + "'>";
+  HtmlSrc +="<span style='color:red;'>";
+  HtmlSrc += mqttERR;
+  HtmlSrc += mqttERR1;
+  HtmlSrc += mqttERR2;
+  HtmlSrc += mqttERR3;
+  HtmlSrc += mqttERR4;
+  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 250px;'>Default public broker 54.38.157.134<br>If the first digit is zero, MQTT is disabled</span></span></td></tr>\n";
+  HtmlSrc +="<tr><td class='tdr'><label for='mqttport'>MQTT broker PORT:</label></td><td>";
+  HtmlSrc +="<input type='text' id='mqttport' name='mqttport' size='4' value='" + String(MQTT_PORT) + "'>\n";
+  HtmlSrc +="<span style='color:red;'>";
+  HtmlSrc += mqttportERR;
+  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 150px;'>Default public broker port 1883</span></span></td></tr>\n";
+  HtmlSrc +="<tr><td class='tdr'><label for='mqtttopic'>MQTT topic:</label></td><td><input type='text' id='mqtttopic' name='mqtttopic' size='20' value='";
+  HtmlSrc += MQTT_TOPIC;
+  HtmlSrc +="'><span style='color:red;'>";
+  HtmlSrc += mqtttopicERR;
+  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 200px;'>Topic path, for example<br>CALL/IC705/1/hz</span></td></tr>\n";
+
+  HtmlSrc +="<tr class='b'><td class='tdr'><label for='baud'>USB serial BAUDRATE:</label></td><td><select name='baud' id='baud'><option value='0'";
+  HtmlSrc += baudSELECT0;
+  HtmlSrc +=">1200</option><option value='1'";
+  HtmlSrc += baudSELECT1;
+  HtmlSrc +=">2400</option><option value='2'";
+  HtmlSrc += baudSELECT2;
+  HtmlSrc +=">4800</option><option value='3'";
+  HtmlSrc += baudSELECT3;
+  HtmlSrc +=">9600</option><option value='4'";
+  HtmlSrc += baudSELECT4;
+  HtmlSrc +=">115200</option></select><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 150px;'>For CI-V output, use<br>speed 9600 or lower</span></span></td></tr>\n";
+
+  HtmlSrc +="<tr class='b'><td class='tdr'></td><td><button id='go'>&#10004; Save and Restart</button> - Be patient, saving is very slow ;)</form>";
+  HtmlSrc +="</td></tr>\n";
+
+  // HtmlSrc +="<tr><td class='tdr'></td><td style='height: 42px;'></td></tr>\n";
+  // HtmlSrc +="<tr><td class='tdr'></td><td style='height: 42px;'></td></tr>";
+  // HtmlSrc +="<tr><td class='tdr'><a href='/'><button id='go'>&#8617; Back to Control</button></a></td><td class='tdl'><a href='/cal' onclick=\"window.open( this.href, this.href, 'width=700,height=715,left=0,top=0,menubar=no,location=no,status=no' ); return false;\"><button id='go'>Calibrate &#8618;</button></a></td></tr>";
+  HtmlSrc +="<tr><td class='tdr'></td><td class='tdl'><span style='color: #666;'>After the reboot, the wifi switches to client mode<br>and if it fails to connect, it returns to AP mode.<br>Debug is available in the serial console on USB-C.</span><br><a href='https://remoteqth.com/w/' target='_blank'>More on Wiki &#10138;</a></td></tr>\n";
+  HtmlSrc +="</body></html>\n";
+
+  ajaxserver.send(200, "text/html", HtmlSrc); //Send web page
 }
