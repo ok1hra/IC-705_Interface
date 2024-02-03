@@ -3,7 +3,7 @@
 ## Functionality
 - **WiFi AP mode with Setup html form** available on address http://ic705.local
 
-    <img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/setup_form.png" height="300">
+    <img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/setup_form.png" height="500">
 
 - Connecting the IC-705 via Bluetooth and **sending the frequency to MQTT**
 - **Frequency and mode** for [Óm - simple contest PHP log](https://github.com/ok1hra/Om) available on **http port 81** (address http://ic705.local:81)
