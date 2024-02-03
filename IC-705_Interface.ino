@@ -50,7 +50,7 @@
   + after connect WiFi, send assigned IP address with CW on TRX
   + send ? in serial terminal, answer interface status
   + add AP mode - status LED signal AP mode by slowly turning on and off (fade in / fade out)
-  + add setup http web form on port 80 (not work - BTname, BaudRate?)
+  + add setup http web form on port 80
 
 //--------------------------------------------------------------------*/
 
@@ -63,9 +63,10 @@ int HTTP_CAT_PORT   = 0;
 int udpPort         = 0; // UDP port | echo -n "cq de ok1hra ok1hra test k;" | nc -u -w1 192.168.1.19 89
 int udpCatPort      = 0;
 int BaudRate        = 9600;
-char* BTname        = "";
+// char* BTname        = "";
+const char* BTname  = "IC705-interface";
 
-#define REV 20240128
+#define REV 20240203
 #define WIFI
 #define MQTT
 #define UDP_TO_CW
@@ -359,14 +360,14 @@ void setup(){
       mqttBroker[1]=EEPROM.readByte(42);
       mqttBroker[2]=EEPROM.readByte(43);
       mqttBroker[3]=EEPROM.readByte(44);
-      if(mqttBroker[0]==0x00){
-        mqttEnable = false;
-      }
       if(EEPROM.read(41)==0xff && EEPROM.read(42)==0xff && EEPROM.read(43)==0xff && EEPROM.read(44)==0xff){
         mqttBroker[0]=0; // default disable //54;
         mqttBroker[1]=38;
         mqttBroker[2]=157;
         mqttBroker[3]=134;
+      }
+      if(mqttBroker[0]==0x00){
+        mqttEnable = false;
       }
     #endif
 
@@ -410,15 +411,21 @@ void setup(){
     }
 
     // 76-96 BTname
-    if(EEPROM.read(76)==0xff){
-      BTname="IC705-interface";
-    }else{
-      for (int i=76; i<97; i++){
-        if(EEPROM.read(i)!=0xff){
-          BTname=BTname+char(EEPROM.read(i));
-        }
-      }
-    }
+    // if(EEPROM.read(76)==0xff){
+    //   BTname="IC705-interface";
+    // }else{
+    //   String str;
+    //   for (int i=76; i<97; i++){
+    //     if(EEPROM.read(i)!=0xff){
+    //       str=str+String(char(EEPROM.read(i)));
+    //     }
+    //   }
+    //   int str_len = str.length();
+    //   char char_array[str_len];
+    //   str.toCharArray(char_array, str_len+1);
+    //   BTname = char_array;
+    //   Serial.println(BTname);
+    // }
   }
 //------------------------------------------
 
@@ -518,13 +525,13 @@ void setup(){
         Serial.print(".");
         count_try++;    // Increase try counter
         if ( count_try >= wifi_max_try ) {
-          Serial.println("\n");
-          Serial.println("Impossible to establish WiFi connexion");
+          Serial.println();
+          Serial.println("    | Impossible to establish WiFi connexion");
           print_wifi_error();
 
           EEPROM.writeBool(0, true);
           EEPROM.commit();
-          Serial.println("Interface will be restarted to AP mode...");
+          Serial.println("    | Interface will be restarted to AP mode...");
           delay(3000);
           ESP.restart();
         }
@@ -597,8 +604,12 @@ void setup(){
           //   AfterMQTTconnect();
           // }
         }else{
+            IPAddress mqtt_server_ip(mqttBroker[0], mqttBroker[1], mqttBroker[2], mqttBroker[3]);       // MQTT broker IP address
             mqttClient.setServer(mqtt_server_ip, MQTT_PORT);
-            Serial.println("MQTT| Client");
+            Serial.print("MQTT| Connect to ");
+            Serial.print(mqtt_server_ip);
+            Serial.print(":");
+            Serial.println(MQTT_PORT);
             mqttClient.setCallback(MqttRx);
             Serial.println("MQTT| Callback");
             lastMqttReconnectAttempt = 0;
@@ -678,7 +689,8 @@ void loop(){
 void Watchdog(){
 
   // set TRX after BT connect
-  if(TrxNeedSet==1){
+  static bool onlyOne = false;
+  if(TrxNeedSet==1 && onlyOne == false){
     TrxNeedSet=0;
     /*
     FE FE A4 E0 <command> FD
@@ -773,6 +785,7 @@ void Watchdog(){
     delay(500);
 
     Serial.println();
+    onlyOne=true;
   }
 
   // BT CAT
@@ -812,7 +825,7 @@ void Watchdog(){
   if(millis()-catTimer > 2000 && frequencyTmp!=frequency){
   // MQTT
     if(mqttEnable==true){
-      Serial.println("MQTT>"+String(frequency)+"Hz "+String(modes) );
+      // Serial.println("MQTT>"+String(frequency)+"Hz "+String(modes) );
       MqttPubString(MQTT_TOPIC, String(frequency), 0);
     }
     frequencyTmp=frequency;
@@ -1197,7 +1210,7 @@ void Mqtt(){
             }
           }
         }else{
-          // Client connected
+          // Serial.println("MQTT| Client connected");
           mqttClient.loop();
         }
         MqttStatusTimer[0]=millis();
@@ -1223,7 +1236,8 @@ void Mqtt(){
           //   Serial.print("mqttReconnect-subscribe ");
           //   Serial.println(String(cstrr));
           // }
-
+        }else{
+          Serial.println("MQTT| mqttReconnect-not-connected");
         }
         return mqttClient.connected();
     }
@@ -1269,7 +1283,7 @@ void MqttPubString(String TOPICEND, String DATA, bool RETAIN){
       // if(EnableEthernet==1 && MQTT_ENABLE==1 && EthLinkStatus==1 && mqttClient.connected()==true){
       if(mqttClient.connected()==true){
         if (mqttClient.connect(charbuf)) {
-          Serial.print("TXmqtt > ");
+          Serial.print("MQTT| ");
           String topic = String(TOPICEND);
           topic.toCharArray( mqttPath, 50 );
           DATA.toCharArray( mqttTX, 50 );
@@ -1764,7 +1778,7 @@ void ListCommands(){
     }
     Serial.println(" CAT "+String(frequency)+"Hz "+String(modes) );
   }
-  Serial.println("SETTINGS  press key to select");
+  Serial.println("Commands  press key to select");
   Serial.println("       ?  list refresh");
   Serial.println("       E  erase whole eeprom and restart");
   Serial.println("       @  restart device");
@@ -1809,7 +1823,7 @@ void handleSet() {
   bool ERRdetect=0;
 
   if(mqttEnable==false){
-    mqttERR= " MQTT disabled";
+    mqttERR= "<span style='color:#0c0;'> MQTT disabled</span>";
   }
 
   if ( ajaxserver.hasArg("ssid") == false \
@@ -1872,32 +1886,31 @@ void handleSet() {
     }
 
     // 76-96 BTname
-    if ( ajaxserver.arg("btname").length()<1 || ajaxserver.arg("btname").length()>20){
-      btnameERR= " Out of range 1-20 characters";
-      ERRdetect=1;
-    }else{
-      String str = String(ajaxserver.arg("btname"));
-      if(String(BTname) == str){
-        btnameERR="";
-      }else{
-        btnameERR="";
+    // if ( ajaxserver.arg("btname").length()<1 || ajaxserver.arg("btname").length()>20){
+    //   btnameERR= " Out of range 1-20 characters";
+    //   ERRdetect=1;
+    // }else{
+    //   String str = String(ajaxserver.arg("btname"));
+    //   if(String(BTname) == str){
+    //     btnameERR="";
+    //   }else{
+    //     btnameERR="";
 
-        int str_len = str.length();
-        char char_array[str_len];
-        str.toCharArray(char_array, str_len+1);
+    //     int str_len = str.length();
+    //     char char_array[str_len];
+    //     str.toCharArray(char_array, str_len+1);
 
-        // BTname = String(ajaxserver.arg("btname"));
-        str.toCharArray(BTname, str_len+1);
-        for (int i=0; i<20; i++){
-          if(i < str_len){
-            EEPROM.write(76+i, char_array[i]);
-          }else{
-            EEPROM.write(76+i, 0xff);
-          }
-        }
-        // EEPROM.commit();
-      }
-    }
+    //     BTname = char_array;
+    //     // str.toCharArray(BTname, str_len+1);
+    //     for (int i=0; i<20; i++){
+    //       if(i < str_len){
+    //         EEPROM.write(76+i, char_array[i]);
+    //       }else{
+    //         EEPROM.write(76+i, 0xff);
+    //       }
+    //     }
+    //   }
+    // }
 
     // 68-69 HTTP_CAT_PORT
     if ( ajaxserver.arg("httpcatport").length()<1 || ajaxserver.arg("httpcatport").toInt()<1 || ajaxserver.arg("httpcatport").toInt()>65534){
@@ -2067,9 +2080,9 @@ void handleSet() {
     // // APmode
     EEPROM.writeBool(0, false);
     EEPROM.commit();
-    // Serial.println("Interface will be restarted...");
-    // delay(3000);
-    // ESP.restart();
+    Serial.println("Interface will be restarted...");
+    delay(3000);
+    ESP.restart();
     // Serial.println("ERRdetect = "+String(ERRdetect) );
 
   } // else form valid
@@ -2086,17 +2099,27 @@ void handleSet() {
     case 9600: {baudSELECT3= " selected"; break; }
     case 115200: {baudSELECT4= " selected"; break; }
   }
+  String MQTTstyle;
+  if(mqttEnable==true){
+    MQTTstyle="tdr";
+  }else{
+    MQTTstyle="tdg";
+  }
 
   String HtmlSrc = "<!DOCTYPE html><html><head><title>SETUP IC705 IP interface</title>\n";
   HtmlSrc +="<meta http-equiv='Content-Type' content='text/html; charset=UTF-8'>\n";
   // <meta http-equiv = 'refresh' content = '600; url = /'>\n";
-  HtmlSrc +="<style type='text/css'> button#go {background-color: #ccc; padding: 5px 20px 5px 20px; border: none; -webkit-border-radius: 5px; -moz-border-radius: 5px; border-radius: 5px;} button#go:hover {background-color: orange;} table, th, td {color: #fff; border-collapse: collapse; border:0px } .tdr {color: #0c0; height: 40px; text-align: right; vertical-align: middle; padding-right: 15px} html,body {background-color: #333; text-color: #ccc; font-family: sans-serif,Arial,Tahoma,Verdana;} a:hover {color: #fff;} a { color: #ccc; text-decoration: underline; } ";
+  HtmlSrc +="<style type='text/css'> button#go {background-color: #ccc; padding: 5px 20px 5px 20px; border: none; -webkit-border-radius: 5px; -moz-border-radius: 5px; border-radius: 5px;} button#go:hover {background-color: orange;} ";
+  HtmlSrc +=" table, th, td {color: #fff; border-collapse: collapse; border:0px } .tdg {color: #ccc; height: 40px; text-align: right; vertical-align: middle; padding-right: 15px} .tdr {color: #0c0; height: 40px; text-align: right; vertical-align: middle; padding-right: 15px} html,body {background-color: #333; text-color: #ccc; font-family: sans-serif,Arial,Tahoma,Verdana;} a:hover {color: #fff;} a { color: #ccc; text-decoration: underline; } ";
   HtmlSrc +=".b {border-top: 1px dotted #666;} .tooltip-text {visibility: hidden; position: absolute; z-index: 1; width: 300px; color: white; font-size: 12px; background-color: #DE3163; border-radius: 10px; padding: 10px 15px 10px 15px; } .hover-text:hover .tooltip-text { visibility: visible; } #right { top: -30px; left: 200%; } #top { top: -60px; left: -150%; } #left { top: -8px; right: 120%;} ";
   HtmlSrc +=".hover-text {position: relative; background: #888; padding: 5px 12px; margin: 5px; font-size: 15px; border-radius: 100%; color: #FFF; display: inline-block; text-align: center; }</style>\n";
   HtmlSrc +="</head><body>\n";
-  HtmlSrc +="<H1 style='color: #666; text-align: center;'>Setup<br>IC-705 IP interface<br><span style='font-size: 42%;'>(";
+  HtmlSrc +="<H1 style='color: #666; text-align: center;'>Setup IC-705 IP interface</H1>";
+
+  HtmlSrc +="<div style='display: flex; justify-content: center;'><table><form action='/' method='post' style='color: #ccc; margin: 50 0 0 0; text-align: center;'>\n";
+  HtmlSrc +="<tr class='b'><td class='tdr'></td><td><span style='color: #666;'>";
   if(APmode==true){
-    HtmlSrc +="<span style='color: #0c0; '>AP mode ON</span>";
+    HtmlSrc +="AP mode <span style='color: #0c0; '>ON</span>";
   }else{
     HtmlSrc +="AP mode OFF";
   }
@@ -2106,26 +2129,26 @@ void handleSet() {
   HtmlSrc +=REV;
   HtmlSrc +="|HW ";
   HtmlSrc +=String(HardwareRev);
-  HtmlSrc +=")<span style='color: #333;'>";
+  HtmlSrc +="</span><span style='color: #333;'>";
   HtmlSrc +=String(HWidValue);
-  HtmlSrc +="</span></span></H1><div style='display: flex; justify-content: center;'><table><form action='/' method='post' style='color: #ccc; margin: 50 0 0 0; text-align: center;'>\n";
+  HtmlSrc +="</span></td></tr>\n";
 
   HtmlSrc +="<tr class='b'><td class='tdr'><label for='ssid'>Conect to WiFi SSID:</label></td><td><input type='text' id='ssid' name='ssid' size='20' value='";
   HtmlSrc += SSID;
   HtmlSrc +="'><span style='color:";
   HtmlSrc += ssidERR;
-  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 200px;'>After reboot IC705 interface<br>connect to this WiFi SSID</span></td></tr>\n";
+  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 200px;'>After reboot, IC705 interface<br>connect to this WiFi SSID</span></td></tr>\n";
   HtmlSrc +="<tr><td class='tdr'><label for='pswd'>WiFi Password:</label></td><td><input type='text' id='pswd' name='pswd' size='18' value='";
   HtmlSrc += PSWD;
   HtmlSrc +="'><span style='color:";
   HtmlSrc += pswdERR;
   HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 200px;'>WiFi acces password</span></td></tr>\n";
 
-  HtmlSrc +="<tr class='b'><td class='tdr'><label for='btname'>Bluetooth name:</label></td><td><input type='text' id='btname' name='btname' size='20' value='";
-  HtmlSrc += BTname;
-  HtmlSrc +="'><span style='color:red;'>";
-  HtmlSrc += btnameERR;
-  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 200px;'>For pairing bluetooth</span></td></tr>\n";
+  // HtmlSrc +="<tr class='b'><td class='tdr'><label for='btname'>Bluetooth name:</label></td><td><input type='text' id='btname' name='btname' size='20' value='";
+  // HtmlSrc += BTname;
+  // HtmlSrc +="'><span style='color:red;'>";
+  // HtmlSrc += btnameERR;
+  // HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 200px;'>For pairing bluetooth</span></td></tr>\n";
 
   HtmlSrc +="<tr class='b'><td class='tdr'><label for='httpcatport'>http CAT ip port:</label></td><td>";
   HtmlSrc +="<input type='text' id='httpcatport' name='httpcatport' size='4' value='" + String(HTTP_CAT_PORT) + "'>\n";
@@ -2143,25 +2166,25 @@ void handleSet() {
   HtmlSrc += udpcatportERR;
   HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 250px;'>Default udp port 90<br><hr>Send only the data part<br>of the CI-V packet to the UDP port,<br>Interface will add addresses,<br>start and stop bytes</span></span></td></tr>\n";
 
-  HtmlSrc +="<tr class='b'><td class='tdr'><label for='mqttip0'>MQTT broker IP:</label></td><td>";
+  HtmlSrc +="<tr class='b'><td class='"+String(MQTTstyle)+"'><label for='mqttip0'>MQTT broker IP:</label></td><td>";
   HtmlSrc +="<input type='text' id='mqttip0' name='mqttip0' size='1' value='" + String(mqttBroker[0]) + "'>&nbsp;.&nbsp;<input type='text' id='mqttip1' name='mqttip1' size='1' value='" + String(mqttBroker[1]) + "'>&nbsp;.&nbsp;<input type='text' id='mqttip2' name='mqttip2' size='1' value='" + String(mqttBroker[2]) + "'>&nbsp;.&nbsp;<input type='text' id='mqttip3' name='mqttip3' size='1' value='" + String(mqttBroker[3]) + "'>";
-  HtmlSrc +="<span style='color:red;'>";
   HtmlSrc += mqttERR;
+  HtmlSrc +="<span style='color:red;'>";
   HtmlSrc += mqttERR1;
   HtmlSrc += mqttERR2;
   HtmlSrc += mqttERR3;
   HtmlSrc += mqttERR4;
   HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 250px;'>Default public broker 54.38.157.134<br>If the first digit is zero, MQTT is disabled</span></span></td></tr>\n";
-  HtmlSrc +="<tr><td class='tdr'><label for='mqttport'>MQTT broker PORT:</label></td><td>";
+  HtmlSrc +="<tr><td class='"+String(MQTTstyle)+"'><label for='mqttport'>MQTT broker PORT:</label></td><td>";
   HtmlSrc +="<input type='text' id='mqttport' name='mqttport' size='4' value='" + String(MQTT_PORT) + "'>\n";
   HtmlSrc +="<span style='color:red;'>";
   HtmlSrc += mqttportERR;
   HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 150px;'>Default public broker port 1883</span></span></td></tr>\n";
-  HtmlSrc +="<tr><td class='tdr'><label for='mqtttopic'>MQTT topic:</label></td><td><input type='text' id='mqtttopic' name='mqtttopic' size='20' value='";
+  HtmlSrc +="<tr><td class='"+String(MQTTstyle)+"'><label for='mqtttopic'>MQTT topic:</label></td><td><input type='text' id='mqtttopic' name='mqtttopic' size='20' value='";
   HtmlSrc += MQTT_TOPIC;
   HtmlSrc +="'><span style='color:red;'>";
   HtmlSrc += mqtttopicERR;
-  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 200px;'>Topic path, for example<br>CALL/IC705/1/hz</span></td></tr>\n";
+  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 200px;'>Topic path, for example:<br>CALL/IC705/1/hz</span></td></tr>\n";
 
   HtmlSrc +="<tr class='b'><td class='tdr'><label for='baud'>USB serial BAUDRATE:</label></td><td><select name='baud' id='baud'><option value='0'";
   HtmlSrc += baudSELECT0;
@@ -2175,13 +2198,13 @@ void handleSet() {
   HtmlSrc += baudSELECT4;
   HtmlSrc +=">115200</option></select><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 150px;'>For CI-V output, use<br>speed 9600 or lower</span></span></td></tr>\n";
 
-  HtmlSrc +="<tr class='b'><td class='tdr'></td><td><button id='go'>&#10004; Save and Restart</button> - Be patient, saving is very slow ;)</form>";
+  HtmlSrc +="<tr class='b'><td class='tdr'></td><td><button id='go'>&#10004; Save and Restart</button> - Be patient, saving is slow ;)</form>";
   HtmlSrc +="</td></tr>\n";
 
   // HtmlSrc +="<tr><td class='tdr'></td><td style='height: 42px;'></td></tr>\n";
   // HtmlSrc +="<tr><td class='tdr'></td><td style='height: 42px;'></td></tr>";
   // HtmlSrc +="<tr><td class='tdr'><a href='/'><button id='go'>&#8617; Back to Control</button></a></td><td class='tdl'><a href='/cal' onclick=\"window.open( this.href, this.href, 'width=700,height=715,left=0,top=0,menubar=no,location=no,status=no' ); return false;\"><button id='go'>Calibrate &#8618;</button></a></td></tr>";
-  HtmlSrc +="<tr><td class='tdr'></td><td class='tdl'><span style='color: #666;'>After the reboot, the wifi switches to client mode<br>and if it fails to connect, it returns to AP mode.<br>Debug is available in the serial console on USB-C.</span><br><a href='https://remoteqth.com/w/' target='_blank'>More on Wiki &#10138;</a></td></tr>\n";
+  HtmlSrc +="<tr><td class='tdr'></td><td class='tdl'><span style='color: #666;'>After the reboot, the wifi switches to client mode<br>and if it fails to connect, it returns to AP mode.<br>Debug is available in the serial console on USB-C.</span><br><a href='https://remoteqth.com/w/' target='_blank'>More on Wiki &#10138;</a></td></tr></table>\n";
   HtmlSrc +="</body></html>\n";
 
   ajaxserver.send(200, "text/html", HtmlSrc); //Send web page
