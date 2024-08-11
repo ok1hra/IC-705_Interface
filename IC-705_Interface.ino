@@ -30,11 +30,13 @@
   + UDP port 89 receives ascii characters, which it sends via Bluetooth to the IC-705, and transmit them as a CW message
   + UDP port 89 receives ascii characters, which it sends in RTTY mode by keying FSK and PTT TRX inputs
   + Status LED
-    - ON after start
-    - OFF if cononnect Wifi
-    - FLASH send MQTT freq
-    - DOUBLE FLASH receive CW via UDP
-    - FLASH+PTT receive RTTY via UDP
+    - Fade in/out - WiFi in AP mode
+    - WiFi in client mode
+      - ON waiting connected to WiFi
+      - OFF Wifi connected to AP
+      - FLASH send MQTT freq
+      - DOUBLE FLASH receive CW via UDP
+      - FLASH+PTT receive RTTY via UDP
   + mDNS - to easily find IP devices in the network, using the command "ping ic705.local"
   + Watchdog - resets the device after more than 73 seconds of inactivity
   + Output signal POWER-OUT (13.8V/0.5A) with LED activates after connecting BT (can turn on your hamshack)
@@ -51,6 +53,7 @@
   + send ? in serial terminal, answer interface status
   + add AP mode - status LED signal AP mode by slowly turning on and off (fade in / fade out)
   + add setup http web form on port 80
+  + add HW rev 3 detection
 
 //--------------------------------------------------------------------*/
 
@@ -66,7 +69,7 @@ int BaudRate        = 9600;
 // char* BTname        = "";
 const char* BTname  = "IC705-interface";
 
-#define REV 20240203
+#define REV 20240811
 #define WIFI
 #define MQTT
 #define UDP_TO_CW
@@ -437,10 +440,10 @@ void setup(){
     HWidValue = analogRead(HWidPin);
     if(HWidValue<=150){
       HardwareRev=1;
-    }else if(HWidValue>150 && HWidValue<=350){
+    }else if(HWidValue>150 && HWidValue<=406){
       HardwareRev=2;  // 253
-    // }else if(HWidValue>450 && HWidValue<=700){
-    //   HardwareRev=4;  // 604
+     }else if(HWidValue>406 && HWidValue<=713){
+       HardwareRev=3;  // 560
     // }else if(HWidValue>700 && HWidValue<=900){
     //   HardwareRev=5;  // 807
     // }else if(HWidValue>900){

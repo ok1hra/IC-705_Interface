@@ -16,11 +16,13 @@
     [![RTTY + PTT keying](https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/hw/rtty-key.png)](https://youtube.com/shorts/b0uTiIwEsbw)
 
 - **Status LED**
-    - ON after start
-    - OFF if cononnect Wifi
-    - FLASH send MQTT freq
-    - DOUBLE FLASH receive CW via UDP
-    - FLASH+PTT receive RTTY via UDP
+    - Fade in/out - WiFi in AP mode
+    - WiFi in client mode
+        - ON waiting connected to WiFi
+        - OFF Wifi connected to AP
+        - FLASH send MQTT freq
+        - DOUBLE FLASH receive CW via UDP
+        - FLASH+PTT receive RTTY via UDP
 - **mDNS** - to easily find IP devices in the network, using the command **"ping ic705.local"**
 - **Watchdog -** resets the device after more than 73 seconds of inactivity
 - **Output signal POWER-OUT** (13.8V/0.5A) with LED activates after connecting BT (can turn on your hamshack)
@@ -35,16 +37,31 @@
 - Detect PCB hardware ID
 
 ## PCB
-<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/hw/IC-705-interface-01.png" height="300"><img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/hw/IC-705-interface-01-PCB.jpg" height="300">
+<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/hw/IC-705-interface-03.png" height="300">
 
-## 3D prit
-<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/3Dprint/preview.png" height="200">
+- [Schematic rev3 PDF](https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/hw/IC-705-interface-03.pdf)
+- [BOM rev3 html](https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/hw/IC-705-interface-ibom-03.html)
+
+## 3D prit case
+<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/3Dprint/preview.png" height="200"><img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/3Dprint/preview-mountpoint.png" height="200">
+
+- [Source rev3 OpenScad](https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/3Dprint/ic-705-interface-3.scad)
+- [rev3 STL](https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/3Dprint/ic-705-interface-3.stl)
+- [rev3 3MF](https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/3Dprint/ic-705-interface-3.3mf)
+- [With mountpoint rev3 STL](https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/3Dprint/ic-705-interface-3-mountpoint.stl)
+- [With mountpoint rev3 3MF](https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/3Dprint/ic-705-interface-3-mountpoint.3mf)
 
 ## Block diagram
 <img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/hw/hw-block.png" height="250">
 
 <img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/hw/sw-block.png">
 
+## Connectors pinout
+- 13,8V DC jack
+- KEY stereo jack
+- SEND/ALC stereo jack
+- USB-C
+- ACC RJ45
 
 ## Configure
 - In head of .ino file
@@ -66,8 +83,10 @@
 ## Connect and debug
 - Open terminal in Arduino IDE
 - Set Baudrate to 9600
-- Reset ESP32
+- Press ? and Enter
 - Read IP address from terminal debug
+
+<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/cli.png" height="300">
 
 ## Find IP adress
 - Turn on the interface
