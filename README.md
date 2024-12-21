@@ -35,6 +35,7 @@
 - After BT connect, **set TRX to enable: CI-V transceive + enable RIT + enable BK-IN**
 - Support external shift register control switch by frequency (not tested)
 - Detect PCB hardware ID
+- Power consumption < 1W
 
 ## PCB
 <img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/hw/IC-705-interface-03.png" height="300">

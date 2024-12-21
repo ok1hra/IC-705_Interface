@@ -7,13 +7,13 @@
      .STL export press F6 and F7 (or menu /Design/Export as STL...)
 
 */
-mountPoint = 1;         // [0:1] enable mount for screw
+mountPoint = 0;         // [0:1] enable mount for screw
 
 //# translate([0,0,0]) rotate([0,0,0]) import("IC-705-interface-PCB-02.stl", convexity=3);
 
-case();
+//case();
 
-//blob();
+blob();
 
 module blob(){
     difference(){

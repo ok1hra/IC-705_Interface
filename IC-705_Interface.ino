@@ -54,6 +54,8 @@
   + add AP mode - status LED signal AP mode by slowly turning on and off (fade in / fade out)
   + add setup http web form on port 80
   + add HW rev 3 detection
+  + optional reset after diconnect
+  + add Debug to CLI
 
 //--------------------------------------------------------------------*/
 
@@ -68,8 +70,9 @@ int udpCatPort      = 0;
 int BaudRate        = 9600;
 // char* BTname        = "";
 const char* BTname  = "IC705-interface";
+bool Debug          = false;
 
-#define REV 20240811
+#define REV 20241221
 #define WIFI
 #define MQTT
 #define UDP_TO_CW
@@ -79,7 +82,9 @@ const char* BTname  = "IC705-interface";
 #define WDT         // watchdog timer
 #define CIV_OUT     // send freq to CIV out with BaudRate
 #define UDP_TO_CAT  // data command from udpCatPort send to TRX | FE FE A4 E0 <command> FD
-#define BLUETOOTH   // not work
+#define BLUETOOTH   // BT
+// #define RTLE     // not work now | credit OK2CQR https://github.com/ok2cqr/rtle/tree/master
+// #define RESET_AFTER_DISCONNECT  // enable reset after each disconnect + short CW msg
 
 #include "EEPROM.h"
 #define EEPROM_SIZE 97
@@ -227,6 +232,10 @@ bool mqttPostponeStatus = 1;
   #include <WebServer.h>
   WebServer ajaxserver(80);
 #endif
+  #if defined(RTLE)
+    #include "rtle.h"  //Web page header file
+    WebServer rtleserver(88);
+  #endif
 
 #if defined(HTTP)
   WiFiServer server; //(HTTP_CAT_PORT);
@@ -501,6 +510,12 @@ void setup(){
       ajaxserver.begin();                  //Start server
       Serial.println("HTTP| ajax server started");
 
+      #if defined(RTLE)
+        rtleserver.on("/", handleRTLE);      //This is display page
+        rtleserver.begin();                  //Start server
+        Serial.println("HTTP| RTLE server started");
+      #endif
+
       if (!MDNS.begin("ic705")) {
         Serial.println("Error setting up MDNS responder!");
         while(1) {
@@ -558,6 +573,12 @@ void setup(){
       ajaxserver.on("/", handleSet);      //This is display page
       ajaxserver.begin();                  //Start server
       Serial.println("HTTP| ajax server started");
+
+      #if defined(RTLE)
+        rtleserver.on("/", handleRTLE);      //This is display page
+        rtleserver.begin();                  //Start server
+        Serial.println("HTTP| RTLE server started");
+      #endif
 
       // Set up mDNS responder:
       // - first argument is the domain name, in this example
@@ -629,15 +650,15 @@ void setup(){
     #if defined(BLUETOOTH)
       while (radio_address == 0x00) {
         if (!searchRadio()) {
-          #ifdef DEBUG
-          Serial.println("Radio not found");
-          #endif
+          if(Debug==true){
+            Serial.println("Radio not found");
+          }
         } else {
-          #ifdef DEBUG
-          Serial.print("Radio found at ");
-          Serial.print(radio_address, HEX);
-          Serial.println();
-          #endif
+          if(Debug==true){
+            Serial.print("Radio found at ");
+            Serial.print(radio_address, HEX);
+            Serial.println();
+          }
         }
       }
     #endif
@@ -655,6 +676,9 @@ void setup(){
 void loop(){
   if(APmode==true){
     ajaxserver.handleClient();
+    #if defined(RTLE)
+      rtleserver.handleClient();
+    #endif
     CLI();
 
     // Status LED
@@ -684,6 +708,9 @@ void loop(){
     UdpToCat();
     CLI();
     ajaxserver.handleClient();
+    #if defined(RTLE)
+      rtleserver.handleClient();
+    #endif
   }
 }
 
@@ -740,6 +767,16 @@ void Watchdog(){
     sendCat();
     delay(500);
 
+    // Set CW 28 WPM - 0000=6 WPM ~ 0255=48 WPM (6 per one wpm)
+    Serial.print("|CW-WPM-28");
+    memset(CatMsg, 0xff, 10);
+    CatMsg[0] = 0x14;
+    CatMsg[1] = 0x0C;
+    CatMsg[2] = 0x01;
+    CatMsg[3] = 0x38;
+    sendCat();
+    delay(500);
+
     // Set AFgain to 10
     Serial.print("|AFgain-10");
     memset(CatMsg, 0xff, 10);
@@ -762,11 +799,19 @@ void Watchdog(){
 
     // CW send IP
     Serial.print("|CWsend-IP..");
-    String StrBuf = "IP=  "+String(WiFi.localIP()[0])+"."+String(WiFi.localIP()[1])+"."+String(WiFi.localIP()[2])+"."+String(WiFi.localIP()[3]) ;
+    #if defined(RESET_AFTER_DISCONNECT)
+      String StrBuf = "="+String(WiFi.localIP()[3]) ;
+    #else
+      String StrBuf = "IP=  "+String(WiFi.localIP()[0])+"."+String(WiFi.localIP()[1])+"."+String(WiFi.localIP()[2])+"."+String(WiFi.localIP()[3]) ;
+    #endif
     StrBuf.toCharArray(CwMsg, StrBuf.length()+1);
     modes="CW";
     sendCW();
-    delay(11000);
+    #if defined(RESET_AFTER_DISCONNECT)
+      delay(2000);
+    #else
+      delay(11000);
+    #endif
 
     // Enable BK-IN
     Serial.print("|BK-IN-ON");
@@ -807,6 +852,12 @@ void Watchdog(){
       digitalWrite(PowerOnPin, LOW);
       Serial.println(" PWR| OFF");
       statusPower = 0;
+      #if defined(RESET_AFTER_DISCONNECT)
+        Serial.println();
+        Serial.println("** Interface will be restarted **");
+        delay(3000);
+        ESP.restart();
+      #endif
     }
   }else{
     if(statusPower==0){
@@ -1011,31 +1062,31 @@ void processCatMessages(){
               }
             }
           } else {
-            #ifdef DEBUG
-              Serial.print(read_buffer[3]);
-              Serial.println(" also on-line?!");
-            #endif
+            // if(Debug==true){
+            //   Serial.print(read_buffer[3]);
+            //   Serial.println(" also on-line?!");
+            // }
           }
         }
         powerTimer=millis(); // RX BT
 
       }
 
-  // #ifdef DEBUG
-      //if(!knowncommand){
-      // Serial.print("<");
-      // if(read_buffer[10] == STOP_BYTE){
-      //     memcpy(read_buffer_snapshot, read_buffer, sizeof(read_buffer));
-        // for (uint8_t i = 0; i < sizeof(read_buffer); i++){
-        //   if (read_buffer[i] < 16)Serial.print("0");
-        //   Serial.print(read_buffer[i], HEX);
-        //   Serial.print(" ");
-        //   if (read_buffer[i] == STOP_BYTE)break;
-        // }
-        // Serial.println();
+      // if(Debug==true){
+      //   if(!knowncommand){
+      //   Serial.print("<");
+      //     if(read_buffer[10] == STOP_BYTE){
+      //       memcpy(read_buffer_snapshot, read_buffer, sizeof(read_buffer));
+      //       for (uint8_t i = 0; i < sizeof(read_buffer); i++){
+      //         if (read_buffer[i] < 16)Serial.print("0");
+      //         Serial.print(read_buffer[i], HEX);
+      //         Serial.print(" ");
+      //         if (read_buffer[i] == STOP_BYTE)break;
+      //       }
+      //       Serial.println();
+      //     }
+      //   }
       // }
-      //}
-  // #endif
     }
 
   // #ifdef MIRRORCAT
@@ -1104,51 +1155,51 @@ uint8_t readLine(void){
 //-------------------------------------------------------------------------------------------------------
 void radioSetMode(uint8_t modeid, uint8_t modewidth){
   #if defined(BLUETOOTH)
-      uint8_t req[] = {START_BYTE, START_BYTE, radio_address, CONTROLLER_ADDRESS, CMD_WRITE_MODE, modeid, modewidth, STOP_BYTE};
-    #ifdef DEBUG
-      Serial.print(">");
-    #endif
-      for (uint8_t i = 0; i < sizeof(req); i++) {
-        CAT.write(req[i]);
-    #ifdef DEBUG
+    uint8_t req[] = {START_BYTE, START_BYTE, radio_address, CONTROLLER_ADDRESS, CMD_WRITE_MODE, modeid, modewidth, STOP_BYTE};
+    if(Debug==true){
+      Serial.print("CAT TX >");
+    }
+    for (uint8_t i = 0; i < sizeof(req); i++) {
+      CAT.write(req[i]);
+      if(Debug==true){
         if (req[i] < 16)Serial.print("0");
         Serial.print(req[i], HEX);
         Serial.print(" ");
-    #endif
       }
-    #ifdef DEBUG
+    }
+    if(Debug==true){
       Serial.println();
-    #endif
+    }
   #endif
 }
 //-------------------------------------------------------------------------------------------------------
 void sendCatRequest(uint8_t requestCode){
   #if defined(BLUETOOTH)
       uint8_t req[] = {START_BYTE, START_BYTE, radio_address, CONTROLLER_ADDRESS, requestCode, STOP_BYTE};
-    #ifdef DEBUG
-      Serial.print(">");
-    #endif
+    if(Debug==true){
+      Serial.print("CAT TX >");
+    }
       for (uint8_t i = 0; i < sizeof(req); i++) {
         CAT.write(req[i]);
-    #ifdef DEBUG
-        if (req[i] < 16)Serial.print("0");
-        Serial.print(req[i], HEX);
-        Serial.print(" ");
-    #endif
+        if(Debug==true){
+          if (req[i] < 16)Serial.print("0");
+          Serial.print(req[i], HEX);
+          Serial.print(" ");
+        }
       }
-    #ifdef DEBUG
-      Serial.println();
-    #endif
+      if(Debug==true){
+        Serial.println();
+      }
   #endif
 }
 //-------------------------------------------------------------------------------------------------------
 bool searchRadio(){
   #if defined(BLUETOOTH)
-      for (uint8_t baud = 0; baud < BAUD_RATES_SIZE; baud++) {
-    #ifdef DEBUG
+    for (uint8_t baud = 0; baud < BAUD_RATES_SIZE; baud++) {
+      if(Debug==true){
         Serial.print("Try baudrate ");
         Serial.println(baudRates[baud]);
-    #endif
+      }
         configRadioBaud(baudRates[baud]);
         sendCatRequest(CMD_READ_FREQ);
 
@@ -1159,7 +1210,7 @@ bool searchRadio(){
           }
           return true;
         }
-      }
+    }
 
       radio_address = 0xFF;
       return false;
@@ -1173,28 +1224,28 @@ void printFrequency(void){
       //FE FE 00 40 00 <00 60 06 14> FD ic-732
       for (uint8_t i = 0; i < 5; i++) {
         if (read_buffer[9 - i] == 0xFD)continue; //spike
-    #ifdef DEBUG
-        if (read_buffer[9 - i] < 16)Serial.print("0");
-        Serial.print(read_buffer[9 - i], HEX);
-    #endif
+        if(Debug==true){
 
+          if (read_buffer[9 - i] < 16)Serial.print("0");
+          Serial.print(read_buffer[9 - i], HEX);
+        }
         frequency += (read_buffer[9 - i] >> 4) * decMulti[i * 2];
         frequency += (read_buffer[9 - i] & 0x0F) * decMulti[i * 2 + 1];
       }
-    #ifdef DEBUG
-      Serial.println();
-    #endif
+      if(Debug==true){
+        Serial.println();
+      }
   #endif
 }
 //-------------------------------------------------------------------------------------------------------
 void printMode(void){
   #if defined(BLUETOOTH)
-      //FE FE E0 42 04 <00 01> FD
-    #ifdef DEBUG
+    //FE FE E0 42 04 <00 01> FD
+    if(Debug==true){
       Serial.println(mode[read_buffer[5]]);
-    #endif
-      modes = mode[read_buffer[5]];
-      //read_buffer[6] -> 01 - Wide, 02 - Medium, 03 - Narrow
+    }
+    modes = mode[read_buffer[5]];
+    //read_buffer[6] -> 01 - Wide, 02 - Medium, 03 - Narrow
   #endif
 }
 //-------------------------------------------------------------------------------------------------------
@@ -1312,7 +1363,9 @@ void httpCAT(){
   // listen for incoming clients
   WiFiClient webCatClient = server.available();
   if (webCatClient) {
-      // Debugging("WebCat new client");
+      if(Debug==true){
+        Serial.println("WebCat new client");
+      }
       memset(linebuf,0,sizeof(linebuf));
       charcount=0;
       // an http request ends with a blank line
@@ -1320,7 +1373,9 @@ void httpCAT(){
       while (webCatClient.connected()) {
         if (webCatClient.available()) {
           char c = webCatClient.read();
-          // Debugging(c);
+          if(Debug==true){
+            Serial.print(c);
+          }
           //read char by char HTTP request
           linebuf[charcount]=c;
           if (charcount<sizeof(linebuf)-1) charcount++;
@@ -1360,7 +1415,9 @@ void httpCAT(){
       delay(1);
       // close the connection:
       webCatClient.stop();
-      // Debugging("WebCat client disconnected");
+      if(Debug==true){
+        Serial.println("WebCat client disconnected");
+      }
   }
   #endif
 }
@@ -1405,8 +1462,8 @@ void UdpToCwFsk(){
       }else{
         digitalWrite(StatusPin, LOW);
       }
-      // Serial.print("UDP rx: ");
-      // Serial.println((char *)CwMsg);
+      Serial.print("UDP FSK rx: ");
+      Serial.println((char *)CwMsg);
       if(statusPower==1){
         sendCW();
       }
@@ -1481,17 +1538,18 @@ void sendCW(){
     CwMsg[3] = CONTROLLER_ADDRESS;
     CwMsg[4] = CMD_SEND_CW_MSG;
     CwMsg[TheEnd] = STOP_BYTE;
+    Serial.print("CW ");
     for (uint8_t i = 0; i < sizeof(CwMsg); i++) {
       if (i <= TheEnd){
         CAT.write(CwMsg[i]);
         // if (CwMsg[i] < 16){
         //   Serial.print("0");
         // }
-        // Serial.print(CwMsg[i], HEX);
-        // Serial.print(" ");
+        Serial.print(CwMsg[i], HEX);
+        Serial.print(" ");
       }
     }
-    // Serial.println();
+    Serial.println();
     delay(100);
     if(APmode==true){
       ledcWrite(pwmChannel, 255);
@@ -1511,10 +1569,11 @@ void sendCW(){
     delay(PTTlead);                   // PTT lead delay
     // ch = ' '; Serial.print(ch); chTable(); sendFsk();   // Space before sending
     // while (Serial.available()) {
+    Serial.print("FSK ");
     for (int i = 0; i < TheEnd+1; i++) {
         ch = toUpperCase(static_cast<char>(CwMsg[i]));
-        // Serial.print(String(ch));
-        // Serial.print("|");
+        Serial.print(String(ch));
+        Serial.print("|");
         chTable();
         if(fig1 == 0 && fig2 == 1){
                 d1 = 1; d2 = 1; d3 = 0; d4 = 1; d5 = 1; //FIGURES
@@ -1666,6 +1725,16 @@ void CLI(){
     if(incomingByte==63){
       ListCommands();
 
+    // D
+    }else if(incomingByte==68){
+      if(Debug==false){
+        Debug=true;
+        Serial.println("   Debug ENABLED");
+      }else{
+        Debug=false;
+        Serial.println("   Debug DISABLED");
+      }
+ 
     // E
     }else if(incomingByte==69){
       Serial.println("   Erase whole eeprom? (y/n)");
@@ -1779,10 +1848,19 @@ void ListCommands(){
     }else{
       Serial.println("  IP mqtt DISABLE" );
     }
+    #if defined(RESET_AFTER_DISCONNECT)
+      Serial.println("     RESET after TRX disconnect - ENABLE" );
+    #endif
+
     Serial.println(" CAT "+String(frequency)+"Hz "+String(modes) );
   }
   Serial.println("Commands  press key to select");
   Serial.println("       ?  list refresh");
+  if(Debug==false){
+    Serial.println("       D  enable serial debug");
+  }else{
+    Serial.println("       D  disable serial debug");
+  }
   Serial.println("       E  erase whole eeprom and restart");
   Serial.println("       @  restart device");
   Serial.print( " > " );
@@ -2141,7 +2219,8 @@ void handleSet() {
   HtmlSrc +="'><span style='color:";
   HtmlSrc += ssidERR;
   HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 200px;'>After reboot, IC705 interface<br>connect to this WiFi SSID</span></td></tr>\n";
-  HtmlSrc +="<tr><td class='tdr'><label for='pswd'>WiFi Password:</label></td><td><input type='text' id='pswd' name='pswd' size='18' value='";
+  // HtmlSrc +="<tr><td class='tdr'><label for='pswd'>WiFi Password:</label></td><td><input type='text' id='pswd' name='pswd' size='18' value='";
+  HtmlSrc +="<tr><td class='tdr'><label for='pswd'>WiFi Password:</label></td><td><input type='password' id='pswd' name='pswd' size='18' value='";
   HtmlSrc += PSWD;
   HtmlSrc +="'><span style='color:";
   HtmlSrc += pswdERR;
@@ -2201,14 +2280,27 @@ void handleSet() {
   HtmlSrc += baudSELECT4;
   HtmlSrc +=">115200</option></select><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 150px;'>For CI-V output, use<br>speed 9600 or lower</span></span></td></tr>\n";
 
+  #if defined(RESET_AFTER_DISCONNECT)
+    HtmlSrc +="<tr class='b'><td class='tdr'>RESET after TRX disconnect:</td><td>ENABLE <span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 150px;'>Compile-defined functionality<br>see <a href='https://github.com/ok1hra/IC-705_Interface/blob/main/IC-705_Interface.ino#L85' target='_blank'>GitHub &#10138;</a></span></span></td></tr>\n";
+  #endif
+
   HtmlSrc +="<tr class='b'><td class='tdr'></td><td><button id='go'>&#10004; Save and Restart</button> - Be patient, saving is slow ;)</form>";
   HtmlSrc +="</td></tr>\n";
 
   // HtmlSrc +="<tr><td class='tdr'></td><td style='height: 42px;'></td></tr>\n";
   // HtmlSrc +="<tr><td class='tdr'></td><td style='height: 42px;'></td></tr>";
   // HtmlSrc +="<tr><td class='tdr'><a href='/'><button id='go'>&#8617; Back to Control</button></a></td><td class='tdl'><a href='/cal' onclick=\"window.open( this.href, this.href, 'width=700,height=715,left=0,top=0,menubar=no,location=no,status=no' ); return false;\"><button id='go'>Calibrate &#8618;</button></a></td></tr>";
-  HtmlSrc +="<tr><td class='tdr'></td><td class='tdl'><span style='color: #666;'>After the reboot, the wifi switches to client mode<br>and if it fails to connect, it returns to AP mode.<br>Debug is available in the serial console on USB-C.</span><br><a href='https://remoteqth.com/w/' target='_blank'>More on Wiki &#10138;</a></td></tr></table>\n";
+  HtmlSrc +="<tr><td class='tdr'></td><td class='tdl'><span style='color: #666;'>After the reboot, the wifi switches to client mode<br>and if it fails to connect, it returns to AP mode.<br>Debug is available in the serial console on USB-C.</span><br><a href='https://github.com/ok1hra/IC-705_Interface' target='_blank'>More on GitHub &#10138;</a></td></tr></table>\n";
   HtmlSrc +="</body></html>\n";
 
   ajaxserver.send(200, "text/html", HtmlSrc); //Send web page
 }
+
+#if defined(RTLE)
+  void handleRTLE() {
+    String HtmlSrc = "";
+    String s = RTLE_page; //Read HTML contents
+    HtmlSrc +=s;
+    rtleserver.send(200, "text/html", HtmlSrc); //Send web page
+  }
+#endif
