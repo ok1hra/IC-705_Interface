@@ -72,7 +72,7 @@ int BaudRate        = 9600;
 const char* BTname  = "IC705-interface";
 bool Debug          = false;
 
-#define REV 20241221
+#define REV 20250207
 #define WIFI
 #define MQTT
 #define UDP_TO_CW
@@ -178,13 +178,14 @@ bool Debug          = false;
   uint32_t  frequencyTmp;        //Current frequency in Hz
   uint32_t  timer;
 
-  const char* mode[] = {"LSB", "USB", "AM", "CW", "FSK", "FM", "WFM"};
+  const char* mode[] = {"LSB", "USB", "AM", "CW", "FSK", "FM", "WFM", "DV"};
   #define MODE_TYPE_LSB   0x00
   #define MODE_TYPE_USB   0x01
   #define MODE_TYPE_AM    0x02
   #define MODE_TYPE_CW    0x03
   #define MODE_TYPE_RTTY  0x04
   #define MODE_TYPE_FM    0x05
+  #define MODE_TYPE_DV    0x17
 
   String modes;
   BluetoothSerial CAT;
