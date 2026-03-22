@@ -72,7 +72,7 @@ int BaudRate        = 9600;
 const char* BTname  = "IC705-interface";
 bool Debug          = false;
 
-#define REV 20250207
+#define REV 20260322
 #define WIFI
 #define MQTT
 #define UDP_TO_CW
@@ -171,7 +171,7 @@ bool Debug          = false;
 
   uint8_t  radio_address;     //Transiever address
   uint16_t  baud_rate;        //Current baud speed
-  uint32_t  readtimeout;      //Serial port read timeout
+  uint32_t readtimeout = 2000; // BUGFIX Serial port read timeout
   uint8_t  read_buffer[12];   //Read buffer
   // uint8_t  read_buffer_snapshot[12];   //Buffer snapshot
   uint32_t  frequency;        //Current frequency in Hz
@@ -189,6 +189,7 @@ bool Debug          = false;
 
   String modes;
   BluetoothSerial CAT;
+  bool btClientConnected = false;
 #endif
 
 short HardwareRev = 99;
@@ -220,14 +221,14 @@ bool mqttPostponeStatus = 1;
   // #include <ETH.h>
   // int SsidPassSize = (sizeof(SsidPass)/sizeof(char *))/2; //array size
   // int SelectSsidPass = -1;
-  #define wifi_max_try 20             // Number of try
+  #define wifi_max_try 40             // Number of try
   unsigned long WifiTimer = 0;
   unsigned long WifiReconnect = 30000;
   String MACString;
 
   #include <ESPmDNS.h>
 
-  const char* ssidAP     = "IC705-if-AP";
+  const char* ssidAP     = "IC705-if";
   const char* passwordAP = "remoteqth";
   bool APmode = false;
   #include <WebServer.h>
@@ -537,6 +538,7 @@ void setup(){
       // WiFi.disconnect(true);
       WiFi.mode(WIFI_STA);
       WiFi.begin(SSID.c_str(), PSWD.c_str());
+      WifiTimer = millis(); // BUGFIX
       Serial.print("WIFI| Connecting ssid "+String(SSID)+" ");
       int count_try = 0;
       while(WiFi.status() != WL_CONNECTED){
@@ -648,20 +650,23 @@ void setup(){
       }
     #endif
 
+    // #if defined(BLUETOOTH) // BUGFIX
+    //   while (radio_address == 0x00) {
+    //     if (!searchRadio()) {
+    //       if(Debug==true){
+    //         Serial.println("Radio not found");
+    //       }
+    //     } else {
+    //       if(Debug==true){
+    //         Serial.print("Radio found at ");
+    //         Serial.print(radio_address, HEX);
+    //         Serial.println();
+    //       }
+    //     }
+    //   }
+    // #endif
     #if defined(BLUETOOTH)
-      while (radio_address == 0x00) {
-        if (!searchRadio()) {
-          if(Debug==true){
-            Serial.println("Radio not found");
-          }
-        } else {
-          if(Debug==true){
-            Serial.print("Radio found at ");
-            Serial.print(radio_address, HEX);
-            Serial.println();
-          }
-        }
-      }
+      configRadioBaud(0);
     #endif
 
     #if defined(WDT)
@@ -719,8 +724,23 @@ void loop(){
 
 void Watchdog(){
 
+  static unsigned long catTimer = 0;  // BUGFIX
+  if (btClientConnected == true) {
+    if (millis() - catTimer > 500) {
+      catTimer = millis();
+
+      if (radio_address == 0x00) {
+        if (Debug == true) Serial.println("CAT | searching radio...");
+        searchRadio();
+      } else {
+        sendCatRequest(CMD_READ_FREQ);
+        processCatMessages();
+      }
+    }
+  }
+
   // set TRX after BT connect
-  static bool onlyOne = false;
+  bool onlyOne = false; // BUGFIX remove static
   if(TrxNeedSet==1 && onlyOne == false){
     TrxNeedSet=0;
     /*
@@ -841,8 +861,17 @@ void Watchdog(){
   static long requestTimer = 0;
   if(millis()-requestTimer > 1000){
     // Serial.println("req "+String(millis()/1000));
+    if (radio_address == 0x00) {  // BUGFIX
+      if (millis() - requestTimer > 1000) {
+        if (Debug == true) Serial.println("CAT | searching radio address...");
+        searchRadio();
+        requestTimer = millis();
+      }
+      processCatMessages();
+      return;
+    }
     sendCatRequest(CMD_READ_FREQ);
-    sendCatRequest(CMD_READ_MODE);
+    // sendCatRequest(CMD_READ_MODE);   // BUGFIX?
     requestTimer=millis();
   }
   processCatMessages();
@@ -876,7 +905,7 @@ void Watchdog(){
     MqttPubString(MQTT_TOPIC, String(frequency), 0);
   }
 
-  static long catTimer = 0;
+  // static long catTimer = 0;
   if(millis()-catTimer > 2000 && frequencyTmp!=frequency){
   // MQTT
     if(mqttEnable==true){
@@ -928,12 +957,24 @@ void Watchdog(){
   #if defined(WIFI)
     unsigned long currentMillis = millis();
     // if WiFi is down, try reconnecting every CHECK_WIFI_TIME seconds
-    if ((WiFi.status() != WL_CONNECTED) && (currentMillis - WifiTimer >=WifiReconnect)) {
-      Serial.print(millis());
-      Serial.println("cReconnecting...");
-      WiFi.disconnect();
-      WiFi.reconnect();
-      WifiTimer = currentMillis;
+    // if ((WiFi.status() != WL_CONNECTED) && (currentMillis - WifiTimer >=WifiReconnect)) {
+    //   Serial.print(millis());
+    //   Serial.println("cReconnecting...");
+    //   WiFi.disconnect();
+    //   WiFi.reconnect();
+    //   WifiTimer = currentMillis;
+    // }
+    if (!APmode && (currentMillis - WifiTimer >= WifiReconnect)) {  // BUGFIX
+      wl_status_t st = WiFi.status();
+
+      if (st == WL_DISCONNECTED || st == WL_CONNECT_FAILED || st == WL_NO_SSID_AVAIL) {
+        Serial.print(currentMillis);
+        Serial.println(" WIFI| reconnecting...");
+        WiFi.disconnect(false, false);
+        delay(100);
+        WiFi.begin(SSID.c_str(), PSWD.c_str());
+        WifiTimer = currentMillis;
+      }
     }
   #endif
 
@@ -981,19 +1022,47 @@ byte stringToByte(String str) {
 }
 
 //-------------------------------------------------------------------------------------------------------
-void SelectANT(){
+// void SelectANT(){
+//   #if defined(SELECT_ANT)
+//     TRXselectANT = 42;
+//     for(int ant=0; ant<8; ant++){
+//       if(ANTrange[ant][0]<frequency && frequency<ANTrange[ant][1]){
+//         TRXselectANT=ant;
+//       }else{
+//       }
+//     }
+//     ShiftOutByte=0x00;
+//     bitSet(ShiftOutByte, TRXselectANT);
+//     digitalWrite(ShiftOutLatchPin, LOW);
+//       shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, ShiftOutByte);
+//     digitalWrite(ShiftOutLatchPin, HIGH);
+//   #endif
+// }
+void SelectANT(){   // BUGFIX
   #if defined(SELECT_ANT)
-    TRXselectANT = 42;
-    for(int ant=0; ant<8; ant++){
-      if(ANTrange[ant][0]<frequency && frequency<ANTrange[ant][1]){
-        TRXselectANT=ant;
-      }else{
+    int foundAnt = -1;
+
+    for (int ant = 0; ant < 8; ant++) {
+      if (ANTrange[ant][0] < frequency && frequency < ANTrange[ant][1]) {
+        foundAnt = ant;
+        break;
       }
     }
-    ShiftOutByte=0x00;
+
+    if (foundAnt < 0 || foundAnt > 7) {
+      if (Debug == true) {
+        Serial.print("ANT | no matching range for frequency ");
+        Serial.println(frequency);
+      }
+      return;
+    }
+
+    TRXselectANT = foundAnt;
+    ShiftOutByte = 0x00;
     bitSet(ShiftOutByte, TRXselectANT);
+
     digitalWrite(ShiftOutLatchPin, LOW);
-      shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, ShiftOutByte);
+    shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, ShiftOutByte);
     digitalWrite(ShiftOutLatchPin, HIGH);
   #endif
 }
@@ -1019,112 +1088,187 @@ void print_wifi_error(){
   }
 }
 //-------------------------------------------------------------------------------------------------------
-void processCatMessages(){
+// void processCatMessages(){
+//   #if defined(BLUETOOTH)
+//     /*
+//       <FE FE E0 42 04 00 01 FD  - LSB
+//       <FE FE E0 42 03 00 00 58 45 01 FD  -145.580.000
+
+//       FE FE - start bytes
+//       00/E0 - target address (broadcast/controller)
+//       42 - source address
+//       00/03 - data type
+//       <data>
+//       FD - stop byte
+//     */
+
+//     while (CAT.available()) {
+//       uint8_t knowncommand = 1;
+//       uint8_t r;
+//       if (readLine() > 0) {
+//         if (read_buffer[0] == START_BYTE && read_buffer[1] == START_BYTE) {
+//           if (read_buffer[3] == radio_address) {
+//             if (read_buffer[2] == BROADCAST_ADDRESS) {
+//               switch (read_buffer[4]) {
+//                 case CMD_TRANS_FREQ:
+//                   printFrequency();
+//                   break;
+//                 case CMD_TRANS_MODE:
+//                   printMode();
+//                   break;
+//                 default:
+//                   knowncommand = false;
+//               }
+//             } else if (read_buffer[2] == CONTROLLER_ADDRESS) {
+//               switch (read_buffer[4]) {
+//                 case CMD_READ_FREQ:
+//                   printFrequency();
+//                   break;
+//                 case CMD_READ_MODE:
+//                   printMode();
+//                   break;
+//                 default:
+//                   knowncommand = false;
+//               }
+//             }
+//           } else {
+//             // if(Debug==true){
+//             //   Serial.print(read_buffer[3]);
+//             //   Serial.println(" also on-line?!");
+//             // }
+//           }
+//         }
+//         powerTimer=millis(); // RX BT
+
+//       }
+
+//       // if(Debug==true){
+//       //   if(!knowncommand){
+//       //   Serial.print("<");
+//       //     if(read_buffer[10] == STOP_BYTE){
+//       //       memcpy(read_buffer_snapshot, read_buffer, sizeof(read_buffer));
+//       //       for (uint8_t i = 0; i < sizeof(read_buffer); i++){
+//       //         if (read_buffer[i] < 16)Serial.print("0");
+//       //         Serial.print(read_buffer[i], HEX);
+//       //         Serial.print(" ");
+//       //         if (read_buffer[i] == STOP_BYTE)break;
+//       //       }
+//       //       Serial.println();
+//       //     }
+//       //   }
+//       // }
+//     }
+
+//   // #ifdef MIRRORCAT
+//   //   while (Serial2.available()) {
+//   //     CAT.print((byte)Serial2.read());
+//   //   }
+//   // #endif
+//   #endif
+// }
+void processCatMessages(){  // BUGFIX
   #if defined(BLUETOOTH)
-    /*
-      <FE FE E0 42 04 00 01 FD  - LSB
-      <FE FE E0 42 03 00 00 58 45 01 FD  -145.580.000
-
-      FE FE - start bytes
-      00/E0 - target address (broadcast/controller)
-      42 - source address
-      00/03 - data type
-      <data>
-      FD - stop byte
-    */
-
     while (CAT.available()) {
-      uint8_t knowncommand = 1;
-      uint8_t r;
-      if (readLine() > 0) {
-        if (read_buffer[0] == START_BYTE && read_buffer[1] == START_BYTE) {
-          if (read_buffer[3] == radio_address) {
-            if (read_buffer[2] == BROADCAST_ADDRESS) {
-              switch (read_buffer[4]) {
-                case CMD_TRANS_FREQ:
-                  printFrequency();
-                  break;
-                case CMD_TRANS_MODE:
-                  printMode();
-                  break;
-                default:
-                  knowncommand = false;
-              }
-            } else if (read_buffer[2] == CONTROLLER_ADDRESS) {
-              switch (read_buffer[4]) {
-                case CMD_READ_FREQ:
-                  printFrequency();
-                  break;
-                case CMD_READ_MODE:
-                  printMode();
-                  break;
-                default:
-                  knowncommand = false;
-              }
-            }
-          } else {
-            // if(Debug==true){
-            //   Serial.print(read_buffer[3]);
-            //   Serial.println(" also on-line?!");
-            // }
-          }
-        }
-        powerTimer=millis(); // RX BT
+      uint8_t len = readLine();
+      if (len == 0) return;
 
+      if (Debug == true) {
+        Serial.print("CAT RX < ");
+        for (uint8_t i = 0; i < len; i++) {
+          if (read_buffer[i] < 16) Serial.print("0");
+          Serial.print(read_buffer[i], HEX);
+          Serial.print(" ");
+        }
+        Serial.println();
       }
 
-      // if(Debug==true){
-      //   if(!knowncommand){
-      //   Serial.print("<");
-      //     if(read_buffer[10] == STOP_BYTE){
-      //       memcpy(read_buffer_snapshot, read_buffer, sizeof(read_buffer));
-      //       for (uint8_t i = 0; i < sizeof(read_buffer); i++){
-      //         if (read_buffer[i] < 16)Serial.print("0");
-      //         Serial.print(read_buffer[i], HEX);
-      //         Serial.print(" ");
-      //         if (read_buffer[i] == STOP_BYTE)break;
-      //       }
-      //       Serial.println();
-      //     }
-      //   }
-      // }
-    }
+      if (len < 6) continue;
+      if (read_buffer[0] != START_BYTE || read_buffer[1] != START_BYTE) continue;
+      if (read_buffer[len - 1] != STOP_BYTE) continue;
+      // if (read_buffer[3] != radio_address) continue;
+      if (radio_address == 0x00) {  // BUGFIX
+        radio_address = read_buffer[3];
+        if (Debug == true) {
+          Serial.print("CAT | learned radio address 0x");
+          Serial.println(radio_address, HEX);
+        }
+        TrxNeedSet = 1;
+      } else if (read_buffer[3] != radio_address) {
+        continue;
+      }
 
-  // #ifdef MIRRORCAT
-  //   while (Serial2.available()) {
-  //     CAT.print((byte)Serial2.read());
-  //   }
-  // #endif
+      if (read_buffer[2] == BROADCAST_ADDRESS || read_buffer[2] == CONTROLLER_ADDRESS) {
+        switch (read_buffer[4]) {
+          case CMD_TRANS_FREQ:
+          case CMD_READ_FREQ:
+            if (len >= 11) printFrequency();
+            break;
+
+          case CMD_TRANS_MODE:
+          case CMD_READ_MODE:
+            if (len >= 7) printMode();
+            break;
+        }
+      }
+
+      powerTimer = millis();
+    }
   #endif
 }
+
 //-------------------------------------------------------------------------------------------------------
 // call back to get info about connection
-void callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param) {
-  #if defined(BLUETOOTH)
-    if (event == ESP_SPP_SRV_OPEN_EVT) {
-      Serial.println("    | Client Connected");
-      Serial.println("    | CHANGE frequency on IC-705, for initialize CAT");
-      Serial.println("    | -----------------------------------------------------------------------------");
-      frequencyTmp=0;
-      TrxNeedSet=1;
-    }
-  #endif
+void callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param){ // BUGFIX
+  if (event == ESP_SPP_SRV_OPEN_EVT) {
+    btClientConnected = true;
+    radio_address = 0xA4;
+    frequency = 0;
+    frequencyTmp = 0;
+    TrxNeedSet = 1;
+
+    Serial.println("    | Client Connected");
+    Serial.println("    | CHANGE frequency on IC-705, for initialize CAT");
+    Serial.println("    | -----------------------------------------------------------------------------");
+  }
+
+  if (event == ESP_SPP_CLOSE_EVT) {
+    btClientConnected = false;
+    radio_address = 0x00;
+    Serial.println("    | Client Disconnected");
+  }
 }
 //-------------------------------------------------------------------------------------------------------
-void configRadioBaud(uint16_t  baudrate){
+// void configRadioBaud(uint16_t  baudrate){
+//   #if defined(BLUETOOTH)
+//     if (!CAT.begin(BTname)) //Bluetooth device name
+//     {
+//       Serial.println(" BT | An error occurred initializing Bluetooth");
+//     } else {
+//       CAT.register_callback(callback);
+//       Serial.println(" BT | Initialized");
+//       Serial.println("    | -----------------------------------------------------------------------------");
+//       Serial.println(" BT | The device started, now you MUST PAIR it with Bluetooth name "+String(BTname));
+//     }
+//   #endif
+// }
+void configRadioBaud(uint16_t baudrate){
   #if defined(BLUETOOTH)
-    if (!CAT.begin(BTname)) //Bluetooth device name
-    {
-      Serial.println(" BT | An error occurred initializing Bluetooth");
+    static bool btInitDone = false;
+    if (btInitDone) return;
 
+    if (!CAT.begin(BTname)) {
+      Serial.println(" BT | An error occurred initializing Bluetooth");
     } else {
       CAT.register_callback(callback);
       Serial.println(" BT | Initialized");
       Serial.println("    | -----------------------------------------------------------------------------");
-      Serial.println(" BT | The device started, now you MUST PAIR it with Bluetooth name "+String(BTname));
+      Serial.println(" BT | The device started, now you MUST PAIR it with Bluetooth name " + String(BTname));
+      Serial.println("    | -----------------------------------------------------------------------------");
+      btInitDone = true;
     }
   #endif
 }
+
 //-------------------------------------------------------------------------------------------------------
 uint8_t readLine(void){
   #if defined(BLUETOOTH)
@@ -1194,29 +1338,49 @@ void sendCatRequest(uint8_t requestCode){
   #endif
 }
 //-------------------------------------------------------------------------------------------------------
-bool searchRadio(){
+// bool searchRadio(){
+//   #if defined(BLUETOOTH)
+//     for (uint8_t baud = 0; baud < BAUD_RATES_SIZE; baud++) {
+//       if(Debug==true){
+//         Serial.print("Try baudrate ");
+//         Serial.println(baudRates[baud]);
+//       }
+//         configRadioBaud(baudRates[baud]);
+//         sendCatRequest(CMD_READ_FREQ);
+
+//         if (readLine() > 0)
+//         {
+//           if (read_buffer[0] == START_BYTE && read_buffer[1] == START_BYTE) {
+//             radio_address = read_buffer[3];
+//           }
+//           return true;
+//         }
+//     }
+
+//       // radio_address = 0xFF; // BUGFIX
+//       return false;
+//   #endif
+// }
+
+bool searchRadio(){ // BUGFIX
   #if defined(BLUETOOTH)
-    for (uint8_t baud = 0; baud < BAUD_RATES_SIZE; baud++) {
-      if(Debug==true){
-        Serial.print("Try baudrate ");
-        Serial.println(baudRates[baud]);
-      }
-        configRadioBaud(baudRates[baud]);
-        sendCatRequest(CMD_READ_FREQ);
+    sendCatRequest(CMD_READ_FREQ);
 
-        if (readLine() > 0)
-        {
-          if (read_buffer[0] == START_BYTE && read_buffer[1] == START_BYTE) {
-            radio_address = read_buffer[3];
-          }
-          return true;
+    uint8_t len = readLine();
+    if (len > 0) {
+      if (read_buffer[0] == START_BYTE && read_buffer[1] == START_BYTE) {
+        radio_address = read_buffer[3];
+        if (Debug == true) {
+          Serial.print("CAT | found radio address 0x");
+          Serial.println(radio_address, HEX);
         }
+        return true;
+      }
     }
-
-      radio_address = 0xFF;
-      return false;
+    return false;
   #endif
 }
+  
 //-------------------------------------------------------------------------------------------------------
 void printFrequency(void){
   #if defined(BLUETOOTH)
@@ -1239,14 +1403,43 @@ void printFrequency(void){
   #endif
 }
 //-------------------------------------------------------------------------------------------------------
-void printMode(void){
+// void printMode(void){
+//   #if defined(BLUETOOTH)
+//     //FE FE E0 42 04 <00 01> FD
+//     if(Debug==true){
+//       Serial.println(mode[read_buffer[5]]);
+//     }
+//     modes = mode[read_buffer[5]];
+//     //read_buffer[6] -> 01 - Wide, 02 - Medium, 03 - Narrow
+//   #endif
+// }
+void printMode(void){ // BUGFIX
   #if defined(BLUETOOTH)
-    //FE FE E0 42 04 <00 01> FD
-    if(Debug==true){
-      Serial.println(mode[read_buffer[5]]);
+    uint8_t modeId = read_buffer[5];
+
+    switch (modeId) {
+      case 0x00: modes = "LSB"; break;
+      case 0x01: modes = "USB"; break;
+      case 0x02: modes = "AM";  break;
+      case 0x03: modes = "CW";  break;
+      case 0x04: modes = "RTTY"; break;
+      case 0x05: modes = "FM";  break;
+      case 0x06: modes = "WFM"; break;
+      case 0x17: modes = "DV";  break;
+      default:
+        modes = "UNK";
+        if (Debug == true) {
+          Serial.print("CAT | invalid/unknown mode id: 0x");
+          if (modeId < 16) Serial.print("0");
+          Serial.println(modeId, HEX);
+        }
+        return;
     }
-    modes = mode[read_buffer[5]];
-    //read_buffer[6] -> 01 - Wide, 02 - Medium, 03 - Narrow
+
+    if (Debug == true) {
+      Serial.print("CAT | mode=");
+      Serial.println(modes);
+    }
   #endif
 }
 //-------------------------------------------------------------------------------------------------------
