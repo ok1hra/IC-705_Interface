@@ -225,6 +225,11 @@ bool mqttPostponeStatus = 1;
 
 #if defined(WIFI)
   #include <WiFi.h>
+  #include <FS.h>
+  #include <SPIFFS.h>
+  #include <AsyncTCP.h>
+  #include <ESPAsyncWebServer.h>
+  #include <mbedtls/sha1.h>
   // #include <ETH.h>
   // int SsidPassSize = (sizeof(SsidPass)/sizeof(char *))/2; //array size
   // int SelectSsidPass = -1;
@@ -239,10 +244,11 @@ bool mqttPostponeStatus = 1;
   const char* ssidAP     = "IC705-if";
   const char* passwordAP = "remoteqth";
   bool APmode = false;
-  #include <WebServer.h>
-  WebServer ajaxserver(80);
+  AsyncWebServer ajaxserver(80);
+  AsyncWebSocket ws("/ws");
 #endif
   #if defined(RTLE)
+    #include <WebServer.h>
     #include "rtle.h"  //Web page header file
     WebServer rtleserver(88);
   #endif
@@ -272,8 +278,8 @@ uint8_t CwCat[36] = "";
 #if defined(UDP_TO_FSK)
   #define FSK_OUT  33                      // TTL LEVEL pin OUTPUT
   #define PTT      32                      // PTT pin OUTPUT
-  #define FMARK    LOW                    // FSK mark level [LOW/HIGH]
-  #define FSPACE   HIGH                     // FSK space level [LOW/HIGH]
+  #define FSK_MARK_LEVEL   LOW             // FSK mark level [LOW/HIGH]
+  #define FSK_SPACE_LEVEL  HIGH            // FSK space level [LOW/HIGH]
   #define BaudRateFSK 45.45                   // RTTY baud rate
   #define StopBit  1.5                     // stop bit long
   #define PTTlead  400                     // PTT lead delay ms
@@ -315,6 +321,1305 @@ uint8_t CwCat[36] = "";
 #endif
 
 int incomingByte = 0;   // for incoming serial data
+
+#if defined(WIFI)
+typedef struct {
+  uint32_t state[5];
+  uint32_t count[2];
+  unsigned char buffer[64];
+} SHA1_CTX;
+
+extern "C" void SHA1Init(SHA1_CTX* context){
+  mbedtls_sha1_init(reinterpret_cast<mbedtls_sha1_context*>(context));
+  mbedtls_sha1_starts_ret(reinterpret_cast<mbedtls_sha1_context*>(context));
+}
+
+extern "C" void SHA1Update(SHA1_CTX* context, const unsigned char* data, uint32_t len){
+  mbedtls_sha1_update_ret(reinterpret_cast<mbedtls_sha1_context*>(context), data, len);
+}
+
+extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
+  mbedtls_sha1_finish_ret(reinterpret_cast<mbedtls_sha1_context*>(context), digest);
+  mbedtls_sha1_free(reinterpret_cast<mbedtls_sha1_context*>(context));
+}
+#endif
+
+#if defined(WIFI)
+  const uint8_t WS_QUEUE_DEPTH = 4;
+
+  enum WsPendingMatchType : uint8_t {
+    WS_MATCH_NONE = 0,
+    WS_MATCH_ANY_FRAME = 1,
+    WS_MATCH_COMMAND = 2,
+    WS_MATCH_ACK = 3
+  };
+
+  struct WsPendingRequest {
+    bool active;
+    uint32_t clientId;
+    unsigned long deadlineMs;
+    String reqId;
+    WsPendingMatchType matchType;
+    uint8_t expectedCommand;
+    bool matchSubCommand;
+    uint8_t expectedSubCommand;
+  };
+
+  struct WsQueuedRequest {
+    bool used;
+    uint32_t clientId;
+    unsigned long timeoutMs;
+    String reqId;
+    WsPendingMatchType matchType;
+    uint8_t expectedCommand;
+    bool matchSubCommand;
+    uint8_t expectedSubCommand;
+    size_t frameLen;
+    uint8_t frame[70];
+  };
+
+  struct WsSplitProbeState {
+    bool active;
+    uint32_t clientId;
+    String reqId;
+    uint8_t step;
+  };
+
+  WsPendingRequest wsPendingRequest{false, 0, 0, "", WS_MATCH_NONE, 0, false, 0};
+  WsQueuedRequest wsQueuedRequests[WS_QUEUE_DEPTH]{};
+  WsSplitProbeState wsSplitProbe{false, 0, "", 0};
+  String setupSsidErr = "";
+  String setupPswdErr = "";
+  String setupSsid2Err = "";
+  String setupPswd2Err = "";
+  String setupMqttErr = "";
+  String setupMqttErr1 = "";
+  String setupMqttErr2 = "";
+  String setupMqttErr3 = "";
+  String setupMqttErr4 = "";
+  String setupMqttPortErr = "";
+  String setupMqttTopicErr = "";
+  String setupMqttTopicRxErr = "";
+  String setupHttpCatPortErr = "";
+  String setupUdpPortErr = "";
+  String setupUdpCatPortErr = "";
+  String requestArg(AsyncWebServerRequest *request, const char *name);
+  bool requestHasArg(AsyncWebServerRequest *request, const char *name);
+  String jsonEscape(const String &value);
+  String civFrameToHex(const uint8_t *frame, size_t frameLen);
+  uint32_t decodeCivFrequencyBytes(const uint8_t *bytes, size_t byteCount);
+  uint32_t decodeCivBcdBytes(const uint8_t *bytes, size_t byteCount);
+  String decodeModeName(uint8_t modeId);
+  String wsDecodeCivFrameJson(const uint8_t *frame, size_t frameLen);
+  String wsBuildStateFields(void);
+  String wsBuildStateJson(const char *type, const String &reqId = "");
+  void wsBroadcastRigState(void);
+  void wsBroadcastCivFrame(const char *type, const uint8_t *frame, size_t frameLen, const String &reqId = "");
+  void wsSendError(AsyncWebSocketClient *client, const String &code, const String &message, const String &reqId = "");
+  void wsSendErrorById(uint32_t clientId, const String &code, const String &message, const String &reqId);
+  void wsSendHello(AsyncWebSocketClient *client);
+  String extractJsonString(const String &json, const char *key);
+  bool extractJsonBool(const String &json, const char *key, bool defaultValue);
+  bool parseHexPayload(const String &hex, uint8_t *buffer, size_t &bufferLen, size_t maxLen);
+  bool catWriteFrame(const uint8_t *frame, size_t frameLen, bool broadcastTx);
+  void wsSendQueued(AsyncWebSocketClient *client, const String &reqId, uint8_t depth);
+  bool wsStartRequest(uint32_t clientId, const String &reqId, WsPendingMatchType matchType, uint8_t expectedCommand, bool matchSubCommand, uint8_t expectedSubCommand, unsigned long timeoutMs, const uint8_t *frame, size_t frameLen);
+  bool wsQueuePendingRequest(AsyncWebSocketClient *client, const String &reqId, WsPendingMatchType matchType, uint8_t expectedCommand, bool matchSubCommand, uint8_t expectedSubCommand, unsigned long timeoutMs, const uint8_t *frame, size_t frameLen);
+  void wsClearPendingRequest(void);
+  void wsClearQueuedRequest(uint8_t index);
+  void wsFlushQueuedRequests(const String &code, const String &message);
+  void wsDropQueuedRequestsForClient(uint32_t clientId);
+  void wsTryStartNextQueuedRequest(void);
+  void wsProcessPendingTimeout(void);
+  bool wsResolvePendingRequest(const uint8_t *frame, size_t frameLen);
+  bool parseModeId(const String &modeName, uint8_t &modeId);
+  uint8_t parseFilterWidth(const String &filterName);
+  size_t buildSimpleCatFrame(uint8_t command, const uint8_t *payload, size_t payloadLen, uint8_t *frame, size_t frameMaxLen);
+  size_t buildSetFrequencyFrame(uint32_t freqHz, uint8_t *frame, size_t frameMaxLen);
+  size_t buildSetModeFrame(uint8_t modeId, uint8_t modeWidth, uint8_t *frame, size_t frameMaxLen);
+  size_t buildReadSplitProbeFrame(uint8_t step, uint8_t *frame, size_t frameMaxLen);
+  bool wsStartSplitProbe(AsyncWebSocketClient *client, const String &reqId);
+  void wsClearSplitProbe(void);
+  void resetSetupMessages(void);
+  String setupTemplateProcessor(const String &key);
+  void renderSetupPage(AsyncWebServerRequest *request);
+  void wsHandleTextMessage(AsyncWebSocketClient *client, const String &msg);
+  void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len);
+  void setupAsyncHttpServer(void);
+  void handleSet(AsyncWebServerRequest *request);
+#endif
+
+//-------------------------------------------------------------------------------------------------------
+
+#if defined(WIFI)
+String requestArg(AsyncWebServerRequest *request, const char *name){
+  AsyncWebParameter *param = request->getParam(name, true);
+  if (param != nullptr) {
+    return param->value();
+  }
+  param = request->getParam(name);
+  if (param != nullptr) {
+    return param->value();
+  }
+  return String();
+}
+
+bool requestHasArg(AsyncWebServerRequest *request, const char *name){
+  return request->hasParam(name, true) || request->hasParam(name);
+}
+
+String jsonEscape(const String &value){
+  String out;
+  out.reserve(value.length() + 8);
+  for (size_t i = 0; i < value.length(); i++) {
+    char c = value.charAt(i);
+    switch (c) {
+      case '\\': out += "\\\\"; break;
+      case '"': out += "\\\""; break;
+      case '\n': out += "\\n"; break;
+      case '\r': out += "\\r"; break;
+      case '\t': out += "\\t"; break;
+      default: out += c; break;
+    }
+  }
+  return out;
+}
+
+String civFrameToHex(const uint8_t *frame, size_t frameLen){
+  String hex;
+  hex.reserve(frameLen * 2);
+  for (size_t i = 0; i < frameLen; i++) {
+    if (frame[i] < 16) {
+      hex += "0";
+    }
+    hex += String(frame[i], HEX);
+  }
+  return hex;
+}
+
+uint32_t decodeCivFrequencyBytes(const uint8_t *bytes, size_t byteCount){
+  uint32_t value = 0;
+  for (size_t i = 0; i < byteCount; i++) {
+    size_t src = byteCount - 1 - i;
+    value += (bytes[src] >> 4) * decMulti[i * 2];
+    value += (bytes[src] & 0x0F) * decMulti[i * 2 + 1];
+  }
+  return value;
+}
+
+uint32_t decodeCivBcdBytes(const uint8_t *bytes, size_t byteCount){
+  uint32_t value = 0;
+  for (size_t i = 0; i < byteCount; i++) {
+    value = value * 100 + ((bytes[i] >> 4) * 10) + (bytes[i] & 0x0F);
+  }
+  return value;
+}
+
+String decodeModeName(uint8_t modeId){
+  switch (modeId) {
+    case 0x00: return "LSB";
+    case 0x01: return "USB";
+    case 0x02: return "AM";
+    case 0x03: return "CW";
+    case 0x04: return "RTTY";
+    case 0x05: return "FM";
+    case 0x06: return "WFM";
+    case 0x07: return "CW-R";
+    case 0x08: return "RTTY-R";
+    case 0x17: return "DV";
+    default: return "UNK";
+  }
+}
+
+String wsDecodeCivFrameJson(const uint8_t *frame, size_t frameLen){
+  if (frameLen < 6) {
+    return String();
+  }
+
+  const uint8_t command = frame[4];
+  const size_t payloadLen = frameLen > 6 ? frameLen - 6 : 0;
+  const uint8_t *payload = frame + 5;
+
+  String decoded;
+  if ((command == CMD_READ_FREQ || command == CMD_TRANS_FREQ) && payloadLen >= 5) {
+    decoded = "\"kind\":\"frequency\",\"frequency\":";
+    decoded += String(decodeCivFrequencyBytes(payload, 5));
+    return decoded;
+  }
+
+  if ((command == CMD_READ_MODE || command == CMD_TRANS_MODE) && payloadLen >= 1) {
+    decoded = "\"kind\":\"mode\",\"mode\":\"";
+    decoded += decodeModeName(payload[0]);
+    decoded += "\"";
+    if (payloadLen >= 2) {
+      decoded += ",\"filter\":";
+      decoded += String(payload[1]);
+    }
+    return decoded;
+  }
+
+  if (command == 0x25 && payloadLen >= 6) {
+    decoded = "\"kind\":\"vfoFrequency\",\"selected\":";
+    decoded += (payload[0] == 0x00 ? "true" : "false");
+    decoded += ",\"frequency\":";
+    decoded += String(decodeCivFrequencyBytes(payload + 1, 5));
+    return decoded;
+  }
+
+  if (command == 0x26 && payloadLen >= 2) {
+    decoded = "\"kind\":\"vfoMode\",\"selected\":";
+    decoded += (payload[0] == 0x00 ? "true" : "false");
+    decoded += ",\"mode\":\"";
+    decoded += decodeModeName(payload[1]);
+    decoded += "\"";
+    if (payloadLen >= 3) {
+      decoded += ",\"dataMode\":";
+      decoded += String(payload[2]);
+    }
+    if (payloadLen >= 4) {
+      decoded += ",\"filter\":";
+      decoded += String(payload[3]);
+    }
+    return decoded;
+  }
+
+  if (command == 0x0F && payloadLen >= 1) {
+    decoded = "\"kind\":\"split\",\"code\":\"";
+    if (payload[0] == 0x00) decoded += "OFF";
+    else if (payload[0] == 0x01) decoded += "ON";
+    else if (payload[0] == 0x10) decoded += "SIMPLEX";
+    else if (payload[0] == 0x11) decoded += "DUP-";
+    else if (payload[0] == 0x12) decoded += "DUP+";
+    else decoded += "UNKNOWN";
+    decoded += "\",\"value\":";
+    decoded += String(payload[0]);
+    return decoded;
+  }
+
+  if (command == 0x15 && payloadLen >= 2) {
+    uint8_t subCommand = payload[0];
+    uint32_t rawValue = decodeCivBcdBytes(payload + 1, payloadLen - 1);
+    if (subCommand == 0x02) decoded = "\"kind\":\"sMeter\"";
+    else if (subCommand == 0x11) decoded = "\"kind\":\"powerMeter\"";
+    else if (subCommand == 0x12) decoded = "\"kind\":\"swrMeter\"";
+    else if (subCommand == 0x13) decoded = "\"kind\":\"alcMeter\"";
+    if (decoded.length() > 0) {
+      decoded += ",\"raw\":";
+      decoded += String(rawValue);
+      if (subCommand == 0x02) {
+        decoded += ",\"s9Scale\":";
+        decoded += String((float)rawValue / 120.0f, 2);
+        if (rawValue > 120) {
+          decoded += ",\"dbOverS9Approx\":";
+          decoded += String(((float)(rawValue - 120) * 60.0f) / 121.0f, 1);
+        }
+      } else if (subCommand == 0x11) {
+        decoded += ",\"percentApprox\":";
+        decoded += String(min(100.0f, ((float)rawValue * 100.0f) / 213.0f), 1);
+      } else if (subCommand == 0x12) {
+        float swrApprox = 1.0f;
+        if (rawValue <= 48) {
+          swrApprox = 1.0f + ((float)rawValue * 0.5f / 48.0f);
+        } else if (rawValue <= 80) {
+          swrApprox = 1.5f + ((float)(rawValue - 48) * 0.5f / 32.0f);
+        } else if (rawValue <= 120) {
+          swrApprox = 2.0f + ((float)(rawValue - 80) * 1.0f / 40.0f);
+        } else {
+          swrApprox = 3.0f + ((float)(rawValue - 120) / 40.0f);
+        }
+        decoded += ",\"ratioApprox\":";
+        decoded += String(swrApprox, 2);
+      } else if (subCommand == 0x13) {
+        decoded += ",\"percentApprox\":";
+        decoded += String(min(100.0f, ((float)rawValue * 100.0f) / 120.0f), 1);
+      }
+      return decoded;
+    }
+  }
+
+  if (command == 0x21 && payloadLen >= 1) {
+    decoded = "\"kind\":\"rit\",\"subCommand\":";
+    decoded += String(payload[0]);
+    if (payloadLen > 1) {
+      decoded += ",\"raw\":";
+      decoded += String(decodeCivBcdBytes(payload + 1, payloadLen - 1));
+      decoded += ",\"dataHex\":\"";
+      decoded += civFrameToHex(payload + 1, payloadLen - 1);
+      decoded += "\"";
+    }
+    return decoded;
+  }
+
+  return String();
+}
+
+String wsBuildStateFields(void){
+  String json;
+  json += "\"connected\":";
+  json += (btClientConnected ? "true" : "false");
+  json += ",\"power\":";
+  json += (statusPower == 1 ? "true" : "false");
+  json += ",\"frequency\":";
+  json += String(frequency);
+  json += ",\"mode\":\"";
+  json += jsonEscape(modes);
+  json += "\",\"radioAddress\":\"0x";
+  if (radio_address < 16) {
+    json += "0";
+  }
+  json += String(radio_address, HEX);
+  json += "\"";
+  return json;
+}
+
+String extractJsonString(const String &json, const char *key){
+  String token = "\"" + String(key) + "\":";
+  int start = json.indexOf(token);
+  if (start < 0) {
+    return String();
+  }
+  start += token.length();
+  while (start < (int)json.length() && (json.charAt(start) == ' ' || json.charAt(start) == '\t')) {
+    start++;
+  }
+  if (start >= (int)json.length()) {
+    return String();
+  }
+
+  if (json.charAt(start) == '"') {
+    start++;
+    String out;
+    bool escaped = false;
+    for (int i = start; i < (int)json.length(); i++) {
+      char c = json.charAt(i);
+      if (escaped) {
+        out += c;
+        escaped = false;
+      } else if (c == '\\') {
+        escaped = true;
+      } else if (c == '"') {
+        return out;
+      } else {
+        out += c;
+      }
+    }
+    return String();
+  }
+
+  int end = start;
+  while (end < (int)json.length() && json.charAt(end) != ',' && json.charAt(end) != '}') {
+    end++;
+  }
+  String out = json.substring(start, end);
+  out.trim();
+  return out;
+}
+
+bool extractJsonBool(const String &json, const char *key, bool defaultValue){
+  String value = extractJsonString(json, key);
+  if (value.length() == 0) {
+    return defaultValue;
+  }
+  value.toLowerCase();
+  if (value == "true" || value == "1") {
+    return true;
+  }
+  if (value == "false" || value == "0") {
+    return false;
+  }
+  return defaultValue;
+}
+
+bool parseHexPayload(const String &hex, uint8_t *buffer, size_t &bufferLen, size_t maxLen){
+  bufferLen = 0;
+  int nibble = -1;
+  for (size_t i = 0; i < hex.length(); i++) {
+    char c = hex.charAt(i);
+    if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+      continue;
+    }
+
+    int value;
+    if (c >= '0' && c <= '9') {
+      value = c - '0';
+    } else if (c >= 'a' && c <= 'f') {
+      value = 10 + c - 'a';
+    } else if (c >= 'A' && c <= 'F') {
+      value = 10 + c - 'A';
+    } else {
+      return false;
+    }
+
+    if (nibble < 0) {
+      nibble = value;
+    } else {
+      if (bufferLen >= maxLen) {
+        return false;
+      }
+      buffer[bufferLen++] = (uint8_t)((nibble << 4) | value);
+      nibble = -1;
+    }
+  }
+  return nibble < 0 && bufferLen > 0;
+}
+
+bool parseModeId(const String &modeName, uint8_t &modeId){
+  String normalized = modeName;
+  normalized.toUpperCase();
+  if (normalized == "LSB") {
+    modeId = MODE_TYPE_LSB;
+    return true;
+  }
+  if (normalized == "USB") {
+    modeId = MODE_TYPE_USB;
+    return true;
+  }
+  if (normalized == "AM") {
+    modeId = MODE_TYPE_AM;
+    return true;
+  }
+  if (normalized == "CW") {
+    modeId = MODE_TYPE_CW;
+    return true;
+  }
+  if (normalized == "RTTY" || normalized == "FSK") {
+    modeId = MODE_TYPE_RTTY;
+    return true;
+  }
+  if (normalized == "FM") {
+    modeId = MODE_TYPE_FM;
+    return true;
+  }
+  if (normalized == "DV") {
+    modeId = MODE_TYPE_DV;
+    return true;
+  }
+  return false;
+}
+
+uint8_t parseFilterWidth(const String &filterName){
+  String normalized = filterName;
+  normalized.toUpperCase();
+  if (normalized == "FIL2" || normalized == "MID" || normalized == "MEDIUM") {
+    return IF_PASSBAND_WIDTH_MEDIUM;
+  }
+  if (normalized == "FIL3" || normalized == "NAR" || normalized == "NARROW") {
+    return IF_PASSBAND_WIDTH_NARROW;
+  }
+  return IF_PASSBAND_WIDTH_WIDE;
+}
+
+size_t buildSimpleCatFrame(uint8_t command, const uint8_t *payload, size_t payloadLen, uint8_t *frame, size_t frameMaxLen){
+  if (radio_address == 0x00 || frameMaxLen < payloadLen + 6) {
+    return 0;
+  }
+
+  size_t frameLen = 0;
+  frame[frameLen++] = START_BYTE;
+  frame[frameLen++] = START_BYTE;
+  frame[frameLen++] = radio_address;
+  frame[frameLen++] = CONTROLLER_ADDRESS;
+  frame[frameLen++] = command;
+  for (size_t i = 0; i < payloadLen; i++) {
+    frame[frameLen++] = payload[i];
+  }
+  frame[frameLen++] = STOP_BYTE;
+  return frameLen;
+}
+
+size_t buildSetFrequencyFrame(uint32_t freqHz, uint8_t *frame, size_t frameMaxLen){
+  String strFreq = IntToTenString(freqHz);
+  String splitFreq[5];
+  SplitString(strFreq, splitFreq);
+
+  uint8_t payload[5] = {
+    stringToByte(splitFreq[4]),
+    stringToByte(splitFreq[3]),
+    stringToByte(splitFreq[2]),
+    stringToByte(splitFreq[1]),
+    stringToByte(splitFreq[0])
+  };
+  return buildSimpleCatFrame(CMD_WRITE_FREQ, payload, sizeof(payload), frame, frameMaxLen);
+}
+
+size_t buildSetModeFrame(uint8_t modeId, uint8_t modeWidth, uint8_t *frame, size_t frameMaxLen){
+  uint8_t payload[2] = {modeId, modeWidth};
+  return buildSimpleCatFrame(CMD_WRITE_MODE, payload, sizeof(payload), frame, frameMaxLen);
+}
+
+size_t buildReadSplitProbeFrame(uint8_t step, uint8_t *frame, size_t frameMaxLen){
+  static const uint8_t probeValues[] = {0x00, 0x01, 0x11, 0x12};
+  if (step >= sizeof(probeValues)) {
+    return 0;
+  }
+  uint8_t payload[1] = {probeValues[step]};
+  return buildSimpleCatFrame(0x0F, payload, sizeof(payload), frame, frameMaxLen);
+}
+
+void wsClearSplitProbe(void){
+  wsSplitProbe.active = false;
+  wsSplitProbe.clientId = 0;
+  wsSplitProbe.reqId = "";
+  wsSplitProbe.step = 0;
+}
+
+void resetSetupMessages(void){
+  setupSsidErr = "";
+  setupPswdErr = "";
+  setupSsid2Err = "";
+  setupPswd2Err = "";
+  setupMqttErr = mqttEnable ? "" : "MQTT disabled";
+  setupMqttErr1 = "";
+  setupMqttErr2 = "";
+  setupMqttErr3 = "";
+  setupMqttErr4 = "";
+  setupMqttPortErr = "";
+  setupMqttTopicErr = "";
+  setupMqttTopicRxErr = "";
+  setupHttpCatPortErr = "";
+  setupUdpPortErr = "";
+  setupUdpCatPortErr = "";
+}
+
+String setupTemplateProcessor(const String &key){
+  if (key == "APMODE_TEXT") return APmode ? "AP mode ON" : "AP mode OFF";
+  if (key == "MAC") return MACString;
+  if (key == "REV") return String(REV);
+  if (key == "HWREV") return String(HardwareRev);
+  if (key == "SSID") return SSID;
+  if (key == "PSWD") return PSWD;
+  if (key == "SSID2") return SSID2;
+  if (key == "PSWD2") return PSWD2;
+  if (key == "HTTP_CAT_PORT") return String(HTTP_CAT_PORT);
+  if (key == "UDP_PORT") return String(udpPort);
+  if (key == "UDP_CAT_PORT") return String(udpCatPort);
+  if (key == "MQTT_IP0") return String(mqttBroker[0]);
+  if (key == "MQTT_IP1") return String(mqttBroker[1]);
+  if (key == "MQTT_IP2") return String(mqttBroker[2]);
+  if (key == "MQTT_IP3") return String(mqttBroker[3]);
+  if (key == "MQTT_PORT") return String(MQTT_PORT);
+  if (key == "MQTT_TOPIC") return MQTT_TOPIC;
+  if (key == "MQTT_TOPIC_RX") return MQTT_TOPIC_RX;
+  if (key == "SSID_ERR") return setupSsidErr;
+  if (key == "PSWD_ERR") return setupPswdErr;
+  if (key == "SSID2_ERR") return setupSsid2Err;
+  if (key == "PSWD2_ERR") return setupPswd2Err;
+  if (key == "MQTT_ERR") return setupMqttErr;
+  if (key == "MQTT_ERR1") return setupMqttErr1;
+  if (key == "MQTT_ERR2") return setupMqttErr2;
+  if (key == "MQTT_ERR3") return setupMqttErr3;
+  if (key == "MQTT_ERR4") return setupMqttErr4;
+  if (key == "MQTT_PORT_ERR") return setupMqttPortErr;
+  if (key == "MQTT_TOPIC_ERR") return setupMqttTopicErr;
+  if (key == "MQTT_TOPIC_RX_ERR") return setupMqttTopicRxErr;
+  if (key == "HTTP_CAT_PORT_ERR") return setupHttpCatPortErr;
+  if (key == "UDP_PORT_ERR") return setupUdpPortErr;
+  if (key == "UDP_CAT_PORT_ERR") return setupUdpCatPortErr;
+  if (key == "BAUD1200_SEL") return BaudRate == 1200 ? "selected" : "";
+  if (key == "BAUD2400_SEL") return BaudRate == 2400 ? "selected" : "";
+  if (key == "BAUD4800_SEL") return BaudRate == 4800 ? "selected" : "";
+  if (key == "BAUD9600_SEL") return BaudRate == 9600 ? "selected" : "";
+  if (key == "BAUD115200_SEL") return BaudRate == 115200 ? "selected" : "";
+  return String();
+}
+
+void renderSetupPage(AsyncWebServerRequest *request){
+  if (SPIFFS.exists("/setup.html")) {
+    request->send(SPIFFS, "/setup.html", "text/html", false, setupTemplateProcessor);
+    return;
+  }
+  request->send(500, "text/plain", "Missing /setup.html in SPIFFS");
+}
+
+String wsBuildStateJson(const char *type, const String &reqId){
+  String json = "{\"type\":\"";
+  json += type;
+  json += "\",";
+  json += wsBuildStateFields();
+  if (reqId.length() > 0) {
+    json += ",\"reqId\":\"";
+    json += jsonEscape(reqId);
+    json += "\"";
+  }
+  json += "}";
+  return json;
+}
+
+void wsBroadcastRigState(void){
+  ws.textAll(wsBuildStateJson("state"));
+}
+
+void wsBroadcastCivFrame(const char *type, const uint8_t *frame, size_t frameLen, const String &reqId){
+  String hex = civFrameToHex(frame, frameLen);
+  String decoded = wsDecodeCivFrameJson(frame, frameLen);
+
+  String json = "{\"type\":\"";
+  json += type;
+  json += "\",\"frame\":\"";
+  json += hex;
+  json += "\"";
+  if (decoded.length() > 0) {
+    json += ",\"decoded\":{";
+    json += decoded;
+    json += "}";
+  }
+  if (reqId.length() > 0) {
+    json += ",\"reqId\":\"";
+    json += jsonEscape(reqId);
+    json += "\"";
+  }
+  json += "}";
+  ws.textAll(json);
+}
+
+void wsSendError(AsyncWebSocketClient *client, const String &code, const String &message, const String &reqId){
+  String json = "{\"type\":\"error\",\"code\":\"";
+  json += jsonEscape(code);
+  json += "\",\"message\":\"";
+  json += jsonEscape(message);
+  json += "\"";
+  if (reqId.length() > 0) {
+    json += ",\"reqId\":\"";
+    json += jsonEscape(reqId);
+    json += "\"";
+  }
+  json += "}";
+  client->text(json);
+}
+
+void wsSendErrorById(uint32_t clientId, const String &code, const String &message, const String &reqId){
+  AsyncWebSocketClient *client = ws.client(clientId);
+  if (client != nullptr && client->status() == WS_CONNECTED) {
+    wsSendError(client, code, message, reqId);
+  }
+}
+
+void wsSendHello(AsyncWebSocketClient *client){
+  String json = "{\"type\":\"hello\",\"proto\":1,\"transport\":\"bt-civ\",\"connected\":";
+  json += (btClientConnected ? "true" : "false");
+  json += ",\"state\":{";
+  json += wsBuildStateFields();
+  json += "}";
+  json += "}";
+  client->text(json);
+}
+
+bool catWriteFrame(const uint8_t *frame, size_t frameLen, bool broadcastTx){
+  #if defined(BLUETOOTH)
+    if (!btClientConnected) {
+      return false;
+    }
+    for (size_t i = 0; i < frameLen; i++) {
+      CAT.write(frame[i]);
+    }
+    if (broadcastTx) {
+      wsBroadcastCivFrame("civ.tx", frame, frameLen);
+    }
+    return true;
+  #endif
+  return false;
+}
+
+void wsSendQueued(AsyncWebSocketClient *client, const String &reqId, uint8_t depth){
+  String json = "{\"type\":\"queued\",\"reqId\":\"";
+  json += jsonEscape(reqId);
+  json += "\",\"depth\":";
+  json += String(depth);
+  json += "}";
+  client->text(json);
+}
+
+bool wsStartRequest(uint32_t clientId, const String &reqId, WsPendingMatchType matchType, uint8_t expectedCommand, bool matchSubCommand, uint8_t expectedSubCommand, unsigned long timeoutMs, const uint8_t *frame, size_t frameLen){
+  if (!catWriteFrame(frame, frameLen, true)) {
+    return false;
+  }
+
+  wsPendingRequest.active = true;
+  wsPendingRequest.clientId = clientId;
+  wsPendingRequest.deadlineMs = millis() + timeoutMs;
+  wsPendingRequest.reqId = reqId;
+  wsPendingRequest.matchType = matchType;
+  wsPendingRequest.expectedCommand = expectedCommand;
+  wsPendingRequest.matchSubCommand = matchSubCommand;
+  wsPendingRequest.expectedSubCommand = expectedSubCommand;
+  return true;
+}
+
+bool wsStartSplitProbe(AsyncWebSocketClient *client, const String &reqId){
+  if (wsPendingRequest.active || wsSplitProbe.active) {
+    return false;
+  }
+
+  uint8_t frame[8];
+  size_t frameLen = buildReadSplitProbeFrame(0, frame, sizeof(frame));
+  if (frameLen == 0) {
+    return false;
+  }
+
+  if (!wsStartRequest(client->id(), reqId, WS_MATCH_COMMAND, 0x0F, false, 0, 1200, frame, frameLen)) {
+    return false;
+  }
+
+  wsSplitProbe.active = true;
+  wsSplitProbe.clientId = client->id();
+  wsSplitProbe.reqId = reqId;
+  wsSplitProbe.step = 0;
+  return true;
+}
+
+bool wsQueuePendingRequest(AsyncWebSocketClient *client, const String &reqId, WsPendingMatchType matchType, uint8_t expectedCommand, bool matchSubCommand, uint8_t expectedSubCommand, unsigned long timeoutMs, const uint8_t *frame, size_t frameLen){
+  if (!wsPendingRequest.active) {
+    return wsStartRequest(client->id(), reqId, matchType, expectedCommand, matchSubCommand, expectedSubCommand, timeoutMs, frame, frameLen);
+  }
+
+  for (uint8_t i = 0; i < WS_QUEUE_DEPTH; i++) {
+    if (wsQueuedRequests[i].used) {
+      continue;
+    }
+    wsQueuedRequests[i].used = true;
+    wsQueuedRequests[i].clientId = client->id();
+    wsQueuedRequests[i].timeoutMs = timeoutMs;
+    wsQueuedRequests[i].reqId = reqId;
+    wsQueuedRequests[i].matchType = matchType;
+    wsQueuedRequests[i].expectedCommand = expectedCommand;
+    wsQueuedRequests[i].matchSubCommand = matchSubCommand;
+    wsQueuedRequests[i].expectedSubCommand = expectedSubCommand;
+    wsQueuedRequests[i].frameLen = frameLen;
+    memcpy(wsQueuedRequests[i].frame, frame, frameLen);
+    wsSendQueued(client, reqId, i + 1);
+    return true;
+  }
+
+  return false;
+}
+
+void wsClearPendingRequest(void){
+  wsPendingRequest.active = false;
+  wsPendingRequest.clientId = 0;
+  wsPendingRequest.deadlineMs = 0;
+  wsPendingRequest.reqId = "";
+  wsPendingRequest.matchType = WS_MATCH_NONE;
+  wsPendingRequest.expectedCommand = 0;
+  wsPendingRequest.matchSubCommand = false;
+  wsPendingRequest.expectedSubCommand = 0;
+}
+
+void wsClearQueuedRequest(uint8_t index){
+  wsQueuedRequests[index].used = false;
+  wsQueuedRequests[index].clientId = 0;
+  wsQueuedRequests[index].timeoutMs = 0;
+  wsQueuedRequests[index].reqId = "";
+  wsQueuedRequests[index].matchType = WS_MATCH_NONE;
+  wsQueuedRequests[index].expectedCommand = 0;
+  wsQueuedRequests[index].matchSubCommand = false;
+  wsQueuedRequests[index].expectedSubCommand = 0;
+  wsQueuedRequests[index].frameLen = 0;
+}
+
+void wsFlushQueuedRequests(const String &code, const String &message){
+  for (uint8_t i = 0; i < WS_QUEUE_DEPTH; i++) {
+    if (!wsQueuedRequests[i].used) {
+      continue;
+    }
+    wsSendErrorById(wsQueuedRequests[i].clientId, code, message, wsQueuedRequests[i].reqId);
+    wsClearQueuedRequest(i);
+  }
+}
+
+void wsDropQueuedRequestsForClient(uint32_t clientId){
+  for (uint8_t i = 0; i < WS_QUEUE_DEPTH; i++) {
+    if (wsQueuedRequests[i].used && wsQueuedRequests[i].clientId == clientId) {
+      wsClearQueuedRequest(i);
+    }
+  }
+  if (wsSplitProbe.active && wsSplitProbe.clientId == clientId) {
+    wsClearSplitProbe();
+  }
+}
+
+void wsTryStartNextQueuedRequest(void){
+  if (wsPendingRequest.active) {
+    return;
+  }
+
+  for (uint8_t i = 0; i < WS_QUEUE_DEPTH; i++) {
+    if (!wsQueuedRequests[i].used) {
+      continue;
+    }
+
+    bool started = wsStartRequest(
+      wsQueuedRequests[i].clientId,
+      wsQueuedRequests[i].reqId,
+      wsQueuedRequests[i].matchType,
+      wsQueuedRequests[i].expectedCommand,
+      wsQueuedRequests[i].matchSubCommand,
+      wsQueuedRequests[i].expectedSubCommand,
+      wsQueuedRequests[i].timeoutMs,
+      wsQueuedRequests[i].frame,
+      wsQueuedRequests[i].frameLen
+    );
+
+    if (!started) {
+      wsSendErrorById(wsQueuedRequests[i].clientId, "tx_failed", "Queued CAT request could not be sent", wsQueuedRequests[i].reqId);
+    }
+    wsClearQueuedRequest(i);
+    return;
+  }
+}
+
+void wsProcessPendingTimeout(void){
+  if (!wsPendingRequest.active) {
+    return;
+  }
+  if ((long)(millis() - wsPendingRequest.deadlineMs) < 0) {
+    return;
+  }
+
+  if (wsSplitProbe.active && wsPendingRequest.clientId == wsSplitProbe.clientId && wsPendingRequest.reqId == wsSplitProbe.reqId) {
+    if (wsSplitProbe.step < 3) {
+      wsPendingRequest.active = false;
+      wsPendingRequest.clientId = 0;
+      wsPendingRequest.deadlineMs = 0;
+      wsPendingRequest.reqId = "";
+      wsPendingRequest.matchType = WS_MATCH_NONE;
+      wsPendingRequest.expectedCommand = 0;
+      wsPendingRequest.matchSubCommand = false;
+      wsPendingRequest.expectedSubCommand = 0;
+
+      wsSplitProbe.step++;
+      uint8_t frame[8];
+      size_t frameLen = buildReadSplitProbeFrame(wsSplitProbe.step, frame, sizeof(frame));
+      if (frameLen > 0 && wsStartRequest(wsSplitProbe.clientId, wsSplitProbe.reqId, WS_MATCH_COMMAND, 0x0F, false, 0, 1200, frame, frameLen)) {
+        return;
+      }
+    }
+    wsClearSplitProbe();
+  }
+
+  wsSendErrorById(wsPendingRequest.clientId, "timeout", "No CI-V reply received before timeout", wsPendingRequest.reqId);
+  wsClearPendingRequest();
+  wsTryStartNextQueuedRequest();
+}
+
+bool wsResolvePendingRequest(const uint8_t *frame, size_t frameLen){
+  if (!wsPendingRequest.active || frameLen < 6) {
+    return false;
+  }
+
+  bool matches = false;
+  switch (wsPendingRequest.matchType) {
+    case WS_MATCH_ANY_FRAME:
+      matches = true;
+      break;
+    case WS_MATCH_COMMAND:
+      matches = frameLen > 4 && frame[4] == wsPendingRequest.expectedCommand;
+      if (matches && wsPendingRequest.matchSubCommand) {
+        matches = frameLen > 5 && frame[5] == wsPendingRequest.expectedSubCommand;
+      }
+      break;
+    case WS_MATCH_ACK:
+      matches = frame[4] == 0xFB || frame[4] == 0xFA;
+      break;
+    default:
+      break;
+  }
+
+  if (!matches) {
+    return false;
+  }
+
+  AsyncWebSocketClient *client = ws.client(wsPendingRequest.clientId);
+  if (client != nullptr && client->status() == WS_CONNECTED) {
+    String decoded = wsDecodeCivFrameJson(frame, frameLen);
+    String reply = "{\"type\":\"reply\",\"ok\":";
+    reply += (frame[4] == 0xFA ? "false" : "true");
+    reply += ",\"reqId\":\"";
+    reply += jsonEscape(wsPendingRequest.reqId);
+    reply += "\",\"frame\":\"";
+    reply += civFrameToHex(frame, frameLen);
+    if (decoded.length() > 0) {
+      reply += "\",\"decoded\":{";
+      reply += decoded;
+      reply += "}";
+    } else {
+      reply += "\"";
+    }
+    reply += ",\"state\":{";
+    reply += wsBuildStateFields();
+    reply += "}";
+    reply += "}";
+    client->text(reply);
+  }
+
+  if (wsSplitProbe.active && wsPendingRequest.clientId == wsSplitProbe.clientId && wsPendingRequest.reqId == wsSplitProbe.reqId) {
+    wsClearSplitProbe();
+  }
+  wsClearPendingRequest();
+  wsTryStartNextQueuedRequest();
+  return true;
+}
+
+void wsHandleTextMessage(AsyncWebSocketClient *client, const String &msg){
+  String type = extractJsonString(msg, "type");
+  String reqId = extractJsonString(msg, "reqId");
+
+  if (type == "getState") {
+    client->text(wsBuildStateJson("reply", reqId));
+    return;
+  }
+
+  if (type == "setFrequency") {
+    if (!btClientConnected || radio_address == 0x00) {
+      wsSendError(client, "radio_disconnected", "Bluetooth CAT is not connected", reqId);
+      return;
+    }
+    String frequencyText = extractJsonString(msg, "frequency");
+    uint32_t nextFrequency = (uint32_t)frequencyText.toInt();
+    if (nextFrequency == 0) {
+      wsSendError(client, "invalid_frequency", "Expected frequency in Hz", reqId);
+      return;
+    }
+    uint8_t frame[16];
+    size_t frameLen = buildSetFrequencyFrame(nextFrequency, frame, sizeof(frame));
+    if (frameLen == 0) {
+      wsSendError(client, "tx_failed", "Unable to build frequency command", reqId);
+      return;
+    }
+    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_ACK, 0, false, 0, 1500, frame, frameLen)) {
+      wsSendError(client, "queue_full", "CAT request queue is full", reqId);
+      return;
+    }
+    return;
+  }
+
+  if (type == "readFrequency") {
+    if (!btClientConnected || radio_address == 0x00) {
+      wsSendError(client, "radio_disconnected", "Bluetooth CAT is not connected", reqId);
+      return;
+    }
+    uint8_t frame[8];
+    size_t frameLen = buildSimpleCatFrame(CMD_READ_FREQ, nullptr, 0, frame, sizeof(frame));
+    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_COMMAND, CMD_READ_FREQ, false, 0, 1500, frame, frameLen)) {
+      wsSendError(client, "queue_full", "CAT request queue is full", reqId);
+    }
+    return;
+  }
+
+  if (type == "readMode") {
+    if (!btClientConnected || radio_address == 0x00) {
+      wsSendError(client, "radio_disconnected", "Bluetooth CAT is not connected", reqId);
+      return;
+    }
+    uint8_t frame[8];
+    size_t frameLen = buildSimpleCatFrame(CMD_READ_MODE, nullptr, 0, frame, sizeof(frame));
+    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_COMMAND, CMD_READ_MODE, false, 0, 1500, frame, frameLen)) {
+      wsSendError(client, "queue_full", "CAT request queue is full", reqId);
+    }
+    return;
+  }
+
+  if (type == "readVfoFrequency") {
+    if (!btClientConnected || radio_address == 0x00) {
+      wsSendError(client, "radio_disconnected", "Bluetooth CAT is not connected", reqId);
+      return;
+    }
+    bool selected = !extractJsonBool(msg, "unselected", false);
+    uint8_t payload[1] = {selected ? 0x00 : 0x01};
+    uint8_t frame[8];
+    size_t frameLen = buildSimpleCatFrame(0x25, payload, sizeof(payload), frame, sizeof(frame));
+    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_COMMAND, 0x25, false, 0, 1500, frame, frameLen)) {
+      wsSendError(client, "queue_full", "CAT request queue is full", reqId);
+    }
+    return;
+  }
+
+  if (type == "readVfoMode") {
+    if (!btClientConnected || radio_address == 0x00) {
+      wsSendError(client, "radio_disconnected", "Bluetooth CAT is not connected", reqId);
+      return;
+    }
+    bool selected = !extractJsonBool(msg, "unselected", false);
+    uint8_t payload[1] = {selected ? 0x00 : 0x01};
+    uint8_t frame[8];
+    size_t frameLen = buildSimpleCatFrame(0x26, payload, sizeof(payload), frame, sizeof(frame));
+    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_COMMAND, 0x26, false, 0, 1500, frame, frameLen)) {
+      wsSendError(client, "queue_full", "CAT request queue is full", reqId);
+    }
+    return;
+  }
+
+  if (type == "readRit") {
+    if (!btClientConnected || radio_address == 0x00) {
+      wsSendError(client, "radio_disconnected", "Bluetooth CAT is not connected", reqId);
+      return;
+    }
+    uint8_t payload[1] = {0x00};
+    uint8_t frame[8];
+    size_t frameLen = buildSimpleCatFrame(0x21, payload, sizeof(payload), frame, sizeof(frame));
+    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_COMMAND, 0x21, true, 0x00, 1500, frame, frameLen)) {
+      wsSendError(client, "queue_full", "CAT request queue is full", reqId);
+    }
+    return;
+  }
+
+  if (type == "readSplit") {
+    if (!btClientConnected || radio_address == 0x00) {
+      wsSendError(client, "radio_disconnected", "Bluetooth CAT is not connected", reqId);
+      return;
+    }
+    if (!wsStartSplitProbe(client, reqId)) {
+      wsSendError(client, "queue_full", "CAT request queue is full or split probe is already active", reqId);
+    }
+    return;
+  }
+
+  if (type == "readSmeter") {
+    if (!btClientConnected || radio_address == 0x00) {
+      wsSendError(client, "radio_disconnected", "Bluetooth CAT is not connected", reqId);
+      return;
+    }
+    uint8_t payload[1] = {0x02};
+    uint8_t frame[8];
+    size_t frameLen = buildSimpleCatFrame(0x15, payload, sizeof(payload), frame, sizeof(frame));
+    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_COMMAND, 0x15, true, 0x02, 1500, frame, frameLen)) {
+      wsSendError(client, "queue_full", "CAT request queue is full", reqId);
+    }
+    return;
+  }
+
+  if (type == "readPower") {
+    if (!btClientConnected || radio_address == 0x00) {
+      wsSendError(client, "radio_disconnected", "Bluetooth CAT is not connected", reqId);
+      return;
+    }
+    uint8_t payload[1] = {0x11};
+    uint8_t frame[8];
+    size_t frameLen = buildSimpleCatFrame(0x15, payload, sizeof(payload), frame, sizeof(frame));
+    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_COMMAND, 0x15, true, 0x11, 1500, frame, frameLen)) {
+      wsSendError(client, "queue_full", "CAT request queue is full", reqId);
+    }
+    return;
+  }
+
+  if (type == "readSwr") {
+    if (!btClientConnected || radio_address == 0x00) {
+      wsSendError(client, "radio_disconnected", "Bluetooth CAT is not connected", reqId);
+      return;
+    }
+    uint8_t payload[1] = {0x12};
+    uint8_t frame[8];
+    size_t frameLen = buildSimpleCatFrame(0x15, payload, sizeof(payload), frame, sizeof(frame));
+    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_COMMAND, 0x15, true, 0x12, 1500, frame, frameLen)) {
+      wsSendError(client, "queue_full", "CAT request queue is full", reqId);
+    }
+    return;
+  }
+
+  if (type == "readAlc") {
+    if (!btClientConnected || radio_address == 0x00) {
+      wsSendError(client, "radio_disconnected", "Bluetooth CAT is not connected", reqId);
+      return;
+    }
+    uint8_t payload[1] = {0x13};
+    uint8_t frame[8];
+    size_t frameLen = buildSimpleCatFrame(0x15, payload, sizeof(payload), frame, sizeof(frame));
+    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_COMMAND, 0x15, true, 0x13, 1500, frame, frameLen)) {
+      wsSendError(client, "queue_full", "CAT request queue is full", reqId);
+    }
+    return;
+  }
+
+  if (type == "setMode") {
+    if (!btClientConnected || radio_address == 0x00) {
+      wsSendError(client, "radio_disconnected", "Bluetooth CAT is not connected", reqId);
+      return;
+    }
+    String modeName = extractJsonString(msg, "mode");
+    String filterName = extractJsonString(msg, "filter");
+    uint8_t modeId = 0;
+    if (!parseModeId(modeName, modeId)) {
+      wsSendError(client, "invalid_mode", "Supported modes: LSB, USB, AM, CW, RTTY/FSK, FM, DV", reqId);
+      return;
+    }
+    uint8_t frame[12];
+    size_t frameLen = buildSetModeFrame(modeId, parseFilterWidth(filterName), frame, sizeof(frame));
+    if (frameLen == 0) {
+      wsSendError(client, "tx_failed", "Unable to build mode command", reqId);
+      return;
+    }
+    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_ACK, 0, false, 0, 1500, frame, frameLen)) {
+      wsSendError(client, "queue_full", "CAT request queue is full", reqId);
+    }
+    return;
+  }
+
+  if (type == "setRitClear") {
+    if (!btClientConnected || radio_address == 0x00) {
+      wsSendError(client, "radio_disconnected", "Bluetooth CAT is not connected", reqId);
+      return;
+    }
+    uint8_t payload[4] = {0x00, 0x00, 0x00, 0x00};
+    uint8_t frame[12];
+    size_t frameLen = buildSimpleCatFrame(0x21, payload, sizeof(payload), frame, sizeof(frame));
+    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_ACK, 0, false, 0, 1500, frame, frameLen)) {
+      wsSendError(client, "queue_full", "CAT request queue is full", reqId);
+    }
+    return;
+  }
+
+  if (type == "sendCw") {
+    String text = extractJsonString(msg, "text");
+    if (text.length() == 0) {
+      wsSendError(client, "missing_text", "Expected CW text", reqId);
+      return;
+    }
+    memset(CwMsg, 0, sizeof(CwMsg));
+    text.toCharArray(CwMsg, sizeof(CwMsg));
+    sendCW();
+    String reply = "{\"type\":\"reply\",\"ok\":true";
+    if (reqId.length() > 0) {
+      reply += ",\"reqId\":\"";
+      reply += jsonEscape(reqId);
+      reply += "\"";
+    }
+    reply += "}";
+    client->text(reply);
+    return;
+  }
+
+  if (type == "civ.raw") {
+    String data = extractJsonString(msg, "data");
+    bool framed = extractJsonBool(msg, "framed", false);
+    bool expectReply = extractJsonBool(msg, "expectReply", false);
+    bool expectAck = extractJsonBool(msg, "expectAck", false);
+    if (data.length() == 0) {
+      wsSendError(client, "missing_data", "Expected hex payload in data", reqId);
+      return;
+    }
+    if (!btClientConnected) {
+      wsSendError(client, "radio_disconnected", "Bluetooth CAT is not connected", reqId);
+      return;
+    }
+    if (!framed && radio_address == 0x00) {
+      wsSendError(client, "radio_address_unknown", "Radio address is not known yet", reqId);
+      return;
+    }
+
+    uint8_t payload[64];
+    size_t payloadLen = 0;
+    if (!parseHexPayload(data, payload, payloadLen, sizeof(payload))) {
+      wsSendError(client, "invalid_hex", "Payload must be valid hex bytes", reqId);
+      return;
+    }
+
+    uint8_t frame[70];
+    size_t frameLen = 0;
+    if (framed) {
+      if (payloadLen < 5 || payloadLen > sizeof(frame)) {
+        wsSendError(client, "invalid_frame", "Framed CI-V payload has invalid length", reqId);
+        return;
+      }
+      memcpy(frame, payload, payloadLen);
+      frameLen = payloadLen;
+    } else {
+      if (payloadLen + 5 > sizeof(frame)) {
+        wsSendError(client, "frame_too_large", "CI-V payload is too large", reqId);
+        return;
+      }
+      frame[frameLen++] = START_BYTE;
+      frame[frameLen++] = START_BYTE;
+      frame[frameLen++] = radio_address;
+      frame[frameLen++] = CONTROLLER_ADDRESS;
+      memcpy(frame + frameLen, payload, payloadLen);
+      frameLen += payloadLen;
+      frame[frameLen++] = STOP_BYTE;
+    }
+
+    uint8_t commandByte = frameLen > 4 ? frame[4] : 0x00;
+    if (expectReply) {
+      WsPendingMatchType matchType = expectAck ? WS_MATCH_ACK : WS_MATCH_COMMAND;
+      if (!expectAck && commandByte == 0xFB) {
+        matchType = WS_MATCH_ACK;
+      }
+      uint8_t subCommandByte = frameLen > 5 ? frame[5] : 0x00;
+      bool matchSubCommand = frameLen > 5;
+      if (!wsQueuePendingRequest(client, reqId, matchType, commandByte, matchSubCommand, subCommandByte, 1500, frame, frameLen)) {
+        wsSendError(client, "queue_full", "CAT request queue is full", reqId);
+        return;
+      }
+    } else if (!catWriteFrame(frame, frameLen, true)) {
+      wsSendError(client, "tx_failed", "Unable to send frame to radio", reqId);
+      return;
+    }
+
+    if (!expectReply) {
+      String reply = "{\"type\":\"reply\",\"ok\":true";
+      if (reqId.length() > 0) {
+        reply += ",\"reqId\":\"";
+        reply += jsonEscape(reqId);
+        reply += "\"";
+      }
+      reply += "}";
+      client->text(reply);
+    }
+    return;
+  }
+
+  wsSendError(client, "unsupported_type", "Supported messages: getState, readFrequency, readMode, readVfoFrequency, readVfoMode, readRit, readSplit, readSmeter, readPower, readSwr, readAlc, setFrequency, setMode, setRitClear, sendCw, civ.raw", reqId);
+}
+
+void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len){
+  (void)server;
+  if (type == WS_EVT_CONNECT) {
+    wsSendHello(client);
+  } else if (type == WS_EVT_DISCONNECT) {
+    if (wsPendingRequest.active && wsPendingRequest.clientId == client->id()) {
+      wsClearPendingRequest();
+      wsTryStartNextQueuedRequest();
+    }
+    wsDropQueuedRequestsForClient(client->id());
+  } else if (type == WS_EVT_DATA) {
+    AwsFrameInfo *info = (AwsFrameInfo *)arg;
+    if (!info->final || info->index != 0 || info->len != len || info->opcode != WS_TEXT) {
+      wsSendError(client, "unsupported_frame", "Only single-frame text messages are supported", "");
+      return;
+    }
+
+    String msg;
+    msg.reserve(len);
+    for (size_t i = 0; i < len; i++) {
+      msg += (char)data[i];
+    }
+    wsHandleTextMessage(client, msg);
+  }
+}
+
+void setupAsyncHttpServer(void){
+  ajaxserver.on("/api/state", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send(200, "application/json", wsBuildStateJson("state"));
+  });
+
+  ajaxserver.on("/setup", HTTP_GET, [](AsyncWebServerRequest *request){
+    handleSet(request);
+  });
+  ajaxserver.on("/setup", HTTP_POST, [](AsyncWebServerRequest *request){
+    handleSet(request);
+  });
+
+  ajaxserver.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    if (APmode || !SPIFFS.exists("/index.html")) {
+      handleSet(request);
+      return;
+    }
+    request->send(SPIFFS, "/index.html", "text/html");
+  });
+
+  ajaxserver.serveStatic("/", SPIFFS, "/");
+  ws.onEvent(onWsEvent);
+  ajaxserver.addHandler(&ws);
+  ajaxserver.begin();
+}
+#endif
 
 //-------------------------------------------------------------------------------------------------------
 
@@ -517,22 +1822,19 @@ void setup(){
   #endif
 
   #if defined(WIFI)
+    if (!SPIFFS.begin(true)) {
+      Serial.println("SPIFFS| mount failed");
+    } else {
+      Serial.println("SPIFFS| mounted");
+    }
+
     if(APmode==true){
       // WiFi.softAP(ssid, password); remove the password parameter, if you want the AP (Access Point) to be open
       WiFi.softAP(ssidAP, passwordAP);
       IPAddress IP = WiFi.softAPIP();
+      MACString = WiFi.softAPmacAddress();
       Serial.print(" AP | IP address: ");
       Serial.println(IP);
-
-      // serverForm.begin();
-
-      // ajax
-      // ajaxserver.on("/",HTTP_POST, handlePostRot);
-      ajaxserver.on("/", handleSet);      //This is display page
-      // ajaxserver.on("/", handleRoot);      //This is display page
-      // ajaxserver.on("/set", handleSet);
-      ajaxserver.begin();                  //Start server
-      Serial.println("HTTP| ajax server started");
 
       #if defined(RTLE)
         rtleserver.on("/", handleRTLE);      //This is display page
@@ -547,6 +1849,10 @@ void setup(){
         }
       }
       MDNS.addService("http", "tcp", 80);
+      MDNS.addService("ws", "tcp", 80);
+
+      setupAsyncHttpServer();
+      Serial.println("HTTP| async server started");
 
       Serial.println("mDNS| responder started");
       APcliAlert();
@@ -572,12 +1878,6 @@ void setup(){
       Serial.print(" dBm, MAC ");
       Serial.println(MACString);
 
-      // ajax
-      // ajaxserver.on("/",HTTP_POST, handlePostRot);
-      ajaxserver.on("/", handleSet);      //This is display page
-      ajaxserver.begin();                  //Start server
-      Serial.println("HTTP| ajax server started");
-
       #if defined(RTLE)
         rtleserver.on("/", handleRTLE);      //This is display page
         rtleserver.begin();                  //Start server
@@ -595,6 +1895,9 @@ void setup(){
               delay(1000);
           }
       }
+      MDNS.addService("ws", "tcp", 80);
+      setupAsyncHttpServer();
+      Serial.println("HTTP| async server started");
       Serial.println("mDNS| responder started");
     }
   #endif
@@ -683,11 +1986,12 @@ void setup(){
 
 void loop(){
   if(APmode==true){
-    ajaxserver.handleClient();
     #if defined(RTLE)
       rtleserver.handleClient();
     #endif
     CLI();
+    ws.cleanupClients();
+    wsProcessPendingTimeout();
 
     // Status LED
     static int PwmValue = 0;
@@ -715,10 +2019,11 @@ void loop(){
     UdpToCwFsk();
     UdpToCat();
     CLI();
-    ajaxserver.handleClient();
     #if defined(RTLE)
       rtleserver.handleClient();
     #endif
+    ws.cleanupClients();
+    wsProcessPendingTimeout();
   }
 }
 
@@ -734,12 +2039,19 @@ void Watchdog(){
     if (statusPower == 1 && mqttEnable == true) {
       MqttPubString(MQTT_TOPIC, "0", 0);
     }
+    if (wsPendingRequest.active) {
+      wsSendErrorById(wsPendingRequest.clientId, "radio_disconnected", "Radio disconnected before reply arrived", wsPendingRequest.reqId);
+      wsClearPendingRequest();
+    }
+    wsClearSplitProbe();
+    wsFlushQueuedRequests("radio_disconnected", "Radio disconnected before queued request could be sent");
+    wsBroadcastRigState();
   }
 
   static unsigned long catPollTimer = 0;
   static unsigned long mqttFreqTimer = 0;
   if (btClientConnected == true) {
-    if (millis() - catPollTimer > 500) {
+    if (!wsPendingRequest.active && millis() - catPollTimer > 500) {
       catPollTimer = millis();
 
       if (radio_address == 0x00) {
@@ -1020,9 +2332,8 @@ void ServiceBackgroundTasks(unsigned long waitMs) {
         mqttClient.loop();
       }
     #endif
-    #if defined(HTTP)
-      ajaxserver.handleClient();
-    #endif
+    ws.cleanupClients();
+    wsProcessPendingTimeout();
     delay(10);
   }
 }
@@ -1332,6 +2643,9 @@ void processCatMessages(){  // BUGFIX
         continue;
       }
 
+      wsResolvePendingRequest(read_buffer, len);
+      wsBroadcastCivFrame("civ.rx", read_buffer, len);
+
       if (read_buffer[2] == BROADCAST_ADDRESS || read_buffer[2] == CONTROLLER_ADDRESS) {
         switch (read_buffer[4]) {
           case CMD_TRANS_FREQ:
@@ -1347,6 +2661,7 @@ void processCatMessages(){  // BUGFIX
       }
 
       powerTimer = millis();
+      wsBroadcastRigState();
     }
   #endif
 }
@@ -1366,6 +2681,7 @@ void callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param){ // BUGFIX
     Serial.println("    | Client Connected");
     Serial.println("    | CHANGE frequency on IC-705, for initialize CAT");
     Serial.println("    | -----------------------------------------------------------------------------");
+    wsBroadcastRigState();
   }
 
   if (event == ESP_SPP_CLOSE_EVT) {
@@ -1374,6 +2690,7 @@ void callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param){ // BUGFIX
     TrxNeedSet = 0;
     btDisconnectPending = true;
     Serial.println("    | Client Disconnected");
+    wsBroadcastRigState();
   }
 }
 //-------------------------------------------------------------------------------------------------------
@@ -1444,13 +2761,13 @@ void radioSetMode(uint8_t modeid, uint8_t modewidth){
       Serial.print("CAT TX >");
     }
     for (uint8_t i = 0; i < sizeof(req); i++) {
-      CAT.write(req[i]);
       if(Debug==true){
         if (req[i] < 16)Serial.print("0");
         Serial.print(req[i], HEX);
         Serial.print(" ");
       }
     }
+    catWriteFrame(req, sizeof(req), true);
     if(Debug==true){
       Serial.println();
     }
@@ -1481,13 +2798,13 @@ bool radioSetFrequency(uint32_t freqHz){
       Serial.print("CAT TX >");
     }
     for (uint8_t i = 0; i < sizeof(req); i++) {
-      CAT.write(req[i]);
       if(Debug==true){
         if (req[i] < 16)Serial.print("0");
         Serial.print(req[i], HEX);
         Serial.print(" ");
       }
     }
+    catWriteFrame(req, sizeof(req), true);
     if(Debug==true){
       Serial.println();
     }
@@ -1498,21 +2815,21 @@ bool radioSetFrequency(uint32_t freqHz){
 //-------------------------------------------------------------------------------------------------------
 void sendCatRequest(uint8_t requestCode){
   #if defined(BLUETOOTH)
-      uint8_t req[] = {START_BYTE, START_BYTE, radio_address, CONTROLLER_ADDRESS, requestCode, STOP_BYTE};
+    uint8_t req[] = {START_BYTE, START_BYTE, radio_address, CONTROLLER_ADDRESS, requestCode, STOP_BYTE};
     if(Debug==true){
       Serial.print("CAT TX >");
     }
-      for (uint8_t i = 0; i < sizeof(req); i++) {
-        CAT.write(req[i]);
-        if(Debug==true){
-          if (req[i] < 16)Serial.print("0");
-          Serial.print(req[i], HEX);
-          Serial.print(" ");
-        }
-      }
+    for (uint8_t i = 0; i < sizeof(req); i++) {
       if(Debug==true){
-        Serial.println();
+        if (req[i] < 16)Serial.print("0");
+        Serial.print(req[i], HEX);
+        Serial.print(" ");
       }
+    }
+    catWriteFrame(req, sizeof(req), true);
+    if(Debug==true){
+      Serial.println();
+    }
   #endif
 }
 //-------------------------------------------------------------------------------------------------------
@@ -1902,9 +3219,7 @@ void sendCat(){
     }
 
     frame[frameLen++] = STOP_BYTE;
-    for (uint8_t i = 0; i < frameLen; i++) {
-      CAT.write(frame[i]);
-    }
+    catWriteFrame(frame, frameLen, true);
   #endif
 }
 //-------------------------------------------------------------------------------------------------------
@@ -1927,10 +3242,10 @@ void sendCW(){
 
     Serial.print("CW ");
     for (uint8_t i = 0; i < frameLen; i++) {
-      CAT.write(frame[i]);
       Serial.print(frame[i], HEX);
       Serial.print(" ");
     }
+    catWriteFrame(frame, frameLen, true);
     Serial.println();
     delay(100);
     if(APmode==true){
@@ -2017,24 +3332,24 @@ void sendFsk(){
         //      Serial.print(OneBit);Serial.print('|');Serial.print(OneBit*StopBit);Serial.print(' ');                  // ms
         #endif
         //--start bit
-        digitalWrite(FSK_OUT, FSPACE); delay(OneBit);
+        digitalWrite(FSK_OUT, FSK_SPACE_LEVEL); delay(OneBit);
         //--bit1
-        if(d1 == 1){digitalWrite(FSK_OUT, FMARK); }
-        else       {digitalWrite(FSK_OUT, FSPACE); } delay(OneBit);
+        if(d1 == 1){digitalWrite(FSK_OUT, FSK_MARK_LEVEL); }
+        else       {digitalWrite(FSK_OUT, FSK_SPACE_LEVEL); } delay(OneBit);
         //--bit2
-        if(d2 == 1){digitalWrite(FSK_OUT, FMARK); }
-        else       {digitalWrite(FSK_OUT, FSPACE); } delay(OneBit);
+        if(d2 == 1){digitalWrite(FSK_OUT, FSK_MARK_LEVEL); }
+        else       {digitalWrite(FSK_OUT, FSK_SPACE_LEVEL); } delay(OneBit);
         //--bit3
-        if(d3 == 1){digitalWrite(FSK_OUT, FMARK); }
-        else       {digitalWrite(FSK_OUT, FSPACE); } delay(OneBit);
+        if(d3 == 1){digitalWrite(FSK_OUT, FSK_MARK_LEVEL); }
+        else       {digitalWrite(FSK_OUT, FSK_SPACE_LEVEL); } delay(OneBit);
         //--bit4
-        if(d4 == 1){digitalWrite(FSK_OUT, FMARK); }
-        else       {digitalWrite(FSK_OUT, FSPACE); } delay(OneBit);
+        if(d4 == 1){digitalWrite(FSK_OUT, FSK_MARK_LEVEL); }
+        else       {digitalWrite(FSK_OUT, FSK_SPACE_LEVEL); } delay(OneBit);
         //--bit5
-        if(d5 == 1){digitalWrite(FSK_OUT, FMARK); }
-        else       {digitalWrite(FSK_OUT, FSPACE); } delay(OneBit);
+        if(d5 == 1){digitalWrite(FSK_OUT, FSK_MARK_LEVEL); }
+        else       {digitalWrite(FSK_OUT, FSK_SPACE_LEVEL); } delay(OneBit);
         //--stop bit
-        digitalWrite(FSK_OUT, FMARK); delay(OneBit*StopBit);
+        digitalWrite(FSK_OUT, FSK_MARK_LEVEL); delay(OneBit*StopBit);
   #endif
 }
 
@@ -2294,53 +3609,28 @@ void APcliAlert(){
 //-------------------------------------------------------------------------------------------------------
 
 // ajax rx
-void handleSet() {
-
-  String ssidERR="red;'>";
-  String pswdERR="red;'>";
-  String ssid2ERR="red;'>";
-  String pswd2ERR="red;'>";
-  String baudSELECT0= "";
-  String baudSELECT1= "";
-  String baudSELECT2= "";
-  String baudSELECT3= "";
-  String baudSELECT4= "";
-  String mqttERR= "";
-  String mqttERR1= "";
-  String mqttERR2= "";
-  String mqttERR3= "";
-  String mqttERR4= "";
-  String mqttportERR= "";
-  String mqtttopicERR= "";
-  String mqtttopicrxERR= "";
-  String httpcatportERR= "";
-  String udpportERR= "";
-  String udpcatportERR= "";
-  String btnameERR= "";
+void handleSet(AsyncWebServerRequest *request) {
+  resetSetupMessages();
   bool ERRdetect=0;
 
-  if(mqttEnable==false){
-    mqttERR= "<span style='color:#0c0;'> MQTT disabled</span>";
-  }
-
-  if ( ajaxserver.hasArg("ssid") == false \
-    && ajaxserver.hasArg("pswd") == false \
+  if ( requestHasArg(request, "ssid") == false \
+    && requestHasArg(request, "pswd") == false \
   ) {
     // Serial.println("Form NOT valid");
   }else{
     // Serial.println("Form VALID");
 
     // 1-20 - SSID1*
-    if ( ajaxserver.arg("ssid").length()<1 || ajaxserver.arg("ssid").length()>20){
-      ssidERR= "red;'> Out of range 1-20 characters";
+    if ( requestArg(request, "ssid").length()<1 || requestArg(request, "ssid").length()>20){
+      setupSsidErr = "Out of range 1-20 characters";
       ERRdetect=1;
     }else{
-      String str = String(ajaxserver.arg("ssid"));
+      String str = requestArg(request, "ssid");
       if(SSID == str){
-        ssidERR="red;'>";
+        setupSsidErr = "";
       }else{
-        ssidERR="orange;'> Warning: SSID has changed.";
-        SSID = String(ajaxserver.arg("ssid"));
+        setupSsidErr = "Warning: SSID has changed.";
+        SSID = requestArg(request, "ssid");
 
         int str_len = str.length();
         if(str_len > 20){
@@ -2360,16 +3650,16 @@ void handleSet() {
     }
 
     // 22-39 - PSWD1*
-    if ( ajaxserver.arg("pswd").length()<1 || ajaxserver.arg("pswd").length()>18){
-      pswdERR= "red;'> Out of range 1-18 characters";
+    if ( requestArg(request, "pswd").length()<1 || requestArg(request, "pswd").length()>18){
+      setupPswdErr = "Out of range 1-18 characters";
       ERRdetect=1;
     }else{
-      String str = String(ajaxserver.arg("pswd"));
+      String str = requestArg(request, "pswd");
       if(PSWD == str){
-        pswdERR="red;'>";
+        setupPswdErr = "";
       }else{
-        pswdERR="orange;'> Warning: PSWD has changed.";
-        PSWD = String(ajaxserver.arg("pswd"));
+        setupPswdErr = "Warning: Password has changed.";
+        PSWD = requestArg(request, "pswd");
 
         int str_len = str.length();
         if(str_len > 18){
@@ -2389,15 +3679,15 @@ void handleSet() {
     }
 
     // 76-95 - SSID2
-    if ( ajaxserver.arg("ssid2").length()>20){
-      ssid2ERR= "red;'> Out of range 0-20 characters";
+    if ( requestArg(request, "ssid2").length()>20){
+      setupSsid2Err = "Out of range 0-20 characters";
       ERRdetect=1;
     }else{
-      String str = String(ajaxserver.arg("ssid2"));
+      String str = requestArg(request, "ssid2");
       if(SSID2 == str){
-        ssid2ERR="red;'>";
+        setupSsid2Err = "";
       }else{
-        ssid2ERR="orange;'> Warning: SSID 2 has changed.";
+        setupSsid2Err = "Warning: SSID 2 has changed.";
         SSID2 = str;
 
         int str_len = str.length();
@@ -2417,15 +3707,15 @@ void handleSet() {
     }
 
     // 97-114 - PSWD2
-    if ( ajaxserver.arg("pswd2").length()>18){
-      pswd2ERR= "red;'> Out of range 0-18 characters";
+    if ( requestArg(request, "pswd2").length()>18){
+      setupPswd2Err = "Out of range 0-18 characters";
       ERRdetect=1;
     }else{
-      String str = String(ajaxserver.arg("pswd2"));
+      String str = requestArg(request, "pswd2");
       if(PSWD2 == str){
-        pswd2ERR="red;'>";
+        setupPswd2Err = "";
       }else{
-        pswd2ERR="orange;'> Warning: PSWD 2 has changed.";
+        setupPswd2Err = "Warning: Password 2 has changed.";
         PSWD2 = str;
 
         int str_len = str.length();
@@ -2445,63 +3735,63 @@ void handleSet() {
     }
 
     if ((SSID2.length() == 0 && PSWD2.length() > 0) || (SSID2.length() > 0 && PSWD2.length() == 0)) {
-      ssid2ERR = "red;'> SSID2 and Password2 must be both filled or both empty";
-      pswd2ERR = "red;'>";
+      setupSsid2Err = "SSID2 and Password2 must be both filled or both empty";
+      setupPswd2Err = "";
       ERRdetect = 1;
     }
 
     // 68-69 HTTP_CAT_PORT
-    if ( ajaxserver.arg("httpcatport").length()<1 || ajaxserver.arg("httpcatport").toInt()<1 || ajaxserver.arg("httpcatport").toInt()>65534){
-      httpcatportERR= " Out of range number 1-65534";
+    if ( requestArg(request, "httpcatport").length()<1 || requestArg(request, "httpcatport").toInt()<1 || requestArg(request, "httpcatport").toInt()>65534){
+      setupHttpCatPortErr = "Out of range number 1-65534";
       ERRdetect=1;
     }else{
-      if(HTTP_CAT_PORT == ajaxserver.arg("httpcatport").toInt()){
-        httpcatportERR="";
+      if(HTTP_CAT_PORT == requestArg(request, "httpcatport").toInt()){
+        setupHttpCatPortErr = "";
       }else{
-        httpcatportERR="";
-        HTTP_CAT_PORT = ajaxserver.arg("httpcatport").toInt();
+        setupHttpCatPortErr = "";
+        HTTP_CAT_PORT = requestArg(request, "httpcatport").toInt();
         EEPROM.writeUShort(68, HTTP_CAT_PORT);
       }
     }
 
     // 70-71 udpPort
-    if ( ajaxserver.arg("udpport").length()<1 || ajaxserver.arg("udpport").toInt()<1 || ajaxserver.arg("udpport").toInt()>65534){
-      udpportERR= " Out of range number 1-65534";
+    if ( requestArg(request, "udpport").length()<1 || requestArg(request, "udpport").toInt()<1 || requestArg(request, "udpport").toInt()>65534){
+      setupUdpPortErr = "Out of range number 1-65534";
       ERRdetect=1;
     }else{
-      if(udpPort == ajaxserver.arg("udpport").toInt()){
-        udpportERR="";
+      if(udpPort == requestArg(request, "udpport").toInt()){
+        setupUdpPortErr = "";
       }else{
-        udpportERR="";
-        udpPort = ajaxserver.arg("udpport").toInt();
+        setupUdpPortErr = "";
+        udpPort = requestArg(request, "udpport").toInt();
         EEPROM.writeUShort(70, udpPort);
       }
     }
 
     // 72-73 udpCatPort
-    if ( ajaxserver.arg("udpcatport").length()<1 || ajaxserver.arg("udpcatport").toInt()<1 || ajaxserver.arg("udpcatport").toInt()>65534){
-      udpcatportERR= " Out of range number 1-65534";
+    if ( requestArg(request, "udpcatport").length()<1 || requestArg(request, "udpcatport").toInt()<1 || requestArg(request, "udpcatport").toInt()>65534){
+      setupUdpCatPortErr = "Out of range number 1-65534";
       ERRdetect=1;
     }else{
-      if(udpCatPort == ajaxserver.arg("udpcatport").toInt()){
-        udpcatportERR="";
+      if(udpCatPort == requestArg(request, "udpcatport").toInt()){
+        setupUdpCatPortErr = "";
       }else{
-        udpcatportERR="";
-        udpCatPort = ajaxserver.arg("udpcatport").toInt();
+        setupUdpCatPortErr = "";
+        udpCatPort = requestArg(request, "udpcatport").toInt();
         EEPROM.writeUShort(72, udpCatPort);
       }
     }
 
     // 41-44 mqttBroker[4]
-    if ( ajaxserver.arg("mqttip0").length()<1 || ajaxserver.arg("mqttip0").toInt()>255){
-      mqttERR1= " IP1: Out of range 0-255";
+    if ( requestArg(request, "mqttip0").length()<1 || requestArg(request, "mqttip0").toInt()>255){
+      setupMqttErr1 = "IP1: Out of range 0-255";
       ERRdetect=1;
     }else{
-      if(mqttBroker[0] == byte(ajaxserver.arg("mqttip0").toInt()) ){
-        mqttERR1="";
+      if(mqttBroker[0] == byte(requestArg(request, "mqttip0").toInt()) ){
+        setupMqttErr1 = "";
       }else{
-        mqttERR1="";
-        mqttBroker[0] = byte(ajaxserver.arg("mqttip0").toInt()) ;
+        setupMqttErr1 = "";
+        mqttBroker[0] = byte(requestArg(request, "mqttip0").toInt()) ;
         EEPROM.writeByte(41, mqttBroker[0]);
       }
       if(mqttBroker[0]==0x00){
@@ -2511,70 +3801,70 @@ void handleSet() {
       }
     }
 
-    if ( ajaxserver.arg("mqttip1").length()<1 || ajaxserver.arg("mqttip1").toInt()>255){
-      mqttERR2= " IP2: Out of range 0-255";
+    if ( requestArg(request, "mqttip1").length()<1 || requestArg(request, "mqttip1").toInt()>255){
+      setupMqttErr2 = "IP2: Out of range 0-255";
       ERRdetect=1;
     }else{
-      if(mqttBroker[1] == byte(ajaxserver.arg("mqttip1").toInt()) ){
-        mqttERR2="";
+      if(mqttBroker[1] == byte(requestArg(request, "mqttip1").toInt()) ){
+        setupMqttErr2 = "";
       }else{
-        mqttERR2="";
-        mqttBroker[1] = byte(ajaxserver.arg("mqttip1").toInt()) ;
+        setupMqttErr2 = "";
+        mqttBroker[1] = byte(requestArg(request, "mqttip1").toInt()) ;
         EEPROM.writeByte(42, mqttBroker[1]);
       }
     }
 
-    if ( ajaxserver.arg("mqttip2").length()<1 || ajaxserver.arg("mqttip2").toInt()>255){
-      mqttERR3= " IP3: Out of range 0-255";
+    if ( requestArg(request, "mqttip2").length()<1 || requestArg(request, "mqttip2").toInt()>255){
+      setupMqttErr3 = "IP3: Out of range 0-255";
       ERRdetect=1;
     }else{
-      if(mqttBroker[2] == byte(ajaxserver.arg("mqttip2").toInt()) ){
-        mqttERR3="";
+      if(mqttBroker[2] == byte(requestArg(request, "mqttip2").toInt()) ){
+        setupMqttErr3 = "";
       }else{
-        mqttERR3="";
-        mqttBroker[2] = byte(ajaxserver.arg("mqttip2").toInt()) ;
+        setupMqttErr3 = "";
+        mqttBroker[2] = byte(requestArg(request, "mqttip2").toInt()) ;
         EEPROM.writeByte(43, mqttBroker[2]);
       }
     }
 
-    if ( ajaxserver.arg("mqttip3").length()<1 || ajaxserver.arg("mqttip3").toInt()>255){
-      mqttERR4= " IP4: Out of range 0-255";
+    if ( requestArg(request, "mqttip3").length()<1 || requestArg(request, "mqttip3").toInt()>255){
+      setupMqttErr4 = "IP4: Out of range 0-255";
       ERRdetect=1;
     }else{
-      if(mqttBroker[3] == byte(ajaxserver.arg("mqttip3").toInt()) ){
-        mqttERR4="";
+      if(mqttBroker[3] == byte(requestArg(request, "mqttip3").toInt()) ){
+        setupMqttErr4 = "";
       }else{
-        mqttERR4="";
-        mqttBroker[3] = byte(ajaxserver.arg("mqttip3").toInt()) ;
+        setupMqttErr4 = "";
+        mqttBroker[3] = byte(requestArg(request, "mqttip3").toInt()) ;
         EEPROM.writeByte(44, mqttBroker[3]);
       }
     }
 
     // 45-46 MQTT_PORT
-    if ( ajaxserver.arg("mqttport").length()<1 || ajaxserver.arg("mqttport").toInt()<1 || ajaxserver.arg("mqttport").toInt()>65534){
-      mqttportERR= " Out of range number 1-65534";
+    if ( requestArg(request, "mqttport").length()<1 || requestArg(request, "mqttport").toInt()<1 || requestArg(request, "mqttport").toInt()>65534){
+      setupMqttPortErr = "Out of range number 1-65534";
       ERRdetect=1;
     }else{
-      if(MQTT_PORT == ajaxserver.arg("mqttport").toInt()){
-        mqttportERR="";
+      if(MQTT_PORT == requestArg(request, "mqttport").toInt()){
+        setupMqttPortErr = "";
       }else{
-        mqttportERR="";
-        MQTT_PORT = ajaxserver.arg("mqttport").toInt();
+        setupMqttPortErr = "";
+        MQTT_PORT = requestArg(request, "mqttport").toInt();
         EEPROM.writeUShort(45, MQTT_PORT);
       }
     }
 
     // 47-67 MQTT_TOPIC
-    if ( ajaxserver.arg("mqtttopic").length()<1 || ajaxserver.arg("mqtttopic").length()>20){
-      mqtttopicERR= " Out of range 1-20 characters";
+    if ( requestArg(request, "mqtttopic").length()<1 || requestArg(request, "mqtttopic").length()>20){
+      setupMqttTopicErr = "Out of range 1-20 characters";
       ERRdetect=1;
     }else{
-      String str = String(ajaxserver.arg("mqtttopic"));
+      String str = requestArg(request, "mqtttopic");
       if(MQTT_TOPIC == str){
-        mqtttopicERR="";
+        setupMqttTopicErr = "";
       }else{
-        mqtttopicERR="";
-        MQTT_TOPIC = String(ajaxserver.arg("mqtttopic"));
+        setupMqttTopicErr = "";
+        MQTT_TOPIC = requestArg(request, "mqtttopic");
 
         int str_len = str.length();
         if(str_len > 20){
@@ -2594,15 +3884,15 @@ void handleSet() {
     }
 
     // 115-135 MQTT_TOPIC_RX
-    if ( ajaxserver.arg("mqtttopicrx").length()>20){
-      mqtttopicrxERR= " Out of range 0-20 characters";
+    if ( requestArg(request, "mqtttopicrx").length()>20){
+      setupMqttTopicRxErr = "Out of range 0-20 characters";
       ERRdetect=1;
     }else{
-      String str = String(ajaxserver.arg("mqtttopicrx"));
+      String str = requestArg(request, "mqtttopicrx");
       if(MQTT_TOPIC_RX == str){
-        mqtttopicrxERR="";
+        setupMqttTopicRxErr = "";
       }else{
-        mqtttopicrxERR="";
+        setupMqttTopicRxErr = "";
         MQTT_TOPIC_RX = str;
 
         int str_len = str.length();
@@ -2623,7 +3913,7 @@ void handleSet() {
 
     // 74-75 BaudRate *
     static int BaudRateTmp=115200;
-    switch (ajaxserver.arg("baud").toInt()) {
+    switch (requestArg(request, "baud").toInt()) {
       case 0: {BaudRateTmp= 1200; break; }
       case 1: {BaudRateTmp= 2400; break; }
       case 2: {BaudRateTmp= 4800; break; }
@@ -2658,148 +3948,7 @@ void handleSet() {
 
   } // else form valid
 
-  baudSELECT0= "";
-  baudSELECT1= "";
-  baudSELECT2= "";
-  baudSELECT3= "";
-  baudSELECT4= "";
-  switch (BaudRate) {
-    case 1200: {baudSELECT0= " selected"; break; }
-    case 2400: {baudSELECT1= " selected"; break; }
-    case 4800: {baudSELECT2= " selected"; break; }
-    case 9600: {baudSELECT3= " selected"; break; }
-    case 115200: {baudSELECT4= " selected"; break; }
-  }
-  String MQTTstyle;
-  if(mqttEnable==true){
-    MQTTstyle="tdr";
-  }else{
-    MQTTstyle="tdg";
-  }
-
-  String HtmlSrc = "<!DOCTYPE html><html><head><title>SETUP IC705 IP interface</title>\n";
-  HtmlSrc +="<meta http-equiv='Content-Type' content='text/html; charset=UTF-8'>\n";
-  // <meta http-equiv = 'refresh' content = '600; url = /'>\n";
-  HtmlSrc +="<style type='text/css'> button#go {background-color: #ccc; padding: 5px 20px 5px 20px; border: none; -webkit-border-radius: 5px; -moz-border-radius: 5px; border-radius: 5px;} button#go:hover {background-color: orange;} ";
-  HtmlSrc +=" table, th, td {color: #fff; border-collapse: collapse; border:0px } .tdg {color: #ccc; height: 40px; text-align: right; vertical-align: middle; padding-right: 15px} .tdr {color: #0c0; height: 40px; text-align: right; vertical-align: middle; padding-right: 15px} html,body {background-color: #333; text-color: #ccc; font-family: sans-serif,Arial,Tahoma,Verdana;} a:hover {color: #fff;} a { color: #ccc; text-decoration: underline; } ";
-  HtmlSrc +=".b {border-top: 1px dotted #666;} .tooltip-text {visibility: hidden; position: absolute; z-index: 1; width: 300px; color: white; font-size: 12px; background-color: #DE3163; border-radius: 10px; padding: 10px 15px 10px 15px; } .hover-text:hover .tooltip-text { visibility: visible; } #right { top: -30px; left: 200%; } #top { top: -60px; left: -150%; } #left { top: -8px; right: 120%;} ";
-  HtmlSrc +=".hover-text {position: relative; background: #888; padding: 5px 12px; margin: 5px; font-size: 15px; border-radius: 100%; color: #FFF; display: inline-block; text-align: center; }</style>\n";
-  HtmlSrc +="</head><body>\n";
-  HtmlSrc +="<H1 style='color: #666; text-align: center;'>Setup IC-705 IP interface</H1>";
-
-  HtmlSrc +="<div style='display: flex; justify-content: center;'><table><form action='/' method='post' style='color: #ccc; margin: 50 0 0 0; text-align: center;'>\n";
-  HtmlSrc +="<tr class='b'><td class='tdr'></td><td><span style='color: #666;'>";
-  if(APmode==true){
-    HtmlSrc +="AP mode <span style='color: #0c0; '>ON</span>";
-  }else{
-    HtmlSrc +="AP mode OFF";
-  }
-  HtmlSrc +="|MAC ";
-  HtmlSrc +=MACString;
-  HtmlSrc +="|FW ";
-  HtmlSrc +=REV;
-  HtmlSrc +="|HW ";
-  HtmlSrc +=String(HardwareRev);
-  HtmlSrc +="</span><span style='color: #333;'>";
-  HtmlSrc +=String(HWidValue);
-  HtmlSrc +="</span></td></tr>\n";
-
-  HtmlSrc +="<tr class='b'><td class='tdr'><label for='ssid'>Connect to WiFi SSID 1:</label></td><td><input type='text' id='ssid' name='ssid' size='20' value='";
-  HtmlSrc += SSID;
-  HtmlSrc +="'><span style='color:";
-  HtmlSrc += ssidERR;
-  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 220px;'>After reboot, IC705 interface<br>tries WiFi SSID 1 first</span></td></tr>\n";
-  // HtmlSrc +="<tr><td class='tdr'><label for='pswd'>WiFi Password:</label></td><td><input type='text' id='pswd' name='pswd' size='18' value='";
-  HtmlSrc +="<tr><td class='tdr'><label for='pswd'>WiFi Password 1:</label></td><td><input type='password' id='pswd' name='pswd' size='18' value='";
-  HtmlSrc += PSWD;
-  HtmlSrc +="'><span style='color:";
-  HtmlSrc += pswdERR;
-  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 200px;'>WiFi acces password</span></td></tr>\n";
-
-  HtmlSrc +="<tr class='b'><td class='tdr'><label for='ssid2'>Connect to WiFi SSID 2:</label></td><td><input type='text' id='ssid2' name='ssid2' size='20' value='";
-  HtmlSrc += SSID2;
-  HtmlSrc +="'><span style='color:";
-  HtmlSrc += ssid2ERR;
-  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 250px;'>Optional backup WiFi.<br>If SSID 1 fails, interface tries SSID 2.</span></td></tr>\n";
-  HtmlSrc +="<tr><td class='tdr'><label for='pswd2'>WiFi Password 2:</label></td><td><input type='password' id='pswd2' name='pswd2' size='18' value='";
-  HtmlSrc += PSWD2;
-  HtmlSrc +="'><span style='color:";
-  HtmlSrc += pswd2ERR;
-  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 250px;'>Leave SSID 2 and Password 2 both empty to disable backup WiFi.</span></td></tr>\n";
-
-  // HtmlSrc +="<tr class='b'><td class='tdr'><label for='btname'>Bluetooth name:</label></td><td><input type='text' id='btname' name='btname' size='20' value='";
-  // HtmlSrc += BTname;
-  // HtmlSrc +="'><span style='color:red;'>";
-  // HtmlSrc += btnameERR;
-  // HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 200px;'>For pairing bluetooth</span></td></tr>\n";
-
-  HtmlSrc +="<tr class='b'><td class='tdr'><label for='httpcatport'>http CAT ip port:</label></td><td>";
-  HtmlSrc +="<input type='text' id='httpcatport' name='httpcatport' size='4' value='" + String(HTTP_CAT_PORT) + "'>\n";
-  HtmlSrc +="<span style='color:red;'>";
-  HtmlSrc += httpcatportERR;
-  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 150px;'>Default http port 81</span></span></td></tr>\n";
-  HtmlSrc +="<tr><td class='tdr'><label for='udpport'>CW/FSK udp port:</label></td><td>";
-  HtmlSrc +="<input type='text' id='udpport' name='udpport' size='4' value='" + String(udpPort) + "'>\n";
-  HtmlSrc +="<span style='color:red;'>";
-  HtmlSrc += udpportERR;
-  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 150px;'>Default udp port 89</span></span></td></tr>\n";
-  HtmlSrc +="<tr><td class='tdr'><label for='udpcatport'>CAT udp port:</label></td><td>";
-  HtmlSrc +="<input type='text' id='udpcatport' name='udpcatport' size='4' value='" + String(udpCatPort) + "'>\n";
-  HtmlSrc +="<span style='color:red;'>";
-  HtmlSrc += udpcatportERR;
-  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 250px;'>Default udp port 90<br><hr>Send only the data part<br>of the CI-V packet to the UDP port,<br>Interface will add addresses,<br>start and stop bytes</span></span></td></tr>\n";
-
-  HtmlSrc +="<tr class='b'><td class='"+String(MQTTstyle)+"'><label for='mqttip0'>MQTT broker IP:</label></td><td>";
-  HtmlSrc +="<input type='text' id='mqttip0' name='mqttip0' size='1' value='" + String(mqttBroker[0]) + "'>&nbsp;.&nbsp;<input type='text' id='mqttip1' name='mqttip1' size='1' value='" + String(mqttBroker[1]) + "'>&nbsp;.&nbsp;<input type='text' id='mqttip2' name='mqttip2' size='1' value='" + String(mqttBroker[2]) + "'>&nbsp;.&nbsp;<input type='text' id='mqttip3' name='mqttip3' size='1' value='" + String(mqttBroker[3]) + "'>";
-  HtmlSrc += mqttERR;
-  HtmlSrc +="<span style='color:red;'>";
-  HtmlSrc += mqttERR1;
-  HtmlSrc += mqttERR2;
-  HtmlSrc += mqttERR3;
-  HtmlSrc += mqttERR4;
-  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 250px;'>Default public broker 54.38.157.134<br>If the first digit is zero, MQTT is disabled</span></span></td></tr>\n";
-  HtmlSrc +="<tr><td class='"+String(MQTTstyle)+"'><label for='mqttport'>MQTT broker PORT:</label></td><td>";
-  HtmlSrc +="<input type='text' id='mqttport' name='mqttport' size='4' value='" + String(MQTT_PORT) + "'>\n";
-  HtmlSrc +="<span style='color:red;'>";
-  HtmlSrc += mqttportERR;
-  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 150px;'>Default public broker port 1883</span></span></td></tr>\n";
-  HtmlSrc +="<tr><td class='"+String(MQTTstyle)+"'><label for='mqtttopic'>MQTT topic TX:</label></td><td><input type='text' id='mqtttopic' name='mqtttopic' size='20' value='";
-  HtmlSrc += MQTT_TOPIC;
-  HtmlSrc +="'><span style='color:red;'>";
-  HtmlSrc += mqtttopicERR;
-  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 200px;'>Publish topic path, for example:<br>CALL/IC705/1/hz</span></td></tr>\n";
-  HtmlSrc +="<tr><td class='"+String(MQTTstyle)+"'><label for='mqtttopicrx'>MQTT topic RX:</label></td><td><input type='text' id='mqtttopicrx' name='mqtttopicrx' size='20' value='";
-  HtmlSrc += MQTT_TOPIC_RX;
-  HtmlSrc +="'><span style='color:red;'>";
-  HtmlSrc += mqtttopicrxERR;
-  HtmlSrc +="</span><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 260px;'>Optional subscribe topic. Payload must be frequency in Hz.<br>Example: 14074000</span></td></tr>\n";
-
-  HtmlSrc +="<tr class='b'><td class='tdr'><label for='baud'>USB serial BAUDRATE:</label></td><td><select name='baud' id='baud'><option value='0'";
-  HtmlSrc += baudSELECT0;
-  HtmlSrc +=">1200</option><option value='1'";
-  HtmlSrc += baudSELECT1;
-  HtmlSrc +=">2400</option><option value='2'";
-  HtmlSrc += baudSELECT2;
-  HtmlSrc +=">4800</option><option value='3'";
-  HtmlSrc += baudSELECT3;
-  HtmlSrc +=">9600</option><option value='4'";
-  HtmlSrc += baudSELECT4;
-  HtmlSrc +=">115200</option></select><span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 150px;'>For CI-V output, use<br>speed 9600 or lower</span></span></td></tr>\n";
-
-  #if defined(RESET_AFTER_DISCONNECT)
-    HtmlSrc +="<tr class='b'><td class='tdr'>RESET after TRX disconnect:</td><td>ENABLE <span class='hover-text'>?<span class='tooltip-text' id='top' style='width: 150px;'>Compile-defined functionality<br>see <a href='https://github.com/ok1hra/IC-705_Interface/blob/main/IC-705_Interface.ino#L85' target='_blank'>GitHub &#10138;</a></span></span></td></tr>\n";
-  #endif
-
-  HtmlSrc +="<tr class='b'><td class='tdr'></td><td><button id='go'>&#10004; Save and Restart</button> - Be patient, saving is slow ;)</form>";
-  HtmlSrc +="</td></tr>\n";
-
-  // HtmlSrc +="<tr><td class='tdr'></td><td style='height: 42px;'></td></tr>\n";
-  // HtmlSrc +="<tr><td class='tdr'></td><td style='height: 42px;'></td></tr>";
-  // HtmlSrc +="<tr><td class='tdr'><a href='/'><button id='go'>&#8617; Back to Control</button></a></td><td class='tdl'><a href='/cal' onclick=\"window.open( this.href, this.href, 'width=700,height=715,left=0,top=0,menubar=no,location=no,status=no' ); return false;\"><button id='go'>Calibrate &#8618;</button></a></td></tr>";
-  HtmlSrc +="<tr><td class='tdr'></td><td class='tdl'><span style='color: #666;'>After reboot, the interface switches to client mode<br>and alternates between WiFi 1 and WiFi 2 until it connects.<br>AP mode is available only from the serial console on USB-C.</span><br><a href='https://github.com/ok1hra/IC-705_Interface' target='_blank'>More on GitHub &#10138;</a></td></tr></table>\n";
-  HtmlSrc +="</body></html>\n";
-
-  ajaxserver.send(200, "text/html", HtmlSrc); //Send web page
+  renderSetupPage(request);
 }
 
 #if defined(RTLE)

@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IC-705 Setup</title>
+  <link rel="stylesheet" href="/setup.css">
+</head>
+<body>
+  <main class="setup-shell">
+    <section class="setup-card">
+      <header class="setup-head">
+        <p class="eyebrow">Configuration</p>
+        <h1>IC-705 IP interface</h1>
+        <p class="meta">%APMODE_TEXT% | MAC %MAC% | FW %REV% | HW %HWREV%</p>
+      </header>
+
+      <form action="/setup" method="post" class="setup-form">
+        <label>Connect to WiFi SSID 1
+          <input type="text" name="ssid" maxlength="20" value="%SSID%">
+          <span class="msg">%SSID_ERR%</span>
+        </label>
+
+        <label>WiFi Password 1
+          <input type="password" name="pswd" maxlength="18" value="%PSWD%">
+          <span class="msg">%PSWD_ERR%</span>
+        </label>
+
+        <label>Connect to WiFi SSID 2
+          <input type="text" name="ssid2" maxlength="20" value="%SSID2%">
+          <span class="msg">%SSID2_ERR%</span>
+        </label>
+
+        <label>WiFi Password 2
+          <input type="password" name="pswd2" maxlength="18" value="%PSWD2%">
+          <span class="msg">%PSWD2_ERR%</span>
+        </label>
+
+        <label>HTTP CAT port
+          <input type="text" name="httpcatport" value="%HTTP_CAT_PORT%">
+          <span class="msg">%HTTP_CAT_PORT_ERR%</span>
+        </label>
+
+        <label>CW/FSK UDP port
+          <input type="text" name="udpport" value="%UDP_PORT%">
+          <span class="msg">%UDP_PORT_ERR%</span>
+        </label>
+
+        <label>CAT UDP port
+          <input type="text" name="udpcatport" value="%UDP_CAT_PORT%">
+          <span class="msg">%UDP_CAT_PORT_ERR%</span>
+        </label>
+
+        <fieldset>
+          <legend>MQTT broker</legend>
+          <div class="ip-row">
+            <input type="text" name="mqttip0" value="%MQTT_IP0%">
+            <input type="text" name="mqttip1" value="%MQTT_IP1%">
+            <input type="text" name="mqttip2" value="%MQTT_IP2%">
+            <input type="text" name="mqttip3" value="%MQTT_IP3%">
+          </div>
+          <span class="msg">%MQTT_ERR%</span>
+          <span class="msg">%MQTT_ERR1%</span>
+          <span class="msg">%MQTT_ERR2%</span>
+          <span class="msg">%MQTT_ERR3%</span>
+          <span class="msg">%MQTT_ERR4%</span>
+        </fieldset>
+
+        <label>MQTT broker port
+          <input type="text" name="mqttport" value="%MQTT_PORT%">
+          <span class="msg">%MQTT_PORT_ERR%</span>
+        </label>
+
+        <label>MQTT topic TX
+          <input type="text" name="mqtttopic" maxlength="20" value="%MQTT_TOPIC%">
+          <span class="msg">%MQTT_TOPIC_ERR%</span>
+        </label>
+
+        <label>MQTT topic RX
+          <input type="text" name="mqtttopicrx" maxlength="20" value="%MQTT_TOPIC_RX%">
+          <span class="msg">%MQTT_TOPIC_RX_ERR%</span>
+        </label>
+
+        <label>USB serial baudrate
+          <select name="baud">
+            <option value="0" %BAUD1200_SEL%>1200</option>
+            <option value="1" %BAUD2400_SEL%>2400</option>
+            <option value="2" %BAUD4800_SEL%>4800</option>
+            <option value="3" %BAUD9600_SEL%>9600</option>
+            <option value="4" %BAUD115200_SEL%>115200</option>
+          </select>
+        </label>
+
+        <div class="actions">
+          <button type="submit">Save and Restart</button>
+          <a href="/">Back</a>
+        </div>
+      </form>
+
+      <p class="footnote">After reboot the interface alternates between WiFi profile 1 and 2 until it connects. AP mode remains available from the USB-C serial console.</p>
+    </section>
+  </main>
+</body>
+</html>
