@@ -21,6 +21,38 @@ body {
   font-family: Tahoma, Verdana, sans-serif;
 }
 
+.topbar {
+  border-bottom: 1px solid var(--line);
+  background: rgba(19, 24, 22, 0.96);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.tabs {
+  width: min(880px, calc(100vw - 24px));
+  margin: 0 auto;
+  display: flex;
+  gap: 6px;
+  padding: 10px 0;
+}
+
+.tab {
+  color: var(--muted);
+  text-decoration: none;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.tab-active {
+  color: #eaf6ee;
+  border-color: #507163;
+  background: rgba(127, 208, 165, 0.18);
+}
+
 .setup-shell {
   width: min(880px, calc(100vw - 24px));
   margin: 24px auto 32px;
@@ -115,6 +147,10 @@ a {
 }
 
 @media (max-width: 640px) {
+  .tabs {
+    width: min(100vw - 16px, 880px);
+  }
+
   .setup-shell {
     width: min(100vw - 16px, 880px);
     margin: 16px auto 24px;

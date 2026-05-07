@@ -346,6 +346,7 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
 
 #if defined(WIFI)
   const uint8_t WS_QUEUE_DEPTH = 4;
+  const uint8_t WS_SPLIT_PROBE_STEPS = 4;
 
   enum WsPendingMatchType : uint8_t {
     WS_MATCH_NONE = 0,
@@ -361,8 +362,8 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
     String reqId;
     WsPendingMatchType matchType;
     uint8_t expectedCommand;
-    bool matchSubCommand;
-    uint8_t expectedSubCommand;
+    uint8_t expectedPayloadLen;
+    uint8_t expectedPayload[4];
   };
 
   struct WsQueuedRequest {
@@ -372,8 +373,8 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
     String reqId;
     WsPendingMatchType matchType;
     uint8_t expectedCommand;
-    bool matchSubCommand;
-    uint8_t expectedSubCommand;
+    uint8_t expectedPayloadLen;
+    uint8_t expectedPayload[4];
     size_t frameLen;
     uint8_t frame[70];
   };
@@ -385,7 +386,7 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
     uint8_t step;
   };
 
-  WsPendingRequest wsPendingRequest{false, 0, 0, "", WS_MATCH_NONE, 0, false, 0};
+  WsPendingRequest wsPendingRequest{false, 0, 0, "", WS_MATCH_NONE, 0, 0, {0, 0, 0, 0}};
   WsQueuedRequest wsQueuedRequests[WS_QUEUE_DEPTH]{};
   WsSplitProbeState wsSplitProbe{false, 0, "", 0};
   String setupSsidErr = "";
@@ -423,20 +424,21 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   bool parseHexPayload(const String &hex, uint8_t *buffer, size_t &bufferLen, size_t maxLen);
   bool catWriteFrame(const uint8_t *frame, size_t frameLen, bool broadcastTx);
   void wsSendQueued(AsyncWebSocketClient *client, const String &reqId, uint8_t depth);
-  bool wsStartRequest(uint32_t clientId, const String &reqId, WsPendingMatchType matchType, uint8_t expectedCommand, bool matchSubCommand, uint8_t expectedSubCommand, unsigned long timeoutMs, const uint8_t *frame, size_t frameLen);
-  bool wsQueuePendingRequest(AsyncWebSocketClient *client, const String &reqId, WsPendingMatchType matchType, uint8_t expectedCommand, bool matchSubCommand, uint8_t expectedSubCommand, unsigned long timeoutMs, const uint8_t *frame, size_t frameLen);
+  bool wsStartRequest(uint32_t clientId, const String &reqId, WsPendingMatchType matchType, uint8_t expectedCommand, const uint8_t *expectedPayload, uint8_t expectedPayloadLen, unsigned long timeoutMs, const uint8_t *frame, size_t frameLen);
+  bool wsQueuePendingRequest(AsyncWebSocketClient *client, const String &reqId, WsPendingMatchType matchType, uint8_t expectedCommand, const uint8_t *expectedPayload, uint8_t expectedPayloadLen, unsigned long timeoutMs, const uint8_t *frame, size_t frameLen);
   void wsClearPendingRequest(void);
   void wsClearQueuedRequest(uint8_t index);
   void wsFlushQueuedRequests(const String &code, const String &message);
   void wsDropQueuedRequestsForClient(uint32_t clientId);
   void wsTryStartNextQueuedRequest(void);
   void wsProcessPendingTimeout(void);
-  bool wsResolvePendingRequest(const uint8_t *frame, size_t frameLen);
+  bool wsResolvePendingRequest(const uint8_t *frame, size_t frameLen, String *matchedReqId = nullptr);
   bool parseModeId(const String &modeName, uint8_t &modeId);
   uint8_t parseFilterWidth(const String &filterName);
   size_t buildSimpleCatFrame(uint8_t command, const uint8_t *payload, size_t payloadLen, uint8_t *frame, size_t frameMaxLen);
   size_t buildSetFrequencyFrame(uint32_t freqHz, uint8_t *frame, size_t frameMaxLen);
   size_t buildSetModeFrame(uint8_t modeId, uint8_t modeWidth, uint8_t *frame, size_t frameMaxLen);
+  size_t buildReadQuickSplitFrame(uint8_t *frame, size_t frameMaxLen);
   size_t buildReadSplitProbeFrame(uint8_t step, uint8_t *frame, size_t frameMaxLen);
   bool wsStartSplitProbe(AsyncWebSocketClient *client, const String &reqId);
   void wsClearSplitProbe(void);
@@ -531,6 +533,15 @@ String decodeModeName(uint8_t modeId){
   }
 }
 
+String decodeFilterName(uint8_t filterId){
+  switch (filterId) {
+    case 0x01: return "FIL1";
+    case 0x02: return "FIL2";
+    case 0x03: return "FIL3";
+    default: return "UNK";
+  }
+}
+
 String wsDecodeCivFrameJson(const uint8_t *frame, size_t frameLen){
   if (frameLen < 6) {
     return String();
@@ -554,6 +565,9 @@ String wsDecodeCivFrameJson(const uint8_t *frame, size_t frameLen){
     if (payloadLen >= 2) {
       decoded += ",\"filter\":";
       decoded += String(payload[1]);
+      decoded += ",\"filterName\":\"";
+      decoded += decodeFilterName(payload[1]);
+      decoded += "\"";
     }
     return decoded;
   }
@@ -579,8 +593,32 @@ String wsDecodeCivFrameJson(const uint8_t *frame, size_t frameLen){
     if (payloadLen >= 4) {
       decoded += ",\"filter\":";
       decoded += String(payload[3]);
+      decoded += ",\"filterName\":\"";
+      decoded += decodeFilterName(payload[3]);
+      decoded += "\"";
     }
     return decoded;
+  }
+
+  if (command == 0x1A && payloadLen >= 4 && payload[0] == 0x05) {
+    uint16_t settingId = ((uint16_t)payload[1] << 8) | payload[2];
+    if (settingId == 0x0045 && payloadLen >= 4) {
+      decoded = "\"kind\":\"split\",\"source\":\"quickSplit\",\"enabled\":";
+      decoded += (payload[3] == 0x00 ? "false" : "true");
+      decoded += ",\"code\":\"";
+      decoded += (payload[3] == 0x00 ? "OFF" : "ON");
+      decoded += "\",\"value\":";
+      decoded += String(payload[3]);
+      decoded += ",\"duplex\":\"off\"";
+      return decoded;
+    }
+    if (settingId == 0x0047 && payloadLen >= 4) {
+      decoded = "\"kind\":\"splitLock\",\"enabled\":";
+      decoded += (payload[3] == 0x00 ? "false" : "true");
+      decoded += ",\"value\":";
+      decoded += String(payload[3]);
+      return decoded;
+    }
   }
 
   if (command == 0x0F && payloadLen >= 1) {
@@ -593,6 +631,13 @@ String wsDecodeCivFrameJson(const uint8_t *frame, size_t frameLen){
     else decoded += "UNKNOWN";
     decoded += "\",\"value\":";
     decoded += String(payload[0]);
+    decoded += ",\"enabled\":";
+    decoded += (payload[0] == 0x00 || payload[0] == 0x10) ? "false" : "true";
+    decoded += ",\"duplex\":\"";
+    if (payload[0] == 0x11) decoded += "-";
+    else if (payload[0] == 0x12) decoded += "+";
+    else decoded += "off";
+    decoded += "\"";
     return decoded;
   }
 
@@ -603,6 +648,8 @@ String wsDecodeCivFrameJson(const uint8_t *frame, size_t frameLen){
     else if (subCommand == 0x11) decoded = "\"kind\":\"powerMeter\"";
     else if (subCommand == 0x12) decoded = "\"kind\":\"swrMeter\"";
     else if (subCommand == 0x13) decoded = "\"kind\":\"alcMeter\"";
+    else if (subCommand == 0x15) decoded = "\"kind\":\"vdMeter\"";
+    else if (subCommand == 0x16) decoded = "\"kind\":\"idMeter\"";
     if (decoded.length() > 0) {
       decoded += ",\"raw\":";
       decoded += String(rawValue);
@@ -632,6 +679,12 @@ String wsDecodeCivFrameJson(const uint8_t *frame, size_t frameLen){
       } else if (subCommand == 0x13) {
         decoded += ",\"percentApprox\":";
         decoded += String(min(100.0f, ((float)rawValue * 100.0f) / 120.0f), 1);
+      } else if (subCommand == 0x15) {
+        decoded += ",\"voltsApprox\":";
+        decoded += String(((float)rawValue * 16.0f) / 241.0f, 2);
+      } else if (subCommand == 0x16) {
+        decoded += ",\"ampsApprox\":";
+        decoded += String(((float)rawValue * 4.0f) / 241.0f, 2);
       }
       return decoded;
     }
@@ -650,6 +703,39 @@ String wsDecodeCivFrameJson(const uint8_t *frame, size_t frameLen){
     return decoded;
   }
 
+  if (command == 0x14 && payloadLen >= 2) {
+    decoded = "\"kind\":\"control\",\"subCommand\":";
+    decoded += String(payload[0]);
+    decoded += ",\"raw\":";
+    decoded += String(decodeCivBcdBytes(payload + 1, payloadLen - 1));
+
+    if (payload[0] == 0x01) {
+      decoded += ",\"name\":\"afGain\"";
+    } else if (payload[0] == 0x0A) {
+      decoded += ",\"name\":\"rfPower\"";
+    } else if (payload[0] == 0x0C) {
+      decoded += ",\"name\":\"keySpeed\"";
+    }
+    return decoded;
+  }
+
+  if (command == 0x1C && payloadLen >= 2 && payload[0] == 0x00) {
+    decoded = "\"kind\":\"txState\",\"tx\":";
+    decoded += (payload[1] == 0x01 ? "true" : "false");
+    decoded += ",\"state\":\"";
+    decoded += (payload[1] == 0x01 ? "TX" : "RX");
+    decoded += "\"";
+    return decoded;
+  }
+
+  if (command == 0xFB) {
+    return "\"kind\":\"ack\",\"status\":\"OK\"";
+  }
+
+  if (command == 0xFA) {
+    return "\"kind\":\"ack\",\"status\":\"NG\"";
+  }
+
   return String();
 }
 
@@ -657,6 +743,32 @@ String wsBuildStateFields(void){
   String json;
   json += "\"connected\":";
   json += (btClientConnected ? "true" : "false");
+  json += ",\"btStatus\":\"";
+  if (!btClientConnected) {
+    json += "BT idle";
+  } else if (radio_address == 0x00) {
+    json += "BT linked | searching CI-V";
+  } else if (TrxNeedSet == true || TrxSetupDone == false) {
+    json += "BT linked | TRX setup";
+  } else {
+    json += "BT linked";
+  }
+  json += "\"";
+  json += ",\"wifiStatus\":\"";
+  if (APmode == true) {
+    json += "WiFi AP";
+  } else if (WiFi.status() == WL_CONNECTED) {
+    json += "WiFi STA";
+  } else {
+    json += "WiFi down";
+  }
+  json += "\"";
+  json += ",\"wifiRssi\":";
+  if (APmode == true || WiFi.status() != WL_CONNECTED) {
+    json += "-999";
+  } else {
+    json += String(WiFi.RSSI());
+  }
   json += ",\"power\":";
   json += (statusPower == 1 ? "true" : "false");
   json += ",\"frequency\":";
@@ -847,6 +959,11 @@ size_t buildSetModeFrame(uint8_t modeId, uint8_t modeWidth, uint8_t *frame, size
   return buildSimpleCatFrame(CMD_WRITE_MODE, payload, sizeof(payload), frame, frameMaxLen);
 }
 
+size_t buildReadQuickSplitFrame(uint8_t *frame, size_t frameMaxLen){
+  uint8_t payload[3] = {0x05, 0x00, 0x45};
+  return buildSimpleCatFrame(0x1A, payload, sizeof(payload), frame, frameMaxLen);
+}
+
 size_t buildReadSplitProbeFrame(uint8_t step, uint8_t *frame, size_t frameMaxLen){
   static const uint8_t probeValues[] = {0x00, 0x01, 0x11, 0x12};
   if (step >= sizeof(probeValues)) {
@@ -1029,9 +1146,13 @@ void wsSendQueued(AsyncWebSocketClient *client, const String &reqId, uint8_t dep
   client->text(json);
 }
 
-bool wsStartRequest(uint32_t clientId, const String &reqId, WsPendingMatchType matchType, uint8_t expectedCommand, bool matchSubCommand, uint8_t expectedSubCommand, unsigned long timeoutMs, const uint8_t *frame, size_t frameLen){
-  if (!catWriteFrame(frame, frameLen, true)) {
+bool wsStartRequest(uint32_t clientId, const String &reqId, WsPendingMatchType matchType, uint8_t expectedCommand, const uint8_t *expectedPayload, uint8_t expectedPayloadLen, unsigned long timeoutMs, const uint8_t *frame, size_t frameLen){
+  if (!catWriteFrame(frame, frameLen, false)) {
     return false;
+  }
+
+  if (reqId.length() > 0) {
+    wsBroadcastCivFrame("civ.tx", frame, frameLen, reqId);
   }
 
   wsPendingRequest.active = true;
@@ -1040,8 +1161,11 @@ bool wsStartRequest(uint32_t clientId, const String &reqId, WsPendingMatchType m
   wsPendingRequest.reqId = reqId;
   wsPendingRequest.matchType = matchType;
   wsPendingRequest.expectedCommand = expectedCommand;
-  wsPendingRequest.matchSubCommand = matchSubCommand;
-  wsPendingRequest.expectedSubCommand = expectedSubCommand;
+  wsPendingRequest.expectedPayloadLen = min<uint8_t>(expectedPayloadLen, sizeof(wsPendingRequest.expectedPayload));
+  memset(wsPendingRequest.expectedPayload, 0, sizeof(wsPendingRequest.expectedPayload));
+  if (expectedPayload != nullptr && wsPendingRequest.expectedPayloadLen > 0) {
+    memcpy(wsPendingRequest.expectedPayload, expectedPayload, wsPendingRequest.expectedPayloadLen);
+  }
   return true;
 }
 
@@ -1056,7 +1180,7 @@ bool wsStartSplitProbe(AsyncWebSocketClient *client, const String &reqId){
     return false;
   }
 
-  if (!wsStartRequest(client->id(), reqId, WS_MATCH_COMMAND, 0x0F, false, 0, 1200, frame, frameLen)) {
+  if (!wsStartRequest(client->id(), reqId, WS_MATCH_COMMAND, 0x0F, nullptr, 0, 1500, frame, frameLen)) {
     return false;
   }
 
@@ -1067,9 +1191,9 @@ bool wsStartSplitProbe(AsyncWebSocketClient *client, const String &reqId){
   return true;
 }
 
-bool wsQueuePendingRequest(AsyncWebSocketClient *client, const String &reqId, WsPendingMatchType matchType, uint8_t expectedCommand, bool matchSubCommand, uint8_t expectedSubCommand, unsigned long timeoutMs, const uint8_t *frame, size_t frameLen){
+bool wsQueuePendingRequest(AsyncWebSocketClient *client, const String &reqId, WsPendingMatchType matchType, uint8_t expectedCommand, const uint8_t *expectedPayload, uint8_t expectedPayloadLen, unsigned long timeoutMs, const uint8_t *frame, size_t frameLen){
   if (!wsPendingRequest.active) {
-    return wsStartRequest(client->id(), reqId, matchType, expectedCommand, matchSubCommand, expectedSubCommand, timeoutMs, frame, frameLen);
+    return wsStartRequest(client->id(), reqId, matchType, expectedCommand, expectedPayload, expectedPayloadLen, timeoutMs, frame, frameLen);
   }
 
   for (uint8_t i = 0; i < WS_QUEUE_DEPTH; i++) {
@@ -1082,8 +1206,11 @@ bool wsQueuePendingRequest(AsyncWebSocketClient *client, const String &reqId, Ws
     wsQueuedRequests[i].reqId = reqId;
     wsQueuedRequests[i].matchType = matchType;
     wsQueuedRequests[i].expectedCommand = expectedCommand;
-    wsQueuedRequests[i].matchSubCommand = matchSubCommand;
-    wsQueuedRequests[i].expectedSubCommand = expectedSubCommand;
+    wsQueuedRequests[i].expectedPayloadLen = min<uint8_t>(expectedPayloadLen, sizeof(wsQueuedRequests[i].expectedPayload));
+    memset(wsQueuedRequests[i].expectedPayload, 0, sizeof(wsQueuedRequests[i].expectedPayload));
+    if (expectedPayload != nullptr && wsQueuedRequests[i].expectedPayloadLen > 0) {
+      memcpy(wsQueuedRequests[i].expectedPayload, expectedPayload, wsQueuedRequests[i].expectedPayloadLen);
+    }
     wsQueuedRequests[i].frameLen = frameLen;
     memcpy(wsQueuedRequests[i].frame, frame, frameLen);
     wsSendQueued(client, reqId, i + 1);
@@ -1100,8 +1227,8 @@ void wsClearPendingRequest(void){
   wsPendingRequest.reqId = "";
   wsPendingRequest.matchType = WS_MATCH_NONE;
   wsPendingRequest.expectedCommand = 0;
-  wsPendingRequest.matchSubCommand = false;
-  wsPendingRequest.expectedSubCommand = 0;
+  wsPendingRequest.expectedPayloadLen = 0;
+  memset(wsPendingRequest.expectedPayload, 0, sizeof(wsPendingRequest.expectedPayload));
 }
 
 void wsClearQueuedRequest(uint8_t index){
@@ -1111,8 +1238,8 @@ void wsClearQueuedRequest(uint8_t index){
   wsQueuedRequests[index].reqId = "";
   wsQueuedRequests[index].matchType = WS_MATCH_NONE;
   wsQueuedRequests[index].expectedCommand = 0;
-  wsQueuedRequests[index].matchSubCommand = false;
-  wsQueuedRequests[index].expectedSubCommand = 0;
+  wsQueuedRequests[index].expectedPayloadLen = 0;
+  memset(wsQueuedRequests[index].expectedPayload, 0, sizeof(wsQueuedRequests[index].expectedPayload));
   wsQueuedRequests[index].frameLen = 0;
 }
 
@@ -1152,8 +1279,8 @@ void wsTryStartNextQueuedRequest(void){
       wsQueuedRequests[i].reqId,
       wsQueuedRequests[i].matchType,
       wsQueuedRequests[i].expectedCommand,
-      wsQueuedRequests[i].matchSubCommand,
-      wsQueuedRequests[i].expectedSubCommand,
+      wsQueuedRequests[i].expectedPayload,
+      wsQueuedRequests[i].expectedPayloadLen,
       wsQueuedRequests[i].timeoutMs,
       wsQueuedRequests[i].frame,
       wsQueuedRequests[i].frameLen
@@ -1176,20 +1303,20 @@ void wsProcessPendingTimeout(void){
   }
 
   if (wsSplitProbe.active && wsPendingRequest.clientId == wsSplitProbe.clientId && wsPendingRequest.reqId == wsSplitProbe.reqId) {
-    if (wsSplitProbe.step < 3) {
+    if (wsSplitProbe.step + 1 < WS_SPLIT_PROBE_STEPS) {
       wsPendingRequest.active = false;
       wsPendingRequest.clientId = 0;
       wsPendingRequest.deadlineMs = 0;
       wsPendingRequest.reqId = "";
       wsPendingRequest.matchType = WS_MATCH_NONE;
       wsPendingRequest.expectedCommand = 0;
-      wsPendingRequest.matchSubCommand = false;
-      wsPendingRequest.expectedSubCommand = 0;
+      wsPendingRequest.expectedPayloadLen = 0;
+      memset(wsPendingRequest.expectedPayload, 0, sizeof(wsPendingRequest.expectedPayload));
 
       wsSplitProbe.step++;
       uint8_t frame[8];
       size_t frameLen = buildReadSplitProbeFrame(wsSplitProbe.step, frame, sizeof(frame));
-      if (frameLen > 0 && wsStartRequest(wsSplitProbe.clientId, wsSplitProbe.reqId, WS_MATCH_COMMAND, 0x0F, false, 0, 1200, frame, frameLen)) {
+      if (frameLen > 0 && wsStartRequest(wsSplitProbe.clientId, wsSplitProbe.reqId, WS_MATCH_COMMAND, 0x0F, nullptr, 0, 1500, frame, frameLen)) {
         return;
       }
     }
@@ -1201,7 +1328,7 @@ void wsProcessPendingTimeout(void){
   wsTryStartNextQueuedRequest();
 }
 
-bool wsResolvePendingRequest(const uint8_t *frame, size_t frameLen){
+bool wsResolvePendingRequest(const uint8_t *frame, size_t frameLen, String *matchedReqId){
   if (!wsPendingRequest.active || frameLen < 6) {
     return false;
   }
@@ -1213,8 +1340,9 @@ bool wsResolvePendingRequest(const uint8_t *frame, size_t frameLen){
       break;
     case WS_MATCH_COMMAND:
       matches = frameLen > 4 && frame[4] == wsPendingRequest.expectedCommand;
-      if (matches && wsPendingRequest.matchSubCommand) {
-        matches = frameLen > 5 && frame[5] == wsPendingRequest.expectedSubCommand;
+      if (matches && wsPendingRequest.expectedPayloadLen > 0) {
+        matches = frameLen >= (size_t)(5 + wsPendingRequest.expectedPayloadLen + 1)
+          && memcmp(frame + 5, wsPendingRequest.expectedPayload, wsPendingRequest.expectedPayloadLen) == 0;
       }
       break;
     case WS_MATCH_ACK:
@@ -1226,6 +1354,10 @@ bool wsResolvePendingRequest(const uint8_t *frame, size_t frameLen){
 
   if (!matches) {
     return false;
+  }
+
+  if (matchedReqId != nullptr) {
+    *matchedReqId = wsPendingRequest.reqId;
   }
 
   AsyncWebSocketClient *client = ws.client(wsPendingRequest.clientId);
@@ -1285,7 +1417,7 @@ void wsHandleTextMessage(AsyncWebSocketClient *client, const String &msg){
       wsSendError(client, "tx_failed", "Unable to build frequency command", reqId);
       return;
     }
-    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_ACK, 0, false, 0, 1500, frame, frameLen)) {
+    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_ACK, 0, nullptr, 0, 1500, frame, frameLen)) {
       wsSendError(client, "queue_full", "CAT request queue is full", reqId);
       return;
     }
@@ -1299,7 +1431,7 @@ void wsHandleTextMessage(AsyncWebSocketClient *client, const String &msg){
     }
     uint8_t frame[8];
     size_t frameLen = buildSimpleCatFrame(CMD_READ_FREQ, nullptr, 0, frame, sizeof(frame));
-    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_COMMAND, CMD_READ_FREQ, false, 0, 1500, frame, frameLen)) {
+    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_COMMAND, CMD_READ_FREQ, nullptr, 0, 1500, frame, frameLen)) {
       wsSendError(client, "queue_full", "CAT request queue is full", reqId);
     }
     return;
@@ -1312,7 +1444,7 @@ void wsHandleTextMessage(AsyncWebSocketClient *client, const String &msg){
     }
     uint8_t frame[8];
     size_t frameLen = buildSimpleCatFrame(CMD_READ_MODE, nullptr, 0, frame, sizeof(frame));
-    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_COMMAND, CMD_READ_MODE, false, 0, 1500, frame, frameLen)) {
+    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_COMMAND, CMD_READ_MODE, nullptr, 0, 1500, frame, frameLen)) {
       wsSendError(client, "queue_full", "CAT request queue is full", reqId);
     }
     return;
@@ -1327,7 +1459,7 @@ void wsHandleTextMessage(AsyncWebSocketClient *client, const String &msg){
     uint8_t payload[1] = {selected ? 0x00 : 0x01};
     uint8_t frame[8];
     size_t frameLen = buildSimpleCatFrame(0x25, payload, sizeof(payload), frame, sizeof(frame));
-    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_COMMAND, 0x25, false, 0, 1500, frame, frameLen)) {
+    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_COMMAND, 0x25, nullptr, 0, 1500, frame, frameLen)) {
       wsSendError(client, "queue_full", "CAT request queue is full", reqId);
     }
     return;
@@ -1342,7 +1474,7 @@ void wsHandleTextMessage(AsyncWebSocketClient *client, const String &msg){
     uint8_t payload[1] = {selected ? 0x00 : 0x01};
     uint8_t frame[8];
     size_t frameLen = buildSimpleCatFrame(0x26, payload, sizeof(payload), frame, sizeof(frame));
-    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_COMMAND, 0x26, false, 0, 1500, frame, frameLen)) {
+    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_COMMAND, 0x26, nullptr, 0, 1500, frame, frameLen)) {
       wsSendError(client, "queue_full", "CAT request queue is full", reqId);
     }
     return;
@@ -1356,7 +1488,8 @@ void wsHandleTextMessage(AsyncWebSocketClient *client, const String &msg){
     uint8_t payload[1] = {0x00};
     uint8_t frame[8];
     size_t frameLen = buildSimpleCatFrame(0x21, payload, sizeof(payload), frame, sizeof(frame));
-    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_COMMAND, 0x21, true, 0x00, 1500, frame, frameLen)) {
+    uint8_t expectedPayload[1] = {0x00};
+    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_COMMAND, 0x21, expectedPayload, sizeof(expectedPayload), 1500, frame, frameLen)) {
       wsSendError(client, "queue_full", "CAT request queue is full", reqId);
     }
     return;
@@ -1367,8 +1500,11 @@ void wsHandleTextMessage(AsyncWebSocketClient *client, const String &msg){
       wsSendError(client, "radio_disconnected", "Bluetooth CAT is not connected", reqId);
       return;
     }
-    if (!wsStartSplitProbe(client, reqId)) {
-      wsSendError(client, "queue_full", "CAT request queue is full or split probe is already active", reqId);
+    uint8_t frame[12];
+    size_t frameLen = buildReadQuickSplitFrame(frame, sizeof(frame));
+    uint8_t expectedPayload[3] = {0x05, 0x00, 0x45};
+    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_COMMAND, 0x1A, expectedPayload, sizeof(expectedPayload), 1500, frame, frameLen)) {
+      wsSendError(client, "queue_full", "CAT request queue is full", reqId);
     }
     return;
   }
@@ -1381,7 +1517,8 @@ void wsHandleTextMessage(AsyncWebSocketClient *client, const String &msg){
     uint8_t payload[1] = {0x02};
     uint8_t frame[8];
     size_t frameLen = buildSimpleCatFrame(0x15, payload, sizeof(payload), frame, sizeof(frame));
-    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_COMMAND, 0x15, true, 0x02, 1500, frame, frameLen)) {
+    uint8_t expectedPayload[1] = {0x02};
+    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_COMMAND, 0x15, expectedPayload, sizeof(expectedPayload), 1500, frame, frameLen)) {
       wsSendError(client, "queue_full", "CAT request queue is full", reqId);
     }
     return;
@@ -1395,7 +1532,8 @@ void wsHandleTextMessage(AsyncWebSocketClient *client, const String &msg){
     uint8_t payload[1] = {0x11};
     uint8_t frame[8];
     size_t frameLen = buildSimpleCatFrame(0x15, payload, sizeof(payload), frame, sizeof(frame));
-    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_COMMAND, 0x15, true, 0x11, 1500, frame, frameLen)) {
+    uint8_t expectedPayload[1] = {0x11};
+    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_COMMAND, 0x15, expectedPayload, sizeof(expectedPayload), 1500, frame, frameLen)) {
       wsSendError(client, "queue_full", "CAT request queue is full", reqId);
     }
     return;
@@ -1409,7 +1547,8 @@ void wsHandleTextMessage(AsyncWebSocketClient *client, const String &msg){
     uint8_t payload[1] = {0x12};
     uint8_t frame[8];
     size_t frameLen = buildSimpleCatFrame(0x15, payload, sizeof(payload), frame, sizeof(frame));
-    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_COMMAND, 0x15, true, 0x12, 1500, frame, frameLen)) {
+    uint8_t expectedPayload[1] = {0x12};
+    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_COMMAND, 0x15, expectedPayload, sizeof(expectedPayload), 1500, frame, frameLen)) {
       wsSendError(client, "queue_full", "CAT request queue is full", reqId);
     }
     return;
@@ -1423,7 +1562,8 @@ void wsHandleTextMessage(AsyncWebSocketClient *client, const String &msg){
     uint8_t payload[1] = {0x13};
     uint8_t frame[8];
     size_t frameLen = buildSimpleCatFrame(0x15, payload, sizeof(payload), frame, sizeof(frame));
-    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_COMMAND, 0x15, true, 0x13, 1500, frame, frameLen)) {
+    uint8_t expectedPayload[1] = {0x13};
+    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_COMMAND, 0x15, expectedPayload, sizeof(expectedPayload), 1500, frame, frameLen)) {
       wsSendError(client, "queue_full", "CAT request queue is full", reqId);
     }
     return;
@@ -1447,7 +1587,7 @@ void wsHandleTextMessage(AsyncWebSocketClient *client, const String &msg){
       wsSendError(client, "tx_failed", "Unable to build mode command", reqId);
       return;
     }
-    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_ACK, 0, false, 0, 1500, frame, frameLen)) {
+    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_ACK, 0, nullptr, 0, 1500, frame, frameLen)) {
       wsSendError(client, "queue_full", "CAT request queue is full", reqId);
     }
     return;
@@ -1461,7 +1601,7 @@ void wsHandleTextMessage(AsyncWebSocketClient *client, const String &msg){
     uint8_t payload[4] = {0x00, 0x00, 0x00, 0x00};
     uint8_t frame[12];
     size_t frameLen = buildSimpleCatFrame(0x21, payload, sizeof(payload), frame, sizeof(frame));
-    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_ACK, 0, false, 0, 1500, frame, frameLen)) {
+    if (!wsQueuePendingRequest(client, reqId, WS_MATCH_ACK, 0, nullptr, 0, 1500, frame, frameLen)) {
       wsSendError(client, "queue_full", "CAT request queue is full", reqId);
     }
     return;
@@ -1541,9 +1681,14 @@ void wsHandleTextMessage(AsyncWebSocketClient *client, const String &msg){
       if (!expectAck && commandByte == 0xFB) {
         matchType = WS_MATCH_ACK;
       }
-      uint8_t subCommandByte = frameLen > 5 ? frame[5] : 0x00;
-      bool matchSubCommand = frameLen > 5;
-      if (!wsQueuePendingRequest(client, reqId, matchType, commandByte, matchSubCommand, subCommandByte, 1500, frame, frameLen)) {
+      uint8_t expectedPayload[4] = {0, 0, 0, 0};
+      uint8_t expectedPayloadLen = 0;
+      if (!expectAck && frameLen > 5) {
+        size_t availablePayloadLen = frameLen - 6;
+        expectedPayloadLen = (uint8_t)min((size_t)4, availablePayloadLen);
+        memcpy(expectedPayload, frame + 5, expectedPayloadLen);
+      }
+      if (!wsQueuePendingRequest(client, reqId, matchType, commandByte, expectedPayloadLen > 0 ? expectedPayload : nullptr, expectedPayloadLen, 1500, frame, frameLen)) {
         wsSendError(client, "queue_full", "CAT request queue is full", reqId);
         return;
       }
@@ -1597,6 +1742,22 @@ void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventTyp
 void setupAsyncHttpServer(void){
   ajaxserver.on("/api/state", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(200, "application/json", wsBuildStateJson("state"));
+  });
+
+  ajaxserver.on("/cat", HTTP_GET, [](AsyncWebServerRequest *request){
+    if (APmode || !SPIFFS.exists("/index.html")) {
+      handleSet(request);
+      return;
+    }
+    request->send(SPIFFS, "/index.html", "text/html");
+  });
+
+  ajaxserver.on("/ws-cat", HTTP_GET, [](AsyncWebServerRequest *request){
+    if (APmode || !SPIFFS.exists("/ws-cat.html")) {
+      handleSet(request);
+      return;
+    }
+    request->send(SPIFFS, "/ws-cat.html", "text/html");
   });
 
   ajaxserver.on("/setup", HTTP_GET, [](AsyncWebServerRequest *request){
@@ -2643,8 +2804,9 @@ void processCatMessages(){  // BUGFIX
         continue;
       }
 
-      wsResolvePendingRequest(read_buffer, len);
-      wsBroadcastCivFrame("civ.rx", read_buffer, len);
+      String matchedReqId;
+      bool matchedPendingRequest = wsResolvePendingRequest(read_buffer, len, &matchedReqId);
+      wsBroadcastCivFrame("civ.rx", read_buffer, len, matchedPendingRequest ? matchedReqId : "");
 
       if (read_buffer[2] == BROADCAST_ADDRESS || read_buffer[2] == CONTROLLER_ADDRESS) {
         switch (read_buffer[4]) {

@@ -3,110 +3,97 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>IC-705 Web CAT</title>
-  <link rel="stylesheet" href="/app.css">
+  <title>IC-705 CAT</title>
+  <link rel="stylesheet" href="/cat.css">
 </head>
 <body>
-  <main class="shell">
-    <section class="hero">
-      <div class="hero-top">
-        <div>
-          <p class="eyebrow">IC-705 Interface</p>
-          <h1>WebSocket CAT proxy</h1>
-          <p class="lede">Live rig state over <code>/ws</code> with a raw CI-V console for early integration work.</p>
+  <header class="topbar">
+    <nav class="tabs" aria-label="Primary">
+      <a class="tab tab-active" href="/">CAT</a>
+      <a class="tab" href="/ws-cat">WS-CAT</a>
+      <a class="tab" href="/setup">SETUP</a>
+    </nav>
+  </header>
+
+  <main class="cat-shell">
+    <section class="cat-panel">
+      <div class="hero-row">
+        <div class="frequency-wrap">
+          <p class="label">Frequency</p>
+          <div id="frequencyReadout" class="frequency">0.000.00</div>
         </div>
-        <a class="hero-link" href="/setup">Setup</a>
-      </div>
-    </section>
 
-    <section class="card">
-      <div class="card-head">
-        <h2>Status</h2>
-        <button id="refreshState" type="button">Refresh</button>
-      </div>
-      <dl class="status-grid">
-        <div><dt>WebSocket</dt><dd id="wsStatus">Disconnected</dd></div>
-        <div><dt>Radio</dt><dd id="radioStatus">Unknown</dd></div>
-        <div><dt>Power</dt><dd id="powerStatus">Unknown</dd></div>
-        <div><dt>Frequency</dt><dd id="frequencyStatus">0 Hz</dd></div>
-        <div><dt>Mode</dt><dd id="modeStatus">OFF</dd></div>
-        <div><dt>Address</dt><dd id="addressStatus">0x00</dd></div>
-      </dl>
-    </section>
+        <div class="side-stack">
+          <label class="field-row" for="modeSelect">
+            <span>MODE</span>
+            <select id="modeSelect">
+              <option value="LSB">LSB</option>
+              <option value="USB" selected>USB</option>
+              <option value="AM">AM</option>
+              <option value="CW">CW</option>
+              <option value="RTTY">RTTY</option>
+              <option value="FM">FM</option>
+              <option value="DV">DV</option>
+            </select>
+          </label>
 
-    <section class="card">
-      <div class="card-head">
-        <h2>Raw CI-V</h2>
-      </div>
-      <label for="hexPayload">Hex payload</label>
-      <input id="hexPayload" type="text" value="03" spellcheck="false">
-      <label class="check-row"><input id="expectReply" type="checkbox"> Wait for CI-V reply</label>
-      <label class="check-row"><input id="expectAck" type="checkbox"> Match ACK/NG reply</label>
-      <div class="actions">
-        <button id="sendPayload" type="button">Send payload</button>
-        <button id="sendFramed" type="button">Send framed packet</button>
-      </div>
-      <p class="hint">Payload mode wraps bytes as <code>FE FE &lt;radio&gt; E0 ... FD</code>. Framed mode sends the full CI-V frame exactly as entered.</p>
-    </section>
-
-    <section class="card">
-      <div class="card-head">
-        <h2>Helper commands</h2>
-      </div>
-      <div class="actions">
-        <button id="readFrequency" type="button">Read frequency</button>
-        <button id="readMode" type="button">Read mode</button>
-        <button id="readVfoFrequency" type="button">Read selected VFO freq</button>
-        <button id="readVfoMode" type="button">Read selected VFO mode</button>
-        <button id="readRit" type="button">Read RIT</button>
-        <button id="readSplit" type="button">Read split</button>
-        <button id="readSmeter" type="button">Read S-meter</button>
-        <button id="readPower" type="button">Read power</button>
-        <button id="readSwr" type="button">Read SWR</button>
-        <button id="readAlc" type="button">Read ALC</button>
-        <button id="clearRit" type="button">Clear RIT</button>
-      </div>
-
-      <label for="setFrequency">Frequency in Hz</label>
-      <input id="setFrequency" type="text" value="14074000" spellcheck="false">
-      <div class="actions">
-        <button id="sendFrequency" type="button">Set frequency</button>
-      </div>
-
-      <label for="setMode">Mode</label>
-      <input id="setMode" type="text" value="USB" spellcheck="false">
-      <label for="setFilter">Filter</label>
-      <input id="setFilter" type="text" value="FIL1" spellcheck="false">
-      <div class="actions">
-        <button id="sendMode" type="button">Set mode</button>
-      </div>
-
-      <label for="cwText">CW text</label>
-      <input id="cwText" type="text" value="CQ TEST DE OK1HRA" spellcheck="false">
-      <div class="actions">
-        <button id="sendCw" type="button">Send CW</button>
-      </div>
-    </section>
-
-    <section class="card">
-      <div class="card-head">
-        <h2>Event log</h2>
-        <div class="head-actions">
-          <button id="clearLog" type="button">Clear</button>
-          <button id="copyDiagnostic" type="button">Copy diagnostic</button>
+          <div class="field-row">
+            <span>RIT</span>
+            <div class="rit-actions">
+              <span id="ritReadout" class="secondary-value">0.00 kHz</span>
+              <button id="clearRit" class="mini-button" type="button">Clear</button>
+            </div>
+          </div>
         </div>
       </div>
-      <div class="diagnostic-panel">
-        <label class="check-row"><input id="diagnosticMode" type="checkbox"> Diagnostic mode</label>
-        <label class="check-row"><input id="diagnosticFilter" type="checkbox" checked> Show only WS/CI-V traffic and replies</label>
-        <label class="check-row"><input id="diagnosticRequestsOnly" type="checkbox"> Show only request-bound traffic with reqId</label>
-        <label class="check-row"><input id="diagnosticPretty" type="checkbox" checked> Pretty-print JSON in log</label>
-        <p class="hint">For debugging, enable Diagnostic mode, click the commands you want to test, then use Copy diagnostic and paste the result here.</p>
-      </div>
-      <pre id="log" class="log"></pre>
+
+      <section class="meter-block">
+        <div id="meterBar" class="meter-bar" aria-hidden="true"></div>
+        <div class="meter-legend">
+          <span id="meterLabel">S meter</span>
+          <span id="meterValue">S0</span>
+        </div>
+        <div class="sub-value">
+          <span id="subValueLabel">Supply</span>
+          <span id="subValueReadout">--.- V</span>
+        </div>
+      </section>
+
+      <section class="slider-grid">
+        <label>
+          <span class="slider-head"><span>AF volume</span><span id="afVolumeValue">37</span></span>
+          <input id="afVolume" type="range" min="0" max="255" value="37">
+        </label>
+        <label>
+          <span class="slider-head"><span>KEY SPEED</span><span id="keySpeedValue">138</span></span>
+          <input id="keySpeed" type="range" min="0" max="255" value="138">
+        </label>
+        <label>
+          <span class="slider-head"><span>RF power</span><span id="rfPowerValue">205</span></span>
+          <input id="rfPower" type="range" min="0" max="255" value="205">
+        </label>
+      </section>
+
+      <section class="button-row">
+        <button id="preampButton" type="button">P.AMP/ATT OFF</button>
+        <button id="voxButton" type="button">VOX none</button>
+        <button id="filterButton" type="button">FIL1</button>
+        <button id="pttButton" type="button">PTT</button>
+      </section>
+
+      <section class="cw-row">
+        <input id="cwInput" type="text" placeholder="Send CW text..." spellcheck="false" autocomplete="off">
+        <button id="clearCw" type="button">Clear</button>
+      </section>
+
+      <footer class="status-row">
+        <span id="statusAddress">CI-V 0x00</span>
+        <span id="statusConnection">Disconnected</span>
+        <span id="statusRadio">Radio OFF</span>
+      </footer>
     </section>
   </main>
 
-  <script src="/app.js"></script>
+  <script src="/cat.js"></script>
 </body>
 </html>
