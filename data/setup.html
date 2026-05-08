@@ -10,7 +10,7 @@
   <header class="topbar">
     <nav class="tabs" aria-label="Primary">
       <a class="tab" href="/">CAT</a>
-      <a class="tab" href="/ws-cat">WS-CAT</a>
+      <a class="tab" href="/ws-cat">DEBUG</a>
       <a class="tab tab-active" href="/setup">SETUP</a>
     </nav>
   </header>
@@ -167,8 +167,45 @@
         </div>
       </form>
 
+      <div class="backup-row">
+        <a href="/config/download" class="backup-btn" download="ic705-config.json">Download config</a>
+        <label class="backup-btn">
+          Upload config
+          <input type="file" id="configFile" accept=".json" style="display:none">
+        </label>
+        <span id="uploadMsg" class="backup-msg"></span>
+      </div>
+
       <p class="footnote">After reboot the interface alternates between WiFi profile 1 and 2 until it connects. AP mode remains available from the USB-C serial console.</p>
     </section>
   </main>
+
+  <script>
+    document.getElementById("configFile").addEventListener("change", function () {
+      const file = this.files[0];
+      if (!file) return;
+      const msg = document.getElementById("uploadMsg");
+      msg.textContent = "Uploading…";
+      const reader = new FileReader();
+      reader.onload = function (e) {
+        fetch("/config/upload", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: e.target.result
+        })
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            if (data.ok) {
+              msg.textContent = "Uploaded. Reload this page to verify, then click Save and Restart.";
+            } else {
+              msg.textContent = "Error: " + (data.error || "unknown");
+            }
+          })
+          .catch(function () { msg.textContent = "Upload failed — check connection."; });
+      };
+      reader.readAsText(file);
+      this.value = "";
+    });
+  </script>
 </body>
 </html>

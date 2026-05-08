@@ -146,6 +146,34 @@ a {
   color: var(--accent);
 }
 
+.backup-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 24px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.backup-btn {
+  display: inline-block;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 9px 16px;
+  background: var(--panel);
+  color: var(--accent);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.backup-msg {
+  color: var(--warn);
+  font-size: 0.88rem;
+}
+
 @media (max-width: 640px) {
   .tabs {
     width: min(100vw - 16px, 880px);
