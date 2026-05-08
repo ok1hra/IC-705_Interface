@@ -74,6 +74,8 @@ int BaudRate        = 9600;
 // char* BTname        = "";
 const char* BTname  = "IC705-interface";
 bool Debug          = false;
+bool cwIpOnConnect  = false;      // announce WiFi IP via CW on first BT connect
+volatile bool cwIpSendPending = false;
 
 #define REV 20260508
 #define WIFI
@@ -90,7 +92,7 @@ bool Debug          = false;
 // #define RESET_AFTER_DISCONNECT  // enable reset after each disconnect + short CW msg
 
 #include "EEPROM.h"
-#define EEPROM_SIZE 136
+#define EEPROM_SIZE 137
 /*
   0|Byte    1|128
   1|Char    1|A
@@ -574,6 +576,17 @@ uint32_t decodeCivBcdBytes(const uint8_t *bytes, size_t byteCount){
   return value;
 }
 
+// LSB-first variant used for RIT (bytes[0] = least significant pair)
+uint32_t decodeCivBcdBytesLsb(const uint8_t *bytes, size_t byteCount){
+  uint32_t value = 0;
+  uint32_t mult = 1;
+  for (size_t i = 0; i < byteCount; i++) {
+    value += (((bytes[i] >> 4) * 10) + (bytes[i] & 0x0F)) * mult;
+    mult *= 100;
+  }
+  return value;
+}
+
 String decodeModeName(uint8_t modeId){
   switch (modeId) {
     case 0x00: return "LSB";
@@ -879,6 +892,7 @@ String setupTemplateProcessor(const String &key){
   if (key == "BAUD4800_SEL") return BaudRate == 4800 ? "selected" : "";
   if (key == "BAUD9600_SEL") return BaudRate == 9600 ? "selected" : "";
   if (key == "BAUD115200_SEL") return BaudRate == 115200 ? "selected" : "";
+  if (key == "CW_IP_CHK") return cwIpOnConnect ? "checked" : "";
   return String();
 }
 
@@ -1019,21 +1033,12 @@ void handlePostCmd(){
     return;
   }
 
-  if (type == "setRitClear") {
-    uint8_t payload[5] = {0x00, 0x00, 0x00, 0x00, 0x00};
-    uint8_t frame[16];
-    size_t len = buildSimpleCatFrame(0x21, payload, sizeof(payload), frame, sizeof(frame));
-    catWriteFrame(frame, len, false);
-    stateRitRaw = 0;
-    webServer.send(200, "application/json", "{\"ok\":true}");
-    return;
-  }
 
   if (type == "sendCw") {
     String text = extractJsonString(body, "text");
     if (text.length() == 0) { webServer.send(400, "application/json", "{\"error\":\"missing_text\"}"); return; }
     text.toCharArray(CwMsg, sizeof(CwMsg));
-    setModesText("CW");
+    // mode is preserved — sendCW() routes to CW (CI-V) or RTTY (FSK GPIO) based on current mode
     sendCW();
     webServer.send(200, "application/json", "{\"ok\":true}");
     return;
@@ -1186,8 +1191,9 @@ void setupWebServer(void){
     renderIndexPage();
   });
 
-  webServer.on("/setup", HTTP_GET,  [](){ renderSetupPage(); });
-  webServer.on("/setup", HTTP_POST, [](){ handleSet(); renderSetupPage(); });
+  webServer.on("/setup",  HTTP_GET,  [](){ renderSetupPage(); });
+  webServer.on("/setup",  HTTP_POST, [](){ handleSet(); renderSetupPage(); });
+  webServer.on("/ws-cat", HTTP_GET,  [](){ handleFileFromSPIFFS("/ws-cat.html"); });
 
   webServer.onNotFound([](){
     String path = webServer.uri();
@@ -1360,6 +1366,10 @@ void setup(){
       udpCatPort=90;
     }else{
       udpCatPort = EEPROM.readUShort(72);
+    }
+
+    if(EEPROM.read(136) != 0xff){
+      cwIpOnConnect = EEPROM.readBool(136);
     }
 
   }
@@ -1645,7 +1655,7 @@ void Watchdog(){
   static unsigned long auxPollTimer = 0;
   static uint8_t auxPollIndex = 0;
   if (btClientConnected == true) {
-    if (millis() - catPollTimer > 500) {
+    if (millis() - catPollTimer > 200) {
       catPollTimer = millis();
 
       if (radio_address == 0x00) {
@@ -1658,7 +1668,22 @@ void Watchdog(){
       }
     }
 
-    if (radio_address != 0x00 && millis() - auxPollTimer > 150) {
+    if (cwIpSendPending && radio_address != 0x00) {
+      cwIpSendPending = false;
+      TrxSetupDone = true;
+      ServiceBackgroundTasks(800);
+      uint8_t modeFrame[10];
+      size_t modeFrameLen = buildSetModeFrame(0x03, 0x03, modeFrame, sizeof(modeFrame)); // CW, FIL3
+      catWriteFrame(modeFrame, modeFrameLen, false);
+      ServiceBackgroundTasks(400);
+      String ipStr = "IP " + WiFi.localIP().toString();
+      ipStr.toCharArray(CwMsg, sizeof(CwMsg));
+      setModesText("CW");
+      sendCW();
+      ServiceBackgroundTasks(10000); // wait for radio to finish keying
+    }
+
+    if (radio_address != 0x00 && millis() - auxPollTimer > 80) {
       auxPollTimer = millis();
       uint8_t frame[10];
       size_t frameLen = 0;
@@ -2297,7 +2322,7 @@ void processCatMessages(){  // BUGFIX
           else if (pl[0] == 0x0A) stateRfPower = (uint8_t)raw;
         }
         if (cmd == 0x21 && plLen >= 4 && pl[0] == 0x00) {
-          stateRitRaw = decodeCivBcdBytes(pl + 1, 3); // 3 BCD bytes only, sign byte at pl[4] excluded
+          stateRitRaw = decodeCivBcdBytesLsb(pl + 1, 3); // LSB-first, 3 bytes only, sign byte excluded
         }
         if (cmd == 0x1C && plLen >= 2 && pl[0] == 0x00) {
           stateTx = (pl[1] == 0x01);
@@ -2336,11 +2361,12 @@ void callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param){ // BUGFIX
     frequencyTmp = 0;
     if (TrxSetupDone == false) {
       TrxNeedSet = 1;
+      if (cwIpOnConnect) cwIpSendPending = true;
     }
 
     Serial.println("    | Client Connected");
-    Serial.println("    | CHANGE frequency on IC-705, for initialize CAT");
-    Serial.println("    | -----------------------------------------------------------------------------");
+    // Serial.println("    | CHANGE frequency on IC-705, for initialize CAT");
+    // Serial.println("    | -----------------------------------------------------------------------------");
     btStateBroadcastPending = true;
   }
 
@@ -2930,7 +2956,7 @@ void sendCW(){
       delay(100);
       digitalWrite(StatusPin, HIGH);
     }
-  }else if(strcmp(modesSnapshot, "FSK") == 0){ // GPIO -----------------
+  }else if(strcmp(modesSnapshot, "RTTY") == 0){ // GPIO FSK keying -----------------
     int TheEnd = payloadLen - 1;
     if(TheEnd < 0){
       return;
@@ -3619,6 +3645,9 @@ void handleSet() {
     } else {
       configuredCivAddress = nextCivAddress;
     }
+
+    cwIpOnConnect = requestHasArg("cwIpOnConnect");
+    EEPROM.writeBool(136, cwIpOnConnect);
 
     for (uint8_t i = 0; i < CW_MEMORY_COUNT; i++) {
       char fieldName[10];

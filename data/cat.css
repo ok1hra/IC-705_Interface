@@ -246,15 +246,39 @@ select,
 }
 
 .meter-segment.aux-active.active {
-  background: linear-gradient(180deg, #85e76b, #278b3b);
-  border-color: #8af078;
-  box-shadow: 0 0 10px rgba(91, 201, 108, 0.35);
+  background: linear-gradient(180deg, #3d7033, #163d1c);
+  border-color: #3e6e30;
+  box-shadow: 0 0 6px rgba(91, 201, 108, 0.18);
 }
 
 .meter-segment.aux-over.active {
   background: linear-gradient(180deg, #ff6e61, #d11d1d);
   border-color: #ff7d73;
   box-shadow: 0 0 10px rgba(255, 69, 58, 0.35);
+}
+
+.meter-segment.peak {
+  background: rgba(83, 180, 255, 0.75);
+  border-color: #5cb5ff;
+  box-shadow: 0 0 8px rgba(61, 157, 255, 0.55);
+}
+
+.meter-segment.over.peak {
+  background: rgba(255, 110, 97, 0.75);
+  border-color: #ff7d73;
+  box-shadow: 0 0 8px rgba(255, 69, 58, 0.55);
+}
+
+.meter-segment.peak-green {
+  background: rgba(91, 201, 108, 0.75);
+  border-color: #4e8c40;
+  box-shadow: 0 0 8px rgba(91, 201, 108, 0.45);
+}
+
+.meter-segment.peak-red {
+  background: rgba(255, 110, 97, 0.75);
+  border-color: #ff7d73;
+  box-shadow: 0 0 8px rgba(255, 69, 58, 0.55);
 }
 
 .meter-legend,
@@ -331,6 +355,34 @@ input[type="range"]:disabled {
   border-color: #ff7d73;
   background: linear-gradient(180deg, #571919, #351010);
   color: white;
+}
+
+/* P.AMP warm (zesileni) */
+.button-row button[data-preamp="P.AMP1"],
+.button-row button[data-preamp="P.AMP2"] {
+  border-color: #e8a055;
+  background: linear-gradient(180deg, #5a2e08, #3a1c04);
+  color: #f0c080;
+}
+
+/* ATT cool (utlum) */
+.button-row button[data-preamp="ATT"] {
+  border-color: #55a0e8;
+  background: linear-gradient(180deg, #083a5a, #04253a);
+  color: #80c0f0;
+}
+
+/* VOX / BKIN active */
+.button-row button[data-vox="BKIN"],
+.button-row button[data-vox="F-BKIN"] {
+  border-color: #6eaef8;
+  background: linear-gradient(180deg, #163457, #0e223b);
+  color: white;
+}
+
+.button-row button.mode-inactive {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
 .cw-row {

@@ -44,6 +44,11 @@ let pauseVoxReadUntil = 0;
 let pauseFilterReadUntil = 0;
 let pollConnected = false;
 
+let smeterPeak = 0;
+let powerPeak  = 0;
+let swrPeak    = 0;
+const PEAK_DECAY = 0.4; // segments per poll (~200 ms) → ~12 s full-scale fall
+
 const cwMemories = [
   document.getElementById("cwMem1Data").value || "",
   document.getElementById("cwMem2Data").value || "",
@@ -85,6 +90,7 @@ const state = {
   subBarSegments: 0,
   subBarLowSeg: 0,
   subBarHighSeg: 24,
+  subBarPeak: -1,
   preamp: "OFF",
   vox: "none"
 };
@@ -92,9 +98,6 @@ const state = {
 for (let i = 0; i < 24; i++) {
   const segment = document.createElement("span");
   segment.className = "meter-segment";
-  if (i >= 18) {
-    segment.classList.add("over");
-  }
   meterBar.appendChild(segment);
 }
 
@@ -129,6 +132,16 @@ function encodeBcdFixed(value, digits) {
   for (let index = 0; index < digits; index += 2) {
     pairs.push(text.slice(index, index + 2));
   }
+  return pairs.join("");
+}
+
+function encodeBcdFixedLsb(value, digits) {
+  const text = String(Math.max(0, Math.round(Number(value) || 0))).padStart(digits, "0");
+  const pairs = [];
+  for (let index = 0; index < digits; index += 2) {
+    pairs.push(text.slice(index, index + 2));
+  }
+  pairs.reverse();
   return pairs.join("");
 }
 
@@ -170,7 +183,7 @@ function renderFrequency() {
 
 function renderRit() {
   const raw = Math.max(0, Number(state.ritRaw) || 0);
-  const text = (raw / 100).toFixed(2);
+  const text = (raw / 1000).toFixed(2);
   ritReadout.textContent = "";
   for (const char of text) {
     const span = document.createElement("span");
@@ -237,6 +250,10 @@ function resetRxIndicatorsForPowerOff() {
   state.subBarSegments = 0;
   state.subBarLowSeg = 0;
   state.subBarHighSeg = 24;
+  state.subBarPeak = -1;
+  smeterPeak = 0;
+  powerPeak  = 0;
+  swrPeak    = 0;
   setMeterSegments(0);
   setSubBarSegments(0, 0, 24);
 }
@@ -249,20 +266,33 @@ function resetControlSliders() {
 
 // ---------- main render ----------
 
-function setMeterSegments(activeCount) {
+// overThreshold: segments at or above this index get the "over" (red) class
+// peakSeg: index of the peak marker segment (-1 = none)
+function setMeterSegments(activeCount, overThreshold = 18, peakSeg = -1) {
+  const peak = Math.round(peakSeg);
   [...meterBar.children].forEach((segment, index) => {
-    segment.classList.toggle("active", index < activeCount);
+    const active = index < activeCount;
+    segment.classList.toggle("active", active);
+    segment.classList.toggle("over", index >= overThreshold);
+    segment.classList.toggle("peak", !active && index === peak);
   });
 }
 
 // lowSeg: segments below this index are red; highSeg: segments at or above this are red
-function setSubBarSegments(activeCount, lowSeg, highSeg) {
+// peakSeg: index of peak marker (-1 = none)
+function setSubBarSegments(activeCount, lowSeg, highSeg, peakSeg = -1) {
+  const peak = Math.round(peakSeg);
   [...subBar.children].forEach((segment, index) => {
     const active = index < activeCount;
     const red = active && (index < lowSeg || index >= highSeg);
+    const isPeak = !active && index === peak;
+    const peakRed = isPeak && (index < lowSeg || index >= highSeg);
     segment.classList.toggle("active", active);
     segment.classList.toggle("aux-active", active && !red);
     segment.classList.toggle("aux-over", red);
+    segment.classList.toggle("peak", isPeak);
+    segment.classList.toggle("peak-green", isPeak && !peakRed);
+    segment.classList.toggle("peak-red", isPeak && peakRed);
   });
 }
 
@@ -275,11 +305,13 @@ function render() {
   }
   renderRit();
   filterButton.textContent = `FIL${state.filter}`;
+  const isRtty = state.mode === "RTTY";
+  cwInput.placeholder = isRtty ? "Send RTTY text…" : "Send CW text…";
   meterLabel.textContent = state.tx ? "Power" : "S meter";
   meterValue.textContent = state.meterText;
   subValueLabel.textContent = state.subLabel;
   subValueReadout.textContent = state.subValue;
-  setSubBarSegments(state.subBarSegments, state.subBarLowSeg, state.subBarHighSeg);
+  setSubBarSegments(state.subBarSegments, state.subBarLowSeg, state.subBarHighSeg, state.subBarPeak);
   const controlsEnabled = state.radioConnected && state.power;
   afVolume.disabled = !controlsEnabled;
   keySpeed.disabled = !controlsEnabled;
@@ -287,10 +319,13 @@ function render() {
   afVolumeValue.textContent = formatAfVolume(afVolume.value);
   keySpeedValue.textContent = formatKeySpeed(keySpeed.value);
   rfPowerValue.textContent = formatRfPower(rfPower.value);
-  preampButton.textContent = `P.AMP/ATT ${state.preamp}`;
-  voxButton.textContent = `VOX ${state.vox}`;
+  preampButton.textContent = state.preamp === "OFF" ? "P.AMP OFF" : state.preamp;
+  preampButton.dataset.preamp = state.preamp;
+  voxButton.textContent = state.vox === "none" ? "VOX OFF" : state.vox;
+  voxButton.dataset.vox = state.vox;
   pttButton.classList.toggle("tx-active", state.tx);
-  pttButton.textContent = state.tx ? "PTT TX" : "PTT RX";
+  pttButton.textContent = "PTT";
+  renderCwMemoryButtons();
   statusAddress.textContent = state.transceiverType
     ? `${state.transceiverType} | ${state.radioAddress}`
     : `CI-V ${state.radioAddress}`;
@@ -325,7 +360,10 @@ function applyServerState(s) {
   } else {
     // Update TX state — skip if user just clicked PTT
     if (Date.now() >= pauseTxReadUntil) {
-      state.tx = Boolean(s.tx);
+      const newTx = Boolean(s.tx);
+      if (newTx && !state.tx) { smeterPeak = 0; }          // switched to TX: clear S-meter peak
+      if (!newTx && state.tx) { powerPeak = 0; swrPeak = 0; state.subBarPeak = -1; } // switched to RX: clear power/SWR peaks
+      state.tx = newTx;
     }
 
     if (Date.now() >= pauseRitReadUntil) {
@@ -342,20 +380,29 @@ function applyServerState(s) {
       const pm = formatPowerMeter(praw);
       state.meterRaw = praw;
       state.meterText = pm.text;
-      setMeterSegments(pm.segments);
-      // SWR sub-bar: green below SWR 3.0, red above
+      if (pm.segments > powerPeak) powerPeak = pm.segments;
+      else powerPeak = Math.max(0, powerPeak - PEAK_DECAY);
+      setMeterSegments(pm.segments, 12, powerPeak); // blue below 50%, red above 50%
+      // SWR sub-bar: reflection coefficient mapping — SWR1=left, SWR3=center, ∞=right
       const swr = Number(s.swr) || 1;
       state.subLabel = "SWR";
       state.subValue = swr.toFixed(2);
-      state.subBarSegments = Math.min(24, Math.round((Math.min(swr, 4) / 4) * 24));
+      const rho = (swr - 1) / (swr + 1);
+      state.subBarSegments = Math.min(24, Math.round(rho * 24));
       state.subBarLowSeg = 0;
-      state.subBarHighSeg = Math.round((3 / 4) * 24); // 18 — red above SWR 3.0
+      state.subBarHighSeg = 12; // red above SWR 3.0 (center)
+      if (state.subBarSegments > swrPeak) swrPeak = state.subBarSegments;
+      else swrPeak = Math.max(0, swrPeak - PEAK_DECAY);
+      state.subBarPeak = swrPeak;
     } else {
       const sraw = Number(s.smeterRaw) || 0;
       const sm = formatSMeter(sraw);
       state.meterRaw = sraw;
       state.meterText = sm.text;
-      setMeterSegments(sm.segments);
+      if (sm.segments > smeterPeak) smeterPeak = sm.segments;
+      else smeterPeak = Math.max(0, smeterPeak - PEAK_DECAY);
+      setMeterSegments(sm.segments, 18, smeterPeak);
+      state.subBarPeak = -1; // no peak for supply bar
       // Supply sub-bar: seg 0 = red (<7 V), segs 1-21 = green (7-16 V), segs 22-23 = red (>16 V)
       const volts = Number(s.supplyVolts) || 0;
       state.subLabel = "Supply";
@@ -453,7 +500,7 @@ function scheduleRitWrite() {
   window.clearTimeout(ritTimer);
   pauseRitRead(5000);
   ritTimer = window.setTimeout(() => {
-    sendRaw(`2100${encodeBcdFixed(state.ritRaw, 6)}00`); // 3 BCD bytes + sign 00=positive
+    sendRaw(`2100${encodeBcdFixedLsb(state.ritRaw, 6)}`); // LSB-first 3 BCD bytes, no sign byte
   }, 70);
 }
 
@@ -480,8 +527,9 @@ modeSelect.addEventListener("change", () => {
 });
 
 clearRitButton.addEventListener("click", () => {
-  postCmd({ type: "setRitClear" });
   state.ritRaw = 0;
+  pauseRitRead(2000);
+  sendRaw("2100000000"); // CI-V 0x21 sub 0x00: set RIT freq = 0 Hz
   render();
 });
 
@@ -642,10 +690,12 @@ cwMemoryButtons.forEach((button, index) => {
 // ---------- memory UI init ----------
 
 function renderCwMemoryButtons() {
+  const active = state.mode === "CW" || state.mode === "RTTY";
   cwMemoryButtons.forEach((button, index) => {
     const text = cwMemories[index].trim();
-    button.disabled = text.length === 0;
-    button.textContent = text.length > 0 ? text.slice(0, 10) : `CW ${index + 1}`;
+    button.disabled = !active || text.length === 0;
+    button.classList.toggle("mode-inactive", !active);
+    button.textContent = text.length > 0 ? text.slice(0, 10) : `MEM ${index + 1}`;
   });
 }
 

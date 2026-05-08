@@ -99,6 +99,51 @@ fieldset {
   padding: 16px;
 }
 
+.setup-section {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.setup-section-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  cursor: pointer;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  list-style: none;
+  user-select: none;
+}
+
+.setup-section-title::-webkit-details-marker {
+  display: none;
+}
+
+.setup-section-title::before {
+  content: "▶";
+  font-size: 0.7em;
+  transition: transform 0.15s;
+  flex-shrink: 0;
+}
+
+.setup-section[open] > .setup-section-title::before {
+  transform: rotate(90deg);
+}
+
+.setup-section-title:hover {
+  background: rgba(127, 208, 165, 0.07);
+}
+
+.setup-section-body {
+  display: grid;
+  gap: 14px;
+  padding: 4px 16px 16px;
+  border-top: 1px solid var(--line);
+}
+
 input,
 select,
 button {
@@ -119,6 +164,18 @@ select {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 10px;
+}
+
+.checkbox-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+
+.checkbox-row input[type="checkbox"] {
+  width: auto;
+  accent-color: var(--accent);
 }
 
 .msg {

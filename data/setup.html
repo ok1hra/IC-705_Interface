@@ -23,143 +23,161 @@
       </header>
 
       <form action="/setup" method="post" class="setup-form">
-        <label>Connect to WiFi SSID 1
-          <input type="text" name="ssid" maxlength="20" value="%SSID%">
-          <span class="msg">%SSID_ERR%</span>
-        </label>
 
-        <label>WiFi Password 1
-          <input type="password" name="pswd" maxlength="18" value="%PSWD%">
-          <span class="msg">%PSWD_ERR%</span>
-        </label>
-
-        <label>Connect to WiFi SSID 2
-          <input type="text" name="ssid2" maxlength="20" value="%SSID2%">
-          <span class="msg">%SSID2_ERR%</span>
-        </label>
-
-        <label>WiFi Password 2
-          <input type="password" name="pswd2" maxlength="18" value="%PSWD2%">
-          <span class="msg">%PSWD2_ERR%</span>
-        </label>
-
-        <label>HTTP CAT port
-          <input type="text" name="httpcatport" value="%HTTP_CAT_PORT%">
-          <span class="msg">%HTTP_CAT_PORT_ERR%</span>
-        </label>
-
-        <label>CW/FSK UDP port
-          <input type="text" name="udpport" value="%UDP_PORT%">
-          <span class="msg">%UDP_PORT_ERR%</span>
-        </label>
-
-        <label>CAT UDP port
-          <input type="text" name="udpcatport" value="%UDP_CAT_PORT%">
-          <span class="msg">%UDP_CAT_PORT_ERR%</span>
-        </label>
-
-        <fieldset>
-          <legend>MQTT broker</legend>
-          <div class="ip-row">
-            <input type="text" name="mqttip0" value="%MQTT_IP0%">
-            <input type="text" name="mqttip1" value="%MQTT_IP1%">
-            <input type="text" name="mqttip2" value="%MQTT_IP2%">
-            <input type="text" name="mqttip3" value="%MQTT_IP3%">
+        <details class="setup-section">
+          <summary class="setup-section-title">WiFi</summary>
+          <div class="setup-section-body">
+            <label>Connect to WiFi SSID 1
+              <input type="text" name="ssid" maxlength="20" value="%SSID%">
+              <span class="msg">%SSID_ERR%</span>
+            </label>
+            <label>WiFi Password 1
+              <input type="password" name="pswd" maxlength="18" value="%PSWD%">
+              <span class="msg">%PSWD_ERR%</span>
+            </label>
+            <label>Connect to WiFi SSID 2
+              <input type="text" name="ssid2" maxlength="20" value="%SSID2%">
+              <span class="msg">%SSID2_ERR%</span>
+            </label>
+            <label>WiFi Password 2
+              <input type="password" name="pswd2" maxlength="18" value="%PSWD2%">
+              <span class="msg">%PSWD2_ERR%</span>
+            </label>
           </div>
-          <span class="msg">%MQTT_ERR%</span>
-          <span class="msg">%MQTT_ERR1%</span>
-          <span class="msg">%MQTT_ERR2%</span>
-          <span class="msg">%MQTT_ERR3%</span>
-          <span class="msg">%MQTT_ERR4%</span>
-        </fieldset>
+        </details>
 
-        <label>MQTT broker port
-          <input type="text" name="mqttport" value="%MQTT_PORT%">
-          <span class="msg">%MQTT_PORT_ERR%</span>
-        </label>
+        <details class="setup-section">
+          <summary class="setup-section-title">Network ports</summary>
+          <div class="setup-section-body">
+            <label>HTTP CAT port
+              <input type="text" name="httpcatport" value="%HTTP_CAT_PORT%">
+              <span class="msg">%HTTP_CAT_PORT_ERR%</span>
+            </label>
+            <label>CW/FSK UDP port
+              <input type="text" name="udpport" value="%UDP_PORT%">
+              <span class="msg">%UDP_PORT_ERR%</span>
+            </label>
+            <label>CAT UDP port
+              <input type="text" name="udpcatport" value="%UDP_CAT_PORT%">
+              <span class="msg">%UDP_CAT_PORT_ERR%</span>
+            </label>
+          </div>
+        </details>
 
-        <label>MQTT topic TX
-          <input type="text" name="mqtttopic" maxlength="20" value="%MQTT_TOPIC%">
-          <span class="msg">%MQTT_TOPIC_ERR%</span>
-        </label>
+        <details class="setup-section">
+          <summary class="setup-section-title">MQTT</summary>
+          <div class="setup-section-body">
+            <label>Broker IP
+              <div class="ip-row">
+                <input type="text" name="mqttip0" value="%MQTT_IP0%">
+                <input type="text" name="mqttip1" value="%MQTT_IP1%">
+                <input type="text" name="mqttip2" value="%MQTT_IP2%">
+                <input type="text" name="mqttip3" value="%MQTT_IP3%">
+              </div>
+              <span class="msg">%MQTT_ERR%</span>
+              <span class="msg">%MQTT_ERR1%</span>
+              <span class="msg">%MQTT_ERR2%</span>
+              <span class="msg">%MQTT_ERR3%</span>
+              <span class="msg">%MQTT_ERR4%</span>
+            </label>
+            <label>Broker port
+              <input type="text" name="mqttport" value="%MQTT_PORT%">
+              <span class="msg">%MQTT_PORT_ERR%</span>
+            </label>
+            <label>Topic TX
+              <input type="text" name="mqtttopic" maxlength="20" value="%MQTT_TOPIC%">
+              <span class="msg">%MQTT_TOPIC_ERR%</span>
+            </label>
+            <label>Topic RX
+              <input type="text" name="mqtttopicrx" maxlength="20" value="%MQTT_TOPIC_RX%">
+              <span class="msg">%MQTT_TOPIC_RX_ERR%</span>
+            </label>
+          </div>
+        </details>
 
-        <label>MQTT topic RX
-          <input type="text" name="mqtttopicrx" maxlength="20" value="%MQTT_TOPIC_RX%">
-          <span class="msg">%MQTT_TOPIC_RX_ERR%</span>
-        </label>
+        <details class="setup-section">
+          <summary class="setup-section-title">Radio</summary>
+          <div class="setup-section-body">
+            <label>USB serial baudrate
+              <select name="baud">
+                <option value="0" %BAUD1200_SEL%>1200</option>
+                <option value="1" %BAUD2400_SEL%>2400</option>
+                <option value="2" %BAUD4800_SEL%>4800</option>
+                <option value="3" %BAUD9600_SEL%>9600</option>
+                <option value="4" %BAUD115200_SEL%>115200</option>
+              </select>
+            </label>
+            <label>Transceiver profile
+              <select name="trxprofile">
+                <option value="IC-705-BT" %TRX_IC705_SEL%>IC-705-BT</option>
+                <option value="IC-7610-CI-V" %TRX_IC7610_SEL%>IC-7610-CI-V</option>
+              </select>
+            </label>
+            <label>CI-V address
+              <input type="text" name="civaddr" maxlength="2" value="%CIV_ADDR%">
+              <span class="msg">%CIV_ADDR_ERR%</span>
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" name="cwIpOnConnect" %CW_IP_CHK%>
+              Announce WiFi IP via CW on first BT connect
+            </label>
+          </div>
+        </details>
 
-        <label>USB serial baudrate
-          <select name="baud">
-            <option value="0" %BAUD1200_SEL%>1200</option>
-            <option value="1" %BAUD2400_SEL%>2400</option>
-            <option value="2" %BAUD4800_SEL%>4800</option>
-            <option value="3" %BAUD9600_SEL%>9600</option>
-            <option value="4" %BAUD115200_SEL%>115200</option>
-          </select>
-        </label>
+        <details class="setup-section">
+          <summary class="setup-section-title">CW memories</summary>
+          <div class="setup-section-body">
+            <label>CW memory 1
+              <input type="text" name="cwmem1" maxlength="30" value="%CW_MEM1%">
+            </label>
+            <label>CW memory 2
+              <input type="text" name="cwmem2" maxlength="30" value="%CW_MEM2%">
+            </label>
+            <label>CW memory 3
+              <input type="text" name="cwmem3" maxlength="30" value="%CW_MEM3%">
+            </label>
+            <label>CW memory 4
+              <input type="text" name="cwmem4" maxlength="30" value="%CW_MEM4%">
+            </label>
+          </div>
+        </details>
 
-        <label>Transceiver profile
-          <select name="trxprofile">
-            <option value="IC-705-BT" %TRX_IC705_SEL%>IC-705-BT</option>
-            <option value="IC-7610-CI-V" %TRX_IC7610_SEL%>IC-7610-CI-V</option>
-          </select>
-        </label>
-
-        <label>CI-V address
-          <input type="text" name="civaddr" maxlength="2" value="%CIV_ADDR%">
-          <span class="msg">%CIV_ADDR_ERR%</span>
-        </label>
-
-        <fieldset>
-          <legend>CW memories</legend>
-          <label>CW memory 1
-            <input type="text" name="cwmem1" maxlength="30" value="%CW_MEM1%">
-          </label>
-          <label>CW memory 2
-            <input type="text" name="cwmem2" maxlength="30" value="%CW_MEM2%">
-          </label>
-          <label>CW memory 3
-            <input type="text" name="cwmem3" maxlength="30" value="%CW_MEM3%">
-          </label>
-          <label>CW memory 4
-            <input type="text" name="cwmem4" maxlength="30" value="%CW_MEM4%">
-          </label>
-        </fieldset>
-
-        <fieldset>
-          <legend>Frequency memories</legend>
-          <p class="footnote">Use compact format like <code>14074000 USB</code> or <code>144174000 FM</code>.</p>
-          <label>Memory 1
-            <input type="text" name="freqmem1" maxlength="20" value="%FREQ_MEM1%">
-          </label>
-          <label>Memory 2
-            <input type="text" name="freqmem2" maxlength="20" value="%FREQ_MEM2%">
-          </label>
-          <label>Memory 3
-            <input type="text" name="freqmem3" maxlength="20" value="%FREQ_MEM3%">
-          </label>
-          <label>Memory 4
-            <input type="text" name="freqmem4" maxlength="20" value="%FREQ_MEM4%">
-          </label>
-          <label>Memory 5
-            <input type="text" name="freqmem5" maxlength="20" value="%FREQ_MEM5%">
-          </label>
-          <label>Memory 6
-            <input type="text" name="freqmem6" maxlength="20" value="%FREQ_MEM6%">
-          </label>
-          <label>Memory 7
-            <input type="text" name="freqmem7" maxlength="20" value="%FREQ_MEM7%">
-          </label>
-          <label>Memory 8
-            <input type="text" name="freqmem8" maxlength="20" value="%FREQ_MEM8%">
-          </label>
-          <label>Memory 9
-            <input type="text" name="freqmem9" maxlength="20" value="%FREQ_MEM9%">
-          </label>
-          <label>Memory 10
-            <input type="text" name="freqmem10" maxlength="20" value="%FREQ_MEM10%">
-          </label>
-        </fieldset>
+        <details class="setup-section">
+          <summary class="setup-section-title">Frequency memories</summary>
+          <div class="setup-section-body">
+            <p class="footnote">Use compact format like <code>14074000 USB</code> or <code>144174000 FM</code>.</p>
+            <label>Memory 1
+              <input type="text" name="freqmem1" maxlength="20" value="%FREQ_MEM1%">
+            </label>
+            <label>Memory 2
+              <input type="text" name="freqmem2" maxlength="20" value="%FREQ_MEM2%">
+            </label>
+            <label>Memory 3
+              <input type="text" name="freqmem3" maxlength="20" value="%FREQ_MEM3%">
+            </label>
+            <label>Memory 4
+              <input type="text" name="freqmem4" maxlength="20" value="%FREQ_MEM4%">
+            </label>
+            <label>Memory 5
+              <input type="text" name="freqmem5" maxlength="20" value="%FREQ_MEM5%">
+            </label>
+            <label>Memory 6
+              <input type="text" name="freqmem6" maxlength="20" value="%FREQ_MEM6%">
+            </label>
+            <label>Memory 7
+              <input type="text" name="freqmem7" maxlength="20" value="%FREQ_MEM7%">
+            </label>
+            <label>Memory 8
+              <input type="text" name="freqmem8" maxlength="20" value="%FREQ_MEM8%">
+            </label>
+            <label>Memory 9
+              <input type="text" name="freqmem9" maxlength="20" value="%FREQ_MEM9%">
+            </label>
+            <label>Memory 10
+              <input type="text" name="freqmem10" maxlength="20" value="%FREQ_MEM10%">
+            </label>
+          </div>
+        </details>
 
         <div class="actions">
           <button type="submit">Save and Restart</button>
