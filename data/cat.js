@@ -2,7 +2,10 @@ const frequencyReadout = document.getElementById("frequencyReadout");
 const modeSelect = document.getElementById("modeSelect");
 const ritReadout = document.getElementById("ritReadout");
 const clearRitButton = document.getElementById("clearRit");
+const freqMemorySelect = document.getElementById("freqMemorySelect");
+const freqInput = document.getElementById("freqInput");
 const meterBar = document.getElementById("meterBar");
+const subBar = document.getElementById("subBar");
 const meterLabel = document.getElementById("meterLabel");
 const meterValue = document.getElementById("meterValue");
 const subValueLabel = document.getElementById("subValueLabel");
@@ -19,9 +22,16 @@ const filterButton = document.getElementById("filterButton");
 const pttButton = document.getElementById("pttButton");
 const cwInput = document.getElementById("cwInput");
 const clearCwButton = document.getElementById("clearCw");
+const cwMemoryButtons = [
+  document.getElementById("cwMemory1"),
+  document.getElementById("cwMemory2"),
+  document.getElementById("cwMemory3"),
+  document.getElementById("cwMemory4")
+];
 const statusAddress = document.getElementById("statusAddress");
 const statusConnection = document.getElementById("statusConnection");
 const statusRadio = document.getElementById("statusRadio");
+const statusFw = document.getElementById("statusFw");
 
 let socket;
 let reqId = 1;
@@ -29,6 +39,28 @@ let pendingReads = 0;
 let cwSentLength = 0;
 let tuneTimer = null;
 let ritTimer = null;
+let pauseFrequencyReadUntil = 0;
+let pauseRitReadUntil = 0;
+
+const cwMemories = [
+  document.getElementById("cwMem1Data").value || "",
+  document.getElementById("cwMem2Data").value || "",
+  document.getElementById("cwMem3Data").value || "",
+  document.getElementById("cwMem4Data").value || ""
+];
+
+const freqMemories = [
+  document.getElementById("freqMem1Data").value || "",
+  document.getElementById("freqMem2Data").value || "",
+  document.getElementById("freqMem3Data").value || "",
+  document.getElementById("freqMem4Data").value || "",
+  document.getElementById("freqMem5Data").value || "",
+  document.getElementById("freqMem6Data").value || "",
+  document.getElementById("freqMem7Data").value || "",
+  document.getElementById("freqMem8Data").value || "",
+  document.getElementById("freqMem9Data").value || "",
+  document.getElementById("freqMem10Data").value || ""
+];
 
 const state = {
   wsConnected: false,
@@ -36,6 +68,7 @@ const state = {
   btStatus: "BT idle",
   wifiStatus: "WiFi down",
   wifiRssi: -999,
+  fwRev: "----",
   power: false,
   frequency: 0,
   mode: "USB",
@@ -48,14 +81,16 @@ const state = {
   meterText: "S0",
   subValue: "--.- V",
   subLabel: "Supply",
+  subBarSegments: 0,
+  subBarAlert: false,
   preamp: "OFF",
   vox: "none"
 };
 
 const pollPlan = [
-  () => send({ type: "readFrequency", reqId: nextReqId() }, true),
+  () => Date.now() >= pauseFrequencyReadUntil && send({ type: "readFrequency", reqId: nextReqId() }, true),
   () => send({ type: "readMode", reqId: nextReqId() }, true),
-  () => send({ type: "readRit", reqId: nextReqId() }, true),
+  () => Date.now() >= pauseRitReadUntil && send({ type: "readRit", reqId: nextReqId() }, true),
   () => sendRaw("1401", true),
   () => sendRaw("140C", true),
   () => sendRaw("140A", true),
@@ -65,6 +100,7 @@ const pollPlan = [
 ];
 
 let pollIndex = 0;
+let pollStuckCount = 0;
 
 for (let i = 0; i < 24; i++) {
   const segment = document.createElement("span");
@@ -73,6 +109,12 @@ for (let i = 0; i < 24; i++) {
     segment.classList.add("over");
   }
   meterBar.appendChild(segment);
+}
+
+for (let i = 0; i < 24; i++) {
+  const segment = document.createElement("span");
+  segment.className = "meter-segment";
+  subBar.appendChild(segment);
 }
 
 function nextReqId() {
@@ -117,6 +159,7 @@ function encodeBcdFixed(value, digits) {
 function buildFrequencySlots(value) {
   const hz = Math.max(0, Number(value) || 0);
   const shown = String(Math.floor(hz / 10)).padStart(8, " ");
+  const hzLast = String(hz % 10);
   const steps = [100000000, 10000000, 1000000, 100000, 10000, 1000, 100, 10];
   return [
     { char: shown[0], step: steps[0], blank: shown[0] === " " },
@@ -128,7 +171,8 @@ function buildFrequencySlots(value) {
     { char: shown[5], step: steps[5] },
     { char: ".", dot: true, step: null },
     { char: shown[6], step: steps[6] },
-    { char: shown[7], step: steps[7] }
+    { char: shown[7], step: steps[7] },
+    { char: hzLast, step: 1, smallHz: true }
   ];
 }
 
@@ -137,7 +181,7 @@ function renderFrequency() {
   frequencyReadout.textContent = "";
   for (const slot of slots) {
     const span = document.createElement("span");
-    span.className = `frequency-slot${slot.dot ? " dot" : ""}${slot.blank ? " blank" : ""}`;
+    span.className = `frequency-slot${slot.dot ? " dot" : ""}${slot.blank ? " blank" : ""}${slot.smallHz ? " hz-last" : ""}`;
     span.textContent = slot.char;
     if (slot.step) {
       span.dataset.step = String(slot.step);
@@ -166,6 +210,14 @@ function renderRit() {
   ritReadout.appendChild(suffix);
 }
 
+function pauseFrequencyRead(ms = 1200) {
+  pauseFrequencyReadUntil = Date.now() + ms;
+}
+
+function pauseRitRead(ms = 1200) {
+  pauseRitReadUntil = Date.now() + ms;
+}
+
 function readWheelStep(target, fallbackStep) {
   const slot = target.closest("[data-step]");
   return slot ? Number(slot.dataset.step) || fallbackStep : fallbackStep;
@@ -173,6 +225,7 @@ function readWheelStep(target, fallbackStep) {
 
 function scheduleFrequencyWrite() {
   window.clearTimeout(tuneTimer);
+  pauseFrequencyRead(1400);
   tuneTimer = window.setTimeout(() => {
     send({
       type: "setFrequency",
@@ -184,6 +237,7 @@ function scheduleFrequencyWrite() {
 
 function scheduleRitWrite() {
   window.clearTimeout(ritTimer);
+  pauseRitRead(1400);
   ritTimer = window.setTimeout(() => {
     sendRaw(`2100${encodeBcdFixed(state.ritRaw, 6)}`, true, true);
   }, 70);
@@ -224,6 +278,21 @@ function formatPowerMeter(raw) {
   return { text: `${percent}%`, segments: Math.round((percent / 100) * 24) };
 }
 
+function formatKeySpeed(raw) {
+  const numeric = Math.max(0, Math.min(255, Number(raw) || 0));
+  return `${6 + Math.floor((numeric * 42) / 255)} WPM`;
+}
+
+function formatAfVolume(raw) {
+  const numeric = Math.max(0, Math.min(255, Number(raw) || 0));
+  return `${Math.round((numeric * 100) / 255)} %`;
+}
+
+function formatRfPower(raw) {
+  const numeric = Math.max(0, Math.min(255, Number(raw) || 0));
+  return `${Math.round((numeric * 100) / 255)} %`;
+}
+
 function formatSwr(raw) {
   const numeric = Number(raw) || 0;
   let ratio = 1;
@@ -252,7 +321,16 @@ function resetRxIndicatorsForPowerOff() {
   state.meterText = "S0";
   state.subLabel = "Supply";
   state.subValue = "--.- V";
+  state.subBarSegments = 0;
+  state.subBarAlert = false;
   setMeterSegments(0);
+  setSubBarSegments(0, false);
+}
+
+function resetControlSliders() {
+  afVolume.value = "0";
+  keySpeed.value = "0";
+  rfPower.value = "0";
 }
 
 function applyState(message) {
@@ -264,12 +342,14 @@ function applyState(message) {
   state.btStatus = message.btStatus || state.btStatus;
   state.wifiStatus = message.wifiStatus || state.wifiStatus;
   state.wifiRssi = Number(message.wifiRssi ?? state.wifiRssi);
+  state.fwRev = message.fwRev || state.fwRev;
   state.power = Boolean(message.power);
   state.frequency = Number(message.frequency) || 0;
   state.mode = message.mode || state.mode;
   state.radioAddress = message.radioAddress || state.radioAddress;
   if (!state.power) {
     resetRxIndicatorsForPowerOff();
+    resetControlSliders();
   } else if (!wasPowerOn) {
     state.subLabel = state.tx ? "SWR" : "Supply";
   }
@@ -320,13 +400,19 @@ function applyDecoded(decoded) {
   }
 
   if (decoded.kind === "swrMeter") {
+    const ratio = Number(formatSwr(decoded.raw));
     state.subLabel = "SWR";
-    state.subValue = formatSwr(decoded.raw);
+    state.subValue = ratio.toFixed(2);
+    state.subBarSegments = Math.min(24, Math.round((Math.min(ratio, 4) / 4) * 24));
+    state.subBarAlert = ratio > 3;
   }
 
   if (decoded.kind === "vdMeter") {
+    const volts = Number(decoded.voltsApprox ?? 0);
     state.subLabel = "Supply";
-    state.subValue = `${Number(decoded.voltsApprox ?? 0).toFixed(2)} V`;
+    state.subValue = `${volts.toFixed(2)} V`;
+    state.subBarSegments = Math.min(24, Math.round((Math.min(volts, 18) / 18) * 24));
+    state.subBarAlert = volts < 6.5 || volts > 16.0;
   }
 
   if (decoded.kind === "txState") {
@@ -339,6 +425,14 @@ function applyDecoded(decoded) {
 function setMeterSegments(activeCount) {
   [...meterBar.children].forEach((segment, index) => {
     segment.classList.toggle("active", index < activeCount);
+  });
+}
+
+function setSubBarSegments(activeCount, alert) {
+  [...subBar.children].forEach((segment, index) => {
+    segment.classList.toggle("active", index < activeCount);
+    segment.classList.toggle("aux-active", index < activeCount && !alert);
+    segment.classList.toggle("aux-over", index < activeCount && alert);
   });
 }
 
@@ -355,9 +449,14 @@ function render() {
   meterValue.textContent = state.meterText;
   subValueLabel.textContent = state.subLabel;
   subValueReadout.textContent = state.subValue;
-  afVolumeValue.textContent = afVolume.value;
-  keySpeedValue.textContent = keySpeed.value;
-  rfPowerValue.textContent = rfPower.value;
+  setSubBarSegments(state.subBarSegments, state.subBarAlert);
+  const controlsEnabled = state.radioConnected && state.power;
+  afVolume.disabled = !controlsEnabled;
+  keySpeed.disabled = !controlsEnabled;
+  rfPower.disabled = !controlsEnabled;
+  afVolumeValue.textContent = formatAfVolume(afVolume.value);
+  keySpeedValue.textContent = formatKeySpeed(keySpeed.value);
+  rfPowerValue.textContent = formatRfPower(rfPower.value);
   preampButton.textContent = `P.AMP/ATT ${state.preamp}`;
   voxButton.textContent = `VOX ${state.vox}`;
   pttButton.classList.toggle("tx-active", state.tx);
@@ -366,6 +465,7 @@ function render() {
   const wifiText = state.wifiRssi > -999 ? `${state.wifiStatus} ${state.wifiRssi} dBm` : state.wifiStatus;
   statusConnection.textContent = `${state.btStatus} | ${wifiText}`;
   statusRadio.textContent = state.power ? (state.tx ? "TX active" : "RX active") : "Radio OFF";
+  statusFw.textContent = `FW ${state.fwRev}`;
 }
 
 function handleMessage(msg) {
@@ -401,6 +501,9 @@ function connect() {
     state.btStatus = "BT idle";
     state.wifiStatus = "WiFi down";
     state.wifiRssi = -999;
+    state.fwRev = "----";
+    pendingReads = 0;
+    resetControlSliders();
     render();
     setTimeout(connect, 2000);
   });
@@ -417,9 +520,18 @@ function connect() {
 }
 
 setInterval(() => {
-  if (!socket || socket.readyState !== WebSocket.OPEN || pendingReads > 1) {
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
     return;
   }
+  if (pendingReads > 1) {
+    pollStuckCount++;
+    if (pollStuckCount > 20) {
+      pendingReads = 0;
+      pollStuckCount = 0;
+    }
+    return;
+  }
+  pollStuckCount = 0;
   pollPlan[pollIndex % pollPlan.length]();
   pollIndex++;
 }, 140);
@@ -451,20 +563,76 @@ function bindSlider(input, subCommand) {
   });
 }
 
+function renderCwMemoryButtons() {
+  cwMemoryButtons.forEach((button, index) => {
+    const text = cwMemories[index].trim();
+    button.disabled = text.length === 0;
+    button.textContent = text.length > 0 ? text.slice(0, 10) : `CW ${index + 1}`;
+  });
+}
+
+function parseFrequencyMemory(value) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const parts = trimmed.split(/\s+/);
+  const frequency = Number(parts[0]);
+  const mode = parts[1] ? parts[1].toUpperCase() : "";
+  if (!Number.isFinite(frequency) || frequency <= 0) {
+    return null;
+  }
+  return { frequency, mode };
+}
+
+function renderFrequencyMemories() {
+  for (let index = 0; index < freqMemories.length; index++) {
+    const value = freqMemories[index].trim();
+    if (!value) {
+      continue;
+    }
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = `${index + 1}: ${value.slice(0, 18)}`;
+    freqMemorySelect.appendChild(option);
+  }
+}
+
 bindSlider(afVolume, "01");
 bindSlider(keySpeed, "0C");
 bindSlider(rfPower, "0A");
 
 frequencyReadout.addEventListener("wheel", (event) => {
   event.preventDefault();
+  pauseFrequencyRead(1600);
   const step = readWheelStep(event.target, 10);
   tuneFrequency(step, event.deltaY < 0 ? 1 : -1);
 }, { passive: false });
 
+frequencyReadout.addEventListener("click", (event) => {
+  const step = readWheelStep(event.target, 10);
+  pauseFrequencyRead(1600);
+  tuneFrequency(step, 1);
+});
+
+frequencyReadout.addEventListener("contextmenu", (event) => {
+  event.preventDefault();
+  const step = readWheelStep(event.target, 10);
+  pauseFrequencyRead(1600);
+  tuneFrequency(step, -1);
+});
+
 ritReadout.addEventListener("wheel", (event) => {
   event.preventDefault();
+  pauseRitRead(1600);
   tuneRit(event.deltaY < 0 ? 1 : -1);
 }, { passive: false });
+
+frequencyReadout.addEventListener("mouseenter", () => pauseFrequencyRead(5000));
+frequencyReadout.addEventListener("mousemove", () => pauseFrequencyRead(1200));
+
+ritReadout.addEventListener("mouseenter", () => pauseRitRead(5000));
+ritReadout.addEventListener("mousemove", () => pauseRitRead(1200));
 
 preampButton.addEventListener("click", () => {
   if (state.preamp === "OFF") {
@@ -526,10 +694,63 @@ cwInput.addEventListener("input", () => {
   }
 });
 
+freqInput.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") {
+    return;
+  }
+  event.preventDefault();
+  const frequency = Number(freqInput.value.trim());
+  if (!Number.isFinite(frequency) || frequency <= 0) {
+    freqInput.select();
+    return;
+  }
+  pauseFrequencyRead(1800);
+  send({
+    type: "setFrequency",
+    reqId: nextReqId(),
+    frequency: String(Math.round(frequency))
+  });
+  freqInput.value = "";
+});
+
 clearCwButton.addEventListener("click", () => {
   cwInput.value = "";
   cwSentLength = 0;
 });
 
+freqMemorySelect.addEventListener("change", () => {
+  const memory = parseFrequencyMemory(freqMemorySelect.value);
+  if (!memory) {
+    return;
+  }
+  pauseFrequencyRead(1800);
+  send({
+    type: "setFrequency",
+    reqId: nextReqId(),
+    frequency: String(memory.frequency)
+  });
+  if (memory.mode) {
+    send({
+      type: "setMode",
+      reqId: nextReqId(),
+      mode: memory.mode,
+      filter: `FIL${state.filter}`
+    });
+  }
+  freqMemorySelect.value = "";
+});
+
+cwMemoryButtons.forEach((button, index) => {
+  button.addEventListener("click", () => {
+    const text = cwMemories[index].trim();
+    if (!text) {
+      return;
+    }
+    send({ type: "sendCw", reqId: nextReqId(), text });
+  });
+});
+
+renderCwMemoryButtons();
+renderFrequencyMemories();
 connect();
 render();

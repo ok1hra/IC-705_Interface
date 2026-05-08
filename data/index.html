@@ -16,11 +16,41 @@
   </header>
 
   <main class="cat-shell">
+    <div id="memoryData" hidden>
+      <textarea id="cwMem1Data">%CW_MEM1%</textarea>
+      <textarea id="cwMem2Data">%CW_MEM2%</textarea>
+      <textarea id="cwMem3Data">%CW_MEM3%</textarea>
+      <textarea id="cwMem4Data">%CW_MEM4%</textarea>
+      <textarea id="freqMem1Data">%FREQ_MEM1%</textarea>
+      <textarea id="freqMem2Data">%FREQ_MEM2%</textarea>
+      <textarea id="freqMem3Data">%FREQ_MEM3%</textarea>
+      <textarea id="freqMem4Data">%FREQ_MEM4%</textarea>
+      <textarea id="freqMem5Data">%FREQ_MEM5%</textarea>
+      <textarea id="freqMem6Data">%FREQ_MEM6%</textarea>
+      <textarea id="freqMem7Data">%FREQ_MEM7%</textarea>
+      <textarea id="freqMem8Data">%FREQ_MEM8%</textarea>
+      <textarea id="freqMem9Data">%FREQ_MEM9%</textarea>
+      <textarea id="freqMem10Data">%FREQ_MEM10%</textarea>
+    </div>
     <section class="cat-panel">
       <div class="hero-row">
         <div class="frequency-wrap">
           <p class="label">Frequency</p>
           <div id="frequencyReadout" class="frequency">0.000.00</div>
+
+          <section class="meter-block">
+            <div class="meter-legend">
+              <span id="meterLabel">S meter</span>
+              <span id="meterValue">S0</span>
+            </div>
+            <div id="meterBar" class="meter-bar" aria-hidden="true"></div>
+            <div class="meter-divider" aria-hidden="true"></div>
+            <div id="subBar" class="meter-bar meter-bar-secondary" aria-hidden="true"></div>
+            <div class="sub-value">
+              <span id="subValueLabel">Supply</span>
+              <span id="subValueReadout">--.- V</span>
+            </div>
+          </section>
         </div>
 
         <div class="side-stack">
@@ -44,20 +74,20 @@
               <button id="clearRit" class="mini-button" type="button">Clear</button>
             </div>
           </div>
+
+          <label class="field-row" for="freqMemorySelect">
+            <span>MEM</span>
+            <select id="freqMemorySelect">
+              <option value="">Memory select</option>
+            </select>
+          </label>
+
+          <label class="field-row" for="freqInput">
+            <span>FREQ</span>
+            <input id="freqInput" type="text" inputmode="numeric" placeholder="Hz">
+          </label>
         </div>
       </div>
-
-      <section class="meter-block">
-        <div id="meterBar" class="meter-bar" aria-hidden="true"></div>
-        <div class="meter-legend">
-          <span id="meterLabel">S meter</span>
-          <span id="meterValue">S0</span>
-        </div>
-        <div class="sub-value">
-          <span id="subValueLabel">Supply</span>
-          <span id="subValueReadout">--.- V</span>
-        </div>
-      </section>
 
       <section class="slider-grid">
         <label>
@@ -86,10 +116,18 @@
         <button id="clearCw" type="button">Clear</button>
       </section>
 
+      <section class="button-row memory-row">
+        <button id="cwMemory1" type="button">CW 1</button>
+        <button id="cwMemory2" type="button">CW 2</button>
+        <button id="cwMemory3" type="button">CW 3</button>
+        <button id="cwMemory4" type="button">CW 4</button>
+      </section>
+
       <footer class="status-row">
         <span id="statusAddress">CI-V 0x00</span>
         <span id="statusConnection">Disconnected</span>
         <span id="statusRadio">Radio OFF</span>
+        <span id="statusFw">FW ----</span>
       </footer>
     </section>
   </main>

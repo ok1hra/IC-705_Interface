@@ -98,6 +98,69 @@
           </select>
         </label>
 
+        <label>Transceiver profile
+          <select name="trxprofile">
+            <option value="IC-705-BT" %TRX_IC705_SEL%>IC-705-BT</option>
+            <option value="IC-7610-CI-V" %TRX_IC7610_SEL%>IC-7610-CI-V</option>
+          </select>
+        </label>
+
+        <label>CI-V address
+          <input type="text" name="civaddr" maxlength="2" value="%CIV_ADDR%">
+          <span class="msg">%CIV_ADDR_ERR%</span>
+        </label>
+
+        <fieldset>
+          <legend>CW memories</legend>
+          <label>CW memory 1
+            <input type="text" name="cwmem1" maxlength="30" value="%CW_MEM1%">
+          </label>
+          <label>CW memory 2
+            <input type="text" name="cwmem2" maxlength="30" value="%CW_MEM2%">
+          </label>
+          <label>CW memory 3
+            <input type="text" name="cwmem3" maxlength="30" value="%CW_MEM3%">
+          </label>
+          <label>CW memory 4
+            <input type="text" name="cwmem4" maxlength="30" value="%CW_MEM4%">
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Frequency memories</legend>
+          <p class="footnote">Use compact format like <code>14074000 USB</code> or <code>144174000 FM</code>.</p>
+          <label>Memory 1
+            <input type="text" name="freqmem1" maxlength="20" value="%FREQ_MEM1%">
+          </label>
+          <label>Memory 2
+            <input type="text" name="freqmem2" maxlength="20" value="%FREQ_MEM2%">
+          </label>
+          <label>Memory 3
+            <input type="text" name="freqmem3" maxlength="20" value="%FREQ_MEM3%">
+          </label>
+          <label>Memory 4
+            <input type="text" name="freqmem4" maxlength="20" value="%FREQ_MEM4%">
+          </label>
+          <label>Memory 5
+            <input type="text" name="freqmem5" maxlength="20" value="%FREQ_MEM5%">
+          </label>
+          <label>Memory 6
+            <input type="text" name="freqmem6" maxlength="20" value="%FREQ_MEM6%">
+          </label>
+          <label>Memory 7
+            <input type="text" name="freqmem7" maxlength="20" value="%FREQ_MEM7%">
+          </label>
+          <label>Memory 8
+            <input type="text" name="freqmem8" maxlength="20" value="%FREQ_MEM8%">
+          </label>
+          <label>Memory 9
+            <input type="text" name="freqmem9" maxlength="20" value="%FREQ_MEM9%">
+          </label>
+          <label>Memory 10
+            <input type="text" name="freqmem10" maxlength="20" value="%FREQ_MEM10%">
+          </label>
+        </fieldset>
+
         <div class="actions">
           <button type="submit">Save and Restart</button>
           <a href="/">Back</a>

@@ -115,6 +115,14 @@ body {
   text-align: center;
 }
 
+.frequency-slot.hz-last {
+  width: 0.44em;
+  font-size: 0.68em;
+  align-self: flex-end;
+  margin-left: 0.06em;
+  margin-bottom: 0.18em;
+}
+
 .frequency-slot.dot,
 .rit-slot.dot {
   width: 0.42em;
@@ -150,7 +158,8 @@ button {
 }
 
 select,
-.cw-row input {
+.cw-row input,
+.field-row input {
   width: 100%;
   border-radius: 12px;
   border: 1px solid #314152;
@@ -192,7 +201,12 @@ select,
 }
 
 .meter-block {
-  margin-top: 18px;
+  margin-top: 14px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid #19222d;
+  border-radius: 14px;
+  background: rgba(6, 10, 15, 0.72);
 }
 
 .meter-bar {
@@ -200,6 +214,16 @@ select,
   grid-template-columns: repeat(24, minmax(0, 1fr));
   gap: 4px;
   width: 100%;
+}
+
+.meter-bar-secondary {
+  margin-top: 6px;
+}
+
+.meter-divider {
+  height: 1px;
+  margin: 6px 0 0;
+  background: linear-gradient(90deg, transparent 0, #223244 12%, #223244 88%, transparent 100%);
 }
 
 .meter-segment {
@@ -221,6 +245,18 @@ select,
   box-shadow: 0 0 10px rgba(255, 69, 58, 0.35);
 }
 
+.meter-segment.aux-active.active {
+  background: linear-gradient(180deg, #85e76b, #278b3b);
+  border-color: #8af078;
+  box-shadow: 0 0 10px rgba(91, 201, 108, 0.35);
+}
+
+.meter-segment.aux-over.active {
+  background: linear-gradient(180deg, #ff6e61, #d11d1d);
+  border-color: #ff7d73;
+  box-shadow: 0 0 10px rgba(255, 69, 58, 0.35);
+}
+
 .meter-legend,
 .sub-value,
 .status-row {
@@ -235,8 +271,14 @@ select,
   font-family: "Courier New", monospace;
 }
 
+.meter-legend {
+  margin-top: 0;
+  margin-bottom: 6px;
+}
+
 .sub-value {
   color: var(--muted);
+  margin-top: 6px;
 }
 
 .slider-grid {
@@ -267,6 +309,11 @@ input[type="range"] {
   accent-color: var(--blue);
 }
 
+input[type="range"]:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
 .button-row {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -291,6 +338,10 @@ input[type="range"] {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
   margin-top: 22px;
+}
+
+.memory-row {
+  margin-top: 10px;
 }
 
 .status-row {

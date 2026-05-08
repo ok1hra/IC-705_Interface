@@ -192,7 +192,7 @@ bool Debug          = false;
   #define MODE_TYPE_FM    0x05
   #define MODE_TYPE_DV    0x17
 
-  String modes;
+  char modes[12] = "OFF";
   BluetoothSerial CAT;
   bool btClientConnected = false;
 #endif
@@ -212,6 +212,7 @@ bool statusPower        = 0;
 const int CIVmutePin    = 16;
 bool TrxNeedSet         = 0;
 bool TrxSetupDone       = false;
+volatile bool btStateBroadcastPending = false;
 volatile bool btDisconnectPending = false;
 long mqttPostponeTimer  = 0;
 bool mqttPostponeStatus = 1;
@@ -323,28 +324,30 @@ uint8_t CwCat[36] = "";
 int incomingByte = 0;   // for incoming serial data
 
 #if defined(WIFI)
-typedef struct {
-  uint32_t state[5];
-  uint32_t count[2];
-  unsigned char buffer[64];
-} SHA1_CTX;
+typedef mbedtls_sha1_context SHA1_CTX;
 
 extern "C" void SHA1Init(SHA1_CTX* context){
-  mbedtls_sha1_init(reinterpret_cast<mbedtls_sha1_context*>(context));
-  mbedtls_sha1_starts_ret(reinterpret_cast<mbedtls_sha1_context*>(context));
+  mbedtls_sha1_init(context);
+  mbedtls_sha1_starts_ret(context);
 }
 
 extern "C" void SHA1Update(SHA1_CTX* context, const unsigned char* data, uint32_t len){
-  mbedtls_sha1_update_ret(reinterpret_cast<mbedtls_sha1_context*>(context), data, len);
+  mbedtls_sha1_update_ret(context, data, len);
 }
 
 extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
-  mbedtls_sha1_finish_ret(reinterpret_cast<mbedtls_sha1_context*>(context), digest);
-  mbedtls_sha1_free(reinterpret_cast<mbedtls_sha1_context*>(context));
+  mbedtls_sha1_finish_ret(context, digest);
+  mbedtls_sha1_free(context);
 }
 #endif
 
 #if defined(WIFI)
+  const uint8_t CW_MEMORY_COUNT = 4;
+  const uint8_t FREQ_MEMORY_COUNT = 10;
+  const size_t CW_MEMORY_MAX_LEN = 30;
+  const size_t FREQ_MEMORY_MAX_LEN = 20;
+  const uint8_t CIV_ADDRESS_DEFAULT = 0xA4;
+  const char *MEMORY_CONFIG_PATH = "/memories.cfg";
   const uint8_t WS_QUEUE_DEPTH = 4;
   const uint8_t WS_SPLIT_PROBE_STEPS = 4;
 
@@ -389,6 +392,9 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   WsPendingRequest wsPendingRequest{false, 0, 0, "", WS_MATCH_NONE, 0, 0, {0, 0, 0, 0}};
   WsQueuedRequest wsQueuedRequests[WS_QUEUE_DEPTH]{};
   WsSplitProbeState wsSplitProbe{false, 0, "", 0};
+  volatile bool wsRigStateDirty = false;
+  unsigned long wsRigStateLastSentMs = 0;
+  const unsigned long WS_STATE_MIN_INTERVAL_MS = 150;
   String setupSsidErr = "";
   String setupPswdErr = "";
   String setupSsid2Err = "";
@@ -404,8 +410,18 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   String setupHttpCatPortErr = "";
   String setupUdpPortErr = "";
   String setupUdpCatPortErr = "";
+  String setupCivAddrErr = "";
+  String transceiverType = "IC-705-BT";
+  uint8_t configuredCivAddress = CIV_ADDRESS_DEFAULT;
+  String cwMemoryText[CW_MEMORY_COUNT];
+  String freqMemoryText[FREQ_MEMORY_COUNT];
+  portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
   String requestArg(AsyncWebServerRequest *request, const char *name);
   bool requestHasArg(AsyncWebServerRequest *request, const char *name);
+  String trimMemoryValue(const String &value, size_t maxLen);
+  bool parseHexByteString(const String &value, uint8_t &outValue);
+  void loadMemoryConfig(void);
+  void saveMemoryConfig(void);
   String jsonEscape(const String &value);
   String civFrameToHex(const uint8_t *frame, size_t frameLen);
   uint32_t decodeCivFrequencyBytes(const uint8_t *bytes, size_t byteCount);
@@ -414,6 +430,9 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   String wsDecodeCivFrameJson(const uint8_t *frame, size_t frameLen);
   String wsBuildStateFields(void);
   String wsBuildStateJson(const char *type, const String &reqId = "");
+  bool wsCanBroadcast(void);
+  void wsMarkRigStateDirty(void);
+  void wsFlushRigStateIfNeeded(bool force = false);
   void wsBroadcastRigState(void);
   void wsBroadcastCivFrame(const char *type, const uint8_t *frame, size_t frameLen, const String &reqId = "");
   void wsSendError(AsyncWebSocketClient *client, const String &code, const String &message, const String &reqId = "");
@@ -422,6 +441,8 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   String extractJsonString(const String &json, const char *key);
   bool extractJsonBool(const String &json, const char *key, bool defaultValue);
   bool parseHexPayload(const String &hex, uint8_t *buffer, size_t &bufferLen, size_t maxLen);
+  void setModesText(const char *value);
+  void copyModesText(char *dest, size_t destSize);
   bool catWriteFrame(const uint8_t *frame, size_t frameLen, bool broadcastTx);
   void wsSendQueued(AsyncWebSocketClient *client, const String &reqId, uint8_t depth);
   bool wsStartRequest(uint32_t clientId, const String &reqId, WsPendingMatchType matchType, uint8_t expectedCommand, const uint8_t *expectedPayload, uint8_t expectedPayloadLen, unsigned long timeoutMs, const uint8_t *frame, size_t frameLen);
@@ -468,6 +489,102 @@ String requestArg(AsyncWebServerRequest *request, const char *name){
 
 bool requestHasArg(AsyncWebServerRequest *request, const char *name){
   return request->hasParam(name, true) || request->hasParam(name);
+}
+
+String trimMemoryValue(const String &value, size_t maxLen){
+  String trimmed = value;
+  trimmed.trim();
+  if (trimmed.length() > maxLen) {
+    trimmed = trimmed.substring(0, maxLen);
+    trimmed.trim();
+  }
+  return trimmed;
+}
+
+bool parseHexByteString(const String &value, uint8_t &outValue){
+  String normalized = value;
+  normalized.trim();
+  normalized.toUpperCase();
+  if (normalized.startsWith("0X")) {
+    normalized = normalized.substring(2);
+  }
+  if (normalized.length() == 0 || normalized.length() > 2) {
+    return false;
+  }
+
+  char buffer[3] = {0, 0, 0};
+  normalized.toCharArray(buffer, sizeof(buffer));
+  char *endPtr = nullptr;
+  long parsed = strtol(buffer, &endPtr, 16);
+  if (endPtr == nullptr || *endPtr != '\0' || parsed < 0 || parsed > 255) {
+    return false;
+  }
+  outValue = (uint8_t)parsed;
+  return true;
+}
+
+void loadMemoryConfig(void){
+  for (uint8_t i = 0; i < CW_MEMORY_COUNT; i++) {
+    cwMemoryText[i] = "";
+  }
+  for (uint8_t i = 0; i < FREQ_MEMORY_COUNT; i++) {
+    freqMemoryText[i] = "";
+  }
+
+  if (!SPIFFS.exists(MEMORY_CONFIG_PATH)) {
+    return;
+  }
+
+  File file = SPIFFS.open(MEMORY_CONFIG_PATH, FILE_READ);
+  if (!file) {
+    return;
+  }
+
+  for (uint8_t i = 0; i < CW_MEMORY_COUNT && file.available(); i++) {
+    cwMemoryText[i] = trimMemoryValue(file.readStringUntil('\n'), CW_MEMORY_MAX_LEN);
+  }
+  for (uint8_t i = 0; i < FREQ_MEMORY_COUNT && file.available(); i++) {
+    freqMemoryText[i] = trimMemoryValue(file.readStringUntil('\n'), FREQ_MEMORY_MAX_LEN);
+  }
+
+  if (file.available()) {
+    String configuredType = trimMemoryValue(file.readStringUntil('\n'), 16);
+    if (configuredType == "IC-7610-CI-V") {
+      transceiverType = configuredType;
+    } else {
+      transceiverType = "IC-705-BT";
+    }
+  }
+
+  if (file.available()) {
+    uint8_t parsedAddress = CIV_ADDRESS_DEFAULT;
+    if (parseHexByteString(file.readStringUntil('\n'), parsedAddress)) {
+      configuredCivAddress = parsedAddress;
+    }
+  }
+
+  file.close();
+}
+
+void saveMemoryConfig(void){
+  File file = SPIFFS.open(MEMORY_CONFIG_PATH, FILE_WRITE);
+  if (!file) {
+    return;
+  }
+
+  for (uint8_t i = 0; i < CW_MEMORY_COUNT; i++) {
+    file.println(trimMemoryValue(cwMemoryText[i], CW_MEMORY_MAX_LEN));
+  }
+  for (uint8_t i = 0; i < FREQ_MEMORY_COUNT; i++) {
+    file.println(trimMemoryValue(freqMemoryText[i], FREQ_MEMORY_MAX_LEN));
+  }
+  file.println(transceiverType);
+  if (configuredCivAddress < 16) {
+    file.print("0");
+  }
+  file.println(String(configuredCivAddress, HEX));
+
+  file.close();
 }
 
 String jsonEscape(const String &value){
@@ -741,6 +858,8 @@ String wsDecodeCivFrameJson(const uint8_t *frame, size_t frameLen){
 
 String wsBuildStateFields(void){
   String json;
+  char modesSnapshot[sizeof(modes)];
+  copyModesText(modesSnapshot, sizeof(modesSnapshot));
   json += "\"connected\":";
   json += (btClientConnected ? "true" : "false");
   json += ",\"btStatus\":\"";
@@ -769,12 +888,15 @@ String wsBuildStateFields(void){
   } else {
     json += String(WiFi.RSSI());
   }
+  json += ",\"fwRev\":\"";
+  json += String(REV);
+  json += "\"";
   json += ",\"power\":";
   json += (statusPower == 1 ? "true" : "false");
   json += ",\"frequency\":";
   json += String(frequency);
   json += ",\"mode\":\"";
-  json += jsonEscape(modes);
+  json += jsonEscape(String(modesSnapshot));
   json += "\",\"radioAddress\":\"0x";
   if (radio_address < 16) {
     json += "0";
@@ -873,6 +995,22 @@ bool parseHexPayload(const String &hex, uint8_t *buffer, size_t &bufferLen, size
     }
   }
   return nibble < 0 && bufferLen > 0;
+}
+
+void setModesText(const char *value){
+  portENTER_CRITICAL(&stateMux);
+  snprintf(modes, sizeof(modes), "%s", value != nullptr ? value : "");
+  portEXIT_CRITICAL(&stateMux);
+}
+
+void copyModesText(char *dest, size_t destSize){
+  if (dest == nullptr || destSize == 0) {
+    return;
+  }
+
+  portENTER_CRITICAL(&stateMux);
+  snprintf(dest, destSize, "%s", modes);
+  portEXIT_CRITICAL(&stateMux);
 }
 
 bool parseModeId(const String &modeName, uint8_t &modeId){
@@ -996,6 +1134,7 @@ void resetSetupMessages(void){
   setupHttpCatPortErr = "";
   setupUdpPortErr = "";
   setupUdpCatPortErr = "";
+  setupCivAddrErr = "";
 }
 
 String setupTemplateProcessor(const String &key){
@@ -1032,6 +1171,31 @@ String setupTemplateProcessor(const String &key){
   if (key == "HTTP_CAT_PORT_ERR") return setupHttpCatPortErr;
   if (key == "UDP_PORT_ERR") return setupUdpPortErr;
   if (key == "UDP_CAT_PORT_ERR") return setupUdpCatPortErr;
+  if (key == "CIV_ADDR") {
+    String addr = String(configuredCivAddress, HEX);
+    addr.toUpperCase();
+    if (configuredCivAddress < 16) {
+      addr = "0" + addr;
+    }
+    return addr;
+  }
+  if (key == "CIV_ADDR_ERR") return setupCivAddrErr;
+  if (key == "TRX_IC705_SEL") return transceiverType == "IC-705-BT" ? "selected" : "";
+  if (key == "TRX_IC7610_SEL") return transceiverType == "IC-7610-CI-V" ? "selected" : "";
+  if (key == "CW_MEM1") return cwMemoryText[0];
+  if (key == "CW_MEM2") return cwMemoryText[1];
+  if (key == "CW_MEM3") return cwMemoryText[2];
+  if (key == "CW_MEM4") return cwMemoryText[3];
+  if (key == "FREQ_MEM1") return freqMemoryText[0];
+  if (key == "FREQ_MEM2") return freqMemoryText[1];
+  if (key == "FREQ_MEM3") return freqMemoryText[2];
+  if (key == "FREQ_MEM4") return freqMemoryText[3];
+  if (key == "FREQ_MEM5") return freqMemoryText[4];
+  if (key == "FREQ_MEM6") return freqMemoryText[5];
+  if (key == "FREQ_MEM7") return freqMemoryText[6];
+  if (key == "FREQ_MEM8") return freqMemoryText[7];
+  if (key == "FREQ_MEM9") return freqMemoryText[8];
+  if (key == "FREQ_MEM10") return freqMemoryText[9];
   if (key == "BAUD1200_SEL") return BaudRate == 1200 ? "selected" : "";
   if (key == "BAUD2400_SEL") return BaudRate == 2400 ? "selected" : "";
   if (key == "BAUD4800_SEL") return BaudRate == 4800 ? "selected" : "";
@@ -1062,11 +1226,40 @@ String wsBuildStateJson(const char *type, const String &reqId){
   return json;
 }
 
-void wsBroadcastRigState(void){
+bool wsCanBroadcast(void){
+  return ws.count() > 0 && ws.availableForWriteAll();
+}
+
+void wsMarkRigStateDirty(void){
+  wsRigStateDirty = true;
+}
+
+void wsFlushRigStateIfNeeded(bool force){
+  if (!wsRigStateDirty) {
+    return;
+  }
+  if (!force && (millis() - wsRigStateLastSentMs) < WS_STATE_MIN_INTERVAL_MS) {
+    return;
+  }
+  if (!wsCanBroadcast()) {
+    return;
+  }
+
   ws.textAll(wsBuildStateJson("state"));
+  wsRigStateDirty = false;
+  wsRigStateLastSentMs = millis();
+}
+
+void wsBroadcastRigState(void){
+  wsMarkRigStateDirty();
+  wsFlushRigStateIfNeeded();
 }
 
 void wsBroadcastCivFrame(const char *type, const uint8_t *frame, size_t frameLen, const String &reqId){
+  if (!wsCanBroadcast()) {
+    return;
+  }
+
   String hex = civFrameToHex(frame, frameLen);
   String decoded = wsDecodeCivFrameJson(frame, frameLen);
 
@@ -1194,6 +1387,10 @@ bool wsStartSplitProbe(AsyncWebSocketClient *client, const String &reqId){
 bool wsQueuePendingRequest(AsyncWebSocketClient *client, const String &reqId, WsPendingMatchType matchType, uint8_t expectedCommand, const uint8_t *expectedPayload, uint8_t expectedPayloadLen, unsigned long timeoutMs, const uint8_t *frame, size_t frameLen){
   if (!wsPendingRequest.active) {
     return wsStartRequest(client->id(), reqId, matchType, expectedCommand, expectedPayload, expectedPayloadLen, timeoutMs, frame, frameLen);
+  }
+
+  if (frameLen > sizeof(wsQueuedRequests[0].frame)) {
+    return false;
   }
 
   for (uint8_t i = 0; i < WS_QUEUE_DEPTH; i++) {
@@ -1749,7 +1946,7 @@ void setupAsyncHttpServer(void){
       handleSet(request);
       return;
     }
-    request->send(SPIFFS, "/index.html", "text/html");
+    request->send(SPIFFS, "/index.html", "text/html", false, setupTemplateProcessor);
   });
 
   ajaxserver.on("/ws-cat", HTTP_GET, [](AsyncWebServerRequest *request){
@@ -1772,7 +1969,7 @@ void setupAsyncHttpServer(void){
       handleSet(request);
       return;
     }
-    request->send(SPIFFS, "/index.html", "text/html");
+    request->send(SPIFFS, "/index.html", "text/html", false, setupTemplateProcessor);
   });
 
   ajaxserver.serveStatic("/", SPIFFS, "/");
@@ -1987,6 +2184,7 @@ void setup(){
       Serial.println("SPIFFS| mount failed");
     } else {
       Serial.println("SPIFFS| mounted");
+      loadMemoryConfig();
     }
 
     if(APmode==true){
@@ -2191,11 +2389,18 @@ void loop(){
 // SUBROUTINES -------------------------------------------------------------------------------------------------------
 
 void Watchdog(){
+  if (btStateBroadcastPending == true) {
+    btStateBroadcastPending = false;
+    wsBroadcastRigState();
+  }
+
+  wsFlushRigStateIfNeeded();
+
   if (btDisconnectPending == true) {
     btDisconnectPending = false;
     powerTimer = 0;
     frequency = 0;
-    modes = "OFF";
+    setModesText("OFF");
     mqttPostponeStatus = 1;
     if (statusPower == 1 && mqttEnable == true) {
       MqttPubString(MQTT_TOPIC, "0", 0);
@@ -2310,8 +2515,8 @@ void Watchdog(){
     #else
       String StrBuf = "IP=  "+String(WiFi.localIP()[0])+"."+String(WiFi.localIP()[1])+"."+String(WiFi.localIP()[2])+"."+String(WiFi.localIP()[3]) ;
     #endif
-    StrBuf.toCharArray(CwMsg, StrBuf.length()+1);
-    modes="CW";
+    StrBuf.toCharArray(CwMsg, sizeof(CwMsg));
+    setModesText("CW");
     sendCW();
     #if defined(RESET_AFTER_DISCONNECT)
       ServiceBackgroundTasks(2000);
@@ -2369,7 +2574,7 @@ void Watchdog(){
       statusPower = 0;
       frequency = 0;
       frequencyTmp = 0;
-      modes = "OFF";
+      setModesText("OFF");
       #if defined(RESET_AFTER_DISCONNECT)
         Serial.println();
         Serial.println("** Interface will be restarted **");
@@ -2495,6 +2700,9 @@ void ServiceBackgroundTasks(unsigned long waitMs) {
     #endif
     ws.cleanupClients();
     wsProcessPendingTimeout();
+    #if defined(WDT)
+      esp_task_wdt_reset();
+    #endif
     delay(10);
   }
 }
@@ -2823,7 +3031,7 @@ void processCatMessages(){  // BUGFIX
       }
 
       powerTimer = millis();
-      wsBroadcastRigState();
+      wsMarkRigStateDirty();
     }
   #endif
 }
@@ -2831,9 +3039,10 @@ void processCatMessages(){  // BUGFIX
 //-------------------------------------------------------------------------------------------------------
 // call back to get info about connection
 void callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param){ // BUGFIX
+  (void)param;
   if (event == ESP_SPP_SRV_OPEN_EVT) {
     btClientConnected = true;
-    radio_address = 0xA4;
+    radio_address = configuredCivAddress;
     frequency = 0;
     frequencyTmp = 0;
     if (TrxSetupDone == false) {
@@ -2843,7 +3052,7 @@ void callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param){ // BUGFIX
     Serial.println("    | Client Connected");
     Serial.println("    | CHANGE frequency on IC-705, for initialize CAT");
     Serial.println("    | -----------------------------------------------------------------------------");
-    wsBroadcastRigState();
+    btStateBroadcastPending = true;
   }
 
   if (event == ESP_SPP_CLOSE_EVT) {
@@ -2852,7 +3061,7 @@ void callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param){ // BUGFIX
     TrxNeedSet = 0;
     btDisconnectPending = true;
     Serial.println("    | Client Disconnected");
-    wsBroadcastRigState();
+    btStateBroadcastPending = true;
   }
 }
 //-------------------------------------------------------------------------------------------------------
@@ -3075,16 +3284,16 @@ void printMode(void){ // BUGFIX
     uint8_t modeId = read_buffer[5];
 
     switch (modeId) {
-      case 0x00: modes = "LSB"; break;
-      case 0x01: modes = "USB"; break;
-      case 0x02: modes = "AM";  break;
-      case 0x03: modes = "CW";  break;
-      case 0x04: modes = "RTTY"; break;
-      case 0x05: modes = "FM";  break;
-      case 0x06: modes = "WFM"; break;
-      case 0x17: modes = "DV";  break;
+      case 0x00: setModesText("LSB"); break;
+      case 0x01: setModesText("USB"); break;
+      case 0x02: setModesText("AM");  break;
+      case 0x03: setModesText("CW");  break;
+      case 0x04: setModesText("RTTY"); break;
+      case 0x05: setModesText("FM");  break;
+      case 0x06: setModesText("WFM"); break;
+      case 0x17: setModesText("DV");  break;
       default:
-        modes = "UNK";
+        setModesText("UNK");
         if (Debug == true) {
           Serial.print("CAT | invalid/unknown mode id: 0x");
           if (modeId < 16) Serial.print("0");
@@ -3094,8 +3303,10 @@ void printMode(void){ // BUGFIX
     }
 
     if (Debug == true) {
+      char modesSnapshot[sizeof(modes)];
+      copyModesText(modesSnapshot, sizeof(modesSnapshot));
       Serial.print("CAT | mode=");
-      Serial.println(modes);
+      Serial.println(modesSnapshot);
     }
   #endif
 }
@@ -3139,6 +3350,9 @@ void Mqtt(){
   // if(mqttEnable==true){
     bool mqttReconnect() {
         MqttBuildClientId();
+        #if defined(WDT)
+          esp_task_wdt_reset();
+        #endif
         if (mqttClient.connect(mqttClientId)) {
           Serial.println("MQTT| mqttReconnect-connected");
           if(MQTT_TOPIC_RX.length() > 0){
@@ -3266,14 +3480,16 @@ void httpCAT(){
           if (c == '\n' && currentLineIsBlank) {
             // send a standard http response header
             webCatClient.println(F("HTTP/1.1 200 OK"));
-            webCatClient.println(F("Content-Type: text/html"));
-            webCatClient.println(F("Connection: close"));  // the connection will be closed after completion of the response
-            webCatClient.println();
-            if(statusPower==1){
-              webCatClient.print(String(frequency)+"|"+String(modes)+"|");
-            }else{
-              webCatClient.print("0|OFF|");
-            }
+	            webCatClient.println(F("Content-Type: text/html"));
+	            webCatClient.println(F("Connection: close"));  // the connection will be closed after completion of the response
+	            webCatClient.println();
+	            if(statusPower==1){
+	              char modesSnapshot[sizeof(modes)];
+	              copyModesText(modesSnapshot, sizeof(modesSnapshot));
+	              webCatClient.print(String(frequency)+"|"+String(modesSnapshot)+"|");
+	            }else{
+	              webCatClient.print("0|OFF|");
+	            }
             break;
           }
           if (c == '\n') {
@@ -3387,8 +3603,10 @@ void sendCat(){
 //-------------------------------------------------------------------------------------------------------
 void sendCW(){
   int payloadLen = strnlen(CwMsg, sizeof(CwMsg) - 1);
+  char modesSnapshot[sizeof(modes)];
+  copyModesText(modesSnapshot, sizeof(modesSnapshot));
 
-  if(modes=="CW"){  // CAT -----------------
+  if(strcmp(modesSnapshot, "CW") == 0){  // CAT -----------------
     uint8_t frame[sizeof(CwMsg) + 6];
     uint8_t frameLen = 0;
 
@@ -3423,7 +3641,7 @@ void sendCW(){
       delay(100);
       digitalWrite(StatusPin, HIGH);
     }
-  }else if(modes=="FSK"){ // GPIO -----------------
+  }else if(strcmp(modesSnapshot, "FSK") == 0){ // GPIO -----------------
     int TheEnd = payloadLen - 1;
     if(TheEnd < 0){
       return;
@@ -3740,7 +3958,9 @@ void ListCommands(){
       Serial.println("     RESET after TRX disconnect - ENABLE" );
     #endif
 
-    Serial.println(" CAT "+String(frequency)+"Hz "+String(modes) );
+    char modesSnapshot[sizeof(modes)];
+    copyModesText(modesSnapshot, sizeof(modesSnapshot));
+    Serial.println(" CAT "+String(frequency)+"Hz "+String(modesSnapshot) );
   }
   Serial.println("Commands  press key to select");
   Serial.println("       ?  list refresh");
@@ -4096,6 +4316,34 @@ void handleSet(AsyncWebServerRequest *request) {
       Serial.println();
       Serial.println("New Baudrate "+String(BaudRate));
     }
+
+    String nextTransceiverType = trimMemoryValue(requestArg(request, "trxprofile"), 16);
+    if (nextTransceiverType != "IC-7610-CI-V") {
+      nextTransceiverType = "IC-705-BT";
+    }
+    transceiverType = nextTransceiverType;
+
+    uint8_t nextCivAddress = configuredCivAddress;
+    if (!parseHexByteString(requestArg(request, "civaddr"), nextCivAddress)) {
+      setupCivAddrErr = "Use 2-digit hex value 00-FF";
+      ERRdetect = 1;
+    } else {
+      configuredCivAddress = nextCivAddress;
+    }
+
+    for (uint8_t i = 0; i < CW_MEMORY_COUNT; i++) {
+      char fieldName[10];
+      snprintf(fieldName, sizeof(fieldName), "cwmem%u", i + 1);
+      cwMemoryText[i] = trimMemoryValue(requestArg(request, fieldName), CW_MEMORY_MAX_LEN);
+    }
+
+    for (uint8_t i = 0; i < FREQ_MEMORY_COUNT; i++) {
+      char fieldName[12];
+      snprintf(fieldName, sizeof(fieldName), "freqmem%u", i + 1);
+      freqMemoryText[i] = trimMemoryValue(requestArg(request, fieldName), FREQ_MEMORY_MAX_LEN);
+    }
+
+    saveMemoryConfig();
 
 
     if(ERRdetect==0){
