@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IC-705 DataSync</title>
+  <link rel="stylesheet" href="/app.css">
+  <link rel="stylesheet" href="/datasync.css">
+</head>
+<body>
+  <header class="topbar">
+    <nav class="tabs" aria-label="Primary">
+      <a class="tab" href="/log">LOG</a>
+      <a class="tab" href="/">CAT</a>
+      <a class="tab" href="/ws-cat">DEBUG</a>
+      <a class="tab" href="/setup">SETUP</a>
+      <a class="tab tab-active" href="/datasync">DATASYNC</a>
+      <span id="topbarFw" class="topbar-fw"></span>
+    </nav>
+  </header>
+
+  <main class="shell">
+
+    <!-- ── Step 1: Local device ─────────────────────────────────────────────── -->
+    <div class="card">
+      <div class="card-head">
+        <h2><span class="ds-stepnum">1</span> Local device</h2>
+      </div>
+      <div class="ds-label-box">
+        <div class="ds-label-row">
+          <span class="ds-label-caption">Device label</span>
+          <span id="infoDeviceLabel" class="ds-label-value">—</span>
+          <button id="btnEditLabel" type="button" class="ds-label-btn"
+            title="Set a human-readable name for this device. The label is sent to the remote device during sync.">
+            Edit
+          </button>
+        </div>
+        <div id="labelEditRow" class="ds-label-edit ds-hidden">
+          <input id="labelInput" type="text" class="ds-label-input" maxlength="30" autocomplete="off" placeholder="e.g. Shack tablet">
+          <button id="btnLabelSave" type="button" title="Save the new device label">Save</button>
+          <button id="btnLabelCancel" type="button" class="btn-cancel" title="Discard changes">Cancel</button>
+        </div>
+      </div>
+      <dl class="status-grid">
+        <div><dt>Device ID</dt><dd id="infoDeviceId">—</dd></div>
+        <div><dt>Local QSOs</dt><dd id="infoQsoCount">—</dd></div>
+        <div><dt>Remote QSOs</dt><dd id="infoRemoteCount">—</dd></div>
+        <div><dt>Known devices</dt><dd id="infoDeviceCount">—</dd></div>
+        <div><dt>Last seq</dt><dd id="infoLastSeq">—</dd></div>
+      </dl>
+    </div>
+
+    <!-- ── Step 2: Pairing ──────────────────────────────────────────────────── -->
+    <div class="card">
+      <div class="card-head"><h2><span class="ds-stepnum">2</span> Pairing</h2></div>
+
+      <!-- Role selection + flow diagram -->
+      <div id="phaseIdle" class="ds-phase">
+
+        <!-- SVG flow diagram -->
+        <svg class="ds-diagram" viewBox="0 0 480 216" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <defs>
+            <!-- All markers use right-pointing polygon; orient="auto" rotates for left-going lines -->
+            <marker id="arR" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto">
+              <polygon points="0 0, 8 3.5, 0 7" fill="#0e6d53"/>
+            </marker>
+            <marker id="arL" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto">
+              <polygon points="0 0, 8 3.5, 0 7" fill="#0a4c3d"/>
+            </marker>
+            <marker id="arS" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto">
+              <polygon points="0 0, 8 3.5, 0 7" fill="#66756d"/>
+            </marker>
+            <marker id="arSL" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto">
+              <polygon points="0 0, 8 3.5, 0 7" fill="#66756d"/>
+            </marker>
+          </defs>
+
+          <!-- Device A box -->
+          <rect x="8" y="8" width="118" height="48" rx="12" fill="#f0f7f4" stroke="#0e6d53" stroke-width="1.5"/>
+          <text x="67" y="29" text-anchor="middle" font-size="13" font-weight="bold" fill="#0e6d53" font-family="Trebuchet MS,sans-serif">Device A</text>
+          <text x="67" y="47" text-anchor="middle" font-size="10.5" fill="#66756d" font-family="Trebuchet MS,sans-serif">Create session</text>
+
+          <!-- Device B box -->
+          <rect x="354" y="8" width="118" height="48" rx="12" fill="#f0f7f4" stroke="#0e6d53" stroke-width="1.5"/>
+          <text x="413" y="29" text-anchor="middle" font-size="13" font-weight="bold" fill="#0e6d53" font-family="Trebuchet MS,sans-serif">Device B</text>
+          <text x="413" y="47" text-anchor="middle" font-size="10.5" fill="#66756d" font-family="Trebuchet MS,sans-serif">Join session</text>
+
+          <!-- Dashed timelines -->
+          <line x1="67" y1="56" x2="67" y2="208" stroke="#d8d0c2" stroke-width="1.2" stroke-dasharray="5,4"/>
+          <line x1="413" y1="56" x2="413" y2="208" stroke="#d8d0c2" stroke-width="1.2" stroke-dasharray="5,4"/>
+
+          <!-- ① Offer QR: A → B -->
+          <circle cx="67" cy="84" r="5" fill="#0e6d53"/>
+          <line x1="72" y1="84" x2="402" y2="84" stroke="#0e6d53" stroke-width="1.8" marker-end="url(#arR)"/>
+          <text x="240" y="77" text-anchor="middle" font-size="11" fill="#0e6d53" font-family="Trebuchet MS,sans-serif" font-weight="bold">① offer QR</text>
+          <text x="240" y="97" text-anchor="middle" font-size="10" fill="#66756d" font-family="Trebuchet MS,sans-serif">A shows QR → B scans it</text>
+
+          <!-- ② Answer QR: B → A -->
+          <circle cx="413" cy="128" r="5" fill="#0a4c3d"/>
+          <line x1="408" y1="128" x2="78" y2="128" stroke="#0a4c3d" stroke-width="1.8" marker-end="url(#arL)"/>
+          <text x="240" y="121" text-anchor="middle" font-size="11" fill="#0a4c3d" font-family="Trebuchet MS,sans-serif" font-weight="bold">② answer QR</text>
+          <text x="240" y="141" text-anchor="middle" font-size="10" fill="#66756d" font-family="Trebuchet MS,sans-serif">B shows QR → A scans it</text>
+
+          <!-- ③ Automatic sync (arrows separated by 14 px) -->
+          <circle cx="67"  cy="177" r="5" fill="#66756d"/>
+          <circle cx="413" cy="177" r="5" fill="#66756d"/>
+          <line x1="72"  y1="170" x2="402" y2="170" stroke="#66756d" stroke-width="1.8" marker-end="url(#arS)"/>
+          <line x1="408" y1="184" x2="78"  y2="184" stroke="#66756d" stroke-width="1.8" marker-end="url(#arSL)"/>
+          <text x="240" y="163" text-anchor="middle" font-size="11" fill="#66756d" font-family="Trebuchet MS,sans-serif" font-weight="bold">③ automatic sync</text>
+          <text x="240" y="205" text-anchor="middle" font-size="10" fill="#66756d" font-family="Trebuchet MS,sans-serif">missing QSOs transferred both ways</text>
+        </svg>
+
+        <div class="ds-flow-btns">
+          <button id="btnCreateSession" type="button"
+            title="Start as Device A (initiator). Generates an offer QR code to show to Device B. Use this on the device that starts the session.">
+            Create sync session
+          </button>
+          <button id="btnJoinSession" type="button"
+            title="Start as Device B (responder). Scan the offer QR from Device A, then show your answer QR back to Device A.">
+            Join sync session
+          </button>
+        </div>
+      </div>
+
+      <!-- Device A: show offer QR, then scan answer -->
+      <div id="phaseOffer" class="ds-phase ds-hidden">
+        <p class="eyebrow">① Show this QR to Device B</p>
+        <div id="qrOfferContainer" class="ds-qr-wrap"></div>
+        <details class="ds-details">
+          <summary>Copy payload text (no-camera fallback)</summary>
+          <textarea id="offerText" class="ds-payload" readonly></textarea>
+          <button id="btnCopyOffer" type="button"
+            title="Copy the offer payload text. Paste it into Device B if QR scanning is not available (e.g. HTTP without camera access).">
+            Copy to clipboard
+          </button>
+        </details>
+
+        <hr class="ds-hr">
+
+        <p class="eyebrow">② Scan answer QR from Device B</p>
+        <div class="actions">
+          <button id="btnScanAnswer" type="button"
+            title="Open the camera to scan the answer QR shown by Device B. Requires a secure context (HTTPS or localhost).">
+            Scan answer QR
+          </button>
+        </div>
+        <div id="scanAnswerWrap" class="ds-camera-wrap ds-hidden">
+          <video id="videoAnswer" autoplay playsinline></video>
+          <button id="btnStopScanAnswer" class="btn-cancel" type="button"
+            title="Stop the camera and return to manual paste mode.">
+            Stop camera
+          </button>
+        </div>
+        <details class="ds-details">
+          <summary>Paste answer text (no-camera fallback)</summary>
+          <textarea id="answerPasteText" class="ds-payload" placeholder="Paste answer payload here…"></textarea>
+          <button id="btnProcessAnswer" type="button"
+            title="Parse the answer payload that was copied from Device B and complete the connection.">
+            Process answer
+          </button>
+        </details>
+
+        <button id="btnCancelOffer" class="btn-cancel" type="button"
+          title="Abort pairing and return to the role selection screen.">
+          Cancel
+        </button>
+      </div>
+
+      <!-- Device B: scan offer, show answer QR -->
+      <div id="phaseJoin" class="ds-phase ds-hidden">
+        <p class="eyebrow">① Scan offer QR from Device A</p>
+        <div class="actions">
+          <button id="btnScanOffer" type="button"
+            title="Open the camera to scan the offer QR shown by Device A. Requires a secure context (HTTPS or localhost).">
+            Scan offer QR
+          </button>
+        </div>
+        <div id="scanOfferWrap" class="ds-camera-wrap ds-hidden">
+          <video id="videoOffer" autoplay playsinline></video>
+          <button id="btnStopScanOffer" class="btn-cancel" type="button"
+            title="Stop the camera and return to manual paste mode.">
+            Stop camera
+          </button>
+        </div>
+        <details class="ds-details">
+          <summary>Paste offer text (no-camera fallback)</summary>
+          <textarea id="offerPasteText" class="ds-payload" placeholder="Paste offer payload here…"></textarea>
+          <button id="btnProcessOffer" type="button"
+            title="Parse the offer payload copied from Device A and generate an answer QR.">
+            Process offer
+          </button>
+        </details>
+
+        <div id="qrAnswerSection" class="ds-hidden">
+          <hr class="ds-hr">
+          <p class="eyebrow">② Show this answer QR to Device A</p>
+          <div id="qrAnswerContainer" class="ds-qr-wrap"></div>
+          <details class="ds-details">
+            <summary>Copy answer text (no-camera fallback)</summary>
+            <textarea id="answerText" class="ds-payload" readonly></textarea>
+            <button id="btnCopyAnswer" type="button"
+              title="Copy the answer payload text. Paste it into Device A if QR scanning is not available.">
+              Copy to clipboard
+            </button>
+          </details>
+        </div>
+
+        <button id="btnCancelJoin" class="btn-cancel" type="button"
+          title="Abort pairing and return to the role selection screen.">
+          Cancel
+        </button>
+      </div>
+    </div>
+
+    <!-- ── Step 3: Sync status ──────────────────────────────────────────────── -->
+    <div class="card">
+      <div class="card-head"><h2><span class="ds-stepnum">3</span> Sync status</h2></div>
+      <dl class="status-grid">
+        <div><dt>Phase</dt><dd id="stPhase">Idle</dd></div>
+        <div><dt>Remote device</dt><dd id="stRemoteDevice">—</dd></div>
+        <div><dt>Sent records</dt><dd id="stSent">—</dd></div>
+        <div><dt>Received records</dt><dd id="stReceived">—</dd></div>
+        <div><dt>Batches</dt><dd id="stBatches">—</dd></div>
+        <div><dt>Errors</dt><dd id="stErrors">0</dd></div>
+      </dl>
+      <pre id="syncLog" class="log ds-log"></pre>
+    </div>
+
+    <!-- ── Backup / restore (independent utility, no step number) ────────────── -->
+    <div class="card">
+      <div class="card-head"><h2><span class="ds-util-badge">&#128190;</span> Backup / restore <span class="ds-util-note">(independent of sync)</span></h2></div>
+      <p class="lede">Export or import the complete database — QSOs, logs, settings and sync metadata.</p>
+      <div class="actions">
+        <button id="btnExport" type="button"
+          title="Download all QSOs, logs and settings as a dated JSON file: yyyymmdd-hhmm-ic705-backup.json. Use this as a long-term backup or to move data to another device.">
+          Export backup
+        </button>
+        <label class="ds-import-label"
+          title="Restore from a previously exported backup file. Records with the same key are overwritten; no data is deleted. Safe to repeat.">
+          Import backup
+          <input type="file" id="importFile" accept=".json" style="display:none">
+        </label>
+        <span id="importMsg" class="ds-import-msg"></span>
+      </div>
+      <p class="hint" style="margin-top: 16px;">Export filename: <code>yyyymmdd-hhmm-ic705-backup.json</code> &nbsp;·&nbsp;
+         Import overwrites existing records with the same key (idempotent — safe to repeat).</p>
+    </div>
+
+  </main>
+
+  <script src="/qrcode.min.js"></script>
+  <script src="/datasync.js"></script>
+  <script>fetch('/state').then(function(r){return r.json();}).then(function(d){if(d.fwRev)document.getElementById('topbarFw').textContent='FW '+d.fwRev;}).catch(function(){});</script>
+</body>
+</html>

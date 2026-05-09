@@ -278,25 +278,29 @@
       }
       logs.sort((a,b) => b.createdAtUtc.localeCompare(a.createdAtUtc));
       container.innerHTML = '';
-      logs.forEach(log => {
-        const isActive = _activeLog && _activeLog.id === log.id;
-        const row = document.createElement('div');
-        row.className = 'lm-log-row' + (isActive ? ' lm-log-active' : '');
-        row.innerHTML = `
-          <div class="lm-log-info">
-            <span class="lm-log-name">${_esc(log.contestName)}</span>
-            <span class="lm-log-meta">${_esc(log.stationCall)} &nbsp;·&nbsp; ${_esc(log.id.slice(0,10))} &nbsp;·&nbsp; QSO# ${log.nextQsoNumber - 1}</span>
-          </div>
-          <div class="lm-log-btns">
-            ${!isActive ? `<button class="lm-btn lm-btn-sm" data-act="open" data-id="${_esc(log.id)}">Open</button>` : '<span class="lm-active-tag">active</span>'}
-            <button class="lm-btn lm-btn-sm lm-btn-export" data-act="csv"  data-id="${_esc(log.id)}">CSV</button>
-            <button class="lm-btn lm-btn-sm lm-btn-export" data-act="adif" data-id="${_esc(log.id)}">ADIF</button>
-            <button class="lm-btn lm-btn-sm lm-btn-del"  data-act="del"  data-id="${_esc(log.id)}">Del</button>
-          </div>
-        `;
-        container.appendChild(row);
+      Promise.all(logs.map(log =>
+        LogDB.getQsosForLog(log.id).then(qsos => qsos.filter(q => !q.deleted).length)
+      )).then(counts => {
+        logs.forEach((log, i) => {
+          const isActive = _activeLog && _activeLog.id === log.id;
+          const row = document.createElement('div');
+          row.className = 'lm-log-row' + (isActive ? ' lm-log-active' : '');
+          row.innerHTML = `
+            <div class="lm-log-info">
+              <span class="lm-log-name">${_esc(log.contestName)}</span>
+              <span class="lm-log-meta">${_esc(log.stationCall)}${log.myLocator ? ' &nbsp;·&nbsp; ' + _esc(log.myLocator) : ''}${log.defaultExchange ? ' &nbsp;·&nbsp; exch: ' + _esc(log.defaultExchange) : ''} &nbsp;·&nbsp; QSO# ${counts[i]}</span>
+            </div>
+            <div class="lm-log-btns">
+              ${!isActive ? `<button class="lm-btn lm-btn-sm" data-act="open" data-id="${_esc(log.id)}">Open</button>` : '<span class="lm-active-tag">active</span>'}
+              <button class="lm-btn lm-btn-sm lm-btn-export" data-act="csv"  data-id="${_esc(log.id)}">CSV</button>
+              <button class="lm-btn lm-btn-sm lm-btn-export" data-act="adif" data-id="${_esc(log.id)}">ADIF</button>
+              <button class="lm-btn lm-btn-sm lm-btn-del"  data-act="del"  data-id="${_esc(log.id)}">Del</button>
+            </div>
+          `;
+          container.appendChild(row);
+        });
+        container.addEventListener('click', onLogListClick);
       });
-      container.addEventListener('click', onLogListClick);
     });
   }
 

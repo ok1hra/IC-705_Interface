@@ -999,6 +999,8 @@ bool handleFileFromSPIFFS(const String &path){
   if (!SPIFFS.exists(path)) return false;
   File f = SPIFFS.open(path, "r");
   if (!f) return false;
+  webServer.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  webServer.sendHeader("Pragma", "no-cache");
   webServer.streamFile(f, contentType);
   f.close();
   return true;
@@ -1228,8 +1230,9 @@ void setupWebServer(void){
 
   webServer.on("/setup",  HTTP_GET,  [](){ renderSetupPage(); });
   webServer.on("/setup",  HTTP_POST, [](){ handleSet(); renderSetupPage(); });
-  webServer.on("/ws-cat", HTTP_GET,  [](){ handleFileFromSPIFFS("/ws-cat.html"); });
-  webServer.on("/log",    HTTP_GET,  [](){ handleFileFromSPIFFS("/log.html"); });
+  webServer.on("/ws-cat",   HTTP_GET,  [](){ handleFileFromSPIFFS("/ws-cat.html"); });
+  webServer.on("/log",      HTTP_GET,  [](){ handleFileFromSPIFFS("/log.html"); });
+  webServer.on("/datasync", HTTP_GET,  [](){ handleFileFromSPIFFS("/datasync.html"); });
 
   webServer.onNotFound([](){
     String path = webServer.uri();

@@ -1,0 +1,209 @@
+.ds-hidden { display: none !important; }
+
+/* Step number badge in card headings */
+.ds-stepnum {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: white;
+  font-size: 13px;
+  font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+  font-weight: 700;
+  margin-right: 8px;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
+/* Flow diagram */
+.ds-diagram {
+  display: block;
+  width: 100%;
+  max-width: 480px;
+  margin: 0 auto 20px;
+}
+
+.ds-phase {
+  margin-top: 6px;
+}
+
+.ds-qr-wrap {
+  display: flex;
+  justify-content: center;
+  margin: 16px 0;
+  min-height: 40px;
+}
+
+.ds-qr-note {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.ds-hr {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 18px 0;
+}
+
+.ds-details {
+  margin: 12px 0 4px;
+}
+
+.ds-details summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 0.88rem;
+  user-select: none;
+}
+
+.ds-payload {
+  display: block;
+  width: 100%;
+  min-height: 72px;
+  padding: 10px;
+  margin: 8px 0 6px;
+  border-radius: 10px;
+  border: 1px solid #cfc5b4;
+  background: white;
+  font-family: "Courier New", monospace;
+  font-size: 0.78rem;
+  resize: vertical;
+}
+
+.ds-camera-wrap {
+  margin: 10px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.ds-camera-wrap video {
+  width: 100%;
+  max-width: 380px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+}
+
+.ds-log {
+  min-height: 80px;
+  max-height: 400px;
+  margin-top: 14px;
+  font-size: 0.82rem;
+}
+
+.btn-cancel {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  margin-top: 14px;
+}
+
+.btn-cancel:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.ds-label-box {
+  background: var(--surface, #f4f1eb);
+  border: 1px solid var(--line, #ddd);
+  border-radius: 12px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+}
+
+.ds-label-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ds-label-caption {
+  font-size: 0.82rem;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.ds-label-value {
+  flex: 1;
+  font-weight: 600;
+  color: var(--text, #222);
+  font-size: 1rem;
+}
+
+.ds-label-btn {
+  padding: 4px 14px;
+  font-size: 0.82rem;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.ds-label-edit {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.ds-label-input {
+  width: auto;
+  flex: 1;
+  min-width: 140px;
+  max-width: 260px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid #cfc5b4;
+  background: white;
+  margin-bottom: 0;
+  font: inherit;
+}
+
+.ds-import-label {
+  display: inline-flex;
+  align-items: center;
+  padding: 10px 16px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: white;
+  cursor: pointer;
+  font-weight: inherit;
+  font-size: inherit;
+}
+
+.ds-import-label:hover {
+  background: var(--accent-strong);
+}
+
+.ds-import-msg {
+  align-self: center;
+  font-size: 0.88rem;
+  color: var(--muted);
+}
+
+.ds-util-badge {
+  font-size: 18px;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.ds-util-note {
+  font-size: 0.78rem;
+  font-weight: normal;
+  color: var(--muted);
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.ds-flow-btns {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.ds-flow-btns button {
+  flex: 0 1 auto;
+}
