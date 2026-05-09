@@ -54,6 +54,16 @@ body {
   background: rgba(14, 109, 83, 0.08);
 }
 
+.topbar-fw {
+  margin-left: auto;
+  align-self: center;
+  font-size: 13px;
+  color: var(--muted);
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  padding-right: 4px;
+}
+
 .shell {
   width: min(960px, calc(100vw - 24px));
   margin: 24px auto 40px;

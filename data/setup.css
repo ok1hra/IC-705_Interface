@@ -4,7 +4,7 @@
   --line: #3b4541;
   --text: #e9efe7;
   --muted: #98a49d;
-  --accent: #7fd0a5;
+  --accent: #008800;
   --warn: #ffb062;
 }
 
@@ -15,7 +15,7 @@
 body {
   margin: 0;
   background:
-    radial-gradient(circle at top, rgba(127, 208, 165, 0.14), transparent 28%),
+    radial-gradient(circle at top, rgba(0, 136, 0, 0.14), transparent 28%),
     linear-gradient(180deg, #313a36 0, var(--bg) 100%);
   color: var(--text);
   font-family: Tahoma, Verdana, sans-serif;
@@ -50,7 +50,17 @@ body {
 .tab-active {
   color: #eaf6ee;
   border-color: #507163;
-  background: rgba(127, 208, 165, 0.18);
+  background: rgba(0, 136, 0, 0.18);
+}
+
+.topbar-fw {
+  margin-left: auto;
+  align-self: center;
+  font-size: 13px;
+  color: var(--muted);
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  padding-right: 4px;
 }
 
 .setup-shell {
@@ -87,7 +97,6 @@ body {
   gap: 16px;
 }
 
-label,
 fieldset {
   display: grid;
   gap: 8px;
@@ -116,6 +125,7 @@ fieldset {
   color: var(--accent);
   list-style: none;
   user-select: none;
+  transition: background 0.12s, color 0.12s;
 }
 
 .setup-section-title::-webkit-details-marker {
@@ -133,13 +143,22 @@ fieldset {
   transform: rotate(90deg);
 }
 
-.setup-section-title:hover {
-  background: rgba(127, 208, 165, 0.07);
+.setup-section-title:hover,
+.setup-section[open] > .setup-section-title {
+  background: var(--accent);
+  color: #eaf6ee;
+}
+
+.setup-section-title:hover .setup-local-badge,
+.setup-section[open] > .setup-section-title .setup-local-badge {
+  background: rgba(0,0,0,0.25);
+  color: #eaf6ee;
+  border-color: transparent;
 }
 
 .setup-section-body {
   display: grid;
-  gap: 14px;
+  gap: 10px;
   padding: 4px 16px 16px;
   border-top: 1px solid var(--line);
 }
@@ -160,10 +179,30 @@ select {
   padding: 10px 12px;
 }
 
+/* Two-column label layout: fixed label left, input right */
+label {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  align-items: center;
+  gap: 4px 16px;
+}
+
+/* msg and textarea stay in the right column */
+label .msg,
+label textarea {
+  grid-column: 2;
+}
+
+/* hide empty error spans so they don't create blank rows */
+.msg:empty {
+  display: none;
+}
+
 .ip-row {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 10px;
+  grid-column: 2;
 }
 
 .checkbox-row {
@@ -171,16 +210,128 @@ select {
   flex-direction: row;
   align-items: center;
   gap: 10px;
+  grid-template-columns: unset;
 }
 
 .checkbox-row input[type="checkbox"] {
   width: auto;
   accent-color: var(--accent);
+  flex-shrink: 0;
+}
+
+/* Input + help-tip wrapper (column 2) */
+.input-with-tip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  grid-column: 2;
+}
+
+.input-with-tip > input,
+.input-with-tip > select {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+
+.input-with-tip > textarea {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+
+.input-with-tip > .ip-row {
+  flex: 1;
+  min-width: 0;
+  grid-column: unset;
+}
+
+.input-with-tip-top {
+  align-items: flex-start;
+}
+
+/* Help tooltip icon */
+.help-tip {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1.5px solid var(--warn);
+  color: var(--warn);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: help;
+  position: relative;
+  user-select: none;
+}
+
+.help-tip::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: -4px;
+  width: 260px;
+  background: #101a14;
+  border: 1px solid var(--line);
+  color: var(--text);
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 0.82rem;
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 1.5;
+  white-space: normal;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 100;
+}
+
+.help-tip:hover::after {
+  opacity: 1;
+}
+
+/* In checkbox-row (flex), the help-tip is a flex sibling — no wrapper needed */
+.checkbox-row .help-tip {
+  margin-left: auto;
+}
+
+/* Password reveal toggle */
+.pw-toggle {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid #51605a;
+  background: #0f1312;
+  color: var(--muted);
+  padding: 0;
+  cursor: pointer;
+  font-weight: 400;
+  transition: color 0.12s, border-color 0.12s;
+}
+
+.pw-toggle:hover {
+  color: var(--text);
+  border-color: var(--accent);
+  background: #0f1312;
+}
+
+.pw-toggle.pw-visible {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 .msg {
   color: var(--warn);
-  min-height: 1.2em;
+  min-height: 1em;
+  font-size: 0.88rem;
 }
 
 .actions {
@@ -191,16 +342,31 @@ select {
 }
 
 button {
-  border: none;
+  border: 2px solid var(--accent);
   border-radius: 999px;
-  padding: 11px 18px;
-  background: var(--accent);
-  color: #10211a;
+  padding: 10px 18px;
+  background: #1a1a1a;
+  color: var(--accent);
   font-weight: 700;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #F5B027;
+  color: #1a1200;
+  border-color: #F5B027;
 }
 
 a {
   color: var(--accent);
+}
+
+.spiffs-form {
+  display: grid;
+  gap: 16px;
+  margin-top: 32px;
+  padding-top: 24px;
+  border-top: 1px solid var(--line);
 }
 
 .backup-row {
@@ -245,6 +411,17 @@ a {
     padding: 18px;
   }
 
+  label {
+    grid-template-columns: 1fr;
+  }
+
+  label .msg,
+  label textarea,
+  .ip-row,
+  .input-with-tip {
+    grid-column: 1;
+  }
+
   .ip-row {
     grid-template-columns: repeat(2, 1fr);
   }
@@ -252,5 +429,11 @@ a {
   .actions {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .help-tip::after {
+    right: auto;
+    left: -4px;
+    width: min(260px, calc(100vw - 48px));
   }
 }

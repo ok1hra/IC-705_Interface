@@ -420,6 +420,8 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   void setupWebServer(void);
   void handleConfigDownload(void);
   void handleConfigUpload(void);
+  void handleGetLogConfig(void);
+  void handlePostLogConfig(void);
 #endif
 
 //-------------------------------------------------------------------------------------------------------
@@ -1180,20 +1182,54 @@ void handleConfigUpload() {
   webServer.send(200, "application/json", "{\"ok\":true}");
 }
 
+static const char* LOG_CONFIG_PATH = "/log-config.json";
+
+void handleGetLogConfig() {
+  if (!SPIFFS.exists(LOG_CONFIG_PATH)) {
+    webServer.send(200, "application/json", "{}");
+    return;
+  }
+  File f = SPIFFS.open(LOG_CONFIG_PATH, "r");
+  if (!f) { webServer.send(500, "application/json", "{\"error\":\"open\"}"); return; }
+  webServer.streamFile(f, "application/json");
+  f.close();
+}
+
+void handlePostLogConfig() {
+  String body = webServer.arg("plain");
+  body.trim();
+  if (body.length() == 0 || body.length() > 2048) {
+    webServer.send(400, "application/json", "{\"error\":\"bad_request\"}");
+    return;
+  }
+  if (body[0] != '{' || body[body.length()-1] != '}') {
+    webServer.send(400, "application/json", "{\"error\":\"not_json\"}");
+    return;
+  }
+  File f = SPIFFS.open(LOG_CONFIG_PATH, "w");
+  if (!f) { webServer.send(500, "application/json", "{\"error\":\"write\"}"); return; }
+  f.print(body);
+  f.close();
+  webServer.send(200, "application/json", "{\"ok\":true}");
+}
+
 void setupWebServer(void){
   webServer.on("/state", HTTP_GET, handleGetState);
   webServer.on("/cmd", HTTP_POST, handlePostCmd);
   webServer.on("/config/download", HTTP_GET,  handleConfigDownload);
   webServer.on("/config/upload",   HTTP_POST, handleConfigUpload);
+  webServer.on("/log-config", HTTP_GET,  handleGetLogConfig);
+  webServer.on("/log-config", HTTP_POST, handlePostLogConfig);
 
   webServer.on("/", HTTP_GET, [](){
-    if (APmode || !SPIFFS.exists("/index.html")) { renderSetupPage(); return; }
+    if (!SPIFFS.exists("/index.html")) { renderSetupPage(); return; }
     renderIndexPage();
   });
 
   webServer.on("/setup",  HTTP_GET,  [](){ renderSetupPage(); });
   webServer.on("/setup",  HTTP_POST, [](){ handleSet(); renderSetupPage(); });
   webServer.on("/ws-cat", HTTP_GET,  [](){ handleFileFromSPIFFS("/ws-cat.html"); });
+  webServer.on("/log",    HTTP_GET,  [](){ handleFileFromSPIFFS("/log.html"); });
 
   webServer.onNotFound([](){
     String path = webServer.uri();
@@ -1591,43 +1627,33 @@ void setup(){
 //-------------------------------------------------------------------------------------------------------
 
 void loop(){
-  if(APmode==true){
-    #if defined(RTLE)
-      rtleserver.handleClient();
-    #endif
-    CLI();
-    webServer.handleClient();
+  Watchdog();
+  Mqtt();
+  httpCAT();
+  UdpToCwFsk();
+  UdpToCat();
+  CLI();
+  #if defined(RTLE)
+    rtleserver.handleClient();
+  #endif
+  webServer.handleClient();
 
-    // Status LED
+  // AP mode: status LED fade in/out
+  if(APmode==true){
     static int PwmValue = 0;
     static bool PwmDir = true;
     static long pwmTimer = 0;
     if(millis()-pwmTimer>3){
       if(PwmDir==true){
         PwmValue++;
-        if(PwmValue>254){
-          PwmDir=false;
-        }
+        if(PwmValue>254){ PwmDir=false; }
       }else{
         PwmValue--;
-        if(PwmValue<1){
-          PwmDir=true;
-        }
+        if(PwmValue<1){ PwmDir=true; }
       }
       ledcWrite(pwmChannel, PwmValue);
       pwmTimer=millis();
     }
-  }else{
-    Watchdog();
-    Mqtt();
-    httpCAT();
-    UdpToCwFsk();
-    UdpToCat();
-    CLI();
-    #if defined(RTLE)
-      rtleserver.handleClient();
-    #endif
-    webServer.handleClient();
   }
 }
 

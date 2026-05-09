@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IC-705 Log</title>
+  <link rel="stylesheet" href="/log.css">
+</head>
+<body>
+  <header class="topbar">
+    <nav class="tabs" aria-label="Primary">
+      <a class="tab tab-active" href="/log">LOG</a>
+      <a class="tab" href="/">CAT</a>
+      <a class="tab" href="/ws-cat">DEBUG</a>
+      <a class="tab" href="/setup">SETUP</a>
+      <span id="topbarFw" class="topbar-fw"></span>
+    </nav>
+  </header>
+
+  <main class="log-shell">
+
+    <!-- Terminal journal — fills all remaining vertical space -->
+    <div class="log-journal" id="logJournal">
+      <div class="log-journal-header" id="logJournalHeader" aria-hidden="true">
+        <span class="jcol jcol-nr">Nr</span>
+        <span class="jcol jcol-date">Date</span>
+        <span class="jcol jcol-time">Time</span>
+        <span class="jcol jcol-call">Call</span>
+        <span class="jcol jcol-freq">Freq</span>
+        <span class="jcol jcol-mode">Mode</span>
+        <span class="jcol jcol-snt">Snt</span>
+        <span class="jcol jcol-rcv">Rcv</span>
+        <span class="jcol jcol-exch">Exch</span>
+        <span class="jcol jcol-trx" id="jhdrTrx">TRX</span>
+        <span class="jcol jcol-dxcc">DXCC</span>
+      </div>
+      <div class="log-journal-body" id="logJournalBody">
+        <div class="log-empty" id="logEmptyHint">No QSO logged yet.</div>
+      </div>
+    </div>
+
+    <!-- Dupe panel — shown above status bar when check finds matches -->
+    <div id="dupePanel" class="dupe-panel dupe-panel-hidden"></div>
+
+    <!-- Status bar -->
+    <div class="log-statusbar" id="logStatusbar" aria-label="TRX status">
+      <span id="sbTime">--:--</span>
+      <span id="sbFreqModeGroup">
+        <span class="sb-sep">|</span>
+        <span id="sbFreq">-.---.--</span>
+        <span class="sb-sep">|</span>
+        <span id="sbMode">---</span>
+      </span>
+      <span id="sbManualGroup" style="display:none">
+        <span class="sb-sep">|</span>
+        <input id="sbManualFreq" class="sb-manual-freq" type="text" inputmode="decimal" placeholder="kHz" autocomplete="off" spellcheck="false">
+        <span class="sb-sep">|</span>
+        <select id="sbManualMode" class="sb-manual-mode">
+          <option value="USB">USB</option>
+          <option value="LSB">LSB</option>
+          <option value="CW">CW</option>
+          <option value="CW-R">CW-R</option>
+          <option value="RTTY">RTTY</option>
+          <option value="FM">FM</option>
+          <option value="AM">AM</option>
+        </select>
+      </span>
+      <span id="sbDxccGroup">
+        <span class="sb-sep">|</span>
+        <span id="sbContinent">--</span>
+        <span class="sb-sep">|</span>
+        <span id="sbCountry">--</span>
+        <span class="sb-sep">|</span>
+        <span id="sbPrefix">--</span>
+        <span class="sb-sep">|</span>
+        <span id="sbCq">CQ--</span>
+        <span class="sb-sep">|</span>
+        <span id="sbItu">ITU--</span>
+        <span class="sb-sep">|</span>
+        <span id="sbUtc">utc --</span>
+        <span class="sb-sep">|</span>
+        <span id="sbQrb">QRB --</span>
+        <span class="sb-sep">|</span>
+        <span id="sbAz">Az --</span>
+      </span>
+    </div>
+
+    <!-- Input row -->
+    <div class="log-input-row">
+      <!-- Call + attached button (RUN: *?  /  S&P: check) -->
+      <div class="log-input-group">
+        <span class="log-az-indicator" id="azIndicator"></span>
+        <div class="log-merged-pair">
+          <input id="inpCall"
+                 class="log-input log-input-l"
+                 type="text"
+                 maxlength="11"
+                 autocomplete="off"
+                 autocorrect="off"
+                 autocapitalize="characters"
+                 spellcheck="false"
+                 enterkeyhint="next"
+                 placeholder="">
+          <button id="btnCallQ" class="btn-action btn-merged-r" type="button" title="Send CALL?">*?</button>
+          <button id="btnCheck" class="btn-action btn-merged-r btn-action-hidden" type="button" title="Check call in log">check</button>
+        </div>
+      </div>
+      <!-- RST standalone, no label -->
+      <input id="inpRst"
+             class="log-input log-input-rst"
+             type="text"
+             maxlength="3"
+             autocomplete="off"
+             spellcheck="false"
+             placeholder="599">
+      <!-- Exch + nr? attached -->
+      <div class="log-input-group">
+        <span class="log-field-lbl">EXCH</span>
+        <div class="log-merged-pair">
+          <input id="inpExch"
+                 class="log-input log-input-l"
+                 type="text"
+                 maxlength="10"
+                 autocomplete="off"
+                 autocorrect="off"
+                 autocapitalize="characters"
+                 spellcheck="false"
+                 enterkeyhint="send"
+                 placeholder="">
+          <button id="btnNrQ" class="btn-action btn-merged-r" type="button" title="Request repeat of number">nr?</button>
+        </div>
+      </div>
+      <button id="btnPrevEx" class="btn-action btn-action-hidden" type="button" title="Re-send previous exchange">prev exch</button>
+      <div class="log-hint-area" id="logHint" aria-live="assertive"></div>
+    </div>
+
+    <!-- Bottom button bar -->
+    <div class="log-btn-bar">
+      <div class="log-btn-group">
+        <button id="btnRunMode"
+                class="btn-runmode"
+                data-state="RUN"
+                data-next="S&amp;P"
+                type="button"
+                aria-label="Toggle RUN / S&P mode"></button>
+      </div>
+      <div class="log-btn-spacer" style="max-width:24px"></div>
+      <div class="log-btn-group">
+        <button class="btn-trx btn-trx-active" data-trx="1" id="btnTrx1" type="button">TRX1</button>
+        <button class="btn-trx" data-trx="2" id="btnTrx2" type="button">TRX2</button>
+        <button class="btn-trx" data-trx="3" id="btnTrx3" type="button">TRX3</button>
+      </div>
+      <div class="log-btn-spacer"></div>
+      <div class="log-btn-group">
+        <span id="connStatus" class="conn-status conn-off">TRX disconnected</span>
+        <button id="btnOpenLog" class="btn-trx" type="button" title="Open / create log">LOG</button>
+      </div>
+    </div>
+
+  </main>
+
+  <script src="/dxcc.js"></script>
+  <script src="/log-db.js"></script>
+  <script src="/log-manager.js"></script>
+  <script src="/log-macros.js"></script>
+  <script src="/log.js"></script>
+</body>
+</html>

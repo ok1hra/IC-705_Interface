@@ -9,9 +9,11 @@
 <body>
   <header class="topbar">
     <nav class="tabs" aria-label="Primary">
+      <a class="tab" href="/log">LOG</a>
       <a class="tab" href="/">CAT</a>
       <a class="tab tab-active" href="/ws-cat">DEBUG</a>
       <a class="tab" href="/setup">SETUP</a>
+      <span id="topbarFw" class="topbar-fw"></span>
     </nav>
   </header>
 
@@ -115,5 +117,6 @@
   </main>
 
   <script src="/app.js"></script>
+  <script>fetch('/state').then(function(r){return r.json();}).then(function(d){if(d.fwRev)document.getElementById('topbarFw').textContent='FW '+d.fwRev;}).catch(function(){});</script>
 </body>
 </html>

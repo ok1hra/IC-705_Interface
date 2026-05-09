@@ -59,6 +59,16 @@ body {
   background: rgba(46, 100, 165, 0.22);
 }
 
+.topbar-fw {
+  margin-left: auto;
+  align-self: center;
+  font-size: 13px;
+  color: var(--muted);
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  padding-right: 4px;
+}
+
 .cat-shell {
   width: min(980px, calc(100vw - 24px));
   margin: 24px auto 36px;

@@ -9,9 +9,11 @@
 <body>
   <header class="topbar">
     <nav class="tabs" aria-label="Primary">
+      <a class="tab" href="/log">LOG</a>
       <a class="tab" href="/">CAT</a>
       <a class="tab" href="/ws-cat">DEBUG</a>
       <a class="tab tab-active" href="/setup">SETUP</a>
+      <span class="topbar-fw">FW %REV%</span>
     </nav>
   </header>
   <main class="setup-shell">
@@ -25,54 +27,80 @@
       <form action="/setup" method="post" class="setup-form">
 
         <details class="setup-section">
-          <summary class="setup-section-title">WiFi</summary>
+          <summary class="setup-section-title">WiFi <span class="setup-local-badge">eeprom</span></summary>
           <div class="setup-section-body">
             <label>Connect to WiFi SSID 1
-              <input type="text" name="ssid" maxlength="20" value="%SSID%">
+              <div class="input-with-tip">
+                <input type="text" name="ssid" maxlength="20" value="%SSID%">
+                <span class="help-tip" data-tip="Primary WiFi network name. The device tries this first after restart.">?</span>
+              </div>
               <span class="msg">%SSID_ERR%</span>
             </label>
             <label>WiFi Password 1
-              <input type="password" name="pswd" maxlength="18" value="%PSWD%">
+              <div class="input-with-tip">
+                <input type="password" id="pwField1" name="pswd" maxlength="18" value="%PSWD%">
+                <button type="button" class="pw-toggle" data-target="pwField1" aria-label="Show password" title="Show / hide password"><svg class="pw-eye" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg></button>
+                <span class="help-tip" data-tip="Password for WiFi network 1.">?</span>
+              </div>
               <span class="msg">%PSWD_ERR%</span>
             </label>
             <label>Connect to WiFi SSID 2
-              <input type="text" name="ssid2" maxlength="20" value="%SSID2%">
+              <div class="input-with-tip">
+                <input type="text" name="ssid2" maxlength="20" value="%SSID2%">
+                <span class="help-tip" data-tip="Fallback WiFi network. When profile 1 fails the device tries profile 2 — and alternates between them until it connects.">?</span>
+              </div>
               <span class="msg">%SSID2_ERR%</span>
             </label>
             <label>WiFi Password 2
-              <input type="password" name="pswd2" maxlength="18" value="%PSWD2%">
+              <div class="input-with-tip">
+                <input type="password" id="pwField2" name="pswd2" maxlength="18" value="%PSWD2%">
+                <button type="button" class="pw-toggle" data-target="pwField2" aria-label="Show password" title="Show / hide password"><svg class="pw-eye" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg></button>
+                <span class="help-tip" data-tip="Password for WiFi network 2.">?</span>
+              </div>
               <span class="msg">%PSWD2_ERR%</span>
             </label>
           </div>
         </details>
 
         <details class="setup-section">
-          <summary class="setup-section-title">Network ports</summary>
+          <summary class="setup-section-title">Network ports <span class="setup-local-badge">eeprom</span></summary>
           <div class="setup-section-body">
             <label>HTTP CAT port
-              <input type="text" name="httpcatport" value="%HTTP_CAT_PORT%">
+              <div class="input-with-tip">
+                <input type="text" name="httpcatport" value="%HTTP_CAT_PORT%">
+                <span class="help-tip" data-tip="TCP port for the web UI and HTTP CAT API.">?</span>
+              </div>
               <span class="msg">%HTTP_CAT_PORT_ERR%</span>
             </label>
             <label>CW/FSK UDP port
-              <input type="text" name="udpport" value="%UDP_PORT%">
+              <div class="input-with-tip">
+                <input type="text" name="udpport" value="%UDP_PORT%">
+                <span class="help-tip" data-tip="UDP port for CW/RTTY-FSK keying commands from N1MM+, Win-Test or similar contest loggers.">?</span>
+              </div>
               <span class="msg">%UDP_PORT_ERR%</span>
             </label>
             <label>CAT UDP port
-              <input type="text" name="udpcatport" value="%UDP_CAT_PORT%">
+              <div class="input-with-tip">
+                <input type="text" name="udpcatport" value="%UDP_CAT_PORT%">
+                <span class="help-tip" data-tip="UDP port for CI-V CAT passthrough commands.">?</span>
+              </div>
               <span class="msg">%UDP_CAT_PORT_ERR%</span>
             </label>
           </div>
         </details>
 
         <details class="setup-section">
-          <summary class="setup-section-title">MQTT</summary>
+          <summary class="setup-section-title">MQTT <span class="setup-local-badge">eeprom</span></summary>
           <div class="setup-section-body">
             <label>Broker IP
-              <div class="ip-row">
-                <input type="text" name="mqttip0" value="%MQTT_IP0%">
-                <input type="text" name="mqttip1" value="%MQTT_IP1%">
-                <input type="text" name="mqttip2" value="%MQTT_IP2%">
-                <input type="text" name="mqttip3" value="%MQTT_IP3%">
+              <div class="input-with-tip">
+                <div class="ip-row">
+                  <input type="text" name="mqttip0" value="%MQTT_IP0%">
+                  <input type="text" name="mqttip1" value="%MQTT_IP1%">
+                  <input type="text" name="mqttip2" value="%MQTT_IP2%">
+                  <input type="text" name="mqttip3" value="%MQTT_IP3%">
+                </div>
+                <span class="help-tip" data-tip="IP address of the MQTT broker (four octets). Set to 0.0.0.0 to disable MQTT.">?</span>
               </div>
               <span class="msg">%MQTT_ERR%</span>
               <span class="msg">%MQTT_ERR1%</span>
@@ -81,112 +109,228 @@
               <span class="msg">%MQTT_ERR4%</span>
             </label>
             <label>Broker port
-              <input type="text" name="mqttport" value="%MQTT_PORT%">
+              <div class="input-with-tip">
+                <input type="text" name="mqttport" value="%MQTT_PORT%">
+                <span class="help-tip" data-tip="MQTT broker TCP port. Default: 1883.">?</span>
+              </div>
               <span class="msg">%MQTT_PORT_ERR%</span>
             </label>
             <label>Topic TX
-              <input type="text" name="mqtttopic" maxlength="20" value="%MQTT_TOPIC%">
+              <div class="input-with-tip">
+                <input type="text" name="mqtttopic" maxlength="20" value="%MQTT_TOPIC%">
+                <span class="help-tip" data-tip="MQTT topic the device publishes TRX data to (frequency, mode, signal reports).">?</span>
+              </div>
               <span class="msg">%MQTT_TOPIC_ERR%</span>
             </label>
             <label>Topic RX
-              <input type="text" name="mqtttopicrx" maxlength="20" value="%MQTT_TOPIC_RX%">
+              <div class="input-with-tip">
+                <input type="text" name="mqtttopicrx" maxlength="20" value="%MQTT_TOPIC_RX%">
+                <span class="help-tip" data-tip="MQTT topic the device subscribes to for incoming CAT commands.">?</span>
+              </div>
               <span class="msg">%MQTT_TOPIC_RX_ERR%</span>
             </label>
           </div>
         </details>
 
         <details class="setup-section">
-          <summary class="setup-section-title">Radio</summary>
+          <summary class="setup-section-title">Radio <span class="setup-local-badge">eeprom</span></summary>
           <div class="setup-section-body">
             <label>USB serial baudrate
-              <select name="baud">
-                <option value="0" %BAUD1200_SEL%>1200</option>
-                <option value="1" %BAUD2400_SEL%>2400</option>
-                <option value="2" %BAUD4800_SEL%>4800</option>
-                <option value="3" %BAUD9600_SEL%>9600</option>
-                <option value="4" %BAUD115200_SEL%>115200</option>
-              </select>
+              <div class="input-with-tip">
+                <select name="baud">
+                  <option value="0" %BAUD1200_SEL%>1200</option>
+                  <option value="1" %BAUD2400_SEL%>2400</option>
+                  <option value="2" %BAUD4800_SEL%>4800</option>
+                  <option value="3" %BAUD9600_SEL%>9600</option>
+                  <option value="4" %BAUD115200_SEL%>115200</option>
+                </select>
+                <span class="help-tip" data-tip="Serial speed for CI-V data over USB-C. Must match the radio's USB Serial Baud Rate setting.">?</span>
+              </div>
             </label>
             <label>Transceiver profile
-              <select name="trxprofile">
-                <option value="IC-705-BT" %TRX_IC705_SEL%>IC-705-BT</option>
-                <option value="IC-7610-CI-V" %TRX_IC7610_SEL%>IC-7610-CI-V</option>
-              </select>
+              <div class="input-with-tip">
+                <select name="trxprofile">
+                  <option value="IC-705-BT" %TRX_IC705_SEL%>IC-705-BT</option>
+                  <option value="IC-7610-CI-V" %TRX_IC7610_SEL%>IC-7610-CI-V</option>
+                </select>
+                <span class="help-tip" data-tip="Radio model preset — selects CI-V framing and default bus address.">?</span>
+              </div>
             </label>
             <label>CI-V address
-              <input type="text" name="civaddr" maxlength="2" value="%CIV_ADDR%">
+              <div class="input-with-tip">
+                <input type="text" name="civaddr" maxlength="2" value="%CIV_ADDR%">
+                <span class="help-tip" data-tip="CI-V bus address in hexadecimal. IC-705 default: A4. Check MENU → SET → Connectors → CI-V → CI-V Address.">?</span>
+              </div>
               <span class="msg">%CIV_ADDR_ERR%</span>
             </label>
             <label class="checkbox-row">
               <input type="checkbox" name="cwIpOnConnect" %CW_IP_CHK%>
               Announce WiFi IP via CW on first BT connect
-            </label>
-          </div>
-        </details>
-
-        <details class="setup-section">
-          <summary class="setup-section-title">CW memories</summary>
-          <div class="setup-section-body">
-            <label>CW memory 1
-              <input type="text" name="cwmem1" maxlength="30" value="%CW_MEM1%">
-            </label>
-            <label>CW memory 2
-              <input type="text" name="cwmem2" maxlength="30" value="%CW_MEM2%">
-            </label>
-            <label>CW memory 3
-              <input type="text" name="cwmem3" maxlength="30" value="%CW_MEM3%">
-            </label>
-            <label>CW memory 4
-              <input type="text" name="cwmem4" maxlength="30" value="%CW_MEM4%">
-            </label>
-          </div>
-        </details>
-
-        <details class="setup-section">
-          <summary class="setup-section-title">Frequency memories</summary>
-          <div class="setup-section-body">
-            <p class="footnote">Use compact format like <code>14074000 USB</code> or <code>144174000 FM</code>.</p>
-            <label>Memory 1
-              <input type="text" name="freqmem1" maxlength="20" value="%FREQ_MEM1%">
-            </label>
-            <label>Memory 2
-              <input type="text" name="freqmem2" maxlength="20" value="%FREQ_MEM2%">
-            </label>
-            <label>Memory 3
-              <input type="text" name="freqmem3" maxlength="20" value="%FREQ_MEM3%">
-            </label>
-            <label>Memory 4
-              <input type="text" name="freqmem4" maxlength="20" value="%FREQ_MEM4%">
-            </label>
-            <label>Memory 5
-              <input type="text" name="freqmem5" maxlength="20" value="%FREQ_MEM5%">
-            </label>
-            <label>Memory 6
-              <input type="text" name="freqmem6" maxlength="20" value="%FREQ_MEM6%">
-            </label>
-            <label>Memory 7
-              <input type="text" name="freqmem7" maxlength="20" value="%FREQ_MEM7%">
-            </label>
-            <label>Memory 8
-              <input type="text" name="freqmem8" maxlength="20" value="%FREQ_MEM8%">
-            </label>
-            <label>Memory 9
-              <input type="text" name="freqmem9" maxlength="20" value="%FREQ_MEM9%">
-            </label>
-            <label>Memory 10
-              <input type="text" name="freqmem10" maxlength="20" value="%FREQ_MEM10%">
+              <span class="help-tip" data-tip="Sends the ESP32 IP address in Morse code after the first Bluetooth connection — useful when DHCP assigns an unknown address.">?</span>
             </label>
           </div>
         </details>
 
         <div class="actions">
-          <button type="submit">Save and Restart</button>
-          <a href="/">Back</a>
+          <button type="submit">Save EEPROM and Restart</button>
         </div>
+        <p class="footnote">After reboot the interface alternates between WiFi profile 1 and 2 until it connects. AP mode remains available from the USB-C serial console.</p>
       </form>
 
+      <div class="setup-form spiffs-form">
+
+        <details class="setup-section" id="logSettingsSection">
+          <summary class="setup-section-title">LOG settings <span class="setup-local-badge">spiffs</span></summary>
+          <div class="setup-section-body">
+            <label>TRX1 label
+              <div class="input-with-tip">
+                <input type="text" id="ls_trx1Label" maxlength="10" placeholder="TRX1">
+                <span class="help-tip" data-tip="Display name for transceiver slot 1, shown in the log journal and status bar.">?</span>
+              </div>
+            </label>
+            <label>TRX2 label
+              <div class="input-with-tip">
+                <input type="text" id="ls_trx2Label" maxlength="10" placeholder="TRX2">
+                <span class="help-tip" data-tip="Display name for transceiver slot 2.">?</span>
+              </div>
+            </label>
+            <label>TRX3 label
+              <div class="input-with-tip">
+                <input type="text" id="ls_trx3Label" maxlength="10" placeholder="TRX3">
+                <span class="help-tip" data-tip="Display name for transceiver slot 3.">?</span>
+              </div>
+            </label>
+            <label>RST default SSB/FM
+              <div class="input-with-tip">
+                <input type="text" id="ls_rstSsb" maxlength="3" value="59" placeholder="59">
+                <span class="help-tip" data-tip="Default RST/RS pre-filled for SSB and FM QSOs.">?</span>
+              </div>
+            </label>
+            <label>RST default CW/RTTY
+              <div class="input-with-tip">
+                <input type="text" id="ls_rstCwRtty" maxlength="3" value="599" placeholder="599">
+                <span class="help-tip" data-tip="Default RST pre-filled for CW and digital mode QSOs.">?</span>
+              </div>
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" id="ls_manualModeForPhone" checked>
+              Manual mode for Phone (SSB/FM) — no automatic macros
+              <span class="help-tip" data-tip="When checked, pressing Enter on an SSB/FM QSO logs it immediately without sending any CW/RTTY macro.">?</span>
+            </label>
+            <label>Blocked DXCC list (one per line)
+              <div class="input-with-tip input-with-tip-top">
+                <textarea id="ls_blockedDxcc" rows="3" placeholder="Russia&#10;Kaliningrad"></textarea>
+                <span class="help-tip" data-tip="DXCC entity names to flag as blocked (one per line, e.g. Russia). Matching callsigns are highlighted in red in the log journal.">?</span>
+              </div>
+            </label>
+          </div>
+        </details>
+
+        <details class="setup-section">
+          <summary class="setup-section-title">CW memories <span class="setup-local-badge">spiffs</span></summary>
+          <div class="setup-section-body">
+            <label>CW memory 1
+              <div class="input-with-tip">
+                <input type="text" id="cwmem1" maxlength="30" value="%CW_MEM1%">
+                <span class="help-tip" data-tip="Plain CW/RTTY text keyed when memory key 1 is activated. Mode determines keying method (CW via CI-V, RTTY via FSK GPIO). Max 30 characters.">?</span>
+              </div>
+            </label>
+            <label>CW memory 2
+              <div class="input-with-tip">
+                <input type="text" id="cwmem2" maxlength="30" value="%CW_MEM2%">
+                <span class="help-tip" data-tip="Plain CW/RTTY text keyed when memory key 2 is activated. Max 30 characters.">?</span>
+              </div>
+            </label>
+            <label>CW memory 3
+              <div class="input-with-tip">
+                <input type="text" id="cwmem3" maxlength="30" value="%CW_MEM3%">
+                <span class="help-tip" data-tip="Plain CW/RTTY text keyed when memory key 3 is activated. Max 30 characters.">?</span>
+              </div>
+            </label>
+            <label>CW memory 4
+              <div class="input-with-tip">
+                <input type="text" id="cwmem4" maxlength="30" value="%CW_MEM4%">
+                <span class="help-tip" data-tip="Plain CW/RTTY text keyed when memory key 4 is activated. Max 30 characters.">?</span>
+              </div>
+            </label>
+          </div>
+        </details>
+
+        <details class="setup-section">
+          <summary class="setup-section-title">Frequency memories <span class="setup-local-badge">spiffs</span></summary>
+          <div class="setup-section-body">
+            <p class="footnote">Use compact format like <code>14074000 USB</code> or <code>144174000 FM</code>.</p>
+            <label>Memory 1
+              <div class="input-with-tip">
+                <input type="text" id="freqmem1" maxlength="20" value="%FREQ_MEM1%">
+                <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM). Selectable from the CAT page.">?</span>
+              </div>
+            </label>
+            <label>Memory 2
+              <div class="input-with-tip">
+                <input type="text" id="freqmem2" maxlength="20" value="%FREQ_MEM2%">
+                <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
+              </div>
+            </label>
+            <label>Memory 3
+              <div class="input-with-tip">
+                <input type="text" id="freqmem3" maxlength="20" value="%FREQ_MEM3%">
+                <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
+              </div>
+            </label>
+            <label>Memory 4
+              <div class="input-with-tip">
+                <input type="text" id="freqmem4" maxlength="20" value="%FREQ_MEM4%">
+                <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
+              </div>
+            </label>
+            <label>Memory 5
+              <div class="input-with-tip">
+                <input type="text" id="freqmem5" maxlength="20" value="%FREQ_MEM5%">
+                <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
+              </div>
+            </label>
+            <label>Memory 6
+              <div class="input-with-tip">
+                <input type="text" id="freqmem6" maxlength="20" value="%FREQ_MEM6%">
+                <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
+              </div>
+            </label>
+            <label>Memory 7
+              <div class="input-with-tip">
+                <input type="text" id="freqmem7" maxlength="20" value="%FREQ_MEM7%">
+                <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
+              </div>
+            </label>
+            <label>Memory 8
+              <div class="input-with-tip">
+                <input type="text" id="freqmem8" maxlength="20" value="%FREQ_MEM8%">
+                <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
+              </div>
+            </label>
+            <label>Memory 9
+              <div class="input-with-tip">
+                <input type="text" id="freqmem9" maxlength="20" value="%FREQ_MEM9%">
+                <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
+              </div>
+            </label>
+            <label>Memory 10
+              <div class="input-with-tip">
+                <input type="text" id="freqmem10" maxlength="20" value="%FREQ_MEM10%">
+                <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
+              </div>
+            </label>
+          </div>
+        </details>
+
+        <div class="actions">
+          <button type="button" id="spiffsSaveBtn">Save SPIFFS settings</button>
+          <span id="spiffsSaveMsg" class="backup-msg"></span>
+        </div>
+      </div>
+
       <div class="backup-row">
-        <a href="/config/download" class="backup-btn" download="ic705-config.json">Download config</a>
+        <a href="/config/download" class="backup-btn" id="btnDownloadConfig">Download config</a>
         <label class="backup-btn">
           Upload config
           <input type="file" id="configFile" accept=".json" style="display:none">
@@ -194,11 +338,125 @@
         <span id="uploadMsg" class="backup-msg"></span>
       </div>
 
-      <p class="footnote">After reboot the interface alternates between WiFi profile 1 and 2 until it connects. AP mode remains available from the USB-C serial console.</p>
     </section>
   </main>
 
+  <style>
+    .setup-local-badge {
+      font-size: 10px;
+      background: rgba(0, 136, 0, 0.12);
+      border: 1px solid #005500;
+      border-radius: 3px;
+      padding: 1px 5px;
+      color: var(--accent);
+      margin-left: 8px;
+      vertical-align: middle;
+    }
+  </style>
+
   <script>
+    // ── SPIFFS settings (LOG config + CW/Freq memories) ─────────────────────
+    (function () {
+      function loadLogSettings() {
+        fetch('/log-config').then(function(r){ return r.json(); }).then(function(cfg) {
+          var keys = ['trx1Label','trx2Label','trx3Label',
+                      'rstSsb','rstCwRtty','manualModeForPhone','blockedDxcc'];
+          keys.forEach(function(k) {
+            var v = cfg[k];
+            if (v == null) return;
+            var el = document.getElementById('ls_' + k);
+            if (!el) return;
+            if (el.type === 'checkbox') el.checked = !!v;
+            else el.value = v;
+          });
+        }).catch(function(){});
+      }
+
+      function saveSpiffs() {
+        var msg = document.getElementById('spiffsSaveMsg');
+
+        var logData = {
+          trx1Label:       document.getElementById('ls_trx1Label').value.trim() || 'TRX1',
+          trx2Label:       document.getElementById('ls_trx2Label').value.trim() || 'TRX2',
+          trx3Label:       document.getElementById('ls_trx3Label').value.trim() || 'TRX3',
+          rstSsb:          document.getElementById('ls_rstSsb').value.trim()    || '59',
+          rstCwRtty:       document.getElementById('ls_rstCwRtty').value.trim() || '599',
+          manualModeForPhone: document.getElementById('ls_manualModeForPhone').checked,
+          blockedDxcc:     document.getElementById('ls_blockedDxcc').value,
+        };
+
+        var memData = {};
+        [1,2,3,4].forEach(function(i) {
+          var el = document.getElementById('cwmem' + i);
+          if (el) memData['cwmem' + i] = el.value;
+        });
+        [1,2,3,4,5,6,7,8,9,10].forEach(function(i) {
+          var el = document.getElementById('freqmem' + i);
+          if (el) memData['freqmem' + i] = el.value;
+        });
+
+        msg.textContent = 'Saving…';
+        Promise.all([
+          fetch('/log-config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(logData)
+          }).then(function(r){ return r.json(); }),
+          fetch('/config/upload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(memData)
+          }).then(function(r){ return r.json(); })
+        ]).then(function(results) {
+          var ok = results[0].ok && results[1].ok;
+          msg.textContent = ok ? 'Saved.' : 'Error saving — check connection.';
+          setTimeout(function(){ msg.textContent = ''; }, 2000);
+        }).catch(function() {
+          msg.textContent = 'Save failed.';
+        });
+      }
+
+      document.getElementById('spiffsSaveBtn').addEventListener('click', saveSpiffs);
+
+      loadLogSettings();
+    }());
+  </script>
+
+  <script>
+    document.querySelectorAll('.pw-toggle').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var inp = document.getElementById(btn.dataset.target);
+        var visible = inp.type === 'text';
+        inp.type = visible ? 'password' : 'text';
+        btn.classList.toggle('pw-visible', !visible);
+        btn.querySelector('.pw-eye').style.display     = visible ? '' : 'none';
+        btn.querySelector('.pw-eye-off').style.display = visible ? 'none' : '';
+      });
+    });
+  </script>
+
+  <script>
+    document.getElementById("btnDownloadConfig").addEventListener("click", function (e) {
+      e.preventDefault();
+      const d = new Date();
+      const y   = d.getFullYear();
+      const mo  = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      const h   = String(d.getHours()).padStart(2, '0');
+      const mi  = String(d.getMinutes()).padStart(2, '0');
+      const filename = y + mo + day + '-' + h + mi + '-ic705-config.json';
+      fetch('/config/download')
+        .then(function(r) { return r.blob(); })
+        .then(function(blob) {
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = filename;
+          a.click();
+          URL.revokeObjectURL(url);
+        });
+    });
+
     document.getElementById("configFile").addEventListener("change", function () {
       const file = this.files[0];
       if (!file) return;
@@ -214,7 +472,7 @@
           .then(function (r) { return r.json(); })
           .then(function (data) {
             if (data.ok) {
-              msg.textContent = "Uploaded. Reload this page to verify, then click Save and Restart.";
+              msg.textContent = "Uploaded. Reload this page to verify, then click Save EEPROM and Restart.";
             } else {
               msg.textContent = "Error: " + (data.error || "unknown");
             }
