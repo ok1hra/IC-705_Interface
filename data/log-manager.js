@@ -203,6 +203,10 @@
 
   // ── Log manager modal UI ───────────────────────────────────────────────────
 
+  let _allLogs   = [];
+  let _allCounts = [];
+  let _delAllTimer = null;
+
   function buildModal() {
     const el = document.createElement('div');
     el.id        = 'logMgrModal';
@@ -215,8 +219,14 @@
         </div>
 
         <section class="lm-section" id="lmListSection">
-          <div class="lm-section-title">Saved logs</div>
+          <div class="lm-list-header">
+            <span class="lm-section-title" style="margin:0">Saved logs</span>
+            <input id="lmSearch" class="lm-search" type="search" placeholder="filter…" autocomplete="off" spellcheck="false">
+          </div>
           <div id="lmLogList" class="lm-log-list"></div>
+          <div class="lm-del-all-row">
+            <button id="lmDeleteAll" class="lm-btn lm-btn-sm lm-btn-del" type="button">Delete all</button>
+          </div>
         </section>
 
         <section class="lm-section">
@@ -224,7 +234,7 @@
           <form id="lmNewForm" class="lm-form" autocomplete="off">
             <label class="lm-row">
               <span>Contest</span>
-              <input id="lmContest" maxlength="30" placeholder="CQWW" required>
+              <input id="lmContest" maxlength="40" placeholder="CQWW" required>
             </label>
             <label class="lm-row">
               <span>My call</span>
@@ -254,6 +264,9 @@
     document.getElementById('lmClose').addEventListener('click', closeModal);
     el.addEventListener('click', e => { if (e.target === el) closeModal(); });
     document.getElementById('lmNewForm').addEventListener('submit', onNewFormSubmit);
+    document.getElementById('lmLogList').addEventListener('click', onLogListClick);
+    document.getElementById('lmSearch').addEventListener('input', applyFilter);
+    document.getElementById('lmDeleteAll').addEventListener('click', onDeleteAll);
 
     // uppercase fields
     ['lmContest','lmMyCall','lmExch','lmLoc'].forEach(id => {
@@ -272,36 +285,66 @@
     const container = document.getElementById('lmLogList');
     if (!container) return;
     LogDB.getLogs().then(logs => {
-      if (!logs.length) {
-        container.innerHTML = '<div class="lm-empty">No logs yet.</div>';
-        return;
-      }
       logs.sort((a,b) => b.createdAtUtc.localeCompare(a.createdAtUtc));
-      container.innerHTML = '';
       Promise.all(logs.map(log =>
         LogDB.getQsosForLog(log.id).then(qsos => qsos.filter(q => !q.deleted).length)
       )).then(counts => {
-        logs.forEach((log, i) => {
-          const isActive = _activeLog && _activeLog.id === log.id;
-          const row = document.createElement('div');
-          row.className = 'lm-log-row' + (isActive ? ' lm-log-active' : '');
-          row.innerHTML = `
-            <div class="lm-log-info">
-              <span class="lm-log-name">${_esc(log.contestName)}</span>
-              <span class="lm-log-meta">${_esc(log.stationCall)}${log.myLocator ? ' &nbsp;·&nbsp; ' + _esc(log.myLocator) : ''}${log.defaultExchange ? ' &nbsp;·&nbsp; exch: ' + _esc(log.defaultExchange) : ''} &nbsp;·&nbsp; QSO# ${counts[i]}</span>
-            </div>
-            <div class="lm-log-btns">
-              ${!isActive ? `<button class="lm-btn lm-btn-sm" data-act="open" data-id="${_esc(log.id)}">Open</button>` : '<span class="lm-active-tag">active</span>'}
-              <button class="lm-btn lm-btn-sm lm-btn-export" data-act="csv"  data-id="${_esc(log.id)}">CSV</button>
-              <button class="lm-btn lm-btn-sm lm-btn-export" data-act="adif" data-id="${_esc(log.id)}">ADIF</button>
-              <button class="lm-btn lm-btn-sm lm-btn-del"  data-act="del"  data-id="${_esc(log.id)}">Del</button>
-            </div>
-          `;
-          container.appendChild(row);
-        });
-        container.addEventListener('click', onLogListClick);
+        _allLogs   = logs;
+        _allCounts = counts;
+        applyFilter();
       });
     });
+  }
+
+  function applyFilter() {
+    const container = document.getElementById('lmLogList');
+    if (!container) return;
+    const searchEl = document.getElementById('lmSearch');
+    const query    = searchEl ? searchEl.value.trim().toLowerCase() : '';
+
+    const filtered = _allLogs.reduce((acc, log, i) => {
+      const match = !query
+        || log.contestName.toLowerCase().includes(query)
+        || log.stationCall.toLowerCase().includes(query);
+      if (match) acc.push({ log, i });
+      return acc;
+    }, []);
+
+    container.innerHTML = '';
+
+    if (!filtered.length) {
+      container.innerHTML = '<div class="lm-empty">' + (_allLogs.length ? 'No match.' : 'No logs yet.') + '</div>';
+      return;
+    }
+
+    filtered.forEach(({ log, i }) => {
+      const count    = _allCounts[i] || 0;
+      const isActive = _activeLog && _activeLog.id === log.id;
+      const row      = document.createElement('div');
+      row.className  = 'lm-log-row' + (isActive ? ' lm-log-active' : '');
+      row.innerHTML  = `
+        <div class="lm-log-info">
+          <span class="lm-log-name">${_esc(log.contestName)}</span>
+          <span class="lm-log-meta">${_esc(log.stationCall)}${log.myLocator ? ' | ' + _esc(log.myLocator) : ''}${log.defaultExchange ? ' | ' + _esc(log.defaultExchange) : ''} | #${count}</span>
+        </div>
+        <div class="lm-log-btns">
+          ${!isActive ? `<button class="lm-btn lm-btn-sm" data-act="open" data-id="${_esc(log.id)}">Open</button>` : '<span class="lm-active-tag">active</span>'}
+          <button class="lm-btn lm-btn-sm lm-btn-export" data-act="csv"  data-id="${_esc(log.id)}">CSV</button>
+          <button class="lm-btn lm-btn-sm lm-btn-export" data-act="adif" data-id="${_esc(log.id)}">ADIF</button>
+          <button class="lm-btn lm-btn-sm lm-btn-del"    data-act="del"  data-id="${_esc(log.id)}">Del</button>
+        </div>
+      `;
+      container.appendChild(row);
+    });
+
+    const total    = _allCounts.reduce((s, c) => s + c, 0);
+    const filteredTotal = filtered.reduce((s, { i }) => s + (_allCounts[i] || 0), 0);
+    const footer   = document.createElement('div');
+    footer.className = 'lm-log-total';
+    footer.textContent = query
+      ? `${filtered.length} / ${_allLogs.length} logs · ${filteredTotal} / ${total} QSO`
+      : `${_allLogs.length} logs · ${total} QSO`;
+    container.appendChild(footer);
   }
 
   function onLogListClick(e) {
@@ -325,6 +368,46 @@
           renderLogList();
         });
     }
+  }
+
+  function onDeleteAll() {
+    const btn = document.getElementById('lmDeleteAll');
+    if (!btn) return;
+    if (btn.dataset.confirm !== '1') {
+      // first click — arm
+      btn.dataset.confirm = '1';
+      btn.textContent = '⚠ Confirm delete ALL?';
+      btn.classList.add('lm-btn-del-confirm');
+      clearTimeout(_delAllTimer);
+      _delAllTimer = setTimeout(() => {
+        btn.dataset.confirm = '';
+        btn.textContent = 'Delete all';
+        btn.classList.remove('lm-btn-del-confirm');
+      }, 3000);
+      return;
+    }
+    // second click — execute
+    clearTimeout(_delAllTimer);
+    btn.dataset.confirm = '';
+    btn.textContent = 'Deleting…';
+    btn.disabled = true;
+    LogDB.openDb().then(db => new Promise((resolve, reject) => {
+      const t = db.transaction(['qso', 'logs'], 'readwrite');
+      t.objectStore('qso').clear();
+      t.objectStore('logs').clear();
+      t.oncomplete = resolve;
+      t.onerror    = e => reject(e.target.error);
+    })).then(() => {
+      activateLog(null);
+      btn.disabled = false;
+      btn.textContent = 'Delete all';
+      btn.classList.remove('lm-btn-del-confirm');
+      renderLogList();
+    }).catch(err => {
+      btn.disabled = false;
+      btn.textContent = 'Delete all';
+      alert('Error: ' + err.message);
+    });
   }
 
   function onNewFormSubmit(e) {

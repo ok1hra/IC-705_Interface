@@ -77,7 +77,7 @@ bool Debug          = false;
 bool cwIpOnConnect  = false;      // announce WiFi IP via CW on first BT connect
 volatile bool cwIpSendPending = false;
 
-#define REV 20260508
+#define REV 20260509
 #define WIFI
 #define MQTT
 #define UDP_TO_CW
@@ -989,6 +989,62 @@ void handleGetState(){
   webServer.send(200, "application/json", stateBuf);
 }
 
+// ── Pairing signalling buffer ─────────────────────────────────────────────────
+static String  g_pairOffer;
+static String  g_pairAnswer;
+static uint32_t g_pairOfferMs = 0;
+const  uint32_t PAIR_TTL_MS   = 300000UL; // 5 minutes
+
+static void pairCors() {
+  webServer.sendHeader("Access-Control-Allow-Origin",  "*");
+  webServer.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  webServer.sendHeader("Access-Control-Allow-Headers", "Content-Type");
+  webServer.sendHeader("Cache-Control", "no-store");
+}
+
+void handlePairingOptions() { pairCors(); webServer.send(204); }
+
+void handlePairingOfferPost() {
+  pairCors();
+  g_pairOffer   = webServer.arg("plain");
+  g_pairAnswer  = "";
+  g_pairOfferMs = millis();
+  webServer.send(200, "application/json", "{\"ok\":true}");
+}
+
+void handlePairingOfferGet() {
+  pairCors();
+  if (g_pairOffer.isEmpty() || (millis() - g_pairOfferMs) > PAIR_TTL_MS) {
+    g_pairOffer = ""; g_pairAnswer = "";
+    webServer.send(200, "application/json", "{\"pending\":false}");
+  } else {
+    webServer.send(200, "application/json", g_pairOffer);
+  }
+}
+
+void handlePairingAnswerPost() {
+  pairCors();
+  g_pairAnswer = webServer.arg("plain");
+  webServer.send(200, "application/json", "{\"ok\":true}");
+}
+
+void handlePairingAnswerGet() {
+  pairCors();
+  if (g_pairAnswer.isEmpty()) {
+    webServer.send(200, "application/json", "{\"pending\":false}");
+  } else {
+    String ans = g_pairAnswer;
+    g_pairOffer = ""; g_pairAnswer = "";
+    webServer.send(200, "application/json", ans);
+  }
+}
+
+void handlePairingReject() {
+  pairCors();
+  g_pairOffer = ""; g_pairAnswer = "";
+  webServer.send(200, "application/json", "{\"ok\":true}");
+}
+
 bool handleFileFromSPIFFS(const String &path){
   String contentType = "text/plain";
   if (path.endsWith(".html")) contentType = "text/html";
@@ -1233,6 +1289,15 @@ void setupWebServer(void){
   webServer.on("/ws-cat",   HTTP_GET,  [](){ handleFileFromSPIFFS("/ws-cat.html"); });
   webServer.on("/log",      HTTP_GET,  [](){ handleFileFromSPIFFS("/log.html"); });
   webServer.on("/datasync", HTTP_GET,  [](){ handleFileFromSPIFFS("/datasync.html"); });
+
+  webServer.on("/pairing/offer",  HTTP_OPTIONS, handlePairingOptions);
+  webServer.on("/pairing/offer",  HTTP_POST,    handlePairingOfferPost);
+  webServer.on("/pairing/offer",  HTTP_GET,     handlePairingOfferGet);
+  webServer.on("/pairing/answer", HTTP_OPTIONS, handlePairingOptions);
+  webServer.on("/pairing/answer", HTTP_POST,    handlePairingAnswerPost);
+  webServer.on("/pairing/answer", HTTP_GET,     handlePairingAnswerGet);
+  webServer.on("/pairing/reject", HTTP_OPTIONS, handlePairingOptions);
+  webServer.on("/pairing/reject", HTTP_POST,    handlePairingReject);
 
   webServer.onNotFound([](){
     String path = webServer.uri();

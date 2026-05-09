@@ -183,6 +183,49 @@
   color: var(--muted);
 }
 
+.ds-section {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+  margin-bottom: 16px;
+  background: #f7f5f0;
+}
+
+.ds-section-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 16px;
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 0.95rem;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  list-style: none;
+  user-select: none;
+  transition: background 0.12s, color 0.12s;
+}
+
+.ds-section-title::-webkit-details-marker { display: none; }
+
+.ds-section-title::before {
+  content: "▶";
+  font-size: 0.68em;
+  transition: transform 0.15s;
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+
+.ds-section[open] > .ds-section-title::before { transform: rotate(90deg); }
+
+.ds-section-title:hover { background: rgba(0,0,0,0.04); color: var(--text); }
+
+.ds-section[open] > .ds-section-title { color: var(--text); border-bottom: 1px solid var(--line); }
+
+.ds-section-body {
+  padding: 14px 16px 16px;
+}
+
 .ds-util-badge {
   font-size: 18px;
   margin-right: 6px;
@@ -196,6 +239,62 @@
   margin-left: 6px;
   vertical-align: middle;
 }
+
+.ds-peer-label {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.ds-peer-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.ds-offer-msg {
+  margin-top: 12px;
+  font-size: 0.88rem;
+  color: var(--muted);
+}
+
+.ds-offer-found {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: var(--surface, #f4f1eb);
+  border: 1px solid var(--line);
+}
+
+.ds-offer-who {
+  margin: 0 0 12px;
+  font-size: 1rem;
+}
+
+/* Waiting spinner */
+.ds-spinner {
+  width: 32px;
+  height: 32px;
+  margin: 18px auto;
+  border: 3px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: ds-spin 0.9s linear infinite;
+}
+
+@keyframes ds-spin { to { transform: rotate(360deg); } }
+
+.ds-phase-status {
+  text-align: center;
+  font-size: 0.95rem;
+  min-height: 1.4em;
+  margin: 4px 0 8px;
+}
+
+.ds-status-ok  { color: var(--accent); font-weight: 600; }
+.ds-status-err { color: #c0392b; font-weight: 600; }
 
 .ds-flow-btns {
   display: flex;

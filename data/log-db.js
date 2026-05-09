@@ -164,6 +164,20 @@
     );
   }
 
+  // Global search across all logs
+  function findDupesGlobal(call) {
+    return getAll('qso').then(qsos =>
+      qsos.filter(q => !q.deleted && q.call && q.call.toUpperCase() === call.toUpperCase())
+    );
+  }
+
+  function findPartialGlobal(fragment) {
+    const frag = fragment.toUpperCase();
+    return getAll('qso').then(qsos =>
+      qsos.filter(q => !q.deleted && q.call && q.call.toUpperCase().includes(frag))
+    );
+  }
+
   // ── Settings (key/value) ───────────────────────────────────────────────────
 
   function getSetting(key, defaultVal) {
@@ -207,7 +221,7 @@
     // logs
     createLog, getLogs, getLog, updateLog, deleteLog,
     // qso
-    addQso, getQso, updateQso, getQsosForLog, deleteQso, findDupes, findPartial,
+    addQso, getQso, updateQso, getQsosForLog, deleteQso, findDupes, findPartial, findDupesGlobal, findPartialGlobal,
     // settings
     getSetting, setSetting, getAllSettings,
     // runtime state

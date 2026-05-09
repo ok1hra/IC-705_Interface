@@ -153,7 +153,7 @@
   // ── Version vector ───────────────────────────────────────────────────────────
 
   async function getLocalVector() {
-    const [cdb, sdb] = await Promise.all([openContestDb(), openSyncDb()]);
+    const cdb = await openContestDb();
 
     // Max local (numeric) QSO id — numbers sort before strings in IDB,
     // so bound(1, MAX_SAFE_INTEGER) reliably skips remote string keys.
@@ -170,8 +170,17 @@
     const vector = {};
     if (localMax > 0) vector[deviceId()] = localMax;
 
-    const states = await idbGetAll(sdb, 'sync_state');
-    states.forEach(s => { vector[s.source_device_id] = s.max_seq_seen; });
+    // Build remote part of vector from QSOs actually present in contestDb.
+    // DO NOT use sync_state here — it may be stale when QSOs were deleted
+    // from contestDb while datasyncDb was left intact.
+    const allQsos = await idbGetAll(cdb, 'qso');
+    allQsos.forEach(q => {
+      if (typeof q.id === 'string' && q.source_device_id && q.source_seq != null) {
+        const cur = vector[q.source_device_id] || 0;
+        if (q.source_seq > cur) vector[q.source_device_id] = q.source_seq;
+      }
+    });
+
     return vector;
   }
 
@@ -352,6 +361,16 @@
     });
   }
 
+  // ── HTTP signalling via ESP32 ─────────────────────────────────────────────────
+
+  let pollTimer = null;
+  let peerBase  = '';   // base URL of peer ESP32 (for Device B → Device A)
+
+  function myBase()   { return window.location.protocol + '//' + window.location.host; }
+  function peerUrl()  { return peerBase || myBase(); }
+
+  function stopPoll() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+
   async function createOffer() {
     try {
       setPhase('creating-offer');
@@ -363,26 +382,62 @@
       await pc.setLocalDescription(offer);
       await waitIce(pc);
       const payload = {
-        type: 'datasync-offer', encoding: 'base64url',
+        type: 'datasync-offer',
         protocol_version: PROTOCOL_VER, device_id: deviceId(),
         device_label: deviceLabel(), session_id: sessionId,
-        created_at: new Date().toISOString(),
-        data: await compress(pc.localDescription.sdp),
+        sdp: pc.localDescription.sdp,
       };
-      const str = JSON.stringify(payload);
-      document.getElementById('offerText').value = str;
-      showQR('qrOfferContainer', str);
+      const resp = await fetch(myBase() + '/pairing/offer', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) throw new Error('ESP32 offer POST failed');
       setPhase('waiting-answer');
-      log('Offer ready. Show QR to Device B, then scan their answer.');
+      log('Session created — waiting for other device to accept…');
+      // show our IP for cross-ESP32 case
+      const myIp = window.location.hostname;
+      const ipEl = document.getElementById('offerMyIp');
+      if (ipEl) ipEl.textContent = myIp;
+      // poll for answer
+      pollTimer = setInterval(async () => {
+        try {
+          const r = await fetch(myBase() + '/pairing/answer');
+          const d = await r.json();
+          if (!d.pending) return;
+          stopPoll();
+          await processAnswer(JSON.stringify(d));
+        } catch (_) {}
+      }, 2000);
     } catch(e) {
       log('createOffer ERROR: ' + e.name + ': ' + e.message);
     }
   }
 
-  async function processOffer(raw) {
+  async function syncButton() {
+    const ipInput = el('peerIpInput');
+    const raw = ipInput ? ipInput.value.trim() : '';
+    peerBase = raw ? (window.location.protocol + '//' + raw) : '';
+    try {
+      const r = await fetch(peerUrl() + '/pairing/offer');
+      const payload = await r.json();
+      if (payload.type === 'datasync-offer') {
+        // Someone is waiting — show accept/reject
+        el('offerFromLabel').textContent = payload.device_label || payload.device_id.slice(0,8);
+        el('offerFound').dataset.payload = JSON.stringify(payload);
+        showPhase('phaseJoin');
+        return;
+      }
+    } catch(_) {}
+    // No offer found — create one and wait
+    showPhase('phaseOffer');
+    await createOffer();
+  }
+
+  async function acceptOffer() {
+    const raw = el('offerFound').dataset.payload;
     let payload;
     try {
-      payload = JSON.parse(raw.trim());
+      payload = JSON.parse(raw);
       if (payload.type !== 'datasync-offer')         throw new Error('Not a datasync-offer payload');
       if (payload.protocol_version !== PROTOCOL_VER) throw new Error('Protocol version mismatch');
     } catch (e) { log('Error: ' + e.message); return; }
@@ -392,23 +447,29 @@
     await upsertDevice(payload.device_id, payload.device_label);
     makePC();
     pc.ondatachannel = e => { dc = e.channel; setupDC(dc); };
-    const sdp = payload.data ? await decompress(payload.data) : payload.sdp;
-    await pc.setRemoteDescription({ type: 'offer', sdp });
+    await pc.setRemoteDescription({ type: 'offer', sdp: payload.sdp });
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
     await waitIce(pc);
     const ans = {
-      type: 'datasync-answer', encoding: 'base64url',
+      type: 'datasync-answer',
       protocol_version: PROTOCOL_VER, device_id: deviceId(),
       device_label: deviceLabel(), session_id: sessionId,
-      created_at: new Date().toISOString(),
-      data: await compress(pc.localDescription.sdp),
+      sdp: pc.localDescription.sdp,
+      pending: true,
     };
-    const str = JSON.stringify(ans);
-    document.getElementById('answerText').value = str;
-    document.getElementById('qrAnswerSection').classList.remove('ds-hidden');
-    showQR('qrAnswerContainer', str);
-    log('Answer ready. Show QR to Device A.');
+    await fetch(peerUrl() + '/pairing/answer', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(ans),
+    });
+    log('Answer sent — waiting for DataChannel…');
+  }
+
+  async function rejectOffer() {
+    try {
+      await fetch(peerUrl() + '/pairing/reject', { method: 'POST' });
+    } catch(_) {}
+    resetPairing();
   }
 
   async function processAnswer(raw) {
@@ -419,8 +480,7 @@
       if (payload.session_id !== sessionId)   throw new Error('Session ID mismatch');
     } catch (e) { log('Error: ' + e.message); return; }
     await upsertDevice(payload.device_id, payload.device_label);
-    const sdp = payload.data ? await decompress(payload.data) : payload.sdp;
-    await pc.setRemoteDescription({ type: 'answer', sdp });
+    await pc.setRemoteDescription({ type: 'answer', sdp: payload.sdp });
     setPhase('connecting');
     log('Answer accepted — waiting for DataChannel…');
   }
@@ -547,11 +607,20 @@
 
   async function onLogsBatch(msg) {
     let stored = 0;
-    if (msg.logs && msg.logs.length > 0) stored = await insertRemoteQsos(msg.logs, msg.log_meta);
+    let actualMaxSeq = 0;
+    if (msg.logs && msg.logs.length > 0) {
+      stored = await insertRemoteQsos(msg.logs, msg.log_meta);
+      // Track the highest source_seq actually stored (may be less than msg.to_seq if gaps)
+      msg.logs.forEach(q => {
+        if (q.source_seq > actualMaxSeq) actualMaxSeq = q.source_seq;
+      });
+    }
     stats.received += stored; stats.batches++; updateStats();
     sendMsg({ type: 'ack_batch', batch_id: msg.batch_id, status: 'ok', stored_count: stored });
     if (msg.is_last) {
-      if (msg.count > 0) await updateSyncState(msg.source_device_id, msg.to_seq);
+      // Update sync_state only to the seq we actually received, not msg.to_seq.
+      // This ensures a partial transfer is correctly re-requested next time.
+      if (actualMaxSeq > 0) await updateSyncState(msg.source_device_id, actualMaxSeq);
       log('Received total ' + stats.received + ' QSOs from remote');
       pendingReqIds.delete(msg.request_id);
       checkDone();
@@ -672,6 +741,19 @@
       done: 'Done ✓', failed: 'Failed',
     };
     document.getElementById('stPhase').textContent = labels[p] || p;
+
+    // Update pairing card status message
+    const spinner  = document.querySelector('.ds-spinner');
+    const offerMsg = document.querySelector('#phaseOffer .ds-phase-status');
+    if (p === 'done') {
+      if (spinner)  { spinner.style.display = 'none'; }
+      if (offerMsg) { offerMsg.textContent = 'Sync complete ✓'; offerMsg.className = 'ds-phase-status ds-status-ok'; }
+    } else if (p === 'failed') {
+      if (spinner)  { spinner.style.display = 'none'; }
+      if (offerMsg) { offerMsg.textContent = 'Sync failed'; offerMsg.className = 'ds-phase-status ds-status-err'; }
+    } else if (p === 'connecting' || p === 'syncing') {
+      if (offerMsg) { offerMsg.textContent = labels[p]; offerMsg.className = 'ds-phase-status'; }
+    }
   }
 
   function resetStats() {
@@ -700,6 +782,7 @@
 
   function resetPairing() {
     if (pc) { try { pc.close(); } catch (_) {} pc = null; dc = null; }
+    stopPoll();
     stopScan();
     showPhase('phaseIdle');
     document.getElementById('qrAnswerSection').classList.add('ds-hidden');
@@ -754,48 +837,11 @@
   function wire() {
     function on(id, ev, fn) { const e = el(id); if (e) e.addEventListener(ev, fn); }
 
-    on('btnCreateSession', 'click', async () => { showPhase('phaseOffer'); await createOffer(); });
-    on('btnJoinSession',   'click', () => showPhase('phaseJoin'));
-    on('btnCancelOffer',   'click', resetPairing);
-    on('btnCancelJoin',    'click', resetPairing);
-
-    function copyEl(id) {
-      const t = document.getElementById(id);
-      if (!t) return;
-      t.select();
-      t.setSelectionRange(0, 99999);
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(t.value).catch(() => document.execCommand('copy'));
-      } else {
-        document.execCommand('copy');
-      }
-    }
-    on('btnCopyOffer',  'click', () => copyEl('offerText'));
-    on('btnCopyAnswer', 'click', () => copyEl('answerText'));
-
-    on('btnScanOffer', 'click', () =>
-      startScan('videoOffer', 'scanOfferWrap', async p => {
-        el('offerPasteText').value = p; await processOffer(p);
-      })
-    );
-    on('btnStopScanOffer', 'click', () => {
-      stopScan(); el('scanOfferWrap').classList.add('ds-hidden');
-    });
-    on('btnProcessOffer', 'click', async () => {
-      const t = el('offerPasteText').value.trim(); if (t) await processOffer(t);
-    });
-
-    on('btnScanAnswer', 'click', () =>
-      startScan('videoAnswer', 'scanAnswerWrap', async p => {
-        el('answerPasteText').value = p; await processAnswer(p);
-      })
-    );
-    on('btnStopScanAnswer', 'click', () => {
-      stopScan(); el('scanAnswerWrap').classList.add('ds-hidden');
-    });
-    on('btnProcessAnswer', 'click', async () => {
-      const t = el('answerPasteText').value.trim(); if (t) await processAnswer(t);
-    });
+    on('btnSync',        'click', syncButton);
+    on('btnCancelOffer', 'click', resetPairing);
+    on('btnCancelJoin',  'click', resetPairing);
+    on('btnAcceptOffer', 'click', async () => { showPhase('phaseOffer'); await acceptOffer(); });
+    on('btnRejectOffer', 'click', rejectOffer);
 
     const labelEditRow   = el('labelEditRow');
     const labelInput     = el('labelInput');

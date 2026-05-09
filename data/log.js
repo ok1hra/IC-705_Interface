@@ -436,28 +436,82 @@ function checkDupe(call) {
   const log = LogManager.getActiveLog();
   if (!log || !call) { clearDupePanel(); return; }
   const normCall = call.toUpperCase();
-  Promise.all([
-    LogDB.findDupes(log.id, normCall),
-    call.length >= 2 ? LogDB.findPartial(log.id, normCall) : Promise.resolve([]),
-  ]).then(([dupes, partials]) => {
-    const activeDupes = dupes.filter(d => !d.deleted);
-    if (!activeDupes.length && !partials.length) { clearDupePanel(); return; }
+  const chkGlobal = document.getElementById('chkGlobalSearch');
+  const isGlobal  = !!(chkGlobal && chkGlobal.checked);
 
-    const parts = [];
+  const dupeProm    = isGlobal ? LogDB.findDupesGlobal(normCall)      : LogDB.findDupes(log.id, normCall);
+  const partialProm = call.length >= 2
+    ? (isGlobal ? LogDB.findPartialGlobal(normCall) : LogDB.findPartial(log.id, normCall))
+    : Promise.resolve([]);
+  const logsProm    = isGlobal ? LogDB.getLogs() : Promise.resolve(null);
+
+  Promise.all([dupeProm, partialProm, logsProm]).then(([dupes, partials, allLogs]) => {
+    const activeDupes    = dupes.filter(d => !d.deleted);
+    const activePartials = partials.filter(d => !d.deleted && d.call.toUpperCase() !== normCall);
+    if (!activeDupes.length && !activePartials.length) { clearDupePanel(); return; }
+
+    function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+    function hlCall(c, frag) {
+      const idx = c.indexOf(frag);
+      if (idx < 0) return esc(c);
+      return esc(c.slice(0, idx))
+        + '<span class="dp-partial-hl">' + esc(c.slice(idx, idx + frag.length)) + '</span>'
+        + esc(c.slice(idx + frag.length));
+    }
+
+    const logMap = Object.fromEntries((allLogs || []).map(l => [l.id, l]));
+    const myCall  = log.stationCall || '';
+    const hasDupe = activeDupes.some(d => d.logId === log.id);
+    let html = '';
+
     if (activeDupes.length) {
-      parts.push('DUPE: ' + activeDupes.map(d =>
-        '#' + String(d.qsoNumber).padStart(3,'0') + ' ' + d.call + ' ' + d.timeOnUtc + ' ' + d.frequencyDisplay + ' ' + d.mode
-      ).join('   '));
-    }
-    if (partials.length) {
-      const uniq = [...new Set(partials.map(d => d.call))].sort();
-      parts.push('SIMILAR: ' + uniq.join('  '));
+      const fmtD = d => 'DUPE: #' + String(d.qsoNumber).padStart(3,'0') + ' '
+        + esc(d.call) + ' ' + esc(d.timeOnUtc||'') + ' '
+        + esc(d.frequencyDisplay||'') + ' ' + esc(d.mode||'');
+
+      if (!isGlobal) {
+        html += '<div class="dp-line dp-dupe">' + activeDupes.map(fmtD).join('   ') + '</div>';
+      } else {
+        const cat1 = [], cat2 = [], cat3 = [];
+        activeDupes.forEach(d => {
+          if (d.logId === log.id) { cat3.push(d); return; }
+          const sc = (logMap[d.logId] || {}).stationCall || '';
+          (sc === myCall ? cat2 : cat1).push(d);
+        });
+        cat1.forEach(d => { html += '<div class="dp-line dp-dupe-other">'   + fmtD(d) + '</div>'; });
+        cat2.forEach(d => { html += '<div class="dp-line dp-dupe-samecall">' + fmtD(d) + '</div>'; });
+        cat3.forEach(d => { html += '<div class="dp-line dp-dupe">'          + fmtD(d) + '</div>'; });
+      }
     }
 
-    dupePanel.textContent = parts.join('     ');
-    dupePanel.className = 'dupe-panel' + (activeDupes.length ? '' : ' dupe-panel-similar');
+    if (activePartials.length) {
+      if (!isGlobal) {
+        const uniq = [...new Set(activePartials.map(d => d.call))].sort();
+        html += '<div class="dp-line dp-partial">PARTIAL: '
+          + uniq.map(c => hlCall(c, normCall)).join('  ') + '</div>';
+      } else {
+        const pAct = [], pSame = [], pOther = [];
+        activePartials.forEach(d => {
+          if (d.logId === log.id) { pAct.push(d); return; }
+          const sc = (logMap[d.logId] || {}).stationCall || '';
+          (sc === myCall ? pSame : pOther).push(d);
+        });
+        const uAct   = [...new Set(pAct.map(d => d.call))].sort();
+        const uSame  = [...new Set(pSame.map(d => d.call))].sort();
+        const uOther = [...new Set(pOther.map(d => d.call))].sort();
+        const cells = [];
+        if (uOther.length) cells.push(uOther.map(c => esc(c)).join('  '));
+        if (uSame.length)  cells.push('<span class="dp-partial-green">' + uSame.map(c => esc(c)).join('  ') + '</span>');
+        if (uAct.length)   cells.push(uAct.map(c => hlCall(c, normCall)).join('  '));
+        if (cells.length) html += '<div class="dp-line dp-partial">PARTIAL: ' + cells.join('  ') + '</div>';
+      }
+    }
+
+    if (!html) { clearDupePanel(); return; }
+
+    dupePanel.innerHTML = html;
+    dupePanel.className = 'dupe-panel' + (hasDupe ? '' : ' dupe-panel-similar');
     dupePanel.classList.remove('dupe-panel-hidden');
-
     document.querySelectorAll('.qso-row').forEach(row => {
       row.classList.toggle('qso-dupe', row.dataset.call === normCall);
     });
@@ -597,7 +651,7 @@ function sendTuAndResetRit() {
 
 // ── Journal: append a QSO row (Phase 4 will call this) ───────────────────────
 
-function appendJournalRow(qso) {
+function appendJournalRow(qso, displayNr) {
   const hint = document.getElementById('logEmptyHint');
   if (hint) hint.remove();
 
@@ -619,7 +673,7 @@ function appendJournalRow(qso) {
   })();
 
   const cols = [
-    { cls: 'jcol-nr',   text: String(qso.qsoNumber).padStart(3, '0') },
+    { cls: 'jcol-nr',   text: String(displayNr != null ? displayNr : qso.qsoNumber).padStart(3, '0') },
     { cls: 'jcol-date', text: qso.deleted ? '' : (qso.qsoDateUtc  || '') },
     { cls: 'jcol-time', text: qso.deleted ? '' : (qso.timeOnUtc   || '--:--') },
     { cls: 'jcol-call', text: qso.deleted ? '' : (qso.call        || '') },
@@ -649,6 +703,15 @@ document.getElementById('logJournalBody').addEventListener('click', e => {
   const row = e.target.closest('.qso-row[data-qso-id]');
   if (!row || !row.dataset.qsoId) return;
   openQsoEdit(Number(row.dataset.qsoId));
+});
+
+document.getElementById('logJournalBody').addEventListener('contextmenu', e => {
+  const callSpan = e.target.closest('.jcol-call');
+  if (!callSpan) return;
+  const row = callSpan.closest('.qso-row');
+  if (!row || !row.dataset.call) return;
+  e.preventDefault();
+  window.open('https://www.google.com/search?q=' + encodeURIComponent(row.dataset.call), '_blank');
 });
 
 let _qsoEditQso = null;
@@ -861,7 +924,7 @@ function onActiveLogChanged(log) {
     btnOpenLog.classList.remove('btn-trx-active');
     return;
   }
-  btnOpenLog.textContent = 'LOG: ' + (log.contestName || '—').substring(0, 12);
+  btnOpenLog.textContent = 'LOG: ' + (log.contestName || '—');
   btnOpenLog.classList.add('btn-trx-active');
   // reload journal rows for the active log
   loadJournalFromDb(log.id);
@@ -876,12 +939,16 @@ function loadJournalFromDb(logId) {
   body.innerHTML = '';
 
   LogDB.getQsosForLog(logId).then(qsos => {
-    qsos.sort((a, b) => a.qsoNumber - b.qsoNumber);
+    qsos.sort((a, b) => {
+      const ta = (a.timestampUtc || a.qsoDateUtc + 'T' + (a.timeOnUtc||'') + 'Z') || '';
+      const tb = (b.timestampUtc || b.qsoDateUtc + 'T' + (b.timeOnUtc||'') + 'Z') || '';
+      return ta < tb ? -1 : ta > tb ? 1 : 0;
+    });
     if (!qsos.length) {
       body.innerHTML = '<div class="log-empty" id="logEmptyHint">No QSO logged yet.</div>';
       return;
     }
-    qsos.forEach(q => appendJournalRow(q));
+    qsos.forEach((q, i) => appendJournalRow(q, i + 1));
   }).catch(() => {});
 }
 
