@@ -1,5 +1,11 @@
 # IC-705 IP Interface
 
+## Firmware web installer
+- First plug USB-C between ESP32 and PC
+- Then open the Firmware page and follow the instructions https://ok1hra.github.io/IC-705_Interface/
+
+----
+
 ## Functionality
 - **WiFi AP mode with Setup html form** available on address http://ic705.local
 
