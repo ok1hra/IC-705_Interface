@@ -248,6 +248,7 @@ bool mqttPostponeStatus = 1;
   String MACString;
 
   #include <ESPmDNS.h>
+  #include <HTTPClient.h>
 
   const char* ssidAP     = "IC705-if";
   const char* passwordAP = "remoteqth";
@@ -428,6 +429,8 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   void handleConfigUpload(void);
   void handleGetLogConfig(void);
   void handlePostLogConfig(void);
+  void handleOi3State(void);
+  void handleOi3Send(void);
 #endif
 
 //-------------------------------------------------------------------------------------------------------
@@ -859,6 +862,9 @@ String setupTemplateProcessor(const String &key){
   if (key == "PSWD_ERR") return setupPswdErr;
   if (key == "SSID2_ERR") return setupSsid2Err;
   if (key == "PSWD2_ERR") return setupPswd2Err;
+  if (key == "MQTT_AP_NOTE") return APmode
+    ? "<span class=\"ap-note\">MQTT is not active in AP mode — a WiFi network connection to the broker is required. Settings are saved and will apply after switching to station mode.</span>"
+    : "";
   if (key == "MQTT_ERR") return setupMqttErr;
   if (key == "MQTT_ERR1") return setupMqttErr1;
   if (key == "MQTT_ERR2") return setupMqttErr2;
@@ -1165,6 +1171,7 @@ void handleConfigDownload() {
   j += ",\"baudrate\":";        j += BaudRate;
   j += ",\"trxprofile\":\"";    j += configJsonEscape(transceiverType); j += "\"";
   j += ",\"civaddr\":\"";       j += civHex;                          j += "\"";
+  j += ",\"cwIpOnConnect\":";  j += cwIpOnConnect ? "true" : "false";
   for (uint8_t i = 0; i < CW_MEMORY_COUNT; i++) {
     j += ",\"cwmem"; j += (i + 1); j += "\":\""; j += configJsonEscape(cwMemoryText[i]); j += "\"";
   }
@@ -1206,6 +1213,21 @@ void handleConfigUpload() {
   String civStr = extractJsonString(body, "civaddr");
   uint8_t civAddr = configuredCivAddress;
   if (parseHexByteString(civStr, civAddr)) configuredCivAddress = civAddr;
+
+  {
+    int idx = body.indexOf("\"cwIpOnConnect\"");
+    if (idx >= 0) {
+      int colon = body.indexOf(':', idx);
+      if (colon >= 0) {
+        int vs = colon + 1;
+        while (vs < (int)body.length() && body[vs] == ' ') vs++;
+        bool v = body.substring(vs, vs + 4) == "true";
+        cwIpOnConnect = v;
+        EEPROM.writeBool(136, v);
+      }
+    }
+  }
+
 
   // Integers to EEPROM
   auto parseField = [&](const char *key, int minVal, int maxVal) -> int {
@@ -1277,6 +1299,60 @@ void handlePostLogConfig() {
   webServer.send(200, "application/json", "{\"ok\":true}");
 }
 
+void handleOi3State() {
+  String ip = webServer.arg("ip");
+  if (ip.length() == 0) {
+    webServer.send(400, "application/json", "{\"error\":\"missing_ip\"}");
+    return;
+  }
+  HTTPClient http;
+  String url = "http://" + ip + ":81/";
+  if (!http.begin(url)) {
+    webServer.send(200, "application/json", "{\"connected\":false,\"frequency\":0,\"mode\":\"USB\"}");
+    return;
+  }
+  http.setTimeout(1000);
+  int code = http.GET();
+  if (code != 200) {
+    http.end();
+    webServer.send(200, "application/json", "{\"connected\":false,\"frequency\":0,\"mode\":\"USB\"}");
+    return;
+  }
+  String resp = http.getString();
+  http.end();
+  resp.trim();
+  int p1 = resp.indexOf('|');
+  if (p1 < 0) {
+    webServer.send(200, "application/json", "{\"connected\":false,\"frequency\":0,\"mode\":\"USB\"}");
+    return;
+  }
+  long freq = resp.substring(0, p1).toInt();
+  int p2 = resp.indexOf('|', p1 + 1);
+  String modeStr = (p2 > p1) ? resp.substring(p1 + 1, p2) : resp.substring(p1 + 1);
+  modeStr.trim();
+  String j = "{\"connected\":true,\"frequency\":";
+  j += freq;
+  j += ",\"mode\":\"";
+  j += modeStr;
+  j += "\"}";
+  webServer.send(200, "application/json", j);
+}
+
+void handleOi3Send() {
+  String body = webServer.arg("plain");
+  String ip   = extractJsonString(body, "ip");
+  String text = extractJsonString(body, "text");
+  if (ip.length() == 0 || text.length() == 0) {
+    webServer.send(400, "application/json", "{\"error\":\"missing\"}");
+    return;
+  }
+  WiFiUDP oi3Udp;
+  oi3Udp.beginPacket(ip.c_str(), 89);
+  oi3Udp.print(text);
+  oi3Udp.endPacket();
+  webServer.send(200, "application/json", "{\"ok\":true}");
+}
+
 void setupWebServer(void){
   webServer.on("/state", HTTP_GET, handleGetState);
   webServer.on("/cmd", HTTP_POST, handlePostCmd);
@@ -1284,6 +1360,8 @@ void setupWebServer(void){
   webServer.on("/config/upload",   HTTP_POST, handleConfigUpload);
   webServer.on("/log-config", HTTP_GET,  handleGetLogConfig);
   webServer.on("/log-config", HTTP_POST, handlePostLogConfig);
+  webServer.on("/oi3/state", HTTP_GET,  handleOi3State);
+  webServer.on("/oi3/send",  HTTP_POST, handleOi3Send);
 
   webServer.on("/", HTTP_GET, [](){
     if (!SPIFFS.exists("/index.html")) { renderSetupPage(); return; }
@@ -1545,8 +1623,8 @@ void setup(){
     }
 
     if(APmode==true){
-      // WiFi.softAP(ssid, password); remove the password parameter, if you want the AP (Access Point) to be open
-      WiFi.softAP(ssidAP, passwordAP);
+      WiFi.mode(WIFI_AP);
+      WiFi.softAP(ssidAP, passwordAP, 1, 0, 4); // ch1, visible, max 4 clients, WPA2
       IPAddress IP = WiFi.softAPIP();
       MACString = WiFi.softAPmacAddress();
       Serial.print(" AP | IP address: ");
@@ -2737,6 +2815,7 @@ void MqttBuildClientId(){
 //-------------------------------------------------------------------------------------------------------
 void Mqtt(){
   #if defined(MQTT)
+    if(APmode) return;
     if(mqttEnable==true){
       if (millis()-MqttStatusTimer[0]>MqttStatusTimer[1]){
         if(!mqttClient.connected()){

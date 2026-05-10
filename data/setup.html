@@ -14,7 +14,7 @@
       <a class="tab" href="/ws-cat">DEBUG</a>
       <a class="tab tab-active" href="/setup">SETUP</a>
       <a class="tab" href="/datasync">LOGSYNC</a>
-      <span class="topbar-fw">FW %REV%</span>
+      <span id="topbarFw" class="topbar-fw" data-rev="%REV%"></span>
     </nav>
   </header>
   <main class="setup-shell">
@@ -93,6 +93,7 @@
         <details class="setup-section">
           <summary class="setup-section-title">MQTT <span class="setup-local-badge">eeprom</span></summary>
           <div class="setup-section-body">
+            %MQTT_AP_NOTE%
             <label>Broker IP
               <div class="input-with-tip">
                 <div class="ip-row">
@@ -177,14 +178,19 @@
                 <input type="text" id="ls_trx2Label" name="trx2label" maxlength="10" placeholder="TRX2" value="%TRX2_LABEL%">
               </label>
               <label class="setup-trx-col">CI-V address
-                <input type="text" name="trx2civ" maxlength="2" value="%TRX2_CIV%" placeholder="A4">
+                <input type="text" id="ls_trx2Civ" name="trx2civ" maxlength="2" value="%TRX2_CIV%" placeholder="A4">
               </label>
             </div>
             <label>Backend IP
               <div class="input-with-tip">
-                <input type="text" name="trx2ip" value="%TRX2_IP%" placeholder="192.168.x.x">
+                <input type="text" id="ls_trx2Ip" name="trx2ip" value="%TRX2_IP%" placeholder="192.168.x.x">
                 <span class="help-tip" data-tip="IP address of the backend (ESP32 or CI-V bridge) for TRX2. Leave blank if not used.">?</span>
               </div>
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" id="ls_trx2Oi3">
+              OI3 — simple mode: read freq/mode via HTTP :81, send CW/RTTY via UDP :89
+              <span class="help-tip" data-tip="OI3 protocol: frequency and mode are read by HTTP GET from port 81 of the backend IP (format: 21023630|CW|). CW and RTTY messages are sent via UDP to port 89. The CAT page is not used with this option.">?</span>
             </label>
 
             <div class="setup-trx-divider"></div>
@@ -194,14 +200,19 @@
                 <input type="text" id="ls_trx3Label" name="trx3label" maxlength="10" placeholder="TRX3" value="%TRX3_LABEL%">
               </label>
               <label class="setup-trx-col">CI-V address
-                <input type="text" name="trx3civ" maxlength="2" value="%TRX3_CIV%" placeholder="A4">
+                <input type="text" id="ls_trx3Civ" name="trx3civ" maxlength="2" value="%TRX3_CIV%" placeholder="A4">
               </label>
             </div>
             <label>Backend IP
               <div class="input-with-tip">
-                <input type="text" name="trx3ip" value="%TRX3_IP%" placeholder="192.168.x.x">
+                <input type="text" id="ls_trx3Ip" name="trx3ip" value="%TRX3_IP%" placeholder="192.168.x.x">
                 <span class="help-tip" data-tip="IP address of the backend (ESP32 or CI-V bridge) for TRX3. Leave blank if not used.">?</span>
               </div>
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" id="ls_trx3Oi3">
+              OI3 — simple mode: read freq/mode via HTTP :81, send CW/RTTY via UDP :89
+              <span class="help-tip" data-tip="OI3 protocol: frequency and mode are read by HTTP GET from port 81 of the backend IP (format: 21023630|CW|). CW and RTTY messages are sent via UDP to port 89. The CAT page is not used with this option.">?</span>
             </label>
           </div>
         </details>
@@ -379,6 +390,9 @@
       function loadLogSettings() {
         fetch('/log-config').then(function(r){ return r.json(); }).then(function(cfg) {
           var keys = ['trx1Label','trx2Label','trx3Label',
+                      'trx2Civ','trx3Civ',
+                      'trx2Ip','trx3Ip',
+                      'trx2Oi3','trx3Oi3',
                       'rstSsb','rstCwRtty','manualModeForPhone','blockedDxcc'];
           keys.forEach(function(k) {
             var v = cfg[k];
@@ -399,6 +413,12 @@
           trx1Label:       document.getElementById('ls_trx1Label').value.trim() || 'IC-705',
           trx2Label:       document.getElementById('ls_trx2Label').value.trim() || 'TRX2',
           trx3Label:       document.getElementById('ls_trx3Label').value.trim() || 'TRX3',
+          trx2Civ:         document.getElementById('ls_trx2Civ').value.trim(),
+          trx3Civ:         document.getElementById('ls_trx3Civ').value.trim(),
+          trx2Ip:          document.getElementById('ls_trx2Ip').value.trim(),
+          trx3Ip:          document.getElementById('ls_trx3Ip').value.trim(),
+          trx2Oi3:         document.getElementById('ls_trx2Oi3').checked,
+          trx3Oi3:         document.getElementById('ls_trx3Oi3').checked,
           rstSsb:          document.getElementById('ls_rstSsb').value.trim()    || '59',
           rstCwRtty:       document.getElementById('ls_rstCwRtty').value.trim() || '599',
           manualModeForPhone: document.getElementById('ls_manualModeForPhone').checked,
@@ -465,16 +485,21 @@
       const h   = String(d.getHours()).padStart(2, '0');
       const mi  = String(d.getMinutes()).padStart(2, '0');
       const filename = y + mo + day + '-' + h + mi + '-ic705-config.json';
-      fetch('/config/download')
-        .then(function(r) { return r.blob(); })
-        .then(function(blob) {
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = filename;
-          a.click();
-          URL.revokeObjectURL(url);
-        });
+      Promise.all([
+        fetch('/config/download').then(function(r) { return r.json(); }),
+        fetch('/log-config').then(function(r) { return r.json(); }).catch(function() { return {}; })
+      ]).then(function(results) {
+        var combined = Object.assign({}, results[0], { logConfig: results[1] });
+        var blob = new Blob([JSON.stringify(combined, null, 2)], { type: 'application/json' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
+      }).catch(function() {
+        document.getElementById("uploadMsg").textContent = "Download failed — check connection.";
+      });
     });
 
     document.getElementById("configFile").addEventListener("change", function () {
@@ -484,17 +509,38 @@
       msg.textContent = "Uploading…";
       const reader = new FileReader();
       reader.onload = function (e) {
-        fetch("/config/upload", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: e.target.result
-        })
-          .then(function (r) { return r.json(); })
-          .then(function (data) {
-            if (data.ok) {
+        var parsed;
+        try { parsed = JSON.parse(e.target.result); } catch(_) {
+          msg.textContent = "Error: invalid JSON";
+          return;
+        }
+        var logCfg   = parsed.logConfig || null;
+        var eepromCopy = Object.assign({}, parsed);
+        delete eepromCopy.logConfig;
+
+        var tasks = [
+          fetch("/config/upload", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(eepromCopy)
+          }).then(function(r) { return r.json(); })
+        ];
+        if (logCfg && typeof logCfg === 'object') {
+          tasks.push(
+            fetch("/log-config", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(logCfg)
+            }).then(function(r) { return r.json(); })
+          );
+        }
+        Promise.all(tasks)
+          .then(function(results) {
+            var ok = results.every(function(r) { return r.ok; });
+            if (ok) {
               msg.textContent = "Uploaded. Reload this page to verify, then click Save EEPROM and Restart.";
             } else {
-              msg.textContent = "Error: " + (data.error || "unknown");
+              msg.textContent = "Error: " + (results.map(function(r){ return r.error||''; }).join(', '));
             }
           })
           .catch(function () { msg.textContent = "Upload failed — check connection."; });
@@ -503,5 +549,6 @@
       this.value = "";
     });
   </script>
+  <script src="/fw-version.js"></script>
 </body>
 </html>

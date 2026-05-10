@@ -11,8 +11,8 @@ SKETCH_FILE="${ROOT_DIR}/IC-705_Interface.ino"
 
 # no_ota partition scheme (No OTA — 2MB APP / 2MB SPIFFS)
 PARTITIONS_CSV_NAME="no_ota"
-FLASH_MODE="dio"
-FLASH_FREQ="40m"
+FLASH_MODE="qio"
+FLASH_FREQ="80m"
 FLASH_SIZE="4MB"
 
 # Offsets from no_ota.csv

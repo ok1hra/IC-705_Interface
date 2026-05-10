@@ -135,6 +135,13 @@
   function sendMacro(type, ctx) {
     const text = buildMacro(type, ctx);
     if (!text) return Promise.resolve(false);  // PHONE mode — nothing to send
+    if (ctx._oi3 && ctx._trxIp) {
+      return fetch('/oi3/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ip: ctx._trxIp, text })
+      }).then(r => r.ok).catch(() => false);
+    }
     return fetch('/cmd', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

@@ -315,6 +315,47 @@ select,
   margin-top: 6px;
 }
 
+.tune-strip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 18px;
+  position: relative;
+}
+
+.tune-strip::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 2px;
+  height: 18px;
+  background: var(--blue-dim);
+  border-radius: 1px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.tune-slider {
+  flex: 1;
+  accent-color: var(--blue);
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.tune-step-select {
+  width: auto;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid #314152;
+  background: #05080d;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
 .slider-grid {
   margin-top: 22px;
   display: grid;

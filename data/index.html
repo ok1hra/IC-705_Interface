@@ -92,6 +92,15 @@
         </div>
       </div>
 
+      <section class="tune-strip">
+        <input id="tuneSlider" type="range" min="-100" max="100" value="0" class="tune-slider" autocomplete="off">
+        <select id="tuneStep" class="tune-step-select">
+          <option value="1">1 Hz</option>
+          <option value="10" selected>10 Hz</option>
+          <option value="100">100 Hz</option>
+        </select>
+      </section>
+
       <section class="slider-grid">
         <label>
           <span class="slider-head"><span>AF volume</span><span id="afVolumeValue">37</span></span>
@@ -135,7 +144,7 @@
     </section>
   </main>
 
+  <script src="/fw-version.js"></script>
   <script src="/cat.js"></script>
-  <script>fetch('/state').then(function(r){return r.json();}).then(function(d){if(d.fwRev)document.getElementById('topbarFw').textContent='FW '+d.fwRev;}).catch(function(){});</script>
 </body>
 </html>

@@ -6,6 +6,8 @@ const app = {
   runMode:    'RUN',   // 'RUN' | 'SP'
   activeTrx:  1,       // 1 | 2 | 3
   trxLabels:  ['IC-705', 'TRX2', 'TRX3'],
+  trxOi3:     [false, false, false],  // OI3 mode per TRX
+  trxIps:     ['', '', ''],           // backend IP per TRX
 
   // TRX state from /state polling
   connected:  false,
@@ -94,14 +96,17 @@ function startClock() {
 
 function pollState() {
   clearTimeout(app._pollTimer);
-  fetch('/state')
+  const trxIdx = app.activeTrx - 1;
+  const isOi3  = app.trxOi3[trxIdx] && trxIdx > 0 && app.trxIps[trxIdx];
+  const url    = isOi3 ? '/oi3/state?ip=' + encodeURIComponent(app.trxIps[trxIdx]) : '/state';
+  fetch(url)
     .then(r => {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
     })
     .then(data => {
       applyState(data);
-      app._pollTimer = setTimeout(pollState, 250);
+      app._pollTimer = setTimeout(pollState, isOi3 ? 500 : 250);
     })
     .catch(() => {
       applyDisconnected();
@@ -113,8 +118,12 @@ function applyState(data) {
   app.connected = !!data.connected;
   if (data.fwRev && !app.fwRev) {
     app.fwRev = String(data.fwRev);
-    const el = document.getElementById('topbarFw');
-    if (el) el.textContent = 'FW ' + app.fwRev;
+    if (window.setFwRev) {
+      window.setFwRev(app.fwRev);
+    } else {
+      const el = document.getElementById('topbarFw');
+      if (el) el.textContent = 'FW ' + app.fwRev;
+    }
   }
 
   // Update frequency/mode/tx only when radio is actually connected —
@@ -260,12 +269,22 @@ function updateTrxHeader() {
   if (hdr) hdr.textContent = app.trxLabels[app.activeTrx - 1] || 'TRX';
 }
 
+function updateCatTabVisibility() {
+  const trxIdx = app.activeTrx - 1;
+  const isOi3  = app.trxOi3[trxIdx] && trxIdx > 0;
+  const catTab = document.querySelector('.tabs a[href="/"]');
+  if (catTab) catTab.style.display = isOi3 ? 'none' : '';
+}
+
 trxButtons.forEach(btn => {
   btn.addEventListener('click', () => {
     app.activeTrx = Number(btn.dataset.trx);
     trxButtons.forEach(b => b.classList.toggle('btn-trx-active', b === btn));
     updateTrxHeader();
+    updateCatTabVisibility();
     renderConnStatus();
+    clearTimeout(app._pollTimer);
+    pollState();
     inpCall.focus();
   });
 });
@@ -356,7 +375,8 @@ function clearForm() {
 // ── Macro context builder ─────────────────────────────────────────────────────
 
 function macroCtx(overrides) {
-  const log = LogManager.getActiveLog() || {};
+  const log    = LogManager.getActiveLog() || {};
+  const trxIdx = app.activeTrx - 1;
   return Object.assign({
     mode:         app.mode,
     freqHz:       app.frequency,
@@ -368,6 +388,8 @@ function macroCtx(overrides) {
     qsoNumber:    log.nextQsoNumber   || 1,
     prevQsoNumber:(log.nextQsoNumber  || 1) - 1,
     myLocator:    log.myLocator       || '',
+    _oi3:         app.trxOi3[trxIdx] && trxIdx > 0,
+    _trxIp:       app.trxIps[trxIdx] || '',
   }, overrides);
 }
 
@@ -380,7 +402,9 @@ function sendMacroText(macroType) {
     showHint('Phone mode — send manually');
     return;
   }
-  if (!app.connected) {
+  const trxIdx = app.activeTrx - 1;
+  const isOi3  = app.trxOi3[trxIdx] && trxIdx > 0 && app.trxIps[trxIdx];
+  if (!app.connected && !isOi3) {
     showHint('TRX not connected');
     return;
   }
@@ -1013,8 +1037,13 @@ function init() {
     if (cfg.trx1Label) app.trxLabels[0] = cfg.trx1Label;
     if (cfg.trx2Label) app.trxLabels[1] = cfg.trx2Label;
     if (cfg.trx3Label) app.trxLabels[2] = cfg.trx3Label;
+    if (cfg.trx2Ip)   app.trxIps[1]   = cfg.trx2Ip;
+    if (cfg.trx3Ip)   app.trxIps[2]   = cfg.trx3Ip;
+    app.trxOi3[1] = !!cfg.trx2Oi3;
+    app.trxOi3[2] = !!cfg.trx3Oi3;
     trxButtons.forEach((b, i) => { b.textContent = app.trxLabels[i]; });
     updateTrxHeader();
+    updateCatTabVisibility();
     renderConnStatus();
   }).catch(() => {});
 
