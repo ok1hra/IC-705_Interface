@@ -9,11 +9,11 @@
 <body>
   <header class="topbar">
     <nav class="tabs" aria-label="Primary">
-      <a class="tab" href="/log">LOG</a>
+      <a class="tab" href="/log">QRPLog</a>
       <a class="tab" href="/">CAT</a>
       <a class="tab" href="/ws-cat">DEBUG</a>
       <a class="tab tab-active" href="/setup">SETUP</a>
-      <a class="tab" href="/datasync">DATASYNC</a>
+      <a class="tab" href="/datasync">LOGSYNC</a>
       <span class="topbar-fw">FW %REV%</span>
     </nav>
   </header>
@@ -148,26 +148,60 @@
                 <span class="help-tip" data-tip="Serial speed for CI-V data over USB-C. Must match the radio's USB Serial Baud Rate setting.">?</span>
               </div>
             </label>
-            <label>Transceiver profile
-              <div class="input-with-tip">
-                <select name="trxprofile">
-                  <option value="IC-705-BT" %TRX_IC705_SEL%>IC-705-BT</option>
-                  <option value="IC-7610-CI-V" %TRX_IC7610_SEL%>IC-7610-CI-V</option>
-                </select>
-                <span class="help-tip" data-tip="Radio model preset — selects CI-V framing and default bus address.">?</span>
-              </div>
-            </label>
-            <label>CI-V address
-              <div class="input-with-tip">
-                <input type="text" name="civaddr" maxlength="2" value="%CIV_ADDR%">
-                <span class="help-tip" data-tip="CI-V bus address in hexadecimal. IC-705 default: A4. Check MENU → SET → Connectors → CI-V → CI-V Address.">?</span>
-              </div>
-              <span class="msg">%CIV_ADDR_ERR%</span>
-            </label>
+
+            <div class="setup-trx-divider"></div>
+            <div class="setup-trx-head">TRX1</div>
+            <div class="setup-trx-row">
+              <label class="setup-trx-col">Label
+                <input type="text" id="ls_trx1Label" name="trx1label" maxlength="10" placeholder="IC-705" value="%TRX1_LABEL%">
+              </label>
+              <label class="setup-trx-col">CI-V address
+                <div class="input-with-tip">
+                  <input type="text" name="civaddr" maxlength="2" placeholder="A4" value="%CIV_ADDR%">
+                  <span class="help-tip" data-tip="CI-V bus address in hexadecimal. IC-705 default: A4. Check MENU → SET → Connectors → CI-V → CI-V Address.">?</span>
+                </div>
+                <span class="msg">%CIV_ADDR_ERR%</span>
+              </label>
+            </div>
+            <div class="setup-trx-note">Connection: <strong>Bluetooth</strong></div>
             <label class="checkbox-row">
               <input type="checkbox" name="cwIpOnConnect" %CW_IP_CHK%>
               Announce WiFi IP via CW on first BT connect
               <span class="help-tip" data-tip="Sends the ESP32 IP address in Morse code after the first Bluetooth connection — useful when DHCP assigns an unknown address.">?</span>
+            </label>
+
+            <div class="setup-trx-divider"></div>
+            <div class="setup-trx-head">TRX2</div>
+            <div class="setup-trx-row">
+              <label class="setup-trx-col">Label
+                <input type="text" id="ls_trx2Label" name="trx2label" maxlength="10" placeholder="TRX2" value="%TRX2_LABEL%">
+              </label>
+              <label class="setup-trx-col">CI-V address
+                <input type="text" name="trx2civ" maxlength="2" value="%TRX2_CIV%" placeholder="A4">
+              </label>
+            </div>
+            <label>Backend IP
+              <div class="input-with-tip">
+                <input type="text" name="trx2ip" value="%TRX2_IP%" placeholder="192.168.x.x">
+                <span class="help-tip" data-tip="IP address of the backend (ESP32 or CI-V bridge) for TRX2. Leave blank if not used.">?</span>
+              </div>
+            </label>
+
+            <div class="setup-trx-divider"></div>
+            <div class="setup-trx-head">TRX3</div>
+            <div class="setup-trx-row">
+              <label class="setup-trx-col">Label
+                <input type="text" id="ls_trx3Label" name="trx3label" maxlength="10" placeholder="TRX3" value="%TRX3_LABEL%">
+              </label>
+              <label class="setup-trx-col">CI-V address
+                <input type="text" name="trx3civ" maxlength="2" value="%TRX3_CIV%" placeholder="A4">
+              </label>
+            </div>
+            <label>Backend IP
+              <div class="input-with-tip">
+                <input type="text" name="trx3ip" value="%TRX3_IP%" placeholder="192.168.x.x">
+                <span class="help-tip" data-tip="IP address of the backend (ESP32 or CI-V bridge) for TRX3. Leave blank if not used.">?</span>
+              </div>
             </label>
           </div>
         </details>
@@ -183,24 +217,6 @@
         <details class="setup-section" id="logSettingsSection">
           <summary class="setup-section-title">LOG settings <span class="setup-local-badge">spiffs</span></summary>
           <div class="setup-section-body">
-            <label>TRX1 label
-              <div class="input-with-tip">
-                <input type="text" id="ls_trx1Label" maxlength="10" placeholder="TRX1">
-                <span class="help-tip" data-tip="Display name for transceiver slot 1, shown in the log journal and status bar.">?</span>
-              </div>
-            </label>
-            <label>TRX2 label
-              <div class="input-with-tip">
-                <input type="text" id="ls_trx2Label" maxlength="10" placeholder="TRX2">
-                <span class="help-tip" data-tip="Display name for transceiver slot 2.">?</span>
-              </div>
-            </label>
-            <label>TRX3 label
-              <div class="input-with-tip">
-                <input type="text" id="ls_trx3Label" maxlength="10" placeholder="TRX3">
-                <span class="help-tip" data-tip="Display name for transceiver slot 3.">?</span>
-              </div>
-            </label>
             <label>RST default SSB/FM
               <div class="input-with-tip">
                 <input type="text" id="ls_rstSsb" maxlength="3" value="59" placeholder="59">
@@ -358,12 +374,15 @@
   <script>
     // ── SPIFFS settings (LOG config + CW/Freq memories) ─────────────────────
     (function () {
+      var TRX_DEFAULTS = { trx1Label: 'IC-705', trx2Label: 'TRX2', trx3Label: 'TRX3' };
+
       function loadLogSettings() {
         fetch('/log-config').then(function(r){ return r.json(); }).then(function(cfg) {
           var keys = ['trx1Label','trx2Label','trx3Label',
                       'rstSsb','rstCwRtty','manualModeForPhone','blockedDxcc'];
           keys.forEach(function(k) {
             var v = cfg[k];
+            if (v == null || v === '') v = TRX_DEFAULTS[k] != null ? TRX_DEFAULTS[k] : null;
             if (v == null) return;
             var el = document.getElementById('ls_' + k);
             if (!el) return;
@@ -377,7 +396,7 @@
         var msg = document.getElementById('spiffsSaveMsg');
 
         var logData = {
-          trx1Label:       document.getElementById('ls_trx1Label').value.trim() || 'TRX1',
+          trx1Label:       document.getElementById('ls_trx1Label').value.trim() || 'IC-705',
           trx2Label:       document.getElementById('ls_trx2Label').value.trim() || 'TRX2',
           trx3Label:       document.getElementById('ls_trx3Label').value.trim() || 'TRX3',
           rstSsb:          document.getElementById('ls_rstSsb').value.trim()    || '59',

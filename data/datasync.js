@@ -802,6 +802,10 @@
       const totalCnt  = await idbCount(cdb, 'qso');
       document.getElementById('infoQsoCount').textContent    = localCnt;
       document.getElementById('infoRemoteCount').textContent = totalCnt - localCnt;
+      const estKb = totalCnt * 650;
+      document.getElementById('infoEstSize').textContent =
+        estKb >= 1048576 ? '~' + (estKb / 1048576).toFixed(1) + ' MB'
+                         : '~' + (estKb / 1024).toFixed(0) + ' kB';
 
       // max local seq
       let maxSeq = 0;
@@ -875,6 +879,82 @@
 
     on('btnExport', 'click', exportDb);
 
+    // ── Field info popup ──────────────────────────────────────────────────────
+    const SI_FIELDS = {
+      deviceId: ['Device ID',
+        'A unique identifier generated for this browser profile on first use. ' +
+        'Stored in localStorage; used during sync to track which QSOs were authored here. ' +
+        'Shown truncated — the full UUID is used internally.'],
+      localQsos: ['Local QSOs',
+        'QSOs created on this device. They carry a numeric local sequence ID and are ' +
+        'sent to other devices during sync. Does not include QSOs received from remote devices.'],
+      lastSeq: ['Last seq',
+        'The highest sequence number assigned to a locally created QSO. ' +
+        'Acts as a version counter — the remote device requests all QSOs above ' +
+        'its last-known sequence number for this device ID.'],
+      remoteQsos: ['Remote QSOs',
+        'QSOs received from other devices and stored in the local database. ' +
+        'Together with Local QSOs they form the complete log.'],
+      knownDevices: ['Known devices',
+        'Number of distinct device IDs this database has ever received records from or synced with. ' +
+        'Each browser profile that has participated in a sync session is counted separately.'],
+      estSize: ['Est. DB size',
+        'Rough estimate: (total QSOs in DB) × 650 B. Includes both local and received QSOs. ' +
+        'Actual size varies with field lengths (±30 %).<br><br>' +
+        'To see the exact figure in your browser:<br>' +
+        '• <b>Chrome / Edge</b> — DevTools <kbd>F12</kbd> → Application → Storage<br>' +
+        '• <b>Firefox</b> — address bar: <code>about:storage</code><br>' +
+        '• <b>Safari</b> — Develop → Web Inspector → Storage<br><br>' +
+        'This app runs over plain HTTP so the Storage API (requires HTTPS) is ' +
+        'unavailable to JavaScript. Desktop browsers rarely evict IndexedDB data ' +
+        'unless the disk is critically full — especially for bookmarked pages.'],
+      phase: ['Phase',
+        'Current state of the sync protocol:<br>' +
+        '• <b>Idle</b> — no active session<br>' +
+        '• <b>Waiting</b> — this device created an offer and is waiting for the other side to connect<br>' +
+        '• <b>Connecting</b> — WebRTC handshake in progress<br>' +
+        '• <b>Syncing</b> — QSO data is being exchanged<br>' +
+        '• <b>Done</b> — session completed successfully'],
+      remoteDevice: ['Remote device',
+        'Label and Device ID of the peer currently connected for sync. ' +
+        'The label is set by the other device on its own LOGSYNC page under "Create local device name".'],
+      sent: ['Sent',
+        'Number of QSOs sent to the remote device in the current session. ' +
+        'Only records with a sequence number higher than what the remote already has are transmitted.'],
+      received: ['Received',
+        'Number of QSOs received from the remote device in the current session. ' +
+        'Only records missing from the local database are stored.'],
+      batches: ['Batches',
+        'Number of data batches exchanged in the current session. ' +
+        'Each batch holds up to 200 QSOs (max 32 kB); large logs are split across multiple batches.'],
+      errors: ['Errors',
+        'Number of protocol errors in the current session. ' +
+        'A non-zero count may indicate a version mismatch, network interruption, or corrupted message.'],
+    };
+
+    const siPopup = document.getElementById('siFieldPopup');
+    const siTitle = document.getElementById('siFieldTitle');
+    const siBody  = document.getElementById('siFieldBody');
+
+    document.querySelectorAll('[data-si]').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        const key  = btn.dataset.si;
+        const info = SI_FIELDS[key];
+        if (!info || !siPopup) return;
+        siTitle.textContent = info[0];
+        siBody.innerHTML    = '<p style="margin:0;line-height:1.55;font-size:13px">' + info[1] + '</p>';
+        siPopup.classList.toggle('si-open');
+      });
+    });
+    document.getElementById('siFieldClose').addEventListener('click', e => {
+      e.stopPropagation();
+      siPopup.classList.remove('si-open');
+    });
+    document.addEventListener('click', e => {
+      if (siPopup && !siPopup.contains(e.target)) siPopup.classList.remove('si-open');
+    });
+
     document.getElementById('importFile').addEventListener('change', async function () {
       if (!this.files[0]) return;
       const file = this.files[0];
@@ -890,6 +970,381 @@
       }
       setTimeout(() => { msg.textContent = ''; }, 3000);
     });
+
+    const importLogFile = el('importLogFile');
+    if (importLogFile) importLogFile.addEventListener('change', function () {
+      if (!this.files[0]) return;
+      const file = this.files[0];
+      this.value = '';
+      handleImportLogFile(file);
+    });
+  }
+
+  // ── Radio log import — format detection ──────────────────────────────────────
+
+  function detectLogFormat(text) {
+    const t = text.trim();
+    if (/<EOH>|<EOR>|<[A-Z0-9_]+:\d+/i.test(t))                            return 'ADIF';
+    if (/^START-OF-LOG:/mi.test(t) || /^QSO:/mi.test(t))                   return 'CABRILLO';
+    if (/^\[REG1TEST(;\d+)?\]/mi.test(t) || /^\[QSORecords(;\d+)?\]/mi.test(t)) return 'EDI';
+    return null;
+  }
+
+  // ── ADIF ─────────────────────────────────────────────────────────────────────
+
+  function _adifFields(text) {
+    const rec = {};
+    const re = /<([A-Z0-9_]+):(\d+)(?::[^>]*)?>([^<]*)/gi;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      rec[m[1].toUpperCase()] = m[3].slice(0, Number(m[2]));
+    }
+    return rec;
+  }
+
+  function parseAdif(text) {
+    const parts  = text.split(/<EOH>/i);
+    const header = parts.length > 1 ? _adifFields(parts[0]) : {};
+    const body   = parts.length > 1 ? parts.slice(1).join('') : text;
+    const qsos   = [];
+    for (const chunk of body.split(/<EOR>/i)) {
+      const rec = _adifFields(chunk);
+      if (Object.keys(rec).length) qsos.push(rec);
+    }
+    return {
+      format: 'ADIF', qsos,
+      prefill: {
+        contest: header['CONTEST_ID']        || '',
+        call:    header['STATION_CALLSIGN']  || header['OPERATOR'] || '',
+        locator: header['MY_GRIDSQUARE']     || '',
+      },
+    };
+  }
+
+  // ── Cabrillo ──────────────────────────────────────────────────────────────────
+
+  function parseCabrillo(text) {
+    const header = {};
+    const qsos   = [];
+    for (const line of text.split(/\r?\n/)) {
+      const t = line.trim();
+      if (!t || t === 'END-OF-LOG:') continue;
+      if (t.toUpperCase().startsWith('QSO:')) {
+        const p = t.replace(/^QSO:\s*/i, '').trim().split(/\s+/);
+        qsos.push({
+          freq: p[0], mode: p[1], date: p[2], time: p[3],
+          myCall: p[4], sentRpt: p[5], sentExch: p[6],
+          call: p[7], rcvdRpt: p[8], rcvdExch: p.slice(9).join(' '),
+        });
+      } else {
+        const m = t.match(/^([A-Z0-9-]+):\s*(.*)$/i);
+        if (m) header[m[1].toUpperCase()] = m[2];
+      }
+    }
+    return {
+      format: 'CABRILLO', qsos, header,
+      prefill: {
+        contest: header['CONTEST']      || '',
+        call:    header['CALLSIGN']     || '',
+        locator: header['GRID-LOCATOR'] || header['LOCATION'] || '',
+      },
+    };
+  }
+
+  // ── EDI / REG1TEST ────────────────────────────────────────────────────────────
+
+  function parseEdi(text) {
+    const sections = {};
+    const qsos     = [];
+    let cur        = 'ROOT';
+    sections[cur]  = {};
+    for (const line of text.split(/\r?\n/)) {
+      const t = line.trim();
+      if (!t) continue;
+      const sec = t.match(/^\[([^;\]]+)(?:;\d+)?\]$/);
+      if (sec) { cur = sec[1].toUpperCase(); sections[cur] = sections[cur] || {}; continue; }
+      if (cur === 'QSORECORDS') {
+        const p = t.split(';');
+        qsos.push({ date: p[0], time: p[1], call: p[2],
+                    sentRpt: p[3], rcvdRpt: p[4], locator: p[5],
+                    sentNr: p[6], rcvdNr: p[7], points: p[8] });
+        continue;
+      }
+      const eq = t.indexOf('=');
+      if (eq >= 0) sections[cur][t.slice(0, eq)] = t.slice(eq + 1);
+    }
+    const stx = sections['STX'] || {};
+    return {
+      format: 'EDI', qsos, sections,
+      prefill: {
+        contest: stx['Contest'] || stx['PContest'] || '',
+        call:    stx['Callsign'] || stx['Call'] || stx['PCall'] || '',
+        locator: stx['Locator'] || stx['PLocator'] || '',
+      },
+    };
+  }
+
+  // ── QSO normalizers ───────────────────────────────────────────────────────────
+
+  function _adifDate(s)  { return s && s.length >= 8 ? s.slice(0,4)+'-'+s.slice(4,6)+'-'+s.slice(6,8) : ''; }
+  function _adifTime(s)  { return s && s.length >= 4 ? s.slice(0,2)+':'+s.slice(2,4) : '00:00'; }
+
+  function _ediDate(s) {
+    if (!s) return '';
+    s = s.trim();
+    if (s.length === 8) return s.slice(0,4)+'-'+s.slice(4,6)+'-'+s.slice(6,8);
+    if (s.length === 6) {
+      const century = parseInt(s.slice(0,2), 10) >= 70 ? '19' : '20';
+      return century + s.slice(0,2)+'-'+s.slice(2,4)+'-'+s.slice(4,6);
+    }
+    return '';
+  }
+
+  function _ediFreqHz(sections) {
+    const stx = sections['STX'] || {};
+    const raw = stx['Band'] || stx['PBand'] || stx['TBand'] || '';
+    const mhz = parseFloat(raw);
+    return isNaN(mhz) ? 0 : Math.round(mhz * 1e6);
+  }
+
+  function _ediMode(sections) {
+    const stx = sections['STX'] || {};
+    return stx['TMode'] || stx['Mode'] || stx['PMode'] || '';
+  }
+
+  function _makeQso(logId, nr, fields) {
+    const d = fields.dateUtc || '';
+    const t = fields.timeUtc || '00:00';
+    return Object.assign({
+      logId, qsoNumber: nr,
+      qsoDateUtc: d, timeOnUtc: t,
+      timestampUtc: d ? d + 'T' + t + ':00Z' : new Date().toISOString(),
+      call: '', rstSent: '599', rstReceived: '599',
+      exchangeReceived: '', frequencyHz: 0, frequencyDisplay: '',
+      mode: '', trx: 1, locatorReceived: '',
+    }, fields);
+  }
+
+  function normalizeAdif(raw, logId, nr) {
+    const freqHz = Math.round((parseFloat(raw['FREQ']) || 0) * 1e6);
+    return _makeQso(logId, nr, {
+      dateUtc:          _adifDate(raw['QSO_DATE']),
+      timeUtc:          _adifTime(raw['TIME_ON'] || raw['TIME_OFF'] || ''),
+      call:             (raw['CALL'] || '').toUpperCase(),
+      rstSent:          raw['RST_SENT'] || '599',
+      rstReceived:      raw['RST_RCVD'] || '599',
+      exchangeReceived: raw['SRX'] || raw['SRX_STRING'] || raw['STX_STRING'] || '',
+      frequencyHz:      freqHz,
+      frequencyDisplay: freqHz ? (freqHz / 1e6).toFixed(4) + ' MHz' : (raw['BAND'] || ''),
+      mode:             raw['MODE'] || raw['SUBMODE'] || '',
+      locatorReceived:  raw['GRIDSQUARE'] || '',
+    });
+  }
+
+  function normalizeCabrillo(raw, logId, nr) {
+    const freqHz = Math.round((parseFloat(raw.freq) || 0) * 1e3);
+    const time   = raw.time || '';
+    return _makeQso(logId, nr, {
+      dateUtc:          raw.date || '',
+      timeUtc:          time.length >= 4 ? time.slice(0,2)+':'+time.slice(2,4) : '00:00',
+      call:             (raw.call || '').toUpperCase(),
+      rstSent:          raw.sentRpt || '599',
+      rstReceived:      raw.rcvdRpt || '599',
+      exchangeReceived: raw.rcvdExch || '',
+      frequencyHz:      freqHz,
+      frequencyDisplay: freqHz ? (freqHz / 1e6).toFixed(4) + ' MHz' : '',
+      mode:             raw.mode || '',
+    });
+  }
+
+  function normalizeEdi(raw, logId, nr, freqHz, mode) {
+    const time = raw.time || '';
+    return _makeQso(logId, nr, {
+      dateUtc:          _ediDate(raw.date),
+      timeUtc:          time.length >= 4 ? time.slice(0,2)+':'+time.slice(2,4) : '00:00',
+      call:             (raw.call || '').toUpperCase(),
+      rstSent:          raw.sentRpt || '59',
+      rstReceived:      raw.rcvdRpt || '59',
+      exchangeReceived: raw.rcvdNr || '',
+      frequencyHz:      freqHz,
+      frequencyDisplay: freqHz ? (freqHz / 1e6).toFixed(3) + ' MHz' : '',
+      mode:             mode,
+      locatorReceived:  raw.locator || '',
+    });
+  }
+
+  // ── Import modal ──────────────────────────────────────────────────────────────
+
+  let _impParsed = null;
+  let _impLogEl  = null;
+
+  function _buildImportModal() {
+    const div = document.createElement('div');
+    div.id        = 'dsImpModal';
+    div.className = 'ds-imp-modal ds-hidden';
+    div.innerHTML = `
+      <div class="ds-imp-box">
+        <div class="ds-imp-header">
+          <span class="ds-imp-title" id="dsImpTitle">Import radio log</span>
+          <button class="ds-imp-close" id="dsImpClose" type="button" title="Cancel">✕</button>
+        </div>
+        <div class="ds-imp-summary" id="dsImpSummary"></div>
+        <form id="dsImpForm" class="ds-imp-form" autocomplete="off">
+          <label class="ds-imp-row">
+            <span>Contest</span>
+            <input id="dsImpContest" maxlength="40" placeholder="CQWW" required>
+          </label>
+          <label class="ds-imp-row">
+            <span>My call</span>
+            <input id="dsImpMyCall" maxlength="16" placeholder="OK1ABC" required>
+          </label>
+          <label class="ds-imp-row">
+            <span>Exchange</span>
+            <input id="dsImpExch" maxlength="10" placeholder="NR / JO70FD">
+          </label>
+          <label class="ds-imp-row">
+            <span>My locator</span>
+            <input id="dsImpLoc" maxlength="6" placeholder="JO70FD">
+          </label>
+          <label class="ds-imp-row">
+            <span>Start QSO#</span>
+            <input id="dsImpStartNr" type="number" min="1" value="1">
+          </label>
+          <div class="ds-imp-actions">
+            <button type="button" class="btn-cancel" id="dsImpCancel">Cancel</button>
+            <button type="submit" id="dsImpSubmit">Import</button>
+          </div>
+        </form>
+        <pre id="dsImpLog" class="log ds-log ds-hidden"></pre>
+      </div>`;
+    document.body.appendChild(div);
+
+    div.addEventListener('click', e => { if (e.target === div) _closeImportModal(); });
+    document.getElementById('dsImpClose').addEventListener('click', _closeImportModal);
+    document.getElementById('dsImpCancel').addEventListener('click', _closeImportModal);
+    document.getElementById('dsImpForm').addEventListener('submit', _onImportSubmit);
+
+    ['dsImpContest','dsImpMyCall','dsImpExch','dsImpLoc'].forEach(id => {
+      const inp = document.getElementById(id);
+      inp.addEventListener('input', () => {
+        const pos = inp.selectionStart;
+        inp.value = inp.value.toUpperCase();
+        inp.setSelectionRange(pos, pos);
+      });
+    });
+
+    _impLogEl = document.getElementById('dsImpLog');
+    return div;
+  }
+
+  function _openImportModal(parsed) {
+    _impParsed = parsed;
+    let modal = document.getElementById('dsImpModal');
+    if (!modal) modal = _buildImportModal();
+
+    const { format, qsos, prefill } = parsed;
+    const n = qsos.length;
+    document.getElementById('dsImpTitle').textContent   = 'Import — ' + format;
+    document.getElementById('dsImpSummary').textContent = n + ' QSO' + (n !== 1 ? 's' : '') + ' detected in ' + format + ' file. Fill in log details and confirm.';
+
+    const set = (id, v) => { if (v) document.getElementById(id).value = v.toUpperCase(); };
+    set('dsImpContest', prefill.contest);
+    set('dsImpMyCall',  prefill.call);
+    set('dsImpLoc',     prefill.locator);
+    document.getElementById('dsImpStartNr').value = 1;
+    document.getElementById('dsImpSubmit').textContent = 'Create log & import ' + n + ' QSO' + (n !== 1 ? 's' : '');
+    document.getElementById('dsImpSubmit').disabled = false;
+
+    _impLogEl.classList.add('ds-hidden');
+    _impLogEl.textContent = '';
+    modal.classList.remove('ds-hidden');
+    document.getElementById('dsImpContest').focus();
+  }
+
+  function _closeImportModal() {
+    const modal = document.getElementById('dsImpModal');
+    if (modal) modal.classList.add('ds-hidden');
+    _impParsed = null;
+  }
+
+  function _impLog(msg) {
+    if (!_impLogEl) return;
+    _impLogEl.classList.remove('ds-hidden');
+    _impLogEl.textContent += new Date().toISOString().slice(11, 19) + ' ' + msg + '\n';
+    _impLogEl.scrollTop = _impLogEl.scrollHeight;
+  }
+
+  async function _onImportSubmit(e) {
+    e.preventDefault();
+    if (!_impParsed) return;
+
+    const contestName     = document.getElementById('dsImpContest').value.trim();
+    const stationCall     = document.getElementById('dsImpMyCall').value.trim();
+    const defaultExchange = document.getElementById('dsImpExch').value.trim();
+    const myLocator       = document.getElementById('dsImpLoc').value.trim();
+    const startQsoNumber  = parseInt(document.getElementById('dsImpStartNr').value, 10) || 1;
+    if (!contestName || !stationCall) return;
+
+    const submitBtn = document.getElementById('dsImpSubmit');
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Importing…';
+
+    try {
+      const logObj = await LogDB.createLog({ contestName, stationCall, defaultExchange, myLocator, startQsoNumber });
+      _impLog('Log created: ' + logObj.id);
+
+      const { format, qsos, sections } = _impParsed;
+      const ediFreqHz = format === 'EDI' ? _ediFreqHz(sections || {}) : 0;
+      const ediMode   = format === 'EDI' ? _ediMode(sections || {})   : '';
+
+      let nr = startQsoNumber, ok = 0, skip = 0;
+      for (const raw of qsos) {
+        try {
+          let q;
+          if      (format === 'ADIF')     q = normalizeAdif(raw, logObj.id, nr);
+          else if (format === 'CABRILLO') q = normalizeCabrillo(raw, logObj.id, nr);
+          else                            q = normalizeEdi(raw, logObj.id, nr, ediFreqHz, ediMode);
+          if (!q.call) { skip++; continue; }
+          await LogDB.addQso(q);
+          nr++; ok++;
+        } catch (_) { skip++; }
+      }
+
+      logObj.nextQsoNumber = nr;
+      await LogDB.updateLog(logObj);
+
+      _impLog('Done. Imported ' + ok + ' QSOs' + (skip ? ', skipped ' + skip + ' (no call).' : '.'));
+      submitBtn.textContent = 'Done ✓';
+      log('Import: ' + ok + ' QSOs → "' + contestName + '" (' + logObj.id + ')');
+      await refreshInfo();
+    } catch (err) {
+      _impLog('Error: ' + err.message);
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Retry';
+    }
+  }
+
+  async function handleImportLogFile(file) {
+    const msg = document.getElementById('importLogMsg');
+    msg.textContent = 'Reading…';
+    try {
+      const text   = await file.text();
+      const format = detectLogFormat(text);
+      if (!format) {
+        msg.textContent = 'Unknown format. Supported: ADIF, Cabrillo, EDI.';
+        setTimeout(() => { msg.textContent = ''; }, 4000);
+        return;
+      }
+      msg.textContent = '';
+      const parsed =
+        format === 'ADIF'      ? parseAdif(text)      :
+        format === 'CABRILLO'  ? parseCabrillo(text)  :
+                                 parseEdi(text);
+      _openImportModal(parsed);
+    } catch (err) {
+      msg.textContent = 'Error: ' + err.message;
+      setTimeout(() => { msg.textContent = ''; }, 4000);
+    }
   }
 
   // ── Init ─────────────────────────────────────────────────────────────────────

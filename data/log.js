@@ -5,7 +5,7 @@
 const app = {
   runMode:    'RUN',   // 'RUN' | 'SP'
   activeTrx:  1,       // 1 | 2 | 3
-  trxLabels:  ['TRX1', 'TRX2', 'TRX3'],
+  trxLabels:  ['IC-705', 'TRX2', 'TRX3'],
 
   // TRX state from /state polling
   connected:  false,
@@ -462,32 +462,13 @@ function checkDupe(call) {
     const logMap = Object.fromEntries((allLogs || []).map(l => [l.id, l]));
     const myCall  = log.stationCall || '';
     const hasDupe = activeDupes.some(d => d.logId === log.id);
-    let html = '';
-
-    if (activeDupes.length) {
-      const fmtD = d => 'DUPE: #' + String(d.qsoNumber).padStart(3,'0') + ' '
-        + esc(d.call) + ' ' + esc(d.timeOnUtc||'') + ' '
-        + esc(d.frequencyDisplay||'') + ' ' + esc(d.mode||'');
-
-      if (!isGlobal) {
-        html += '<div class="dp-line dp-dupe">' + activeDupes.map(fmtD).join('   ') + '</div>';
-      } else {
-        const cat1 = [], cat2 = [], cat3 = [];
-        activeDupes.forEach(d => {
-          if (d.logId === log.id) { cat3.push(d); return; }
-          const sc = (logMap[d.logId] || {}).stationCall || '';
-          (sc === myCall ? cat2 : cat1).push(d);
-        });
-        cat1.forEach(d => { html += '<div class="dp-line dp-dupe-other">'   + fmtD(d) + '</div>'; });
-        cat2.forEach(d => { html += '<div class="dp-line dp-dupe-samecall">' + fmtD(d) + '</div>'; });
-        cat3.forEach(d => { html += '<div class="dp-line dp-dupe">'          + fmtD(d) + '</div>'; });
-      }
-    }
+    let htmlPartial = '';
+    let htmlDupe    = '';
 
     if (activePartials.length) {
       if (!isGlobal) {
         const uniq = [...new Set(activePartials.map(d => d.call))].sort();
-        html += '<div class="dp-line dp-partial">PARTIAL: '
+        htmlPartial += '<div class="dp-line dp-partial">PARTIAL: '
           + uniq.map(c => hlCall(c, normCall)).join('  ') + '</div>';
       } else {
         const pAct = [], pSame = [], pOther = [];
@@ -503,10 +484,31 @@ function checkDupe(call) {
         if (uOther.length) cells.push(uOther.map(c => esc(c)).join('  '));
         if (uSame.length)  cells.push('<span class="dp-partial-green">' + uSame.map(c => esc(c)).join('  ') + '</span>');
         if (uAct.length)   cells.push(uAct.map(c => hlCall(c, normCall)).join('  '));
-        if (cells.length) html += '<div class="dp-line dp-partial">PARTIAL: ' + cells.join('  ') + '</div>';
+        if (cells.length) htmlPartial += '<div class="dp-line dp-partial">PARTIAL: ' + cells.join('  ') + '</div>';
       }
     }
 
+    if (activeDupes.length) {
+      const fmtD = d => 'DUPE: #' + String(d.qsoNumber).padStart(3,'0') + ' '
+        + esc(d.call) + ' ' + esc(d.timeOnUtc||'') + ' '
+        + esc(d.frequencyDisplay||'') + ' ' + esc(d.mode||'');
+
+      if (!isGlobal) {
+        activeDupes.forEach(d => { htmlDupe += '<div class="dp-line dp-dupe">' + fmtD(d) + '</div>'; });
+      } else {
+        const cat1 = [], cat2 = [], cat3 = [];
+        activeDupes.forEach(d => {
+          if (d.logId === log.id) { cat3.push(d); return; }
+          const sc = (logMap[d.logId] || {}).stationCall || '';
+          (sc === myCall ? cat2 : cat1).push(d);
+        });
+        cat1.forEach(d => { htmlDupe += '<div class="dp-line dp-dupe-other">'   + fmtD(d) + '</div>'; });
+        cat2.forEach(d => { htmlDupe += '<div class="dp-line dp-dupe-samecall">' + fmtD(d) + '</div>'; });
+        cat3.forEach(d => { htmlDupe += '<div class="dp-line dp-dupe">'          + fmtD(d) + '</div>'; });
+      }
+    }
+
+    const html = htmlPartial + htmlDupe;
     if (!html) { clearDupePanel(); return; }
 
     dupePanel.innerHTML = html;
@@ -713,6 +715,49 @@ document.getElementById('logJournalBody').addEventListener('contextmenu', e => {
   e.preventDefault();
   window.open('https://www.google.com/search?q=' + encodeURIComponent(row.dataset.call), '_blank');
 });
+
+// ── Call search ───────────────────────────────────────────────────────────────
+
+document.getElementById('jhdrCall').addEventListener('click', () => {
+  const row = document.getElementById('logCallSearchRow');
+  const inp = document.getElementById('logCallSearchInp');
+  row.classList.remove('ds-hidden');
+  inp.value = '';
+  inp.focus();
+  applyCallSearch('');
+});
+
+document.getElementById('logCallSearchClose').addEventListener('click', closeCallSearch);
+
+document.getElementById('logCallSearchInp').addEventListener('input', e => {
+  applyCallSearch(e.target.value.trim());
+});
+
+document.getElementById('logCallSearchInp').addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeCallSearch();
+});
+
+function closeCallSearch() {
+  document.getElementById('logCallSearchRow').classList.add('ds-hidden');
+  applyCallSearch('');
+}
+
+function applyCallSearch(query) {
+  const q = query.toUpperCase();
+  const rows = document.querySelectorAll('#logJournalBody .qso-row');
+  let first = null;
+  rows.forEach(row => {
+    if (!q) {
+      row.classList.remove('qso-search-dim', 'qso-search-hl');
+    } else {
+      const match = (row.dataset.call || '').toUpperCase().includes(q);
+      row.classList.toggle('qso-search-dim', !match);
+      row.classList.toggle('qso-search-hl',   match);
+      if (match && !first) first = row;
+    }
+  });
+  if (first) first.scrollIntoView({ block: 'center' });
+}
 
 let _qsoEditQso = null;
 
@@ -937,6 +982,9 @@ LogManager.onLogChanged(onActiveLogChanged);
 function loadJournalFromDb(logId) {
   const body = document.getElementById('logJournalBody');
   body.innerHTML = '';
+  const spacer = document.createElement('div');
+  spacer.className = 'log-journal-spacer';
+  body.appendChild(spacer);
 
   LogDB.getQsosForLog(logId).then(qsos => {
     qsos.sort((a, b) => {

@@ -201,6 +201,38 @@
     setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 500);
   }
 
+  // ── Storage info popup (shared, created once) ─────────────────────────────
+
+  function _ensureStoragePopup() {
+    if (document.getElementById('lmStorageInfoPopup')) return;
+    const d = document.createElement('div');
+    d.className = 'si-popup';
+    d.id = 'lmStorageInfoPopup';
+    d.innerHTML = `
+      <p class="si-popup-head">Storage info <button class="si-popup-close" id="lmSiClose">✕</button></p>
+      <div class="si-section">
+        <p class="si-h">Usage &amp; quota — where to look</p>
+        <div class="si-row"><span class="si-browser">Chrome / Edge</span><span>DevTools <kbd>F12</kbd> → Application → Storage — shows exact usage and quota for this origin.</span></div>
+        <div class="si-row"><span class="si-browser">Firefox</span><span>Address bar: <code>about:storage</code> — lists all origins with size. Or DevTools <kbd>F12</kbd> → Storage → IndexedDB.</span></div>
+        <div class="si-row"><span class="si-browser">Safari</span><span>Develop → Web Inspector → Storage. (Enable Develop menu in Preferences → Advanced.)</span></div>
+      </div>
+      <div class="si-section">
+        <p class="si-h">Persistent storage — protection from auto-eviction</p>
+        <div class="si-row"><span class="si-browser">Chrome / Edge</span><span>Granted automatically when you bookmark this page or install it as a PWA (⋮ → "Install app"). No action usually needed.</span></div>
+        <div class="si-row"><span class="si-browser">Firefox</span><span>Settings → Privacy &amp; Security → Cookies and Site Data → Manage Data → find this origin → check "Persist". Requires HTTPS.</span></div>
+        <div class="si-row"><span class="si-browser">Safari</span><span>Managed automatically by the browser; explicit requests from code are not supported.</span></div>
+      </div>
+      <p class="si-note">This app runs over plain HTTP, so the Storage API (requires HTTPS) is unavailable to JavaScript. Desktop browsers rarely evict IndexedDB data unless the disk is critically full — especially for bookmarked pages.</p>`;
+    document.body.appendChild(d);
+    document.getElementById('lmSiClose').addEventListener('click', e => {
+      e.stopPropagation();
+      d.classList.remove('si-open');
+    });
+    document.addEventListener('click', e => {
+      if (!d.contains(e.target)) d.classList.remove('si-open');
+    });
+  }
+
   // ── Log manager modal UI ───────────────────────────────────────────────────
 
   let _allLogs   = [];
@@ -214,10 +246,11 @@
     el.innerHTML = `
       <div class="lm-box">
         <div class="lm-header">
-          <span class="lm-title">Contest Log</span>
+          <span class="lm-title">QRPLog</span>
           <button class="lm-close" id="lmClose" type="button">✕</button>
         </div>
 
+        <div class="lm-body">
         <section class="lm-section" id="lmListSection">
           <div class="lm-list-header">
             <span class="lm-section-title" style="margin:0">Saved logs</span>
@@ -257,6 +290,7 @@
             </div>
           </form>
         </section>
+        </div>
       </div>
     `;
     document.body.appendChild(el);
@@ -339,11 +373,21 @@
 
     const total    = _allCounts.reduce((s, c) => s + c, 0);
     const filteredTotal = filtered.reduce((s, { i }) => s + (_allCounts[i] || 0), 0);
-    const footer   = document.createElement('div');
+    const estKb  = total * 650;
+    const estStr = estKb >= 1048576 ? '~' + (estKb / 1048576).toFixed(1) + ' MB'
+                                    : '~' + (estKb / 1024).toFixed(0) + ' kB';
+    const footer = document.createElement('div');
     footer.className = 'lm-log-total';
-    footer.textContent = query
-      ? `${filtered.length} / ${_allLogs.length} logs · ${filteredTotal} / ${total} QSO`
-      : `${_allLogs.length} logs · ${total} QSO`;
+    const footerText = query
+      ? `${filtered.length} / ${_allLogs.length} logs · ${filteredTotal} / ${total} QSO · ${estStr}`
+      : `${_allLogs.length} logs · ${total} QSO · ${estStr}`;
+    footer.innerHTML = `${footerText} <button class="si-btn" id="lmStorageInfo" type="button" title="Jak zkontrolovat storage v prohlížeči">ⓘ</button>`;
+    footer.querySelector('#lmStorageInfo').addEventListener('click', e => {
+      e.stopPropagation();
+      _ensureStoragePopup();
+      const p = document.getElementById('lmStorageInfoPopup');
+      if (p) p.classList.toggle('si-open');
+    });
     container.appendChild(footer);
   }
 

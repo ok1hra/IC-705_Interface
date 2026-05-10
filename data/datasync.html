@@ -10,11 +10,11 @@
 <body>
   <header class="topbar">
     <nav class="tabs" aria-label="Primary">
-      <a class="tab" href="/log">LOG</a>
+      <a class="tab" href="/log">QRPLog</a>
       <a class="tab" href="/">CAT</a>
       <a class="tab" href="/ws-cat">DEBUG</a>
       <a class="tab" href="/setup">SETUP</a>
-      <a class="tab tab-active" href="/datasync">DATASYNC</a>
+      <a class="tab tab-active" href="/datasync">LOGSYNC</a>
       <span id="topbarFw" class="topbar-fw"></span>
     </nav>
   </header>
@@ -99,19 +99,31 @@
     <details class="ds-section">
       <summary class="ds-section-title">Sync status</summary>
       <div class="ds-section-body">
-        <dl class="status-grid">
-          <div><dt>Phase</dt><dd id="stPhase">Idle</dd></div>
-          <div><dt>Remote device</dt><dd id="stRemoteDevice">—</dd></div>
-          <div><dt>Sent</dt><dd id="stSent">—</dd></div>
-          <div><dt>Received</dt><dd id="stReceived">—</dd></div>
-          <div><dt>Batches</dt><dd id="stBatches">—</dd></div>
-          <div><dt>Errors</dt><dd id="stErrors">0</dd></div>
-          <div><dt>Device ID</dt><dd id="infoDeviceId">—</dd></div>
-          <div><dt>Local QSOs</dt><dd id="infoQsoCount">—</dd></div>
-          <div><dt>Remote QSOs</dt><dd id="infoRemoteCount">—</dd></div>
-          <div><dt>Known devices</dt><dd id="infoDeviceCount">—</dd></div>
-          <div><dt>Last seq</dt><dd id="infoLastSeq">—</dd></div>
+
+        <p class="sg-group-label sg-label-local">This device</p>
+        <dl class="status-grid sg-grid-local">
+          <div><dt>Device ID <button class="si-btn" data-si="deviceId" type="button">ⓘ</button></dt><dd id="infoDeviceId">—</dd></div>
+          <div><dt>Local QSOs <button class="si-btn" data-si="localQsos" type="button">ⓘ</button></dt><dd id="infoQsoCount">—</dd></div>
+          <div><dt>Last seq <button class="si-btn" data-si="lastSeq" type="button">ⓘ</button></dt><dd id="infoLastSeq">—</dd></div>
         </dl>
+
+        <p class="sg-group-label sg-label-db">Database</p>
+        <dl class="status-grid sg-grid-db">
+          <div><dt>Remote QSOs <button class="si-btn" data-si="remoteQsos" type="button">ⓘ</button></dt><dd id="infoRemoteCount">—</dd></div>
+          <div><dt>Known devices <button class="si-btn" data-si="knownDevices" type="button">ⓘ</button></dt><dd id="infoDeviceCount">—</dd></div>
+          <div><dt>Est. DB size <button class="si-btn" data-si="estSize" type="button">ⓘ</button></dt><dd id="infoEstSize">—</dd></div>
+        </dl>
+
+        <p class="sg-group-label sg-label-session">Active sync session</p>
+        <dl class="status-grid sg-grid-session">
+          <div><dt>Phase <button class="si-btn" data-si="phase" type="button">ⓘ</button></dt><dd id="stPhase">Idle</dd></div>
+          <div><dt>Remote device <button class="si-btn" data-si="remoteDevice" type="button">ⓘ</button></dt><dd id="stRemoteDevice">—</dd></div>
+          <div><dt>Sent <button class="si-btn" data-si="sent" type="button">ⓘ</button></dt><dd id="stSent">—</dd></div>
+          <div><dt>Received <button class="si-btn" data-si="received" type="button">ⓘ</button></dt><dd id="stReceived">—</dd></div>
+          <div><dt>Batches <button class="si-btn" data-si="batches" type="button">ⓘ</button></dt><dd id="stBatches">—</dd></div>
+          <div><dt>Errors <button class="si-btn" data-si="errors" type="button">ⓘ</button></dt><dd id="stErrors">0</dd></div>
+        </dl>
+
         <pre id="syncLog" class="log ds-log"></pre>
       </div>
     </details>
@@ -138,8 +150,31 @@
       </div>
     </details>
 
+    <!-- ── Import radio log (collapsible) ───────────────────────────────────── -->
+    <details class="ds-section">
+      <summary class="ds-section-title">Import ADIF/Cabrillo/EDI log</summary>
+      <div class="ds-section-body">
+        <p class="lede">Import QSOs from an existing log file into a new log in the database.</p>
+        <p class="lede" style="margin-top:6px">Supported formats: <strong>ADIF</strong> (.adi, .adif) · <strong>Cabrillo</strong> (.log, .cbr) · <strong>EDI / REG1TEST</strong> (.edi)</p>
+        <div class="actions" style="margin-top:14px">
+          <label class="ds-import-label"
+            title="Select an ADIF, Cabrillo or EDI file. Format is detected automatically.">
+            Select log file…
+            <input type="file" id="importLogFile" accept=".adi,.adif,.log,.cbr,.edi,.txt" style="display:none">
+          </label>
+          <span id="importLogMsg" class="ds-import-msg"></span>
+        </div>
+      </div>
+    </details>
+
   </main>
 
+  <div class="si-popup" id="siFieldPopup">
+    <p class="si-popup-head"><span id="siFieldTitle">—</span> <button class="si-popup-close" id="siFieldClose">✕</button></p>
+    <div id="siFieldBody"></div>
+  </div>
+
+  <script src="/log-db.js"></script>
   <script src="/datasync.js"></script>
   <script>fetch('/state').then(function(r){return r.json();}).then(function(d){if(d.fwRev)document.getElementById('topbarFw').textContent='FW '+d.fwRev;}).catch(function(){});</script>
 </body>

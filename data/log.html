@@ -9,11 +9,11 @@
 <body>
   <header class="topbar">
     <nav class="tabs" aria-label="Primary">
-      <a class="tab tab-active" href="/log">LOG</a>
+      <a class="tab tab-active" href="/log">QRPLog</a>
       <a class="tab" href="/">CAT</a>
       <a class="tab" href="/ws-cat">DEBUG</a>
       <a class="tab" href="/setup">SETUP</a>
-      <a class="tab" href="/datasync">DATASYNC</a>
+      <a class="tab" href="/datasync">LOGSYNC</a>
       <span id="topbarFw" class="topbar-fw"></span>
     </nav>
   </header>
@@ -26,7 +26,7 @@
         <span class="jcol jcol-nr">Nr</span>
         <span class="jcol jcol-date">Date</span>
         <span class="jcol jcol-time">Time</span>
-        <span class="jcol jcol-call">Call</span>
+        <span class="jcol jcol-call log-hdr-call" id="jhdrCall" title="Search by call">Call</span>
         <span class="jcol jcol-freq">Freq</span>
         <span class="jcol jcol-mode">Mode</span>
         <span class="jcol jcol-snt">Snt</span>
@@ -35,7 +35,13 @@
         <span class="jcol jcol-trx" id="jhdrTrx">TRX</span>
         <span class="jcol jcol-dxcc">DXCC</span>
       </div>
+      <div class="log-call-search-row ds-hidden" id="logCallSearchRow">
+        <input id="logCallSearchInp" class="log-call-search-inp" type="search"
+               placeholder="Search call…" autocomplete="off" spellcheck="false">
+        <button id="logCallSearchClose" class="log-call-search-close" type="button">✕</button>
+      </div>
       <div class="log-journal-body" id="logJournalBody">
+        <div class="log-journal-spacer"></div>
         <div class="log-empty" id="logEmptyHint">No QSO logged yet.</div>
       </div>
     </div>
