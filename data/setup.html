@@ -551,5 +551,27 @@
     });
   </script>
   <script src="/fw-version.js"></script>
+  <script>
+    (function () {
+      var form = document.querySelector('form[action="/setup"]');
+      if (!form) return;
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        var data = new FormData(form);
+        fetch('/setup', { method: 'POST', body: data }).catch(function () {});
+        form.style.display = 'none';
+        var msg = document.createElement('p');
+        msg.style.cssText = 'padding:2em;font-size:1.1em;';
+        msg.textContent = 'Saved. Restarting… redirecting in 15 s';
+        form.parentNode.insertBefore(msg, form);
+        var s = 15;
+        var t = setInterval(function () {
+          s--;
+          msg.textContent = 'Saved. Restarting… redirecting in ' + s + ' s';
+          if (s <= 0) { clearInterval(t); window.location.href = '/'; }
+        }, 1000);
+      });
+    }());
+  </script>
 </body>
 </html>

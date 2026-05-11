@@ -773,12 +773,26 @@ function applyCallSearch(query) {
   const rows = document.querySelectorAll('#logJournalBody .qso-row');
   let first = null;
   rows.forEach(row => {
+    const callSpan = row.querySelector('.jcol-call');
+    const rawCall  = row.dataset.call || '';
     if (!q) {
       row.classList.remove('qso-search-dim', 'qso-search-hl');
+      if (callSpan) callSpan.textContent = rawCall;
     } else {
-      const match = (row.dataset.call || '').toUpperCase().includes(q);
+      const idx = rawCall.toUpperCase().indexOf(q);
+      const match = idx !== -1;
       row.classList.toggle('qso-search-dim', !match);
       row.classList.toggle('qso-search-hl',   match);
+      if (callSpan) {
+        if (match) {
+          const pre  = rawCall.slice(0, idx);
+          const mid  = rawCall.slice(idx, idx + q.length);
+          const post = rawCall.slice(idx + q.length);
+          callSpan.innerHTML = esc(pre) + '<mark class="call-search-mark">' + esc(mid) + '</mark>' + esc(post);
+        } else {
+          callSpan.textContent = rawCall;
+        }
+      }
       if (match && !first) first = row;
     }
   });

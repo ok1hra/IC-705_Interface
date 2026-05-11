@@ -245,8 +245,9 @@ body {
 .log-call-search-close:hover { color: var(--conn-fail); }
 
 /* Search result states */
-.qso-search-dim { opacity: 0.2; }
+.qso-search-dim { display: none; }
 .qso-search-hl  { background: #1a2a1a; }
+.call-search-mark { background: #ffe066; color: #000; border-radius: 2px; padding: 0 1px; }
 
 .log-empty {
   flex-shrink: 0;
