@@ -4,6 +4,9 @@
 - First plug USB-C between ESP32 and PC
 - Then open the Firmware page and follow the instructions https://ok1hra.github.io/IC-705_Interface/
 
+## User Manual
+- [docs/user-manual.md](docs/user-manual.md) — setup, web UI, CW/RTTY, MQTT, troubleshooting
+
 ----
 
 ## Functionality

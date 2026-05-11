@@ -719,6 +719,8 @@ function appendJournalRow(qso, displayNr) {
     row.appendChild(span);
   });
 
+  if (!qso.deleted) row.title = 'Click to edit';
+
   body.appendChild(row);
   row.scrollIntoView({ block: 'end' });
 }
@@ -787,20 +789,20 @@ let _qsoEditQso = null;
 
 function openQsoEdit(qsoId) {
   LogDB.getQso(qsoId).then(qso => {
-    if (!qso) return;
+    if (!qso) { console.warn('openQsoEdit: QSO not found, id=', qsoId); return; }
     _qsoEditQso = qso;
     let modal = document.getElementById('qsoEditModal');
     if (!modal) modal = buildQsoEditModal();
     fillQsoEditForm(qso);
     modal.classList.remove('lm-hidden');
     document.getElementById('qeCall').focus();
-  });
+  }).catch(err => { console.error('openQsoEdit error:', err); });
 }
 
 function buildQsoEditModal() {
   const el = document.createElement('div');
   el.id = 'qsoEditModal';
-  el.className = 'lm-modal';
+  el.className = 'lm-modal lm-hidden';
   el.innerHTML = `
     <div class="lm-box" style="width:min(440px,calc(100vw - 24px))">
       <div class="lm-header">
@@ -1042,6 +1044,14 @@ function init() {
     app.trxOi3[1] = !!cfg.trx2Oi3;
     app.trxOi3[2] = !!cfg.trx3Oi3;
     trxButtons.forEach((b, i) => { b.textContent = app.trxLabels[i]; });
+    // Hide TRX2/TRX3 buttons when no IP is configured
+    trxButtons[1].style.display = app.trxIps[1] ? '' : 'none';
+    trxButtons[2].style.display = app.trxIps[2] ? '' : 'none';
+    // If active TRX is now hidden, fall back to TRX1
+    if ((app.activeTrx === 2 && !app.trxIps[1]) || (app.activeTrx === 3 && !app.trxIps[2])) {
+      app.activeTrx = 1;
+      trxButtons.forEach((b, i) => b.classList.toggle('btn-trx-active', i === 0));
+    }
     updateTrxHeader();
     updateCatTabVisibility();
     renderConnStatus();

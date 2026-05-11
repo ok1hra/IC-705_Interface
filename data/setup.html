@@ -387,7 +387,7 @@
     (function () {
       var TRX_DEFAULTS = { trx1Label: 'IC-705', trx2Label: 'TRX2', trx3Label: 'TRX3' };
 
-      function loadLogSettings() {
+      window.loadLogSettings = function loadLogSettings() {
         fetch('/log-config').then(function(r){ return r.json(); }).then(function(cfg) {
           var keys = ['trx1Label','trx2Label','trx3Label',
                       'trx2Civ','trx3Civ',
@@ -538,7 +538,8 @@
           .then(function(results) {
             var ok = results.every(function(r) { return r.ok; });
             if (ok) {
-              msg.textContent = "Uploaded. Reload this page to verify, then click Save EEPROM and Restart.";
+              msg.textContent = "Uploaded. Reload this page to apply EEPROM values, then click Save EEPROM and Restart.";
+              loadLogSettings();
             } else {
               msg.textContent = "Error: " + (results.map(function(r){ return r.error||''; }).join(', '));
             }

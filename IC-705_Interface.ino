@@ -184,7 +184,7 @@ volatile bool cwIpSendPending = false;
 
   uint8_t  radio_address;     //Transiever address
   uint16_t  baud_rate;        //Current baud speed
-  uint32_t readtimeout = 2000; // BUGFIX Serial port read timeout
+  uint32_t readtimeout = 2000;
   uint8_t  read_buffer[12];   //Read buffer
   // uint8_t  read_buffer_snapshot[12];   //Buffer snapshot
   uint32_t  frequency;        //Current frequency in Hz
@@ -917,10 +917,13 @@ void renderSetupPage(){
   }
   File file = SPIFFS.open("/setup.html", "r");
   if (!file) { webServer.send(500, "text/plain", "File open failed"); return; }
+  webServer.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  webServer.send(200, "text/html", "");
   String out;
-  out.reserve(8192);
+  out.reserve(256);
   while (file.available()) {
     String line = file.readStringUntil('\n');
+    out = "";
     int start = 0;
     while (true) {
       int p1 = line.indexOf('%', start);
@@ -932,9 +935,10 @@ void renderSetupPage(){
       start = p2 + 1;
     }
     out += '\n';
+    webServer.sendContent(out);
   }
   file.close();
-  webServer.send(200, "text/html", out);
+  webServer.sendContent("");
 }
 
 void renderIndexPage(){
@@ -944,10 +948,13 @@ void renderIndexPage(){
   }
   File file = SPIFFS.open("/index.html", "r");
   if (!file) { webServer.send(500, "text/plain", "File open failed"); return; }
+  webServer.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  webServer.send(200, "text/html", "");
   String out;
-  out.reserve(4096);
+  out.reserve(256);
   while (file.available()) {
     String line = file.readStringUntil('\n');
+    out = "";
     int start = 0;
     while (true) {
       int p1 = line.indexOf('%', start);
@@ -959,9 +966,10 @@ void renderIndexPage(){
       start = p2 + 1;
     }
     out += '\n';
+    webServer.sendContent(out);
   }
   file.close();
-  webServer.send(200, "text/html", out);
+  webServer.sendContent("");
 }
 
 void buildStateJson(char *buf, size_t bufSize){
@@ -1749,21 +1757,6 @@ void setup(){
       }
     #endif
 
-    // #if defined(BLUETOOTH) // BUGFIX
-    //   while (radio_address == 0x00) {
-    //     if (!searchRadio()) {
-    //       if(Debug==true){
-    //         Serial.println("Radio not found");
-    //       }
-    //     } else {
-    //       if(Debug==true){
-    //         Serial.print("Radio found at ");
-    //         Serial.print(radio_address, HEX);
-    //         Serial.println();
-    //       }
-    //     }
-    //   }
-    // #endif
     #if defined(BLUETOOTH)
       configRadioBaud(0);
     #endif
@@ -1774,6 +1767,9 @@ void setup(){
       esp_task_wdt_add(NULL); //add current thread to WDT watch
       WdtTimer=millis();
     #endif
+
+    // Flush any garbage bytes accumulated in Serial RX buffer during boot/USB re-enumeration
+    while (Serial.available()) Serial.read();
   }
 }
 //-------------------------------------------------------------------------------------------------------
@@ -1811,10 +1807,9 @@ void loop(){
 
 // SUBROUTINES -------------------------------------------------------------------------------------------------------
 
-void Watchdog(){
+void handleBtEvents(){
   if (btStateBroadcastPending == true) {
     btStateBroadcastPending = false;
-    // state is now served via HTTP polling — no push needed
   }
 
   if (btDisconnectPending == true) {
@@ -1827,197 +1822,69 @@ void Watchdog(){
       MqttPubString(MQTT_TOPIC, "0", 0);
     }
   }
+}
 
+void pollRadio(){
   static unsigned long catPollTimer = 0;
-  static unsigned long mqttFreqTimer = 0;
   static unsigned long auxPollTimer = 0;
   static uint8_t auxPollIndex = 0;
-  if (btClientConnected == true) {
-    if (millis() - catPollTimer > 200) {
-      catPollTimer = millis();
 
-      if (radio_address == 0x00) {
-        if (Debug == true) Serial.println("CAT | searching radio...");
-        searchRadio();
-      } else {
-        sendCatRequest(CMD_READ_FREQ);
-        sendCatRequest(CMD_READ_MODE);
-        processCatMessages();
-      }
-    }
+  if (!btClientConnected) return;
 
-    if (cwIpSendPending && radio_address != 0x00) {
-      cwIpSendPending = false;
-      TrxSetupDone = true;
-      ServiceBackgroundTasks(800);
-      uint8_t modeFrame[10];
-      size_t modeFrameLen = buildSetModeFrame(0x03, 0x03, modeFrame, sizeof(modeFrame)); // CW, FIL3
-      catWriteFrame(modeFrame, modeFrameLen, false);
-      ServiceBackgroundTasks(400);
-      String ipStr = "IP " + WiFi.localIP().toString();
-      ipStr.toCharArray(CwMsg, sizeof(CwMsg));
-      setModesText("CW");
-      sendCW();
-      ServiceBackgroundTasks(10000); // wait for radio to finish keying
-    }
-
-    if (radio_address != 0x00 && millis() - auxPollTimer > 80) {
-      auxPollTimer = millis();
-      uint8_t frame[10];
-      size_t frameLen = 0;
-      switch (auxPollIndex % 10) {
-        case 0: { uint8_t p[] = {stateTx ? (uint8_t)0x11 : (uint8_t)0x02}; frameLen = buildSimpleCatFrame(0x15, p, 1, frame, sizeof(frame)); break; } // TX=power, RX=S-meter
-        case 1: { uint8_t p[] = {stateTx ? (uint8_t)0x12 : (uint8_t)0x15}; frameLen = buildSimpleCatFrame(0x15, p, 1, frame, sizeof(frame)); break; } // TX=SWR, RX=supply
-        case 2: { uint8_t p[] = {0x01}; frameLen = buildSimpleCatFrame(0x14, p, 1, frame, sizeof(frame)); break; } // AF gain
-        case 3: { uint8_t p[] = {0x0C}; frameLen = buildSimpleCatFrame(0x14, p, 1, frame, sizeof(frame)); break; } // key speed
-        case 4: { uint8_t p[] = {0x0A}; frameLen = buildSimpleCatFrame(0x14, p, 1, frame, sizeof(frame)); break; } // RF power
-        case 5: { uint8_t p[] = {0x00}; frameLen = buildSimpleCatFrame(0x1C, p, 1, frame, sizeof(frame)); break; } // TX state
-        case 6: { uint8_t p[] = {0x00}; frameLen = buildSimpleCatFrame(0x21, p, 1, frame, sizeof(frame)); break; } // RIT offset (sub 0x00)
-        case 7: {                        frameLen = buildSimpleCatFrame(0x11, nullptr, 0, frame, sizeof(frame)); break; } // ATT
-        case 8: { uint8_t p[] = {0x02}; frameLen = buildSimpleCatFrame(0x16, p, 1, frame, sizeof(frame)); break; } // PREAMP
-        case 9: { uint8_t p[] = {0x47}; frameLen = buildSimpleCatFrame(0x16, p, 1, frame, sizeof(frame)); break; } // VOX/BKIN
-      }
-      if (frameLen > 0) catWriteFrame(frame, frameLen, false);
+  if (millis() - catPollTimer > 200) {
+    catPollTimer = millis();
+    if (radio_address == 0x00) {
+      if (Debug == true) Serial.println("CAT | searching radio...");
+      searchRadio();
+    } else {
+      sendCatRequest(CMD_READ_FREQ);
+      sendCatRequest(CMD_READ_MODE);
       processCatMessages();
-      auxPollIndex++;
     }
   }
 
-  // set TRX after BT connect
-  // if(TrxNeedSet==1 && TrxSetupDone == false){
-  //   TrxNeedSet=0;
-  //   /*
-  //   FE FE A4 E0 <command> FD
-  //     - enable CI-V transceive after BT connect, 1A 05 01 31 01
-  //     - enable RIT 21 01 01|clear RIT 21 00 00 00 00 (RIT freq to 0)
-  //     - IP to CW after connect, 16 47 00 (BK-IN OFF), 16 47 01 (BK-IN ON)
-  //   */
-
-  //   // Enable CI-V transceive
-  //   Serial.print("SET |CIV-tx-ON");
-  //   memset(CatMsg, 0xff, 10);
-  //   CatMsg[0] = 0x1A;
-  //   CatMsg[1] = 0x05;
-  //   CatMsg[2] = 0x01;
-  //   CatMsg[3] = 0x31;
-  //   CatMsg[4] = 0x01;
-  //   sendCat();
-  //   ServiceBackgroundTasks(500);
-
-  //   // Enable RIT
-  //   Serial.print("|RIT-ON");
-  //   memset(CatMsg, 0xff, 10);
-  //   CatMsg[0] = 0x21;
-  //   CatMsg[1] = 0x01;
-  //   CatMsg[2] = 0x01;
-  //   sendCat();
-  //   ServiceBackgroundTasks(500);
-
-  //   // Disable BK-IN
-  //   Serial.print("|BK-IN-OFF");
-  //   memset(CatMsg, 0xff, 10);
-  //   CatMsg[0] = 0x16;
-  //   CatMsg[1] = 0x47;
-  //   CatMsg[2] = 0x00;
-  //   sendCat();
-  //   ServiceBackgroundTasks(500);
-
-  //   // Set mode CW
-  //   Serial.print("|MODE-CW");
-  //   memset(CatMsg, 0xff, 10);
-  //   CatMsg[0] = 0x06;
-  //   CatMsg[1] = 0x03;
-  //   CatMsg[2] = 0x03;
-  //   sendCat();
-  //   ServiceBackgroundTasks(500);
-
-  //   // Set CW 28 WPM - 0000=6 WPM ~ 0255=48 WPM (6 per one wpm)
-  //   Serial.print("|CW-WPM-28");
-  //   memset(CatMsg, 0xff, 10);
-  //   CatMsg[0] = 0x14;
-  //   CatMsg[1] = 0x0C;
-  //   CatMsg[2] = 0x01;
-  //   CatMsg[3] = 0x38;
-  //   sendCat();
-  //   ServiceBackgroundTasks(500);
-
-  //   // Set AFgain to 10
-  //   Serial.print("|AFgain-10");
-  //   memset(CatMsg, 0xff, 10);
-  //   CatMsg[0] = 0x14;
-  //   CatMsg[1] = 0x01;
-  //   CatMsg[2] = 0x00;
-  //   CatMsg[3] = 0x25;
-  //   sendCat();
-  //   ServiceBackgroundTasks(500);
-
-  //   // Set RFgain to 0
-  //   Serial.print("|RFgain-0");
-  //   memset(CatMsg, 0xff, 10);
-  //   CatMsg[0] = 0x14;
-  //   CatMsg[1] = 0x02;
-  //   CatMsg[2] = 0x00;
-  //   CatMsg[3] = 0x00;
-  //   sendCat();
-  //   ServiceBackgroundTasks(500);
-
-  //   // CW send IP
-  //   Serial.print("|CWsend-IP..");
-  //   #if defined(RESET_AFTER_DISCONNECT)
-  //     String StrBuf = "="+String(WiFi.localIP()[3]) ;
-  //   #else
-  //     String StrBuf = "IP=  "+String(WiFi.localIP()[0])+"."+String(WiFi.localIP()[1])+"."+String(WiFi.localIP()[2])+"."+String(WiFi.localIP()[3]) ;
-  //   #endif
-  //   StrBuf.toCharArray(CwMsg, sizeof(CwMsg));
-  //   setModesText("CW");
-  //   sendCW();
-  //   #if defined(RESET_AFTER_DISCONNECT)
-  //     ServiceBackgroundTasks(2000);
-  //   #else
-  //     ServiceBackgroundTasks(11000);
-  //   #endif
-
-  //   // Enable BK-IN
-  //   Serial.print("|BK-IN-ON");
-  //   memset(CatMsg, 0xff, 10);
-  //   CatMsg[0] = 0x16;
-  //   CatMsg[1] = 0x47;
-  //   CatMsg[2] = 0x01;
-  //   sendCat();
-  //   ServiceBackgroundTasks(500);
-
-  //   // Set RFgain to 100
-  //   Serial.print("|RFgain-100");
-  //   memset(CatMsg, 0xff, 10);
-  //   CatMsg[0] = 0x14;
-  //   CatMsg[1] = 0x02;
-  //   CatMsg[2] = 0x02;
-  //   CatMsg[3] = 0x55;
-  //   sendCat();
-  //   ServiceBackgroundTasks(500);
-
-  //   Serial.println();
-  //   TrxSetupDone = true;
-  // }
-
-  // BT CAT
-  static long requestTimer = 0;
-  if(millis()-requestTimer > 1000){
-    // Serial.println("req "+String(millis()/1000));
-    if (radio_address == 0x00) {  // BUGFIX
-      if (millis() - requestTimer > 1000) {
-        if (Debug == true) Serial.println("CAT | searching radio address...");
-        searchRadio();
-        requestTimer = millis();
-      }
-      processCatMessages();
-      return;
-    }
-    sendCatRequest(CMD_READ_FREQ);
-    // sendCatRequest(CMD_READ_MODE);   // BUGFIX?
-    requestTimer=millis();
+  if (cwIpSendPending && radio_address != 0x00) {
+    cwIpSendPending = false;
+    TrxSetupDone = true;
+    ServiceBackgroundTasks(800);
+    uint8_t modeFrame[10];
+    size_t modeFrameLen = buildSetModeFrame(0x03, 0x03, modeFrame, sizeof(modeFrame)); // CW, FIL3
+    catWriteFrame(modeFrame, modeFrameLen, false);
+    ServiceBackgroundTasks(400);
+    String ipStr = "IP " + WiFi.localIP().toString();
+    ipStr.toCharArray(CwMsg, sizeof(CwMsg));
+    setModesText("CW");
+    sendCW();
+    ServiceBackgroundTasks(10000); // wait for radio to finish keying
   }
-  processCatMessages();
+
+  if (radio_address != 0x00 && millis() - auxPollTimer > 80) {
+    auxPollTimer = millis();
+    uint8_t frame[10];
+    size_t frameLen = 0;
+    switch (auxPollIndex % 10) {
+      case 0: { uint8_t p[] = {stateTx ? (uint8_t)0x11 : (uint8_t)0x02}; frameLen = buildSimpleCatFrame(0x15, p, 1, frame, sizeof(frame)); break; } // TX=power, RX=S-meter
+      case 1: { uint8_t p[] = {stateTx ? (uint8_t)0x12 : (uint8_t)0x15}; frameLen = buildSimpleCatFrame(0x15, p, 1, frame, sizeof(frame)); break; } // TX=SWR, RX=supply
+      case 2: { uint8_t p[] = {0x01}; frameLen = buildSimpleCatFrame(0x14, p, 1, frame, sizeof(frame)); break; } // AF gain
+      case 3: { uint8_t p[] = {0x0C}; frameLen = buildSimpleCatFrame(0x14, p, 1, frame, sizeof(frame)); break; } // key speed
+      case 4: { uint8_t p[] = {0x0A}; frameLen = buildSimpleCatFrame(0x14, p, 1, frame, sizeof(frame)); break; } // RF power
+      case 5: { uint8_t p[] = {0x00}; frameLen = buildSimpleCatFrame(0x1C, p, 1, frame, sizeof(frame)); break; } // TX state
+      case 6: { uint8_t p[] = {0x00}; frameLen = buildSimpleCatFrame(0x21, p, 1, frame, sizeof(frame)); break; } // RIT offset (sub 0x00)
+      case 7: {                        frameLen = buildSimpleCatFrame(0x11, nullptr, 0, frame, sizeof(frame)); break; } // ATT
+      case 8: { uint8_t p[] = {0x02}; frameLen = buildSimpleCatFrame(0x16, p, 1, frame, sizeof(frame)); break; } // PREAMP
+      case 9: { uint8_t p[] = {0x47}; frameLen = buildSimpleCatFrame(0x16, p, 1, frame, sizeof(frame)); break; } // VOX/BKIN
+    }
+    if (frameLen > 0) catWriteFrame(frame, frameLen, false);
+    processCatMessages();
+    auxPollIndex++;
+  }
+}
+
+void Watchdog(){
+  handleBtEvents();
+  pollRadio();
+
+  static unsigned long mqttFreqTimer = 0;
 
   // Power OUT/LED
   if(millis()-powerTimer > 3000){
@@ -2109,7 +1976,7 @@ void Watchdog(){
     //   WiFi.reconnect();
     //   WifiTimer = currentMillis;
     // }
-    if (!APmode && (currentMillis - WifiTimer >= WifiReconnect)) {  // BUGFIX
+    if (!APmode && (currentMillis - WifiTimer >= WifiReconnect)) {
       wl_status_t st = WiFi.status();
 
       if (st == WL_DISCONNECTED || st == WL_CONNECT_FAILED || st == WL_NO_SSID_AVAIL) {
@@ -2303,7 +2170,7 @@ byte stringToByte(String str) {
 //     digitalWrite(ShiftOutLatchPin, HIGH);
 //   #endif
 // }
-void SelectANT(){   // BUGFIX
+void SelectANT(){
   #if defined(SELECT_ANT)
     int foundAnt = -1;
 
@@ -2431,7 +2298,7 @@ void print_wifi_error(){
 //   // #endif
 //   #endif
 // }
-void processCatMessages(){  // BUGFIX
+void processCatMessages(){
   #if defined(BLUETOOTH)
     while (CAT.available()) {
       uint8_t len = readLine();
@@ -2451,7 +2318,7 @@ void processCatMessages(){  // BUGFIX
       if (read_buffer[0] != START_BYTE || read_buffer[1] != START_BYTE) continue;
       if (read_buffer[len - 1] != STOP_BYTE) continue;
       // if (read_buffer[3] != radio_address) continue;
-      if (radio_address == 0x00) {  // BUGFIX
+      if (radio_address == 0x00) {
         radio_address = read_buffer[3];
         if (Debug == true) {
           Serial.print("CAT | learned radio address 0x");
@@ -2530,7 +2397,7 @@ void processCatMessages(){  // BUGFIX
 
 //-------------------------------------------------------------------------------------------------------
 // call back to get info about connection
-void callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param){ // BUGFIX
+void callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param){
   (void)param;
   if (event == ESP_SPP_SRV_OPEN_EVT) {
     btClientConnected = true;
@@ -2697,31 +2564,7 @@ void sendCatRequest(uint8_t requestCode){
   #endif
 }
 //-------------------------------------------------------------------------------------------------------
-// bool searchRadio(){
-//   #if defined(BLUETOOTH)
-//     for (uint8_t baud = 0; baud < BAUD_RATES_SIZE; baud++) {
-//       if(Debug==true){
-//         Serial.print("Try baudrate ");
-//         Serial.println(baudRates[baud]);
-//       }
-//         configRadioBaud(baudRates[baud]);
-//         sendCatRequest(CMD_READ_FREQ);
-
-//         if (readLine() > 0)
-//         {
-//           if (read_buffer[0] == START_BYTE && read_buffer[1] == START_BYTE) {
-//             radio_address = read_buffer[3];
-//           }
-//           return true;
-//         }
-//     }
-
-//       // radio_address = 0xFF; // BUGFIX
-//       return false;
-//   #endif
-// }
-
-bool searchRadio(){ // BUGFIX
+bool searchRadio(){
   #if defined(BLUETOOTH)
     sendCatRequest(CMD_READ_FREQ);
 
@@ -2772,7 +2615,7 @@ void printFrequency(void){
 //     //read_buffer[6] -> 01 - Wide, 02 - Medium, 03 - Narrow
 //   #endif
 // }
-void printMode(void){ // BUGFIX
+void printMode(void){
   #if defined(BLUETOOTH)
     uint8_t modeId = read_buffer[5];
 
@@ -2829,7 +2672,6 @@ void Mqtt(){
             }
           }
         }else{
-          // Serial.println("MQTT| Client connected");
           mqttClient.loop();
         }
         MqttStatusTimer[0]=millis();
@@ -3349,6 +3191,33 @@ void CLI(){
         Serial.println("   Erase aborted");
       }
 
+    // B
+    }else if(incomingByte==66 || incomingByte==98){
+      #if defined(BLUETOOTH)
+        Serial.println("   Clear all BT bonding data? (y/n)");
+        EnterChar();
+        if(incomingByte==89 || incomingByte==121){
+          int numBonded = esp_bt_gap_get_bond_device_num();
+          if(numBonded == 0){
+            Serial.println("   No bonded devices found");
+          } else {
+            esp_bd_addr_t *bondedDevices = new esp_bd_addr_t[numBonded];
+            esp_bt_gap_get_bond_device_list(&numBonded, bondedDevices);
+            for(int i=0; i<numBonded; i++){
+              esp_bt_gap_remove_bond_device(bondedDevices[i]);
+              Serial.print("   Removed bond #");
+              Serial.println(i+1);
+            }
+            delete[] bondedDevices;
+            Serial.println("   BT bonding cleared - restart device and re-pair");
+          }
+        }else{
+          Serial.println("   Aborted");
+        }
+      #else
+        Serial.println("   BT not enabled");
+      #endif
+
     // @
     }else if(incomingByte==64){
       Serial.println("   Restart Interface? (y/n)");
@@ -3382,19 +3251,20 @@ void CLI(){
 //-------------------------------------------------------------------------------------------------------
 void EnterChar(){
   incomingByte = 0;
-  static byte byteBuf = 0x00;
   Serial.print(" > ");
+  unsigned long enterTimeout = millis();
   while (Serial.available() == 0) {
-    // Wait
+    #if defined(WDT)
+      esp_task_wdt_reset();
+    #endif
+    if (millis() - enterTimeout > 30000) {
+      Serial.println("(timeout)");
+      return;
+    }
+    delay(10);
   }
-  // byteBuf = Serial.read();
-  // // CR/LF
-  // if(byteBuf==13||byteBuf==10){
-  //   //nil
-  // }else{
-    incomingByte = Serial.read();
-    Serial.println( String(char(incomingByte)) );
-  // }
+  incomingByte = Serial.read();
+  Serial.println( String(char(incomingByte)) );
 }
 
 //-------------------------------------------------------------------------------------------------------
@@ -3459,6 +3329,9 @@ void ListCommands(){
   Serial.println("Commands  press key to select");
   Serial.println("       ?  list refresh");
   Serial.println("       A  restart to AP mode");
+  #if defined(BLUETOOTH)
+  Serial.println("       B  clear BT bonding data (use if re-pairing fails)");
+  #endif
   if(Debug==false){
     Serial.println("       D  enable serial debug");
   }else{
