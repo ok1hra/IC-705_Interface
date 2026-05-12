@@ -284,6 +284,14 @@ trxButtons.forEach(btn => {
     updateCatTabVisibility();
     renderConnStatus();
     clearTimeout(app._pollTimer);
+    // Sync active TRX to server and localStorage (server uses 0-indexed)
+    const idx0 = app.activeTrx - 1;
+    localStorage.setItem('ic705_activeTrx', String(idx0));
+    fetch('/trx', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idx: idx0 })
+    }).catch(() => {});
     pollState();
     inpCall.focus();
   });
@@ -1046,6 +1054,14 @@ function init() {
   setRunMode('RUN');
   inpRst.value = rstDefault(app.mode);
   startClock();
+
+  // Restore activeTrx from localStorage (CAT page stores 0-indexed, LOG uses 1-indexed)
+  const storedTrx = parseInt(localStorage.getItem('ic705_activeTrx') || '0', 10);
+  if (storedTrx > 0 && storedTrx < 3) {
+    app.activeTrx = storedTrx + 1;
+    trxButtons.forEach((b, i) => b.classList.toggle('btn-trx-active', i === storedTrx));
+  }
+
   pollState();
 
   // Load global LOG settings from ESP32 /log-config (shared across browsers)

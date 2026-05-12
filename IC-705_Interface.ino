@@ -98,7 +98,86 @@ volatile bool cwIpSendPending = false;
 // #define RESET_AFTER_DISCONNECT  // enable reset after each disconnect + short CW msg
 
 #include "EEPROM.h"
-#define EEPROM_SIZE 137
+#define EEPROM_SIZE 302
+// EEPROM mapa TRX1/2/3 (per-slot 55B):
+//   TRX1 base=137, TRX2 base=192, TRX3 base=247
+//   +0   mode: 0=disabled,1=IC-705-BT,2=IC-705-LAN,3=IC-7610-LAN,4=IC-7300-LAN,5=OI3
+//   +1   ip[4]
+//   +5   port LE (LAN: controlPort 50001 / OI3: httpPort 81)
+//   +7   username[16]
+//   +23  password[16]
+//   +39  civAddr
+//   +40  label[11]
+//   +51  udpCwPort LE  (BT: local incoming / OI3: remote port)
+//   +53  udpCatPort LE (BT: local incoming / OI3: remote port)
+
+#define TRX_MODE_DISABLED   0
+#define TRX_MODE_BT         1
+#define TRX_MODE_IC705_LAN  2
+#define TRX_MODE_IC7610_LAN 3
+#define TRX_MODE_IC7300_LAN 4
+#define TRX_MODE_OI3        5
+#define TRX_COUNT           3
+
+struct TrxConfig {
+  uint8_t  mode       = TRX_MODE_DISABLED;
+  uint8_t  ip[4]      = {0,0,0,0};
+  uint16_t port       = 50001;
+  char     username[17] = {};
+  char     password[17] = {};
+  uint8_t  civAddr    = 0xA4;
+  char     label[12]  = {};
+  uint16_t udpCwPort  = 89;
+  uint16_t udpCatPort = 90;
+
+  bool enabled() const { return mode != TRX_MODE_DISABLED; }
+  bool isBt()    const { return mode == TRX_MODE_BT; }
+  bool isLan()   const { return mode >= TRX_MODE_IC705_LAN && mode <= TRX_MODE_IC7300_LAN; }
+  bool isOi3()   const { return mode == TRX_MODE_OI3; }
+  uint8_t effectiveCivAddr() const {
+    if (mode == TRX_MODE_IC705_LAN)  return 0xA4;
+    if (mode == TRX_MODE_IC7610_LAN) return 0x98;
+    if (mode == TRX_MODE_IC7300_LAN) return 0x94;
+    return civAddr;
+  }
+  const char* modeStr() const {
+    switch (mode) {
+      case TRX_MODE_BT:         return "IC-705-BT";
+      case TRX_MODE_IC705_LAN:  return "IC-705-LAN";
+      case TRX_MODE_IC7610_LAN: return "IC-7610-LAN";
+      case TRX_MODE_IC7300_LAN: return "IC-7300-LAN";
+      case TRX_MODE_OI3:        return "OI3";
+      default:                  return "";
+    }
+  }
+  IPAddress ipAddr() const { return IPAddress(ip[0],ip[1],ip[2],ip[3]); }
+};
+
+struct TrxState {
+  uint8_t  radioAddress = 0;
+  uint32_t frequency    = 0;
+  char     modes[12]    = "OFF";
+  bool     connected    = false;
+  bool     tx           = false;
+  uint8_t  filter       = 1;
+  uint32_t smeterRaw    = 0;
+  uint32_t powerMeterRaw = 0;
+  float    supplyVolts  = 0.0f;
+  float    swr          = 1.0f;
+  uint8_t  afGain       = 0;
+  uint8_t  keySpeed     = 138;
+  uint8_t  rfPower      = 205;
+  uint8_t  preampMode   = 0;
+  uint8_t  attOn        = 0;
+  uint8_t  voxMode      = 0;
+  uint32_t ritRaw       = 0;
+  long     powerTimer   = 0;
+  bool     trxSetupDone = false;
+  bool     trxNeedSet   = false;
+};
+
+static const uint16_t TRX_EEPROM_BASE[TRX_COUNT] = {137, 192, 247};
+static const uint8_t  TRX_EEPROM_SLOT = 55; // bytes per TRX slot
 /*
   0|Byte    1|128
   1|Char    1|A
@@ -249,6 +328,8 @@ bool mqttPostponeStatus = 1;
 
   #include <ESPmDNS.h>
   #include <HTTPClient.h>
+  #include <ESPAsyncWebServer.h>
+  #include <AsyncWebSocket.h>
 
   const char* ssidAP     = "IC705-if";
   const char* passwordAP = "remoteqth";
@@ -368,11 +449,43 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   String setupMqttTopicErr = "";
   String setupMqttTopicRxErr = "";
   String setupHttpCatPortErr = "";
-  String setupUdpPortErr = "";
-  String setupUdpCatPortErr = "";
   String setupCivAddrErr = "";
-  String transceiverType = "IC-705-BT";
-  uint8_t configuredCivAddress = CIV_ADDRESS_DEFAULT;
+
+  // Per-TRX konfigurace a stav
+  #include "icomLanClient.h"
+  TrxConfig trxCfg[TRX_COUNT];
+  TrxState  trxSt[TRX_COUNT];
+  IcomLanClient lanClients[TRX_COUNT];
+  int activeTrxIdx = 0;            // TRX zobrazovaný na CAT stránce
+
+  // Pomocné funkce
+  int btTrxIdx() {
+    for (int i = 0; i < TRX_COUNT; i++) if (trxCfg[i].isBt()) return i;
+    return -1;
+  }
+  // Zpětná kompatibilita — aliasy na TRX1 / aktivní TRX
+  String transceiverType = "";     // nastavuje se z trxCfg[0].modeStr() po načtení
+  uint8_t configuredCivAddress = CIV_ADDRESS_DEFAULT; // alias na trxCfg[0].effectiveCivAddr()
+  bool    lanMode = false;         // true pokud aspoň jeden TRX je LAN
+  // Legacy BT vars (přetrvávají pro kompatibilitu s printFrequency, printMode atd.)
+  // radio_address, frequency, modes atd. jsou stále globální a odpovídají trxSt[activeTrxIdx]
+
+  // WebSocket server pro vodopad (port 82)
+  AsyncWebServer wfWsServer(82);
+  AsyncWebSocket  wfWs("/ws");
+
+  // Vodopad — stav assembleru
+  struct WfFrame {
+    uint32_t startHz;
+    uint32_t endHz;
+    uint8_t  mode;
+    bool     oor;
+    uint8_t  pixels[500];
+    uint16_t pixelCount;
+    bool     complete;
+  };
+  WfFrame wfBuf;
+  bool scopeInitDone = false;  // příznak: scope ON byl odeslán
   String cwMemoryText[CW_MEMORY_COUNT];
   String freqMemoryText[FREQ_MEMORY_COUNT];
   portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
@@ -398,6 +511,10 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   bool parseHexByteString(const String &value, uint8_t &outValue);
   void loadMemoryConfig(void);
   void saveMemoryConfig(void);
+  void processCivFrame(int trxIdx, const uint8_t* frame, size_t len);
+  void civProcessScopePacket(int trxIdx, const uint8_t* d, size_t lenD);
+  void sendWaterfallToWebSocket(const WfFrame& f);
+  void sendScopeActivation(int trxIdx);
   String jsonEscape(const String &value);
   String civFrameToHex(const uint8_t *frame, size_t frameLen);
   uint32_t decodeCivFrequencyBytes(const uint8_t *bytes, size_t byteCount);
@@ -417,11 +534,12 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   size_t buildReadQuickSplitFrame(uint8_t *frame, size_t frameMaxLen);
   void buildStateJson(char *buf, size_t bufSize);
   void handleGetState(void);
+  void handleTrxSelect(void);
   bool handleFileFromSPIFFS(const String &path);
   void handlePostCmd(void);
   void handleSet(void);
-  void renderSetupPage(void);
   void renderIndexPage(void);
+  void handleSetupData(void);
   void resetSetupMessages(void);
   String setupTemplateProcessor(const String &key);
   void setupWebServer(void);
@@ -502,7 +620,10 @@ void loadMemoryConfig(void){
 
   if (file.available()) {
     String configuredType = trimMemoryValue(file.readStringUntil('\n'), 16);
-    if (configuredType == "IC-7610-CI-V") {
+    if (configuredType == "IC-7610-CI-V"  ||
+        configuredType == "IC-705-LAN"    ||
+        configuredType == "IC-7610-LAN"   ||
+        configuredType == "IC-7300-LAN") {
       transceiverType = configuredType;
     } else {
       transceiverType = "IC-705-BT";
@@ -834,8 +955,6 @@ void resetSetupMessages(void){
   setupMqttTopicErr = "";
   setupMqttTopicRxErr = "";
   setupHttpCatPortErr = "";
-  setupUdpPortErr = "";
-  setupUdpCatPortErr = "";
   setupCivAddrErr = "";
 }
 
@@ -849,8 +968,6 @@ String setupTemplateProcessor(const String &key){
   if (key == "SSID2") return SSID2;
   if (key == "PSWD2") return PSWD2;
   if (key == "HTTP_CAT_PORT") return String(HTTP_CAT_PORT);
-  if (key == "UDP_PORT") return String(udpPort);
-  if (key == "UDP_CAT_PORT") return String(udpCatPort);
   if (key == "MQTT_IP0") return String(mqttBroker[0]);
   if (key == "MQTT_IP1") return String(mqttBroker[1]);
   if (key == "MQTT_IP2") return String(mqttBroker[2]);
@@ -874,19 +991,38 @@ String setupTemplateProcessor(const String &key){
   if (key == "MQTT_TOPIC_ERR") return setupMqttTopicErr;
   if (key == "MQTT_TOPIC_RX_ERR") return setupMqttTopicRxErr;
   if (key == "HTTP_CAT_PORT_ERR") return setupHttpCatPortErr;
-  if (key == "UDP_PORT_ERR") return setupUdpPortErr;
-  if (key == "UDP_CAT_PORT_ERR") return setupUdpCatPortErr;
-  if (key == "CIV_ADDR") {
-    String addr = String(configuredCivAddress, HEX);
-    addr.toUpperCase();
-    if (configuredCivAddress < 16) {
-      addr = "0" + addr;
+  // Per-TRX template klíče: TRXn_FIELD (n=1..3)
+  for (int t = 0; t < TRX_COUNT; t++) {
+    String prefix = "TRX" + String(t + 1) + "_";
+    if (!key.startsWith(prefix)) continue;
+    String field = key.substring(prefix.length());
+    const TrxConfig& c = trxCfg[t];
+    if (field == "LABEL") return String(c.label);
+    if (field == "MODE")  return String(c.modeStr());
+    if (field == "CIV") {
+      char buf[3]; snprintf(buf, sizeof(buf), "%02X", c.civAddr);
+      return String(buf);
     }
-    return addr;
+    if (field == "IP")   return String(c.ip[0])+"."+String(c.ip[1])+"."+String(c.ip[2])+"."+String(c.ip[3]);
+    if (field == "PORT") return String(c.port);
+    if (field == "USER") return String(c.username);
+    if (field == "PASS") return String(c.password);
+    if (field == "UDPCW")  return String(c.udpCwPort);
+    if (field == "UDPCAT") return String(c.udpCatPort);
+    // Vybraná volba v dropdown
+    if (field == "SEL_DIS")  return (c.mode == TRX_MODE_DISABLED)   ? "selected" : "";
+    if (field == "SEL_BT")   return (c.mode == TRX_MODE_BT)         ? "selected" : "";
+    if (field == "SEL_705L") return (c.mode == TRX_MODE_IC705_LAN)  ? "selected" : "";
+    if (field == "SEL_7610") return (c.mode == TRX_MODE_IC7610_LAN) ? "selected" : "";
+    if (field == "SEL_7300") return (c.mode == TRX_MODE_IC7300_LAN) ? "selected" : "";
+    if (field == "SEL_OI3")  return (c.mode == TRX_MODE_OI3)        ? "selected" : "";
+    // Zobrazit sekci LAN/OI3
+    if (field == "SHOW_LAN") return c.isLan() ? "block" : "none";
+    if (field == "SHOW_OI3") return c.isOi3() ? "block" : "none";
+    if (field == "SHOW_BT")  return c.isBt()  ? "block" : "none";
+    if (field == "SHOW_IP")  return (c.isLan() || c.isOi3()) ? "block" : "none";
+    if (field == "SHOW_UDP") return (c.isBt()  || c.isOi3()) ? "block" : "none";
   }
-  if (key == "CIV_ADDR_ERR") return setupCivAddrErr;
-  if (key == "TRX_IC705_SEL") return transceiverType == "IC-705-BT" ? "selected" : "";
-  if (key == "TRX_IC7610_SEL") return transceiverType == "IC-7610-CI-V" ? "selected" : "";
   if (key == "CW_MEM1") return cwMemoryText[0];
   if (key == "CW_MEM2") return cwMemoryText[1];
   if (key == "CW_MEM3") return cwMemoryText[2];
@@ -910,36 +1046,7 @@ String setupTemplateProcessor(const String &key){
   return String();
 }
 
-void renderSetupPage(){
-  if (!SPIFFS.exists("/setup.html")) {
-    webServer.send(500, "text/plain", "Missing /setup.html in SPIFFS");
-    return;
-  }
-  File file = SPIFFS.open("/setup.html", "r");
-  if (!file) { webServer.send(500, "text/plain", "File open failed"); return; }
-  webServer.setContentLength(CONTENT_LENGTH_UNKNOWN);
-  webServer.send(200, "text/html", "");
-  String out;
-  out.reserve(256);
-  while (file.available()) {
-    String line = file.readStringUntil('\n');
-    out = "";
-    int start = 0;
-    while (true) {
-      int p1 = line.indexOf('%', start);
-      if (p1 < 0) { out += line.substring(start); break; }
-      int p2 = line.indexOf('%', p1 + 1);
-      if (p2 < 0) { out += line.substring(start); break; }
-      out += line.substring(start, p1);
-      out += setupTemplateProcessor(line.substring(p1 + 1, p2));
-      start = p2 + 1;
-    }
-    out += '\n';
-    webServer.sendContent(out);
-  }
-  file.close();
-  webServer.sendContent("");
-}
+
 
 void renderIndexPage(){
   if (!SPIFFS.exists("/index.html")) {
@@ -953,6 +1060,7 @@ void renderIndexPage(){
   String out;
   out.reserve(256);
   while (file.available()) {
+    yield();
     String line = file.readStringUntil('\n');
     out = "";
     int start = 0;
@@ -973,40 +1081,92 @@ void renderIndexPage(){
 }
 
 void buildStateJson(char *buf, size_t bufSize){
-  char modesSnapshot[sizeof(modes)];
-  copyModesText(modesSnapshot, sizeof(modesSnapshot));
+  const TrxState& ts = trxSt[activeTrxIdx];
+  const TrxConfig& tc = trxCfg[activeTrxIdx];
   char addrStr[5];
-  snprintf(addrStr, sizeof(addrStr), "0x%02X", radio_address);
-  const char *btStat = !btClientConnected ? "BT idle" :
-                       (radio_address == 0x00 ? "BT linked | searching CI-V" : "BT linked");
+  snprintf(addrStr, sizeof(addrStr), "0x%02X", ts.radioAddress);
+
+  // Status aktivního TRX
+  const char *trxStat;
+  if (tc.isBt()) {
+    trxStat = !btClientConnected ? "BT idle" :
+              (ts.radioAddress == 0 ? "BT linked | searching CI-V" : "BT linked");
+  } else if (tc.isLan()) {
+    trxStat = lanClients[activeTrxIdx].statusString();
+  } else {
+    trxStat = "OI3";
+  }
+
   const char *wifiStat = APmode ? "WiFi AP" :
                          (WiFi.status() == WL_CONNECTED ? "WiFi STA" : "WiFi down");
   int rssi = (APmode || WiFi.status() != WL_CONNECTED) ? -999 : (int)WiFi.RSSI();
-  snprintf(buf, bufSize,
+
+  // Hlavní pole z aktivního TRX
+  int n = snprintf(buf, bufSize,
     "{\"connected\":%s,\"btStatus\":\"%s\",\"wifiStatus\":\"%s\","
     "\"wifiRssi\":%d,\"fwRev\":\"%u\",\"power\":%s,"
-    "\"frequency\":%u,\"mode\":\"%s\",\"filter\":%u,"
-    "\"radioAddress\":\"%s\",\"transceiverType\":\"%s\",\"tx\":%s,\"ritRaw\":%u,"
-    "\"smeterRaw\":%u,\"powerMeterRaw\":%u,"
+    "\"frequency\":%lu,\"mode\":\"%s\",\"filter\":%u,"
+    "\"radioAddress\":\"%s\",\"transceiverType\":\"%s\",\"tx\":%s,\"ritRaw\":%lu,"
+    "\"smeterRaw\":%lu,\"powerMeterRaw\":%lu,"
     "\"afGain\":%u,\"keySpeed\":%u,\"rfPower\":%u,"
     "\"supplyVolts\":%.2f,\"swr\":%.2f,"
-    "\"preamp\":%u,\"vox\":%u}",
-    btClientConnected ? "true" : "false", btStat, wifiStat,
+    "\"preamp\":%u,\"vox\":%u,"
+    "\"activeTrx\":%d,",
+    ts.connected ? "true" : "false", trxStat, wifiStat,
     rssi, (unsigned)REV, statusPower ? "true" : "false",
-    (unsigned)frequency, modesSnapshot, (unsigned)stateFilter,
-    addrStr, transceiverType.c_str(), stateTx ? "true" : "false", (unsigned)stateRitRaw,
-    (unsigned)stateSmeterRaw, (unsigned)statePowerMeterRaw,
-    (unsigned)stateAfGain, (unsigned)stateKeySpeed, (unsigned)stateRfPower,
-    stateSupplyVolts, stateSwr,
-    (unsigned)statePreampMode, (unsigned)stateVoxMode
+    (unsigned long)ts.frequency, ts.modes, (unsigned)ts.filter,
+    addrStr, tc.modeStr(), ts.tx ? "true" : "false", (unsigned long)ts.ritRaw,
+    (unsigned long)ts.smeterRaw, (unsigned long)ts.powerMeterRaw,
+    (unsigned)ts.afGain, (unsigned)ts.keySpeed, (unsigned)ts.rfPower,
+    ts.supplyVolts, ts.swr,
+    (unsigned)ts.preampMode, (unsigned)ts.voxMode,
+    activeTrxIdx
   );
+
+  // Per-TRX array pro chips
+  if (n > 0 && n < (int)bufSize - 10) {
+    strncat(buf, "\"trx\":[", bufSize - n - 1); n += 7;
+    for (int t = 0; t < TRX_COUNT && n < (int)bufSize - 60; t++) {
+      if (t > 0) { strncat(buf, ",", bufSize-n-1); n++; }
+      char tmp[80];
+      snprintf(tmp, sizeof(tmp),
+        "{\"label\":\"%s\",\"mode\":\"%s\",\"freq\":%lu,\"conn\":%s}",
+        trxCfg[t].label, trxSt[t].modes,
+        (unsigned long)trxSt[t].frequency,
+        trxSt[t].connected ? "true" : "false");
+      strncat(buf, tmp, bufSize-n-1);
+      n += strlen(tmp);
+    }
+    strncat(buf, "]}", bufSize-n-1);
+  } else {
+    strncat(buf, "\"trx\":[]}", bufSize-n-1);
+  }
 }
 
 void handleGetState(){
-  static char stateBuf[640];
+  static char stateBuf[900];
   buildStateJson(stateBuf, sizeof(stateBuf));
   webServer.sendHeader("Cache-Control", "no-cache");
   webServer.send(200, "application/json", stateBuf);
+}
+
+// Přepnout aktivní TRX (GET → vrátí index, POST {idx:N} → nastaví)
+void handleTrxSelect(){
+  if (webServer.method() == HTTP_POST) {
+    String body = webServer.arg("plain");
+    int idx = extractJsonString(body, "idx").toInt();
+    if (idx >= 0 && idx < TRX_COUNT) {
+      activeTrxIdx = idx;
+      // Synchronizovat globals z nového aktivního TRX
+      radio_address = trxSt[activeTrxIdx].radioAddress;
+      frequency     = trxSt[activeTrxIdx].frequency;
+      setModesText(trxSt[activeTrxIdx].modes);
+    }
+    webServer.send(200, "application/json", "{\"ok\":true}");
+  } else {
+    char tmp[24]; snprintf(tmp, sizeof(tmp), "{\"activeTrx\":%d}", activeTrxIdx);
+    webServer.send(200, "application/json", tmp);
+  }
 }
 
 // ── Pairing signalling buffer ─────────────────────────────────────────────────
@@ -1077,7 +1237,15 @@ bool handleFileFromSPIFFS(const String &path){
   if (!f) return false;
   webServer.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
   webServer.sendHeader("Pragma", "no-cache");
-  webServer.streamFile(f, contentType);
+  webServer.setContentLength(f.size());
+  webServer.send(200, contentType, "");
+  // Manuální streaming po 512B blocích s yield() — log.js je 41KB, bez yield by WDT přerušil loopTask
+  static uint8_t buf[512];
+  while (f.available()) {
+    yield();
+    size_t len = f.read(buf, sizeof(buf));
+    if (len > 0) webServer.client().write(buf, len);
+  }
   f.close();
   return true;
 }
@@ -1087,7 +1255,10 @@ void handlePostCmd(){
   if (body.length() == 0) { webServer.send(400, "application/json", "{\"error\":\"empty body\"}"); return; }
   String type = extractJsonString(body, "type");
 
-  if (!btClientConnected || radio_address == 0x00) {
+  const TrxConfig& atc = trxCfg[activeTrxIdx];
+  bool radioReady = (radio_address != 0x00) &&
+                    (atc.isLan() ? lanClients[activeTrxIdx].isConnected() : btClientConnected);
+  if (!radioReady) {
     webServer.send(503, "application/json", "{\"error\":\"radio_disconnected\"}");
     return;
   }
@@ -1157,9 +1328,129 @@ static void eepromWriteStr(const String &str, int addr, int maxLen) {
   }
 }
 
+static void eepromReadStr(char* dst, int addr, int maxLen) {
+  for (int i = 0; i < maxLen; i++) {
+    uint8_t c = EEPROM.read(addr + i);
+    dst[i] = (c != 0xFF) ? (char)c : '\0';
+  }
+  dst[maxLen] = '\0';
+}
+
+// Uložit TrxConfig do EEPROM slotu i (i=0..2)
+static void saveTrxConfig(int i, const TrxConfig& cfg) {
+  int base = TRX_EEPROM_BASE[i];
+  EEPROM.writeByte(base + 0, cfg.mode);
+  for (int j = 0; j < 4; j++) EEPROM.writeByte(base + 1 + j, cfg.ip[j]);
+  EEPROM.writeUShort(base + 5, cfg.port);
+  for (int j = 0; j < 16; j++) EEPROM.writeByte(base + 7 + j, j < 16 ? (uint8_t)cfg.username[j] : 0xFF);
+  for (int j = 0; j < 16; j++) EEPROM.writeByte(base + 23 + j, (uint8_t)cfg.password[j]);
+  EEPROM.writeByte(base + 39, cfg.civAddr);
+  for (int j = 0; j < 11; j++) EEPROM.writeByte(base + 40 + j, j < 11 ? (uint8_t)cfg.label[j] : 0xFF);
+  EEPROM.writeUShort(base + 51, cfg.udpCwPort);
+  EEPROM.writeUShort(base + 53, cfg.udpCatPort);
+}
+
+// Načíst TrxConfig z EEPROM slotu i
+static void loadTrxConfig(int i, TrxConfig& cfg) {
+  int base = TRX_EEPROM_BASE[i];
+  uint8_t mode = EEPROM.read(base + 0);
+  cfg.mode = (mode <= TRX_MODE_OI3) ? mode : TRX_MODE_DISABLED;
+  for (int j = 0; j < 4; j++) cfg.ip[j] = EEPROM.read(base + 1 + j);
+  uint16_t port = EEPROM.readUShort(base + 5);
+  cfg.port = (port == 0 || port == 0xFFFF) ? (cfg.isOi3() ? 81 : 50001) : port;
+  eepromReadStr(cfg.username, base + 7,  16);
+  eepromReadStr(cfg.password, base + 23, 16);
+  uint8_t civ = EEPROM.read(base + 39);
+  cfg.civAddr = (civ != 0xFF) ? civ : 0xA4;
+  eepromReadStr(cfg.label, base + 40, 11);
+  if (cfg.label[0] == '\0') {
+    const char* defaults[] = {"TRX1","TRX2","TRX3"};
+    strncpy(cfg.label, defaults[i], 11);
+  }
+  uint16_t cw = EEPROM.readUShort(base + 51);
+  cfg.udpCwPort  = (cw  == 0 || cw  == 0xFFFF) ? 89 : cw;
+  uint16_t cat = EEPROM.readUShort(base + 53);
+  cfg.udpCatPort = (cat == 0 || cat == 0xFFFF) ? 90 : cat;
+}
+
+void handleSetupData() {
+  // JSON s aktuální konfigurací + chybovými hlášeními pro /setup-data endpoint.
+  // setup.html je statický soubor; hodnoty se načítají tímto endpointem přes JS fetch.
+  String j;
+  j.reserve(1200);
+  j += "{\"rev\":";      j += REV;
+  j += ",\"hwrev\":";    j += HardwareRev;
+  j += ",\"mac\":\"";    j += MACString;          j += "\"";
+  j += ",\"apmode\":";   j += APmode ? "true" : "false";
+  j += ",\"ssid\":\"";   j += jsonEscape(SSID);   j += "\"";
+  j += ",\"pswd\":\"";   j += jsonEscape(PSWD);   j += "\"";
+  j += ",\"ssid2\":\"";  j += jsonEscape(SSID2);  j += "\"";
+  j += ",\"pswd2\":\"";  j += jsonEscape(PSWD2);  j += "\"";
+  j += ",\"httpcatport\":"; j += HTTP_CAT_PORT;
+  j += ",\"mqttip\":[";
+  j += mqttBroker[0]; j += ","; j += mqttBroker[1]; j += ",";
+  j += mqttBroker[2]; j += ","; j += mqttBroker[3]; j += "]";
+  j += ",\"mqttport\":"; j += MQTT_PORT;
+  j += ",\"mqtttopic\":\"";   j += jsonEscape(MQTT_TOPIC);    j += "\"";
+  j += ",\"mqtttopicrx\":\""; j += jsonEscape(MQTT_TOPIC_RX); j += "\"";
+  j += ",\"baud\":";     j += BaudRate;
+  j += ",\"cwIpOnConnect\":"; j += cwIpOnConnect ? "true" : "false";
+  // Per-TRX
+  j += ",\"trx\":[";
+  for (int t = 0; t < TRX_COUNT; t++) {
+    const TrxConfig& tc = trxCfg[t];
+    char civBuf[3]; snprintf(civBuf, sizeof(civBuf), "%02X", tc.civAddr);
+    if (t) j += ",";
+    j += "{\"mode\":"; j += tc.mode;
+    j += ",\"label\":\""; j += jsonEscape(String(tc.label)); j += "\"";
+    j += ",\"ip\":\"";
+    j += tc.ip[0]; j += "."; j += tc.ip[1]; j += "."; j += tc.ip[2]; j += "."; j += tc.ip[3];
+    j += "\"";
+    j += ",\"port\":"; j += tc.port;
+    j += ",\"user\":\""; j += jsonEscape(String(tc.username)); j += "\"";
+    j += ",\"pass\":\""; j += jsonEscape(String(tc.password)); j += "\"";
+    j += ",\"civ\":\""; j += civBuf; j += "\"";
+    j += ",\"udpcw\":"; j += tc.udpCwPort;
+    j += ",\"udpcat\":"; j += tc.udpCatPort;
+    j += "}";
+  }
+  j += "]";
+  // CW + freq memories
+  j += ",\"cwmem\":[";
+  for (uint8_t i = 0; i < CW_MEMORY_COUNT; i++) {
+    if (i) j += ",";
+    j += "\""; j += jsonEscape(cwMemoryText[i]); j += "\"";
+  }
+  j += "]";
+  j += ",\"freqmem\":[";
+  for (uint8_t i = 0; i < FREQ_MEMORY_COUNT; i++) {
+    if (i) j += ",";
+    j += "\""; j += jsonEscape(freqMemoryText[i]); j += "\"";
+  }
+  j += "]";
+  // Chybová hlášení (nastavují se v handleSet(), prázdné = žádná chyba)
+  j += ",\"eSSID\":\"";     j += jsonEscape(setupSsidErr);       j += "\"";
+  j += ",\"ePSWD\":\"";     j += jsonEscape(setupPswdErr);       j += "\"";
+  j += ",\"eSSID2\":\"";    j += jsonEscape(setupSsid2Err);      j += "\"";
+  j += ",\"ePSWD2\":\"";    j += jsonEscape(setupPswd2Err);      j += "\"";
+  j += ",\"eHttpcatport\":\""; j += jsonEscape(setupHttpCatPortErr); j += "\"";
+  j += ",\"eMqtt\":\"";     j += jsonEscape(setupMqttErr);       j += "\"";
+  j += ",\"eMqtt1\":\"";    j += jsonEscape(setupMqttErr1);      j += "\"";
+  j += ",\"eMqtt2\":\"";    j += jsonEscape(setupMqttErr2);      j += "\"";
+  j += ",\"eMqtt3\":\"";    j += jsonEscape(setupMqttErr3);      j += "\"";
+  j += ",\"eMqtt4\":\"";    j += jsonEscape(setupMqttErr4);      j += "\"";
+  j += ",\"eMqttPort\":\""; j += jsonEscape(setupMqttPortErr);   j += "\"";
+  j += ",\"eMqttTopic\":\""; j += jsonEscape(setupMqttTopicErr); j += "\"";
+  j += ",\"eMqttTopicRx\":\""; j += jsonEscape(setupMqttTopicRxErr); j += "\"";
+  j += ",\"mqttApNote\":\""; j += APmode
+    ? "MQTT is not active in AP mode — a WiFi network connection to the broker is required."
+    : "";
+  j += "\"";
+  j += "}";
+  webServer.send(200, "application/json", j);
+}
+
 void handleConfigDownload() {
-  char civHex[3];
-  snprintf(civHex, sizeof(civHex), "%02X", configuredCivAddress);
   String j;
   j.reserve(1024);
   j += "{\"ssid\":\"";          j += configJsonEscape(SSID);          j += "\"";
@@ -1177,9 +1468,21 @@ void handleConfigDownload() {
   j += ",\"udpport\":";         j += udpPort;
   j += ",\"udpcatport\":";      j += udpCatPort;
   j += ",\"baudrate\":";        j += BaudRate;
-  j += ",\"trxprofile\":\"";    j += configJsonEscape(transceiverType); j += "\"";
-  j += ",\"civaddr\":\"";       j += civHex;                          j += "\"";
   j += ",\"cwIpOnConnect\":";  j += cwIpOnConnect ? "true" : "false";
+  // Per-TRX konfigurace
+  for (int t = 0; t < TRX_COUNT; t++) {
+    const TrxConfig& tc = trxCfg[t];
+    int n = t + 1;
+    j += ",\"trx" + String(n) + "mode\":" + String(tc.mode);
+    j += ",\"trx" + String(n) + "label\":\"" + configJsonEscape(String(tc.label)) + "\"";
+    j += ",\"trx" + String(n) + "ip\":\"" + String(tc.ip[0])+"."+String(tc.ip[1])+"."+String(tc.ip[2])+"."+String(tc.ip[3]) + "\"";
+    j += ",\"trx" + String(n) + "port\":" + String(tc.port);
+    j += ",\"trx" + String(n) + "user\":\"" + configJsonEscape(String(tc.username)) + "\"";
+    char civBuf[3]; snprintf(civBuf, sizeof(civBuf), "%02X", tc.civAddr);
+    j += ",\"trx" + String(n) + "civ\":\"" + civBuf + "\"";
+    j += ",\"trx" + String(n) + "udpcw\":" + String(tc.udpCwPort);
+    j += ",\"trx" + String(n) + "udpcat\":" + String(tc.udpCatPort);
+  }
   for (uint8_t i = 0; i < CW_MEMORY_COUNT; i++) {
     j += ",\"cwmem"; j += (i + 1); j += "\":\""; j += configJsonEscape(cwMemoryText[i]); j += "\"";
   }
@@ -1214,13 +1517,50 @@ void handleConfigUpload() {
   String mqtttopicrx = extractJsonString(body, "mqtttopicrx");
   if (mqtttopicrx.length() <= 20) { MQTT_TOPIC_RX = mqtttopicrx; eepromWriteStr(MQTT_TOPIC_RX, 115, 21); }
 
-  String trx = extractJsonString(body, "trxprofile");
-  if (trx == "IC-7610-CI-V") transceiverType = trx;
-  else if (trx.length() > 0) transceiverType = "IC-705-BT";
+  // Integers to EEPROM — lambda must be declared before per-TRX block
+  auto parseField = [&](const char *key, int minVal, int maxVal) -> int {
+    int idx = body.indexOf(String("\"") + key + "\":");
+    if (idx < 0) return -1;
+    int start = body.indexOf(':', idx) + 1;
+    while (start < (int)body.length() && body[start] == ' ') start++;
+    int end = start;
+    while (end < (int)body.length() && (isDigit(body[end]) || body[end] == '-')) end++;
+    int val = body.substring(start, end).toInt();
+    return (val >= minVal && val <= maxVal) ? val : -1;
+  };
 
-  String civStr = extractJsonString(body, "civaddr");
-  uint8_t civAddr = configuredCivAddress;
-  if (parseHexByteString(civStr, civAddr)) configuredCivAddress = civAddr;
+  // Per-TRX konfigurace z JSON
+  {
+    bool btTaken = false;
+    for (int t = 0; t < TRX_COUNT; t++) {
+      int n = t + 1;
+      String pfx = "trx" + String(n);
+      int modeVal = parseField((pfx + "mode").c_str(), 0, (int)TRX_MODE_OI3);
+      if (modeVal >= 0) {
+        uint8_t mode = (uint8_t)modeVal;
+        if (mode == TRX_MODE_BT && btTaken) mode = TRX_MODE_DISABLED;
+        if (mode == TRX_MODE_BT) btTaken = true;
+        trxCfg[t].mode = mode;
+      }
+      String lbl = extractJsonString(body, (pfx + "label").c_str());
+      if (lbl.length() > 0) { if (lbl.length() > 11) lbl = lbl.substring(0, 11); lbl.toCharArray(trxCfg[t].label, sizeof(trxCfg[t].label)); }
+      String ipStr = extractJsonString(body, (pfx + "ip").c_str());
+      if (ipStr.length() > 0) { int b[4]={0,0,0,0}; sscanf(ipStr.c_str(),"%d.%d.%d.%d",&b[0],&b[1],&b[2],&b[3]); for(int j=0;j<4;j++) trxCfg[t].ip[j]=(uint8_t)b[j]; }
+      int lp = parseField((pfx + "port").c_str(), 1, 65534); if (lp > 0) trxCfg[t].port = (uint16_t)lp;
+      String usr = extractJsonString(body, (pfx + "user").c_str());
+      if (usr.length() > 0) { if (usr.length() > 16) usr = usr.substring(0, 16); usr.toCharArray(trxCfg[t].username, sizeof(trxCfg[t].username)); }
+      String civStr = extractJsonString(body, (pfx + "civ").c_str());
+      uint8_t civ = trxCfg[t].civAddr;
+      if (parseHexByteString(civStr, civ)) trxCfg[t].civAddr = civ;
+      int cw = parseField((pfx + "udpcw").c_str(), 1, 65534); if (cw > 0) trxCfg[t].udpCwPort = (uint16_t)cw;
+      int ct = parseField((pfx + "udpcat").c_str(), 1, 65534); if (ct > 0) trxCfg[t].udpCatPort = (uint16_t)ct;
+      saveTrxConfig(t, trxCfg[t]);
+    }
+    transceiverType      = trxCfg[0].modeStr();
+    configuredCivAddress = trxCfg[0].effectiveCivAddr();
+    lanMode = false;
+    for (int t = 0; t < TRX_COUNT; t++) if (trxCfg[t].isLan()) lanMode = true;
+  }
 
   {
     int idx = body.indexOf("\"cwIpOnConnect\"");
@@ -1236,19 +1576,6 @@ void handleConfigUpload() {
     }
   }
 
-
-  // Integers to EEPROM
-  auto parseField = [&](const char *key, int minVal, int maxVal) -> int {
-    int idx = body.indexOf(String("\"") + key + "\":");
-    if (idx < 0) return -1;
-    int start = body.indexOf(':', idx) + 1;
-    while (start < (int)body.length() && body[start] == ' ') start++;
-    int end = start;
-    while (end < (int)body.length() && (isDigit(body[end]) || body[end] == '-')) end++;
-    int val = body.substring(start, end).toInt();
-    return (val >= minVal && val <= maxVal) ? val : -1;
-  };
-
   int v;
   v = parseField("mqttip0", 0, 255); if (v >= 0) { mqttBroker[0] = v; EEPROM.writeByte(41, v); mqttEnable = (v != 0); }
   v = parseField("mqttip1", 0, 255); if (v >= 0) { mqttBroker[1] = v; EEPROM.writeByte(42, v); }
@@ -1256,8 +1583,6 @@ void handleConfigUpload() {
   v = parseField("mqttip3", 0, 255); if (v >= 0) { mqttBroker[3] = v; EEPROM.writeByte(44, v); }
   v = parseField("mqttport", 1, 65534); if (v >= 0) { MQTT_PORT = v; EEPROM.writeUShort(45, v); }
   v = parseField("httpcatport", 1, 65534); if (v >= 0) { HTTP_CAT_PORT = v; EEPROM.writeUShort(68, v); }
-  v = parseField("udpport", 1, 65534); if (v >= 0) { udpPort = v; EEPROM.writeUShort(70, v); }
-  v = parseField("udpcatport", 1, 65534); if (v >= 0) { udpCatPort = v; EEPROM.writeUShort(72, v); }
   v = parseField("baudrate", 1200, 115200); if (v > 0) { BaudRate = v; EEPROM.writeUShort(74, v); }
 
   for (uint8_t i = 0; i < CW_MEMORY_COUNT; i++) {
@@ -1362,8 +1687,10 @@ void handleOi3Send() {
 }
 
 void setupWebServer(void){
-  webServer.on("/state", HTTP_GET, handleGetState);
-  webServer.on("/cmd", HTTP_POST, handlePostCmd);
+  webServer.on("/state", HTTP_GET,  handleGetState);
+  webServer.on("/trx",   HTTP_GET,  handleTrxSelect);
+  webServer.on("/trx",   HTTP_POST, handleTrxSelect);
+  webServer.on("/cmd",   HTTP_POST, handlePostCmd);
   webServer.on("/config/download", HTTP_GET,  handleConfigDownload);
   webServer.on("/config/upload",   HTTP_POST, handleConfigUpload);
   webServer.on("/log-config", HTTP_GET,  handleGetLogConfig);
@@ -1372,12 +1699,22 @@ void setupWebServer(void){
   webServer.on("/oi3/send",  HTTP_POST, handleOi3Send);
 
   webServer.on("/", HTTP_GET, [](){
-    if (!SPIFFS.exists("/index.html")) { renderSetupPage(); return; }
+    if (!SPIFFS.exists("/index.html")) { handleFileFromSPIFFS("/setup.html"); return; }
     renderIndexPage();
   });
 
-  webServer.on("/setup",  HTTP_GET,  [](){ renderSetupPage(); });
-  webServer.on("/setup",  HTTP_POST, [](){ handleSet(); renderSetupPage(); });
+  // setup.html je statický soubor — žádný template rendering, žádný WDT risk.
+  // Hodnoty se načítají JS fetchem z /setup-data.
+  // POST: handleSet() restartuje při úspěchu; při chybách vrátí 302 redirect na GET.
+  webServer.on("/setup-data", HTTP_GET, [](){ handleSetupData(); });
+  webServer.on("/setup",  HTTP_GET,  [](){ handleFileFromSPIFFS("/setup.html"); });
+  webServer.on("/setup",  HTTP_POST, [](){
+    handleSet();
+    // Pokud jsme stále tady, handleSet() nenalezl chyby ale z nějakého důvodu nerestartoval,
+    // nebo nalezl chyby (ERRdetect != 0). V obou případech přesměrovat zpět na GET /setup.
+    webServer.sendHeader("Location", "/setup", true);
+    webServer.send(302, "text/plain", "");
+  });
   webServer.on("/ws-cat",   HTTP_GET,  [](){ handleFileFromSPIFFS("/ws-cat.html"); });
   webServer.on("/log",      HTTP_GET,  [](){ handleFileFromSPIFFS("/log.html"); });
   webServer.on("/datasync", HTTP_GET,  [](){ handleFileFromSPIFFS("/datasync.html"); });
@@ -1397,18 +1734,30 @@ void setupWebServer(void){
   });
 
   webServer.begin();
+
+  // WebSocket pro vodopad na portu 82
+  wfWs.onEvent([](AsyncWebSocket*, AsyncWebSocketClient*, AwsEventType t,
+                  void*, uint8_t*, size_t){
+    // posílat hello při připojení by bylo hezké, ale stačí tiché připojení
+    (void)t;
+  });
+  wfWsServer.addHandler(&wfWs);
+  wfWsServer.begin();
+  MDNS.addService("ws", "tcp", 82);
 }
 
 
 bool catWriteFrame(const uint8_t *frame, size_t frameLen, bool broadcastTx){
+  #if defined(WIFI)
+  if (trxCfg[activeTrxIdx].isLan() && lanClients[activeTrxIdx].isConnected()) {
+    return lanClients[activeTrxIdx].sendCiv(frame, frameLen);
+  }
+  #endif
   #if defined(BLUETOOTH)
-    if (!btClientConnected) {
-      return false;
-    }
-    for (size_t i = 0; i < frameLen; i++) {
-      CAT.write(frame[i]);
-    }
+  if (trxCfg[activeTrxIdx].isBt() && btClientConnected) {
+    for (size_t i = 0; i < frameLen; i++) CAT.write(frame[i]);
     return true;
+  }
   #endif
   return false;
 }
@@ -1550,14 +1899,14 @@ void setup(){
       HTTP_CAT_PORT = EEPROM.readUShort(68);
     }
 
-    // 70-71 udpPort
+    // 70-71 udpPort (legacy global — migrace do TRX1 udpCwPort při prvním startu)
     if(EEPROM.read(70)==0xff){
       udpPort=89;
     }else{
       udpPort = EEPROM.readUShort(70);
     }
 
-    // 72-73 udpCatPort
+    // 72-73 udpCatPort (legacy global)
     if(EEPROM.read(72)==0xff){
       udpCatPort=90;
     }else{
@@ -1567,6 +1916,41 @@ void setup(){
     if(EEPROM.read(136) != 0xff){
       cwIpOnConnect = EEPROM.readBool(136);
     }
+
+    // Načíst TRX1/2/3 konfigurace z EEPROM
+    #if defined(WIFI)
+    {
+      for (int t = 0; t < TRX_COUNT; t++) {
+        loadTrxConfig(t, trxCfg[t]);
+        Serial.print(" TRX"); Serial.print(t+1);
+        Serial.print("| "); Serial.print(trxCfg[t].label);
+        Serial.print(" mode="); Serial.println(trxCfg[t].modeStr());
+      }
+      // Zpětná kompatibilita: migrate legacy IC-705-BT default (connMode 0xFF → BT)
+      // Pokud TRX1 je DISABLED a TRX2/3 jsou taky disabled → defaultně BT
+      bool anyEnabled = false;
+      for (int t = 0; t < TRX_COUNT; t++) if (trxCfg[t].enabled()) { anyEnabled = true; break; }
+      if (!anyEnabled) {
+        trxCfg[0].mode = TRX_MODE_BT;
+        trxCfg[0].civAddr = 0xA4;
+        trxCfg[0].udpCwPort  = udpPort;
+        trxCfg[0].udpCatPort = udpCatPort;
+        strncpy(trxCfg[0].label, "IC-705", 11);
+        Serial.println(" TRX | defaultni BT na TRX1");
+      }
+      // Synchronizovat legacy globals z TRX1
+      transceiverType    = trxCfg[0].modeStr();
+      configuredCivAddress = trxCfg[0].effectiveCivAddr();
+      lanMode = false;
+      for (int t = 0; t < TRX_COUNT; t++) if (trxCfg[t].isLan()) lanMode = true;
+      // UDP porty z BT TRX (pro N1MM+/Win-Test)
+      int bti = btTrxIdx();
+      if (bti >= 0) {
+        udpPort    = trxCfg[bti].udpCwPort;
+        udpCatPort = trxCfg[bti].udpCatPort;
+      }
+    }
+    #endif
 
   }
 //------------------------------------------
@@ -1758,7 +2142,22 @@ void setup(){
     #endif
 
     #if defined(BLUETOOTH)
-      configRadioBaud(0);
+      if (btTrxIdx() >= 0) configRadioBaud(0);
+    #endif
+
+    #if defined(WIFI)
+      for (int t = 0; t < TRX_COUNT; t++) {
+        if (!trxCfg[t].isLan()) continue;
+        IPAddress ip = trxCfg[t].ipAddr();
+        if (ip == IPAddress(0,0,0,0)) continue;
+        int ti = t; // capture for lambda
+        lanClients[t].begin(ip, trxCfg[t].port,
+                            trxCfg[t].username, trxCfg[t].password,
+                            "ic705if", trxCfg[t].effectiveCivAddr());
+        lanClients[t].onCivReceived([ti](const uint8_t* d, size_t l){ processCivFrame(ti, d, l); });
+        Serial.print(" LAN| TRX"); Serial.print(t+1);
+        Serial.print(" "); Serial.print(ip); Serial.print(":"); Serial.println(trxCfg[t].port);
+      }
     #endif
 
     #if defined(WDT)
@@ -1829,17 +2228,31 @@ void pollRadio(){
   static unsigned long auxPollTimer = 0;
   static uint8_t auxPollIndex = 0;
 
-  if (!btClientConnected) return;
+  // Polling aktivního TRX
+  bool radioOnline = false;
+  #if defined(BLUETOOTH)
+  { int bti = btTrxIdx(); if (bti >= 0 && btClientConnected) radioOnline = true; }
+  #endif
+  #if defined(WIFI)
+  if (trxCfg[activeTrxIdx].isLan() && lanClients[activeTrxIdx].isConnected()) radioOnline = true;
+  #endif
+  if (!radioOnline) return;
 
   if (millis() - catPollTimer > 200) {
     catPollTimer = millis();
     if (radio_address == 0x00) {
-      if (Debug == true) Serial.println("CAT | searching radio...");
-      searchRadio();
+      #if defined(BLUETOOTH)
+      if (trxCfg[activeTrxIdx].isBt()) {
+        if (Debug) Serial.println("CAT | searching radio...");
+        searchRadio();
+      }
+      #endif
     } else {
       sendCatRequest(CMD_READ_FREQ);
       sendCatRequest(CMD_READ_MODE);
-      processCatMessages();
+      #if defined(BLUETOOTH)
+      if (trxCfg[activeTrxIdx].isBt()) processCatMessages();
+      #endif
     }
   }
 
@@ -1875,12 +2288,47 @@ void pollRadio(){
       case 9: { uint8_t p[] = {0x47}; frameLen = buildSimpleCatFrame(0x16, p, 1, frame, sizeof(frame)); break; } // VOX/BKIN
     }
     if (frameLen > 0) catWriteFrame(frame, frameLen, false);
-    processCatMessages();
+    #if defined(BLUETOOTH)
+    if (!lanMode) processCatMessages();
+    #endif
     auxPollIndex++;
   }
 }
 
 void Watchdog(){
+  #if defined(WIFI)
+  // Loop všech LAN klientů + scope aktivace
+  for (int t = 0; t < TRX_COUNT; t++) {
+    if (!trxCfg[t].isLan()) continue;
+    lanClients[t].loop();
+    bool nowConn = lanClients[t].isConnected();
+    trxSt[t].connected = nowConn;
+    if (nowConn && !scopeInitDone) {
+      if (trxSt[t].radioAddress == 0) {
+        trxSt[t].radioAddress = trxCfg[t].effectiveCivAddr();
+      }
+      if (t == activeTrxIdx) radio_address = trxSt[t].radioAddress;
+    }
+    if (nowConn && !scopeInitDone) {
+      scopeInitDone = true;
+      sendScopeActivation(t);
+    }
+    if (!nowConn && scopeInitDone) {
+      scopeInitDone = false;
+    }
+  }
+  // Synchronizovat connected flag z BT
+  {
+    int bti = btTrxIdx();
+    if (bti >= 0) trxSt[bti].connected = btClientConnected;
+  }
+  // WebSocket cleanup
+  static unsigned long wsCleanTimer = 0;
+  if (millis() - wsCleanTimer > 2000) {
+    wsCleanTimer = millis();
+    wfWs.cleanupClients();
+  }
+  #endif
   handleBtEvents();
   pollRadio();
 
@@ -2298,8 +2746,264 @@ void print_wifi_error(){
 //   // #endif
 //   #endif
 // }
+// ── Vodopad (fáze 5) ────────────────────────────────────────────────────────
+
+#if defined(WIFI)
+
+// Scope aktivace: scope ON, fixed mode, edge slot 1
+void sendScopeActivation(int trxIdx) {
+  if (trxSt[trxIdx].radioAddress == 0x00) return;
+  uint8_t frame[12];
+  size_t len;
+  // FE FE <addr> E0 27 00 01 FD  — scope ON
+  { uint8_t p[] = {0x00, 0x01}; len = buildSimpleCatFrame(0x27, p, 2, frame, sizeof(frame)); catWriteFrame(frame, len, false); }
+  delay(20);
+  // FE FE <addr> E0 27 14 00 01 FD  — fixed mode
+  { uint8_t p[] = {0x14, 0x00, 0x01}; len = buildSimpleCatFrame(0x27, p, 3, frame, sizeof(frame)); catWriteFrame(frame, len, false); }
+  delay(20);
+  // FE FE <addr> E0 27 16 01 FD  — edge slot 1
+  { uint8_t p[] = {0x16, 0x01}; len = buildSimpleCatFrame(0x27, p, 2, frame, sizeof(frame)); catWriteFrame(frame, len, false); }
+  Serial.println(" WF | scope aktivovan");
+}
+
+// 5-bajtový BCD → Hz (LSB first, IC-705 formát)
+static uint32_t bcd5ToHz(const uint8_t* b) {
+  return (uint32_t)(b[4] >> 4) * 1000000000UL / 10
+       + (uint32_t)(b[4] & 0xF) * 100000000UL / 10
+       + (uint32_t)(b[3] >> 4) * 10000000UL  / 10
+       + (uint32_t)(b[3] & 0xF) * 1000000UL   / 10
+       + (uint32_t)(b[2] >> 4) * 100000UL     / 10
+       + (uint32_t)(b[2] & 0xF) * 10000UL      / 10
+       + (uint32_t)(b[1] >> 4) * 1000UL
+       + (uint32_t)(b[1] & 0xF) * 100UL
+       + (uint32_t)(b[0] >> 4) * 10UL
+       + (uint32_t)(b[0] & 0xF);
+}
+
+static uint8_t bcdToUint8(uint8_t b) {
+  return (uint8_t)((b >> 4) * 10 + (b & 0x0F));
+}
+
+// Odeslat kompletní vodopadový frame přes WebSocket
+void sendWaterfallToWebSocket(const WfFrame& f) {
+  if (wfWs.count() == 0) return; // žádný klient
+
+  // JSON: {"t":"wf","s":...,"e":...,"v":...,"d":[...]}
+  // Odhad délky: header ~60 B + pixely (max 500 * 4 B = 2000 B) + footer 2 B
+  size_t bufSize = 80 + f.pixelCount * 4 + 4;
+  char* buf = (char*)malloc(bufSize);
+  if (!buf) return;
+
+  int pos = snprintf(buf, bufSize,
+    "{\"t\":\"wf\",\"s\":%lu,\"e\":%lu,\"v\":%lu,\"d\":[",
+    (unsigned long)f.startHz, (unsigned long)f.endHz, (unsigned long)frequency);
+
+  for (uint16_t i = 0; i < f.pixelCount && pos < (int)(bufSize - 6); i++) {
+    if (i > 0) buf[pos++] = ',';
+    pos += snprintf(&buf[pos], bufSize - pos, "%u", f.pixels[i]);
+  }
+  if (pos < (int)(bufSize - 3)) {
+    buf[pos++] = ']';
+    buf[pos++] = '}';
+    buf[pos]   = '\0';
+  }
+
+  wfWs.textAll(buf);
+  free(buf);
+}
+
+// Zpracování CI-V 0x27 scope segmentu.
+// d = &read_buffer[4] (začíná bajtem 0x27), lenD = délka od 0x27 do FD včetně
+void civProcessScopePacket(int trxIdx, const uint8_t* d, size_t lenD) {
+  (void)trxIdx;
+  if (lenD < 6) return;
+  // d[0]=0x27, d[1]=0x00, d[2]=0x00, d[3]=seq_BCD, d[4]=seqMax_BCD
+  uint8_t seq    = bcdToUint8(d[3]);
+  uint8_t seqMax = bcdToUint8(d[4]);
+  if (seq == 0 || seqMax == 0) return;
+
+  if (seq == 1) {
+    // Metadata segment: d[5]=mode, d[6..10]=fA, d[11..15]=fB, d[16]=OOR
+    if (lenD < 18) return;
+    wfBuf.mode = d[5];
+    uint32_t fA = bcd5ToHz(&d[6]);
+    uint32_t fB = bcd5ToHz(&d[11]);
+    wfBuf.oor   = (d[16] != 0);
+    if (wfBuf.mode == 0x00) { // center mode
+      wfBuf.startHz = (fA > fB) ? fA - fB : 0;
+      wfBuf.endHz   = fA + fB;
+    } else {                   // fixed / scroll
+      wfBuf.startHz = fA;
+      wfBuf.endHz   = fB;
+    }
+    wfBuf.pixelCount = 0;
+    wfBuf.complete   = false;
+  } else {
+    // Datový segment: pixely od d[5] do d[lenD-2] (lenD-1 je FD)
+    if (lenD < 7) return;
+    uint16_t pxLen = (uint16_t)(lenD - 5 - 1); // -5 header, -1 FD
+    if (pxLen > 50) pxLen = 50;
+    if (wfBuf.pixelCount + pxLen > sizeof(wfBuf.pixels)) {
+      pxLen = sizeof(wfBuf.pixels) - wfBuf.pixelCount;
+    }
+    memcpy(&wfBuf.pixels[wfBuf.pixelCount], &d[5], pxLen);
+    wfBuf.pixelCount += pxLen;
+  }
+
+  if (seq == seqMax && seq > 1) {
+    wfBuf.complete = true;
+    sendWaterfallToWebSocket(wfBuf);
+  }
+}
+
+#endif // WIFI
+
+// Zpracování CI-V rámce pro konkrétní TRX.
+// Pracuje přes globální read_buffer — vždy zkopíruj frame před voláním.
+static void processCivData(int trxIdx, uint8_t len) {
+  if (trxIdx < 0 || trxIdx >= TRX_COUNT) return;
+  if (len < 6) return;
+  if (read_buffer[0] != START_BYTE || read_buffer[1] != START_BYTE) return;
+  if (read_buffer[len - 1] != STOP_BYTE) return;
+
+  TrxState& ts = trxSt[trxIdx];
+  bool isActive = (trxIdx == activeTrxIdx);
+
+  // Auto-detect CI-V adresa
+  if (ts.radioAddress == 0x00) {
+    ts.radioAddress = read_buffer[3];
+    if (isActive) {
+      radio_address = ts.radioAddress;
+      if (Debug) {
+        Serial.print("CAT | TRX"); Serial.print(trxIdx+1);
+        Serial.print(" adresa 0x"); Serial.println(radio_address, HEX);
+      }
+      if (!ts.trxSetupDone) ts.trxNeedSet = true;
+    }
+  } else if (read_buffer[3] != ts.radioAddress) {
+    return;
+  }
+
+  // Scope / vodopad (0x27)
+  #if defined(WIFI)
+  if (read_buffer[4] == 0x27 && len >= 6 &&
+      read_buffer[5] == 0x00 && read_buffer[6] == 0x00) {
+    civProcessScopePacket(trxIdx, &read_buffer[4], (size_t)(len - 4));
+    return;
+  }
+  #endif
+
+  if (read_buffer[2] == BROADCAST_ADDRESS || read_buffer[2] == CONTROLLER_ADDRESS) {
+    switch (read_buffer[4]) {
+      case CMD_TRANS_FREQ:
+      case CMD_READ_FREQ:
+        if (len >= 11) {
+          // Dekódovat frekvenci do trxSt[trxIdx]
+          ts.frequency = 0;
+          for (uint8_t i = 0; i < 5; i++) {
+            if (read_buffer[9-i] == STOP_BYTE) continue;
+            ts.frequency += (read_buffer[9-i] >> 4) * decMulti[i*2];
+            ts.frequency += (read_buffer[9-i] & 0x0F) * decMulti[i*2+1];
+          }
+          if (isActive) {
+            frequency = ts.frequency;
+          }
+        }
+        break;
+      case CMD_TRANS_MODE:
+      case CMD_READ_MODE:
+        if (len >= 7) {
+          // Přímé mapování bez heap alokace (dříve decodeModeName().c_str() = dangling pointer → crash)
+          const char* mn;
+          switch (read_buffer[5]) {
+            case 0x00: mn = "LSB";    break;
+            case 0x01: mn = "USB";    break;
+            case 0x02: mn = "AM";     break;
+            case 0x03: mn = "CW";     break;
+            case 0x04: mn = "RTTY";   break;
+            case 0x05: mn = "FM";     break;
+            case 0x06: mn = "WFM";    break;
+            case 0x07: mn = "CW-R";   break;
+            case 0x08: mn = "RTTY-R"; break;
+            case 0x17: mn = "DV";     break;
+            default:   mn = "UNK";    break;
+          }
+          strncpy(ts.modes, mn, sizeof(ts.modes) - 1);
+          ts.modes[sizeof(ts.modes) - 1] = '\0';
+          if (len >= 8) ts.filter = read_buffer[6];
+          if (isActive) {
+            setModesText(ts.modes);
+            stateFilter = ts.filter;
+          }
+        }
+        break;
+    }
+  }
+
+  if (len >= 7) {
+    const uint8_t cmd = read_buffer[4];
+    const uint8_t *pl = read_buffer + 5;
+    const size_t plLen = len - 6;
+    if (cmd == 0x15 && plLen >= 2) {
+      uint32_t raw = decodeCivBcdBytes(pl + 1, plLen - 1);
+      if (pl[0] == 0x02) ts.smeterRaw = raw;
+      else if (pl[0] == 0x11) ts.powerMeterRaw = raw;
+      else if (pl[0] == 0x12) ts.swr = 1.0f + ((float)raw * 3.0f / 120.0f);
+      else if (pl[0] == 0x15) ts.supplyVolts = ((float)raw * 16.0f) / 241.0f;
+    }
+    if (cmd == 0x14 && plLen >= 2) {
+      uint32_t raw = decodeCivBcdBytes(pl + 1, plLen - 1);
+      if (pl[0] == 0x01) ts.afGain    = (uint8_t)raw;
+      else if (pl[0] == 0x0C) ts.keySpeed = (uint8_t)raw;
+      else if (pl[0] == 0x0A) ts.rfPower  = (uint8_t)raw;
+    }
+    if (cmd == 0x21 && plLen >= 4 && pl[0] == 0x00)
+      ts.ritRaw = decodeCivBcdBytesLsb(pl + 1, 3);
+    if (cmd == 0x1C && plLen >= 2 && pl[0] == 0x00)
+      ts.tx = (pl[1] == 0x01);
+    if (cmd == 0x04 && plLen >= 2)
+      ts.filter = (uint8_t)pl[1];
+    if (cmd == 0x11 && plLen >= 1) {
+      ts.attOn = pl[0] ? 1 : 0;
+      if (ts.attOn) ts.preampMode = 3;
+      else if (ts.preampMode == 3) ts.preampMode = 0;
+    }
+    if (cmd == 0x16 && plLen >= 2) {
+      if (pl[0] == 0x02 && !ts.attOn) ts.preampMode = pl[1];
+      if (pl[0] == 0x47) ts.voxMode = pl[1];
+    }
+    // Synchronizovat stav aktivního TRX do globálních state vars
+    if (isActive) {
+      stateSmeterRaw    = ts.smeterRaw;
+      statePowerMeterRaw = ts.powerMeterRaw;
+      stateSwr          = ts.swr;
+      stateSupplyVolts  = ts.supplyVolts;
+      stateAfGain       = ts.afGain;
+      stateKeySpeed     = ts.keySpeed;
+      stateRfPower      = ts.rfPower;
+      stateRitRaw       = ts.ritRaw;
+      stateTx           = ts.tx;
+      stateFilter       = ts.filter;
+      statePreampMode   = ts.preampMode;
+      stateAttOn        = ts.attOn;
+      stateVoxMode      = ts.voxMode;
+    }
+  }
+  ts.powerTimer = millis();
+  if (isActive) powerTimer = ts.powerTimer;
+}
+
+// Vstupní bod pro LAN CI-V callback (s TRX indexem)
+void processCivFrame(int trxIdx, const uint8_t* frame, size_t len) {
+  if (len == 0 || len > sizeof(read_buffer)) return;
+  memcpy(read_buffer, frame, len);
+  processCivData(trxIdx, (uint8_t)len);
+}
+
 void processCatMessages(){
   #if defined(BLUETOOTH)
+    int bti = btTrxIdx();
+    if (bti < 0) return;
     while (CAT.available()) {
       uint8_t len = readLine();
       if (len == 0) return;
@@ -2314,83 +3018,7 @@ void processCatMessages(){
         Serial.println();
       }
 
-      if (len < 6) continue;
-      if (read_buffer[0] != START_BYTE || read_buffer[1] != START_BYTE) continue;
-      if (read_buffer[len - 1] != STOP_BYTE) continue;
-      // if (read_buffer[3] != radio_address) continue;
-      if (radio_address == 0x00) {
-        radio_address = read_buffer[3];
-        if (Debug == true) {
-          Serial.print("CAT | learned radio address 0x");
-          Serial.println(radio_address, HEX);
-        }
-        if (TrxSetupDone == false) {
-          TrxNeedSet = 1;
-        }
-      } else if (read_buffer[3] != radio_address) {
-        continue;
-      }
-
-      if (read_buffer[2] == BROADCAST_ADDRESS || read_buffer[2] == CONTROLLER_ADDRESS) {
-        switch (read_buffer[4]) {
-          case CMD_TRANS_FREQ:
-          case CMD_READ_FREQ:
-            if (len >= 11) printFrequency();
-            break;
-
-          case CMD_TRANS_MODE:
-          case CMD_READ_MODE:
-            if (len >= 7) {
-              printMode();
-              if (len >= 8) stateFilter = read_buffer[6];
-            }
-            break;
-        }
-      }
-
-      // Update state variables from decoded CIV frames
-      if (len >= 7) {
-        const uint8_t cmd = read_buffer[4];
-        const uint8_t *pl = read_buffer + 5;
-        const size_t plLen = len - 6;
-        if (cmd == 0x15 && plLen >= 2) {
-          uint32_t raw = decodeCivBcdBytes(pl + 1, plLen - 1);
-          if (pl[0] == 0x02) stateSmeterRaw = raw;
-          else if (pl[0] == 0x11) statePowerMeterRaw = raw;
-          else if (pl[0] == 0x12) stateSwr = 1.0f + ((float)raw * 3.0f / 120.0f);
-          else if (pl[0] == 0x15) stateSupplyVolts = ((float)raw * 16.0f) / 241.0f;
-        }
-        if (cmd == 0x14 && plLen >= 2) {
-          uint32_t raw = decodeCivBcdBytes(pl + 1, plLen - 1);
-          if (pl[0] == 0x01) stateAfGain = (uint8_t)raw;
-          else if (pl[0] == 0x0C) stateKeySpeed = (uint8_t)raw;
-          else if (pl[0] == 0x0A) stateRfPower = (uint8_t)raw;
-        }
-        if (cmd == 0x21 && plLen >= 4 && pl[0] == 0x00) {
-          stateRitRaw = decodeCivBcdBytesLsb(pl + 1, 3); // LSB-first, 3 bytes only, sign byte excluded
-        }
-        if (cmd == 0x1C && plLen >= 2 && pl[0] == 0x00) {
-          stateTx = (pl[1] == 0x01);
-        }
-        if (cmd == 0x04 && plLen >= 2) {
-          stateFilter = (uint8_t)pl[1];
-        }
-        if (cmd == 0x11 && plLen >= 1) {
-          stateAttOn = pl[0] ? 1 : 0;
-          if (stateAttOn) statePreampMode = 3;
-          else if (statePreampMode == 3) statePreampMode = 0;
-        }
-        if (cmd == 0x16 && plLen >= 2) {
-          if (pl[0] == 0x02 && !stateAttOn) {
-            statePreampMode = pl[1]; // 0=OFF, 1=AMP1, 2=AMP2 direct from radio
-          }
-          if (pl[0] == 0x47) {
-            stateVoxMode = pl[1];
-          }
-        }
-      }
-
-      powerTimer = millis();
+      processCivData(bti, len);
     }
   #endif
 }
@@ -2402,6 +3030,10 @@ void callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param){
   if (event == ESP_SPP_SRV_OPEN_EVT) {
     btClientConnected = true;
     radio_address = configuredCivAddress;
+    // Přednastavit radioAddress v TrxState — jinak echo frame z IC-705 způsobí
+    // špatnou auto-detekci (echo má read_buffer[3]=0xE0 = controller, ne radio adresu)
+    // a skutečná odpověď s frekvencí pak filtrem neprojde.
+    { int bti = btTrxIdx(); if (bti >= 0) trxSt[bti].radioAddress = configuredCivAddress; }
     frequency = 0;
     frequencyTmp = 0;
     if (TrxSetupDone == false) {
@@ -2410,14 +3042,14 @@ void callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param){
     }
 
     Serial.println("    | Client Connected");
-    // Serial.println("    | CHANGE frequency on IC-705, for initialize CAT");
-    // Serial.println("    | -----------------------------------------------------------------------------");
     btStateBroadcastPending = true;
   }
 
   if (event == ESP_SPP_CLOSE_EVT) {
     btClientConnected = false;
     radio_address = 0x00;
+    // Reset radioAddress v TrxState pro čistý stav při příštím připojení
+    { int bti = btTrxIdx(); if (bti >= 0) trxSt[bti].radioAddress = 0; }
     TrxNeedSet = 0;
     btDisconnectPending = true;
     Serial.println("    | Client Disconnected");
@@ -2545,23 +3177,18 @@ bool radioSetFrequency(uint32_t freqHz){
 }
 //-------------------------------------------------------------------------------------------------------
 void sendCatRequest(uint8_t requestCode){
-  #if defined(BLUETOOTH)
-    uint8_t req[] = {START_BYTE, START_BYTE, radio_address, CONTROLLER_ADDRESS, requestCode, STOP_BYTE};
-    if(Debug==true){
-      Serial.print("CAT TX >");
-    }
+  if (radio_address == 0x00) return;
+  uint8_t req[] = {START_BYTE, START_BYTE, radio_address, CONTROLLER_ADDRESS, requestCode, STOP_BYTE};
+  if(Debug==true){
+    Serial.print("CAT TX >");
     for (uint8_t i = 0; i < sizeof(req); i++) {
-      if(Debug==true){
-        if (req[i] < 16)Serial.print("0");
-        Serial.print(req[i], HEX);
-        Serial.print(" ");
-      }
+      if (req[i] < 16) Serial.print("0");
+      Serial.print(req[i], HEX);
+      Serial.print(" ");
     }
-    catWriteFrame(req, sizeof(req), true);
-    if(Debug==true){
-      Serial.println();
-    }
-  #endif
+    Serial.println();
+  }
+  catWriteFrame(req, sizeof(req), true);
 }
 //-------------------------------------------------------------------------------------------------------
 bool searchRadio(){
@@ -3503,33 +4130,7 @@ void handleSet() {
       }
     }
 
-    // 70-71 udpPort
-    if ( requestArg("udpport").length()<1 || requestArg("udpport").toInt()<1 || requestArg("udpport").toInt()>65534){
-      setupUdpPortErr = "Out of range number 1-65534";
-      ERRdetect=1;
-    }else{
-      if(udpPort == requestArg("udpport").toInt()){
-        setupUdpPortErr = "";
-      }else{
-        setupUdpPortErr = "";
-        udpPort = requestArg("udpport").toInt();
-        EEPROM.writeUShort(70, udpPort);
-      }
-    }
-
-    // 72-73 udpCatPort
-    if ( requestArg("udpcatport").length()<1 || requestArg("udpcatport").toInt()<1 || requestArg("udpcatport").toInt()>65534){
-      setupUdpCatPortErr = "Out of range number 1-65534";
-      ERRdetect=1;
-    }else{
-      if(udpCatPort == requestArg("udpcatport").toInt()){
-        setupUdpCatPortErr = "";
-      }else{
-        setupUdpCatPortErr = "";
-        udpCatPort = requestArg("udpcatport").toInt();
-        EEPROM.writeUShort(72, udpCatPort);
-      }
-    }
+    // 70-71 udpPort a 72-73 udpCatPort se synchronizují z BT TRX konfigurace níže
 
     // 41-44 mqttBroker[4]
     if ( requestArg("mqttip0").length()<1 || requestArg("mqttip0").toInt()>255){
@@ -3684,18 +4285,87 @@ void handleSet() {
       Serial.println("New Baudrate "+String(BaudRate));
     }
 
-    String nextTransceiverType = trimMemoryValue(requestArg("trxprofile"), 16);
-    if (nextTransceiverType != "IC-7610-CI-V") {
-      nextTransceiverType = "IC-705-BT";
-    }
-    transceiverType = nextTransceiverType;
+    // Per-TRX konfigurace (TRX1–3)
+    {
+      bool btTaken = false;
+      for (int t = 0; t < TRX_COUNT; t++) {
+        int n = t + 1;
+        String pfx = "trx" + String(n);
+        String kmode  = pfx + "mode";
+        String klabel = pfx + "label";
+        String kip    = pfx + "ip";
+        String kport  = pfx + "port";
+        String kuser  = pfx + "user";
+        String kpass  = pfx + "pass";
+        String kciv   = pfx + "civ";
+        String kudpcw = pfx + "udpcw";
+        String kudpct = pfx + "udpcat";
 
-    uint8_t nextCivAddress = configuredCivAddress;
-    if (!parseHexByteString(requestArg("civaddr"), nextCivAddress)) {
-      setupCivAddrErr = "Use 2-digit hex value 00-FF";
-      ERRdetect = 1;
-    } else {
-      configuredCivAddress = nextCivAddress;
+        int modeRaw = requestArg(kmode.c_str()).toInt();
+        uint8_t mode = (uint8_t)(modeRaw < 0 ? 0 : (modeRaw > (int)TRX_MODE_OI3 ? (int)TRX_MODE_OI3 : modeRaw));
+        if (mode == TRX_MODE_BT && btTaken) mode = TRX_MODE_DISABLED;
+        if (mode == TRX_MODE_BT) btTaken = true;
+        trxCfg[t].mode = mode;
+
+        String lbl = requestArg(klabel.c_str());
+        if (lbl.length() > 11) lbl = lbl.substring(0, 11);
+        lbl.toCharArray(trxCfg[t].label, sizeof(trxCfg[t].label));
+
+        if (requestHasArg(kip.c_str())) {
+          String ipStr = requestArg(kip.c_str());
+          int b[4] = {0, 0, 0, 0};
+          sscanf(ipStr.c_str(), "%d.%d.%d.%d", &b[0], &b[1], &b[2], &b[3]);
+          for (int j = 0; j < 4; j++) trxCfg[t].ip[j] = (uint8_t)b[j];
+        }
+
+        if (requestHasArg(kport.c_str())) {
+          int lp = requestArg(kport.c_str()).toInt();
+          if (lp > 0 && lp <= 65534) trxCfg[t].port = (uint16_t)lp;
+        }
+
+        if (requestHasArg(kuser.c_str())) {
+          String usr = requestArg(kuser.c_str());
+          if (usr.length() > 16) usr = usr.substring(0, 16);
+          usr.toCharArray(trxCfg[t].username, sizeof(trxCfg[t].username));
+        }
+
+        if (requestHasArg(kpass.c_str())) {
+          String pw = requestArg(kpass.c_str());
+          if (pw.length() > 0) {
+            if (pw.length() > 16) pw = pw.substring(0, 16);
+            pw.toCharArray(trxCfg[t].password, sizeof(trxCfg[t].password));
+          }
+        }
+
+        if (requestHasArg(kciv.c_str()) && requestArg(kciv.c_str()).length() > 0) {
+          uint8_t civ = trxCfg[t].civAddr;
+          if (parseHexByteString(requestArg(kciv.c_str()), civ)) trxCfg[t].civAddr = civ;
+        }
+
+        if (requestHasArg(kudpcw.c_str())) {
+          int cw = requestArg(kudpcw.c_str()).toInt();
+          if (cw > 0 && cw <= 65534) trxCfg[t].udpCwPort = (uint16_t)cw;
+        }
+        if (requestHasArg(kudpct.c_str())) {
+          int ct = requestArg(kudpct.c_str()).toInt();
+          if (ct > 0 && ct <= 65534) trxCfg[t].udpCatPort = (uint16_t)ct;
+        }
+
+        saveTrxConfig(t, trxCfg[t]);
+      }
+      // Aktualizovat globální aliasy
+      transceiverType      = trxCfg[0].modeStr();
+      configuredCivAddress = trxCfg[0].effectiveCivAddr();
+      lanMode = false;
+      for (int t = 0; t < TRX_COUNT; t++) if (trxCfg[t].isLan()) lanMode = true;
+      // Synchronizovat globální UDP porty z BT TRX
+      int bi = btTrxIdx();
+      if (bi >= 0) {
+        udpPort    = trxCfg[bi].udpCwPort;
+        udpCatPort = trxCfg[bi].udpCatPort;
+        EEPROM.writeUShort(70, udpPort);
+        EEPROM.writeUShort(72, udpCatPort);
+      }
     }
 
     cwIpOnConnect = requestHasArg("cwIpOnConnect");

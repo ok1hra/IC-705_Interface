@@ -93,7 +93,9 @@
       </div>
 
       <section class="tune-strip">
-        <input id="tuneSlider" type="range" min="-100" max="100" value="0" class="tune-slider" autocomplete="off">
+        <div class="tune-slider-wrap">
+          <input id="tuneSlider" type="range" min="-100" max="100" value="0" class="tune-slider" autocomplete="off">
+        </div>
         <select id="tuneStep" class="tune-step-select">
           <option value="1">1 Hz</option>
           <option value="10" selected>10 Hz</option>
@@ -135,12 +137,26 @@
         <button id="cwMemory4" type="button">CW 4</button>
       </section>
 
+      <div id="trxChips" class="trx-chips"></div>
+
       <footer class="status-row">
         <span id="statusAddress">CI-V 0x00</span>
         <span id="statusConnection">Disconnected</span>
         <span id="statusRadio">Radio OFF</span>
         <span id="statusFw">FW ----</span>
       </footer>
+    </section>
+
+    <section class="wf-section" id="wfSection" hidden>
+      <div class="wf-header">
+        <span class="label">WATERFALL</span>
+        <span class="wf-range" id="wfRange">— kHz</span>
+        <span class="wf-status" id="wfWsStatus">WS –</span>
+      </div>
+      <div class="wf-container">
+        <canvas id="wfCanvas" width="500" height="120"></canvas>
+        <canvas id="wfAxis"   width="500" height="20"></canvas>
+      </div>
     </section>
   </main>
 

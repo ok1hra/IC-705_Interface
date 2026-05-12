@@ -320,10 +320,14 @@ select,
   align-items: center;
   gap: 12px;
   margin-top: 18px;
+}
+
+.tune-slider-wrap {
+  flex: 1;
   position: relative;
 }
 
-.tune-strip::before {
+.tune-slider-wrap::before {
   content: '';
   position: absolute;
   left: 50%;
@@ -338,7 +342,8 @@ select,
 }
 
 .tune-slider {
-  flex: 1;
+  width: 100%;
+  display: block;
   accent-color: var(--blue);
   cursor: ew-resize;
   touch-action: none;
@@ -478,3 +483,105 @@ input[type="range"]:disabled {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* ── Waterfall ─────────────────────────────────────────────────────────── */
+
+.wf-section {
+  margin-top: 16px;
+  background: linear-gradient(180deg, rgba(14, 18, 24, 0.95), rgba(7, 9, 11, 0.98));
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 14px 18px 12px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+}
+
+.wf-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.wf-header .label {
+  margin: 0;
+}
+
+.wf-range {
+  font-family: "Courier New", monospace;
+  font-size: 0.82rem;
+  color: var(--muted);
+  flex: 1;
+}
+
+.wf-status {
+  font-size: 0.78rem;
+  color: var(--muted);
+  letter-spacing: 0.05em;
+}
+
+.wf-container {
+  width: 100%;
+  overflow: hidden;
+  border-radius: 8px;
+  background: #000;
+  border: 1px solid #0e1820;
+  cursor: crosshair;
+}
+
+.wf-container canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+#wfAxis {
+  background: #07090c;
+}
+
+/* TRX chips */
+.trx-chips {
+  display: flex;
+  gap: .4rem;
+  flex-wrap: wrap;
+  padding: .35rem .5rem .1rem;
+  margin-top: 12px;
+}
+
+.trx-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  padding: .2rem .55rem;
+  border-radius: 999px;
+  border: 1px solid #3a3a3a;
+  background: #1c1c1c;
+  font-size: .72rem;
+  cursor: pointer;
+  user-select: none;
+  transition: background .12s, border-color .12s;
+  white-space: nowrap;
+}
+
+.trx-chip:hover { background: #282828; border-color: #555; }
+
+.trx-chip.active {
+  background: #1a3050;
+  border-color: #4a90d9;
+  color: #e0ecff;
+}
+
+.trx-chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #555;
+  flex-shrink: 0;
+}
+
+.trx-chip.active .trx-chip-dot { background: #4a90d9; }
+.trx-chip-dot.conn { background: #3db859; }
+.trx-chip.active .trx-chip-dot.conn { background: #5fda7a; }
+
+.trx-chip-label { font-weight: 600; letter-spacing: .02em; }
+.trx-chip-freq  { color: #888; font-family: monospace; }
+.trx-chip.active .trx-chip-freq { color: #aac8f0; }

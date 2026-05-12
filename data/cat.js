@@ -92,7 +92,9 @@ const state = {
   subBarHighSeg: 24,
   subBarPeak: -1,
   preamp: "OFF",
-  vox: "none"
+  vox: "none",
+  activeTrx: 0,
+  trx: []
 };
 
 for (let i = 0; i < 24; i++) {
@@ -335,6 +337,54 @@ function render() {
     : "Disconnected";
   statusRadio.textContent = state.power ? (state.tx ? "TX active" : "RX active") : "Radio OFF";
   statusFw.textContent = `FW ${state.fwRev}`;
+  renderTrxChips();
+}
+
+// ---------- TRX chips ----------
+
+const trxChipsEl = document.getElementById("trxChips");
+
+function fmtFreq(hz) {
+  if (!hz) return "—";
+  const mhz = hz / 1e6;
+  return mhz % 1 === 0 ? mhz.toFixed(0) + " MHz" : mhz.toFixed(3) + " MHz";
+}
+
+function renderTrxChips() {
+  if (!trxChipsEl) return;
+  const trxList = state.trx;
+  if (!trxList || trxList.length === 0) { trxChipsEl.innerHTML = ""; return; }
+  const enabled = trxList.filter(t => t.mode !== "disabled" && t.mode !== undefined || t.freq > 0 || t.label);
+  if (enabled.length <= 1) { trxChipsEl.innerHTML = ""; return; }
+
+  let html = "";
+  trxList.forEach((t, i) => {
+    if (!t.label) return;
+    const active = i === state.activeTrx;
+    const conn   = Boolean(t.conn);
+    html += `<button class="trx-chip${active ? " active" : ""}" data-trx="${i}" type="button" title="Switch to ${t.label}">` +
+            `<span class="trx-chip-dot${conn ? " conn" : ""}"></span>` +
+            `<span class="trx-chip-label">${t.label}</span>` +
+            `<span class="trx-chip-freq">${fmtFreq(t.freq)}</span>` +
+            `</button>`;
+  });
+  trxChipsEl.innerHTML = html;
+
+  trxChipsEl.querySelectorAll(".trx-chip").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const idx = parseInt(btn.dataset.trx, 10);
+      if (idx === state.activeTrx) return;
+      fetch("/trx", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idx })
+      }).then(() => {
+        state.activeTrx = idx;
+        localStorage.setItem("ic705_activeTrx", String(idx));
+        render();
+      }).catch(() => {});
+    });
+  });
 }
 
 // ---------- polling ----------
@@ -353,6 +403,8 @@ function applyServerState(s) {
   state.mode      = s.mode || state.mode;
   state.radioAddress = s.radioAddress || state.radioAddress;
   state.transceiverType = s.transceiverType || state.transceiverType;
+  if (s.activeTrx !== undefined) state.activeTrx = Number(s.activeTrx);
+  if (Array.isArray(s.trx) && s.trx.length) state.trx = s.trx;
 
   if (!state.power) {
     resetRxIndicatorsForPowerOff();
@@ -571,59 +623,49 @@ ritReadout.addEventListener("mousemove",  () => pauseRitRead(1200));
 
 // ---------- tuning slider ----------
 
-const tuneSlider       = document.getElementById("tuneSlider");
-const tuneStepSelect   = document.getElementById("tuneStep");
+const tuneSlider     = document.getElementById("tuneSlider");
+const tuneStepSelect = document.getElementById("tuneStep");
 
-let _tuneRaf      = null;
-let _tuneLastT    = null;
-let _tuneAccum    = 0;
-let _tuneActive   = false;
+let _tuneBase      = 0;   // frekvence při začátku tažení
+let _tuneSendTimer = null;
 
-function _tuneSliderLoop(ts) {
-  if (_tuneLastT !== null && _tuneActive) {
-    const dt  = ts - _tuneLastT;          // ms since last frame
-    const v   = Number(tuneSlider.value); // -100..+100
-    const res = Number(tuneStepSelect.value); // 1 | 10 | 100
-    // rate: Hz/s = v * res, so at max (100) with 100Hz → 10 kHz/s
-    _tuneAccum += v * res * dt / 1000;
-    const whole = Math.trunc(_tuneAccum / res);
-    if (whole !== 0) {
-      _tuneAccum -= whole * res;
-      state.frequency = Math.max(0, state.frequency + whole * res);
-      render();
-      scheduleFrequencyWrite();
-    }
-  }
-  _tuneLastT = ts;
-  _tuneRaf = requestAnimationFrame(_tuneSliderLoop);
+function _captureBase() {
+  _tuneBase = state.frequency;
+  pauseFrequencyRead(60000);
 }
 
-function _startTune() {
-  if (_tuneActive) return;
-  _tuneActive = true;
-  _tuneAccum  = 0;
-  _tuneLastT  = null;
-  pauseFrequencyRead(60000);
-  _tuneRaf = requestAnimationFrame(_tuneSliderLoop);
+function _tuneApply() {
+  const v    = Number(tuneSlider.value);        // -100..+100
+  const step = Number(tuneStepSelect.value);    // Hz / jednotku
+  const newFreq = Math.max(0, _tuneBase + v * step);
+  if (newFreq === state.frequency) return;
+  state.frequency = newFreq;
+  render();
+  if (_tuneSendTimer) return;
+  _tuneSendTimer = setTimeout(() => {
+    _tuneSendTimer = null;
+    postCmd({ type: "setFrequency", frequency: String(state.frequency) });
+  }, 50);
 }
 
 function _stopTune() {
-  _tuneActive = false;
+  clearTimeout(_tuneSendTimer);
+  _tuneSendTimer = null;
   tuneSlider.value = "0";
-  cancelAnimationFrame(_tuneRaf);
-  _tuneRaf   = null;
-  _tuneLastT = null;
-  _tuneAccum = 0;
+  _tuneBase = state.frequency;   // připravit základ pro příští tažení
+  postCmd({ type: "setFrequency", frequency: String(state.frequency) });
   pauseFrequencyRead(600);
 }
 
-tuneSlider.addEventListener("pointerdown", (e) => {
-  tuneSlider.setPointerCapture(e.pointerId);
-  _startTune();
-});
-
-tuneSlider.addEventListener("pointerup",     _stopTune);
-tuneSlider.addEventListener("pointercancel", _stopTune);
+// pointerdown zachytí myš i dotyk — slouží k uložení výchozí frekvence
+tuneSlider.addEventListener("pointerdown", _captureBase);
+// focus: zachytit základ i při ovládání klávesnicí (Tab + šipky)
+tuneSlider.addEventListener("focus",       _captureBase);
+// input: průběžná aktualizace při tažení
+tuneSlider.addEventListener("input",       _tuneApply);
+// change: HTML spec garantuje spuštění při uvolnění (mouseup / touchend / keyup)
+// — spolehlivější než pointerup na native <input type="range">
+tuneSlider.addEventListener("change",      _stopTune);
 
 preampButton.addEventListener("click", () => {
   pausePreampReadUntil = Date.now() + 2000;
@@ -762,5 +804,184 @@ function renderFrequencyMemories() {
 
 renderCwMemoryButtons();
 renderFrequencyMemories();
+
+// Restore activeTrx from localStorage and sync to server
+(function () {
+  const stored = parseInt(localStorage.getItem("ic705_activeTrx") || "0", 10);
+  if (stored > 0) {
+    fetch("/trx", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ idx: stored })
+    }).catch(() => {});
+    state.activeTrx = stored;
+  }
+})();
+
 startPolling();
+
+// ── Waterfall ────────────────────────────────────────────────────────────────
+
+(function () {
+  const wfSection  = document.getElementById("wfSection");
+  const wfCanvas   = document.getElementById("wfCanvas");
+  const wfAxisEl   = document.getElementById("wfAxis");
+  const wfRangeEl  = document.getElementById("wfRange");
+  const wfStatusEl = document.getElementById("wfWsStatus");
+  if (!wfCanvas || !wfAxisEl) return;
+
+  const wfCtx   = wfCanvas.getContext("2d");
+  const axisCtx = wfAxisEl.getContext("2d");
+
+  // Stav
+  const wfState = { startHz: 0, endHz: 0, vfoHz: 0 };
+
+  // Paleta: 0x00 → černá, 0xA0(160) → žlutá  (přes modrou a červenou)
+  const palette = new Uint32Array(256);
+  (function buildPalette() {
+    for (let v = 0; v < 256; v++) {
+      const n = Math.min(v, 160);              // clamp na 0xA0
+      const r = Math.min(255, Math.round(n * 2));
+      const g = Math.max(0,  Math.round(n * 2 - 200));
+      const b = Math.max(0,  Math.round(140 - n * 2));
+      // ImageData je RGBA (little-endian): byte0=R, byte1=G, byte2=B, byte3=A
+      palette[v] = (255 << 24) | (b << 16) | (g << 8) | r;
+    }
+  })();
+
+  function drawWaterfallLine(pixels) {
+    const w = wfCanvas.width;
+    const h = wfCanvas.height;
+
+    // Posunout obsah o 1 řádek dolů
+    const img = wfCtx.getImageData(0, 0, w, h - 1);
+    wfCtx.putImageData(img, 0, 1);
+
+    // Kreslit nový řádek nahoře
+    const row = wfCtx.createImageData(w, 1);
+    const buf = new Uint32Array(row.data.buffer);
+    const scale = pixels.length / w;
+    for (let x = 0; x < w; x++) {
+      const idx = Math.min(Math.floor(x * scale), pixels.length - 1);
+      buf[x] = palette[pixels[idx] & 0xFF];
+    }
+    wfCtx.putImageData(row, 0, 0);
+  }
+
+  function drawVfoMarker() {
+    const { startHz, endHz, vfoHz } = wfState;
+    if (endHz <= startHz) return;
+    const x = Math.round((vfoHz - startHz) / (endHz - startHz) * wfCanvas.width);
+    wfCtx.save();
+    wfCtx.strokeStyle = "rgba(255,230,0,0.9)";
+    wfCtx.lineWidth   = 1;
+    wfCtx.beginPath();
+    wfCtx.moveTo(x + 0.5, 0);
+    wfCtx.lineTo(x + 0.5, wfCanvas.height);
+    wfCtx.stroke();
+    wfCtx.restore();
+  }
+
+  function drawFreqAxis() {
+    const { startHz, endHz } = wfState;
+    if (endHz <= startHz) return;
+    const w = wfAxisEl.width;
+    const h = wfAxisEl.height;
+    axisCtx.clearRect(0, 0, w, h);
+    axisCtx.fillStyle = "#667788";
+    axisCtx.font      = "10px monospace";
+
+    const spanHz = endHz - startHz;
+    // Zvol krok: ~5 popisků
+    const rawStep = spanHz / 5;
+    const mag = Math.pow(10, Math.floor(Math.log10(rawStep)));
+    const step = Math.round(rawStep / mag) * mag;
+    const first = Math.ceil(startHz / step) * step;
+
+    for (let hz = first; hz < endHz; hz += step) {
+      const x = Math.round((hz - startHz) / spanHz * w);
+      const kHz = (hz / 1000).toFixed(hz % 1000 === 0 ? 0 : 1);
+      axisCtx.textAlign = "center";
+      axisCtx.fillText(kHz, x, h - 2);
+      axisCtx.fillStyle = "#334455";
+      axisCtx.fillRect(x, 0, 1, 4);
+      axisCtx.fillStyle = "#667788";
+    }
+
+    // Zobrazit rozsah v hlavičce
+    if (wfRangeEl) {
+      wfRangeEl.textContent =
+        `${(startHz / 1000).toFixed(1)} – ${(endHz / 1000).toFixed(1)} kHz`;
+    }
+  }
+
+  // WebSocket připojení k portu 82
+  let wfSocket = null;
+  let wfRetryTimer = null;
+
+  function wfConnect() {
+    if (wfSocket && wfSocket.readyState <= WebSocket.OPEN) return;
+    wfSocket = new WebSocket(`ws://${location.hostname}:82/ws`);
+
+    wfSocket.addEventListener("open", () => {
+      if (wfStatusEl) wfStatusEl.textContent = "WS ✓";
+    });
+
+    wfSocket.addEventListener("close", () => {
+      if (wfStatusEl) wfStatusEl.textContent = "WS –";
+      clearTimeout(wfRetryTimer);
+      wfRetryTimer = setTimeout(wfConnect, 3000);
+    });
+
+    wfSocket.addEventListener("error", () => {
+      wfSocket.close();
+    });
+
+    wfSocket.addEventListener("message", (event) => {
+      let msg;
+      try { msg = JSON.parse(event.data); } catch (_) { return; }
+      if (!msg || msg.t !== "wf") return;
+
+      wfState.startHz = Number(msg.s) || 0;
+      wfState.endHz   = Number(msg.e) || 0;
+      wfState.vfoHz   = Number(msg.v) || 0;
+
+      if (Array.isArray(msg.d) && msg.d.length > 0) {
+        drawWaterfallLine(msg.d);
+        drawVfoMarker();
+        drawFreqAxis();
+      }
+    });
+  }
+
+  // Click-to-tune: klik na canvas → přeladit na danou frekvenci
+  wfCanvas.addEventListener("click", (e) => {
+    const { startHz, endHz } = wfState;
+    if (endHz <= startHz) return;
+    const rect   = wfCanvas.getBoundingClientRect();
+    const x      = e.clientX - rect.left;
+    const ratio  = x / rect.width;
+    const target = Math.round(startHz + ratio * (endHz - startHz));
+    postCmd({ type: "setFrequency", frequency: String(target) });
+    pauseFrequencyRead(1400);
+  });
+
+  // Zobrazit/skrýt sekci podle transceiverType
+  function updateWfVisibility() {
+    const isLan = state.transceiverType && state.transceiverType.includes("-LAN");
+    if (isLan) {
+      wfSection.hidden = false;
+      wfConnect();
+    } else {
+      wfSection.hidden = true;
+    }
+  }
+
+  // Hook do render() — sledovat změnu transceiverType
+  const _origRender = render;
+  window._wfRenderHooked = true;
+  // Pravidelně kontrolovat viditelnost (každé 2 s)
+  setInterval(updateWfVisibility, 2000);
+  updateWfVisibility();
+})();
 render();
