@@ -871,3 +871,43 @@ body {
   border-color: var(--btn-on-bd);
   color: #ffffff;
 }
+
+/* ── DXC Band Display ────────────────────────────────────────────────────── */
+
+.dxc-band-box {
+  display: none;
+  flex-shrink: 0;
+  background: var(--dark-bg);
+  border-top: 1px solid #3a3a3a;
+  position: relative;
+}
+
+.dxc-band-box.dxc-active {
+  display: block;
+}
+
+.dxc-band-toggle {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  z-index: 2;
+  background: none;
+  border: none;
+  color: var(--conn-ok);
+  cursor: pointer;
+  font-size: 9px;
+  padding: 1px 4px;
+  line-height: 1;
+}
+
+.dxc-band-toggle:hover {
+  color: var(--btn-on-bg);
+}
+
+.dxc-band-box.dxc-collapsed {
+  height: 14px;
+}
+
+.dxc-band-box.dxc-collapsed svg {
+  display: none;
+}

@@ -1031,7 +1031,7 @@ void buildStateJson(char *buf, size_t bufSize){
     "\"smeterRaw\":%u,\"powerMeterRaw\":%u,"
     "\"afGain\":%u,\"keySpeed\":%u,\"rfPower\":%u,"
     "\"supplyVolts\":%.2f,\"swr\":%.2f,"
-    "\"preamp\":%u,\"vox\":%u}",
+    "\"preamp\":%u,\"vox\":%u,\"dxcConnected\":%s}",
     btClientConnected ? "true" : "false", btStat, wifiStat,
     rssi, (unsigned)REV, statusPower ? "true" : "false",
     (unsigned)frequency, modesSnapshot, (unsigned)stateFilter,
@@ -1039,7 +1039,8 @@ void buildStateJson(char *buf, size_t bufSize){
     (unsigned)stateSmeterRaw, (unsigned)statePowerMeterRaw,
     (unsigned)stateAfGain, (unsigned)stateKeySpeed, (unsigned)stateRfPower,
     stateSupplyVolts, stateSwr,
-    (unsigned)statePreampMode, (unsigned)stateVoxMode
+    (unsigned)statePreampMode, (unsigned)stateVoxMode,
+    DxcTelnetStatus ? "true" : "false"
   );
 }
 

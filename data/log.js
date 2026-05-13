@@ -145,12 +145,14 @@ function applyState(data) {
 
   renderStatusBar();
   renderConnStatus();
+  _updateDxcBand(app.frequency, !!data.dxcConnected);
 }
 
 function applyDisconnected() {
   app.connected = false;
   renderStatusBar();
   renderConnStatus();
+  _updateDxcBand(0, false);
 }
 
 // ── Status bar rendering ──────────────────────────────────────────────────────
@@ -1226,3 +1228,210 @@ try {
     inpCall.focus();
   });
 } catch (_) {}
+
+// ── DXC Band Display ──────────────────────────────────────────────────────────
+
+const dxcBandBox = document.getElementById('dxcBandBox');
+const dxcBandSvg = document.getElementById('dxcBandSvg');
+
+const _DXC_NS       = 'http://www.w3.org/2000/svg';
+const _DXC_SCALE_Y  = 68;
+const _DXC_LABEL_Y  = 79;
+const _DXC_CALL_Y   = 56;
+const _DXC_FS       = 11;
+const _DXC_CHAR_W   = 6.5;
+const _DXC_BG       = '#2d2d2d';
+const _DXC_FG       = '#cccccc';
+const _DXC_TICK_COL = '#666666';
+const _DXC_LINE_COL = '#ff4444';
+
+let _dxcSpots     = [];
+let _dxcBandStart = -1;
+let _dxcActive    = false;
+let _svgScale     = null;
+let _svgSpots     = null;
+let _svgLine      = null;
+
+function _dxcW() {
+  return dxcBandSvg.clientWidth || 800;
+}
+
+function _dxcX(freqKhz) {
+  return ((freqKhz - _dxcBandStart) / 100) * _dxcW();
+}
+
+function _dxcScaleLabel(khz) {
+  const s = String(khz);
+  return s.length > 3 ? s.slice(0, -3) + ' ' + s.slice(-3) : s;
+}
+
+function _dxcEl(tag, attrs) {
+  const el = document.createElementNS(_DXC_NS, tag);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+  return el;
+}
+
+function _dxcClear(el) {
+  while (el.firstChild) el.removeChild(el.firstChild);
+}
+
+function _initDxcSvg() {
+  _dxcClear(dxcBandSvg);
+  _svgScale = _dxcEl('g', {});
+  _svgSpots = _dxcEl('g', {});
+  _svgLine  = _dxcEl('line', {
+    y1: '0', y2: String(_DXC_SCALE_Y),
+    stroke: _DXC_LINE_COL, 'stroke-width': '1.5'
+  });
+  dxcBandSvg.appendChild(_svgScale);
+  dxcBandSvg.appendChild(_svgSpots);
+  dxcBandSvg.appendChild(_svgLine);
+  _renderDxcScale();
+}
+
+function _renderDxcScale() {
+  if (!_svgScale) return;
+  _dxcClear(_svgScale);
+  const W = _dxcW();
+
+  _svgScale.appendChild(_dxcEl('line', {
+    x1: '0', x2: String(W),
+    y1: String(_DXC_SCALE_Y), y2: String(_DXC_SCALE_Y),
+    stroke: _DXC_TICK_COL, 'stroke-width': '1'
+  }));
+
+  for (let i = 0; i <= 100; i++) {
+    const x  = (i / 100) * W;
+    const y1 = i % 10 === 0 ? _DXC_SCALE_Y - 10
+             : i % 5  === 0 ? _DXC_SCALE_Y - 7
+             :                 _DXC_SCALE_Y - 4;
+    _svgScale.appendChild(_dxcEl('line', {
+      x1: String(x), x2: String(x),
+      y1: String(y1), y2: String(_DXC_SCALE_Y),
+      stroke: _DXC_TICK_COL, 'stroke-width': '1'
+    }));
+
+    if (i % 25 === 0) {
+      const lbl = _dxcEl('text', {
+        x: String(x), y: String(_DXC_LABEL_Y),
+        'text-anchor': 'middle',
+        fill: _DXC_FG,
+        'font-size': '9',
+        'font-family': 'monospace'
+      });
+      lbl.textContent = _dxcScaleLabel(_dxcBandStart + i);
+      _svgScale.appendChild(lbl);
+    }
+  }
+}
+
+function _renderDxcLine(freqHz) {
+  if (!_svgLine || _dxcBandStart < 0) return;
+  const x = _dxcX(freqHz / 1000);
+  _svgLine.setAttribute('x1', String(x));
+  _svgLine.setAttribute('x2', String(x));
+}
+
+function _renderDxcSpots() {
+  if (!_svgSpots || _dxcBandStart < 0) return;
+  _dxcClear(_svgSpots);
+
+  const visible = _dxcSpots.filter(s => {
+    const f = parseFloat(s.freq);
+    return f >= _dxcBandStart && f < _dxcBandStart + 100;
+  });
+  visible.sort((a, b) => (a.time || '').localeCompare(b.time || ''));
+
+  const PAD = 2;
+  for (const spot of visible) {
+    const f    = parseFloat(spot.freq);
+    const x    = _dxcX(f);
+    const call = String(spot.dx || '');
+    const tw   = call.length * _DXC_CHAR_W;
+
+    const outer = _dxcEl('g', { 'data-freq': String(f), 'data-call': call });
+    outer.style.cursor = 'pointer';
+
+    const grp = _dxcEl('g', { transform: `rotate(-90,${x},${_DXC_CALL_Y})` });
+
+    grp.appendChild(_dxcEl('rect', {
+      x:      String(x - PAD),
+      y:      String(_DXC_CALL_Y - _DXC_FS - PAD),
+      width:  String(tw + PAD * 2),
+      height: String(_DXC_FS + PAD * 2),
+      fill:   _DXC_BG
+    }));
+
+    const txt = _dxcEl('text', {
+      x:             String(x),
+      y:             String(_DXC_CALL_Y),
+      'text-anchor': 'start',
+      fill:          _DXC_FG,
+      'font-size':   String(_DXC_FS),
+      'font-family': 'monospace'
+    });
+    txt.textContent = call;
+    grp.appendChild(txt);
+    outer.appendChild(grp);
+
+    outer.addEventListener('click', () => {
+      fetch('/cmd', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ type: 'setFrequency', reqId: 'dxc-band', frequency: Math.round(f * 1000) })
+      }).catch(() => {});
+      setRunMode('SP');
+      if (call) {
+        inpCall.value = call;
+        inpCall.dispatchEvent(new Event('input'));
+      }
+      inpCall.focus();
+    });
+    _svgSpots.appendChild(outer);
+  }
+}
+
+function _updateDxcBand(freqHz, dxcConnected) {
+  if (!dxcConnected || !freqHz) {
+    if (_dxcActive) {
+      dxcBandBox.classList.remove('dxc-active');
+      _dxcActive = false;
+    }
+    return;
+  }
+
+  const bandStart = Math.floor(freqHz / 100000) * 100;
+
+  if (!_dxcActive) {
+    _dxcActive    = true;
+    _dxcBandStart = bandStart;
+    dxcBandBox.classList.add('dxc-active');
+    _initDxcSvg();
+    _renderDxcSpots();
+  } else if (bandStart !== _dxcBandStart) {
+    _dxcBandStart = bandStart;
+    _renderDxcScale();
+    _renderDxcSpots();
+  }
+  _renderDxcLine(freqHz);
+}
+
+try {
+  const dxcSpotsChannel = new BroadcastChannel('ic705-dxc-spots');
+  dxcSpotsChannel.addEventListener('message', e => {
+    const msg = e.data;
+    if (!msg || !Array.isArray(msg.spots)) return;
+    _dxcSpots = msg.spots;
+    if (_dxcActive) _renderDxcSpots();
+  });
+} catch (_) {}
+
+window.addEventListener('resize', () => {
+  if (_dxcActive) _renderDxcScale();
+});
+
+const dxcBandToggle = document.getElementById('dxcBandToggle');
+dxcBandToggle.addEventListener('click', () => {
+  const collapsed = dxcBandBox.classList.toggle('dxc-collapsed');
+  dxcBandToggle.textContent = collapsed ? '▲' : '▼';
+});

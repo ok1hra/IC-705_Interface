@@ -50,6 +50,12 @@
     <!-- Dupe panel — shown above status bar when check finds matches -->
     <div id="dupePanel" class="dupe-panel dupe-panel-hidden"></div>
 
+    <!-- DXC band display (visible when DXC Telnet is active) -->
+    <div id="dxcBandBox" class="dxc-band-box">
+      <button id="dxcBandToggle" class="dxc-band-toggle" type="button" title="Toggle bandmap">▼</button>
+      <svg id="dxcBandSvg" width="100%" height="80"></svg>
+    </div>
+
     <!-- Status bar -->
     <div class="log-statusbar" id="logStatusbar" aria-label="TRX status">
       <span id="sbTime">--:--</span>
