@@ -27,13 +27,18 @@ const app = {
   _hintTimer:  null,
 };
 
+// ── Auto-backup state ─────────────────────────────────────────────────────────
+
+let _backupIdleTimer = null;
+let _qsoSinceBackup  = 0;
+const BACKUP_IDLE_MS = 30 * 60 * 1000;
+
 // ── DOM references ────────────────────────────────────────────────────────────
 
 const inpCall     = document.getElementById('inpCall');
 const inpRst      = document.getElementById('inpRst');
 const inpExch     = document.getElementById('inpExch');
 const btnRunMode  = document.getElementById('btnRunMode');
-const connStatus  = document.getElementById('connStatus');
 const logHint     = document.getElementById('logHint');
 const logEmptyHint = document.getElementById('logEmptyHint');
 
@@ -204,12 +209,12 @@ function renderDxccStatus(dxcc) {
 // ── Connection status indicator ───────────────────────────────────────────────
 
 function renderConnStatus() {
-  if (app.connected) {
-    connStatus.innerHTML = '<span class="conn-ok">' + app.trxLabels[app.activeTrx - 1] + ' connected</span>';
-  } else {
-    connStatus.innerHTML = '<span class="conn-off">TRX disconnected</span>';
-  }
-  connStatus.className = 'conn-status';
+  trxButtons.forEach((b, i) => {
+    b.classList.remove('trx-conn-ok', 'trx-conn-off');
+    if (i === app.activeTrx - 1) {
+      b.classList.add(app.connected ? 'trx-conn-ok' : 'trx-conn-off');
+    }
+  });
 }
 
 // ── Hint message (2 s auto-clear) ─────────────────────────────────────────────
@@ -218,6 +223,108 @@ function showHint(msg) {
   logHint.textContent = msg;
   clearTimeout(app._hintTimer);
   app._hintTimer = setTimeout(() => { logHint.textContent = ''; }, 2000);
+}
+
+// ── Auto-backup: helpers, idle timer, close warning (C + D) ──────────────────
+
+function _backupFileTs(d) {
+  const p = n => String(n).padStart(2, '0');
+  return String(d.getUTCFullYear()) + p(d.getUTCMonth() + 1) + p(d.getUTCDate()) +
+         '-' + p(d.getUTCHours()) + p(d.getUTCMinutes());
+}
+
+function _idbGetAllStore(db, storeName) {
+  return new Promise((resolve, reject) => {
+    const req = db.transaction(storeName, 'readonly').objectStore(storeName).getAll();
+    req.onsuccess = () => resolve(req.result);
+    req.onerror   = e  => reject(e.target.error);
+  });
+}
+
+async function backupDb() {
+  const now = new Date();
+  const cdb = await LogDB.openDb();
+  const [logs, qso, settings] = await Promise.all([
+    _idbGetAllStore(cdb, 'logs'),
+    _idbGetAllStore(cdb, 'qso'),
+    _idbGetAllStore(cdb, 'settings'),
+  ]);
+
+  let syncState = [], devices = [];
+  try {
+    const sdb = await new Promise((res, rej) => {
+      const r = indexedDB.open('datasyncDb', 1);
+      r.onsuccess      = e => res(e.target.result);
+      r.onerror        = e => rej(e.target.error);
+      r.onupgradeneeded = () => {};
+    });
+    [syncState, devices] = await Promise.all([
+      _idbGetAllStore(sdb, 'sync_state').catch(() => []),
+      _idbGetAllStore(sdb, 'devices').catch(() => []),
+    ]);
+  } catch (_) {}
+
+  const fname  = _backupFileTs(now) + '-QSO-database.json';
+  const backup = {
+    export_version: 1,
+    exported_at:    now.toISOString(),
+    stores:         { logs, qso, settings, sync_state: syncState, devices },
+  };
+  const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = fname; a.click();
+  URL.revokeObjectURL(url);
+  return fname;
+}
+
+function _beforeUnloadHandler(e) {
+  e.preventDefault();
+  e.returnValue = '';
+}
+
+function _disarmBeforeUnload() {
+  window.removeEventListener('beforeunload', _beforeUnloadHandler);
+}
+
+function _onBackupDone() {
+  _qsoSinceBackup = 0;
+  _disarmBeforeUnload();
+  document.getElementById('btnBackup').classList.remove('btn-backup-pending');
+}
+
+function _resetBackupTimer() {
+  clearTimeout(_backupIdleTimer);
+  _backupIdleTimer = setTimeout(async () => {
+    try {
+      const fname = await backupDb();
+      showHint('Auto-backup: ' + fname);
+      _onBackupDone();
+    } catch (err) {
+      showHint('Auto-backup failed: ' + (err.message || err));
+    }
+  }, BACKUP_IDLE_MS);
+}
+
+function _onQsoBackupHook() {
+  _qsoSinceBackup++;
+  _resetBackupTimer();
+  if (_qsoSinceBackup === 1) {
+    document.getElementById('btnBackup').classList.add('btn-backup-pending');
+    window.addEventListener('beforeunload', _beforeUnloadHandler);
+  }
+}
+
+function _initBackup() {
+  document.getElementById('btnBackup').addEventListener('click', async () => {
+    try {
+      const fname = await backupDb();
+      showHint('Backup: ' + fname);
+      _onBackupDone();
+    } catch (err) {
+      showHint('Backup error: ' + (err.message || err));
+    }
+  });
 }
 
 // ── RUN / S&P toggle ──────────────────────────────────────────────────────────
@@ -647,6 +754,7 @@ function logQso(call, exch) {
     .then(saved => {
       LogManager.bumpQsoNumber();
       appendJournalRow(saved);
+      _onQsoBackupHook();
       // Phase 5: send TU macro + reset RIT
       sendTuAndResetRit();
       clearForm();
@@ -1091,6 +1199,8 @@ function init() {
 
   // Start WebSocket for macros
   if (window.LogMacros) LogMacros.init();
+
+  _initBackup();
 
   // Restore last active log, then focus Call
   LogManager.restoreActiveLog().then(() => {

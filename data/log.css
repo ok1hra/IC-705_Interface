@@ -616,23 +616,18 @@ body {
   color: var(--btn-hover-tx);
 }
 
-/* Connection status indicator */
-.conn-status {
-  font-size: 14px;
-  letter-spacing: 0.06em;
+/* Connection status dot in active TRX button */
+
+.btn-trx.trx-conn-ok::before,
+.btn-trx.trx-conn-off::before {
+  content: '●';
+  font-size: 9px;
+  margin-right: 5px;
+  vertical-align: middle;
 }
 
-.conn-prefix {
-  color: var(--dark-muted);
-}
-
-.conn-ok {
-  color: var(--conn-ok);
-}
-
-.conn-off {
-  color: var(--conn-fail);
-}
+.btn-trx.trx-conn-ok::before  { color: var(--conn-ok);   }
+.btn-trx.trx-conn-off::before { color: var(--conn-fail);  }
 
 /* ── Log manager modal ───────────────────────────────────────────────────── */
 
@@ -867,4 +862,12 @@ body {
   display: flex;
   gap: 8px;
   margin-left: auto;
+}
+
+/* ── Backup button state ── */
+
+#btnBackup.btn-backup-pending {
+  background: var(--btn-on-bg);
+  border-color: var(--btn-on-bd);
+  color: #ffffff;
 }

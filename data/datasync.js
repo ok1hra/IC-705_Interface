@@ -58,8 +58,8 @@
 
   function fileTs(d) {
     const p = n => String(n).padStart(2, '0');
-    return String(d.getFullYear()) + p(d.getMonth() + 1) + p(d.getDate()) +
-           '-' + p(d.getHours()) + p(d.getMinutes());
+    return String(d.getUTCFullYear()) + p(d.getUTCMonth() + 1) + p(d.getUTCDate()) +
+           '-' + p(d.getUTCHours()) + p(d.getUTCMinutes());
   }
 
   // ── Database: sync metadata (sync_state, devices) ────────────────────────────
@@ -668,7 +668,7 @@
       stores: { logs, qso, settings, sync_state: syncState, devices },
     };
 
-    download(fileTs(now) + '-ic705-backup.json', JSON.stringify(backup, null, 2), 'application/json');
+    download(fileTs(now) + '-QSO-database.json', JSON.stringify(backup, null, 2), 'application/json');
     log('Exported: ' + qso.length + ' QSOs, ' + logs.length + ' logs');
   }
 
