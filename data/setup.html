@@ -10,6 +10,7 @@
   <header class="topbar">
     <nav class="tabs" aria-label="Primary">
       <a class="tab" href="/log">QRPLog</a>
+      <a class="tab" href="/dxc.html" onclick="window.open(this.href,'DXC','width=600,height=750,left=0,top=0,menubar=no,location=no,status=no'); return false;">DXC</a>
       <a class="tab" href="/">CAT</a>
       <a class="tab" href="/ws-cat">DEBUG</a>
       <a class="tab tab-active" href="/setup">SETUP</a>
@@ -213,6 +214,36 @@
               <input type="checkbox" id="ls_trx3Oi3">
               OI3 — simple mode: read freq/mode via HTTP :81, send CW/RTTY via UDP :89
               <span class="help-tip" data-tip="OI3 protocol: frequency and mode are read by HTTP GET from port 81 of the backend IP (format: 21023630|CW|). CW and RTTY messages are sent via UDP to port 89. The CAT page is not used with this option.">?</span>
+            </label>
+          </div>
+        </details>
+
+        <details class="setup-section">
+          <summary class="setup-section-title">DX Cluster <span class="setup-local-badge">eeprom</span></summary>
+          <div class="setup-section-body">
+            <label>DXC host
+              <div class="input-with-tip">
+                <input type="text" name="dxchost" maxlength="64" placeholder="ve7cc.net" value="%DXC_HOST%">
+                <span class="help-tip" data-tip="Hostname or IP address of the DX cluster telnet server.">?</span>
+              </div>
+            </label>
+            <label>DXC port
+              <div class="input-with-tip">
+                <input type="number" name="dxcport" min="1" max="65534" placeholder="7300" value="%DXC_PORT%">
+                <span class="help-tip" data-tip="Telnet port of the DX cluster server. Common: 7300 or 23.">?</span>
+              </div>
+            </label>
+            <label>Callsign
+              <div class="input-with-tip">
+                <input type="text" name="dxccall" maxlength="16" placeholder="OK1HRA" value="%DXC_CALL%" oninput="this.value=this.value.toUpperCase()">
+                <span class="help-tip" data-tip="Your callsign sent to the cluster for login.">?</span>
+              </div>
+            </label>
+            <label>My locator
+              <div class="input-with-tip">
+                <input type="text" name="dxclocator" maxlength="6" placeholder="JO70" value="%DXC_LOCATOR%" oninput="this.value=this.value.toUpperCase()">
+                <span class="help-tip" data-tip="Your Maidenhead locator (4 or 6 characters) used for distance and bearing calculations to DX spots.">?</span>
+              </div>
             </label>
           </div>
         </details>
@@ -562,14 +593,25 @@
         form.style.display = 'none';
         var msg = document.createElement('p');
         msg.style.cssText = 'padding:2em;font-size:1.1em;';
-        msg.textContent = 'Saved. Restarting… redirecting in 15 s';
+        msg.textContent = 'Saved. Restarting…';
         form.parentNode.insertBefore(msg, form);
-        var s = 15;
-        var t = setInterval(function () {
-          s--;
-          msg.textContent = 'Saved. Restarting… redirecting in ' + s + ' s';
-          if (s <= 0) { clearInterval(t); window.location.href = '/'; }
-        }, 1000);
+        var dots = 0, polling = false;
+        var dot = setInterval(function () {
+          dots = (dots + 1) % 4;
+          msg.textContent = 'Saved. Restarting' + Array(dots + 1).join('.');
+        }, 500);
+        setTimeout(function () {
+          clearInterval(dot);
+          polling = true;
+          msg.textContent = 'Waiting for device…';
+          var poll = setInterval(function () {
+            fetch('/setup', { method: 'GET', cache: 'no-store' })
+              .then(function (r) {
+                if (r.ok) { clearInterval(poll); window.location.reload(); }
+              })
+              .catch(function () {});
+          }, 1000);
+        }, 5000);
       });
     }());
   </script>

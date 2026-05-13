@@ -1211,3 +1211,18 @@ function init() {
 }
 
 init();
+
+// ── DXC tune broadcast ────────────────────────────────────────────────────────
+try {
+  const dxcActionCh = new BroadcastChannel('ic705-dxc-action');
+  dxcActionCh.addEventListener('message', e => {
+    const msg = e.data;
+    if (!msg || msg.type !== 'dxc-tune') return;
+    setRunMode('SP');
+    if (msg.callsign) {
+      inpCall.value = msg.callsign;
+      inpCall.dispatchEvent(new Event('input'));
+    }
+    inpCall.focus();
+  });
+} catch (_) {}
