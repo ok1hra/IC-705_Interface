@@ -93,11 +93,15 @@
       </div>
 
       <section class="tune-strip">
-        <input id="tuneSlider" type="range" min="-100" max="100" value="0" class="tune-slider" autocomplete="off">
+        <div class="tune-slider-wrap">
+          <input id="tuneSlider" type="range" min="-100" max="100" value="0" class="tune-slider" autocomplete="off">
+          <span class="tune-center-mark"></span>
+        </div>
         <select id="tuneStep" class="tune-step-select">
           <option value="1">1 Hz</option>
-          <option value="10" selected>10 Hz</option>
-          <option value="100">100 Hz</option>
+          <option value="10">10 Hz</option>
+          <option value="100" selected>100 Hz</option>
+          <option value="1000">1 kHz</option>
         </select>
       </section>
 

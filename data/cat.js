@@ -571,49 +571,29 @@ ritReadout.addEventListener("mousemove",  () => pauseRitRead(1200));
 
 // ---------- tuning slider ----------
 
-const tuneSlider       = document.getElementById("tuneSlider");
-const tuneStepSelect   = document.getElementById("tuneStep");
+const tuneSlider     = document.getElementById("tuneSlider");
+const tuneStepSelect = document.getElementById("tuneStep");
 
-let _tuneRaf      = null;
-let _tuneLastT    = null;
-let _tuneAccum    = 0;
-let _tuneActive   = false;
-
-function _tuneSliderLoop(ts) {
-  if (_tuneLastT !== null && _tuneActive) {
-    const dt  = ts - _tuneLastT;          // ms since last frame
-    const v   = Number(tuneSlider.value); // -100..+100
-    const res = Number(tuneStepSelect.value); // 1 | 10 | 100
-    // rate: Hz/s = v * res, so at max (100) with 100Hz → 10 kHz/s
-    _tuneAccum += v * res * dt / 1000;
-    const whole = Math.trunc(_tuneAccum / res);
-    if (whole !== 0) {
-      _tuneAccum -= whole * res;
-      state.frequency = Math.max(0, state.frequency + whole * res);
-      render();
-      scheduleFrequencyWrite();
-    }
-  }
-  _tuneLastT = ts;
-  _tuneRaf = requestAnimationFrame(_tuneSliderLoop);
-}
+let _tuneBaseFreq = 0;
 
 function _startTune() {
-  if (_tuneActive) return;
-  _tuneActive = true;
-  _tuneAccum  = 0;
-  _tuneLastT  = null;
+  _tuneBaseFreq = state.frequency;
+  tuneSlider.classList.add("tune-active");
   pauseFrequencyRead(60000);
-  _tuneRaf = requestAnimationFrame(_tuneSliderLoop);
+}
+
+function _onTuneInput() {
+  if (!tuneSlider.classList.contains("tune-active")) return;
+  const offset = Number(tuneSlider.value);
+  const res    = Number(tuneStepSelect.value);
+  state.frequency = Math.max(0, _tuneBaseFreq + offset * res);
+  render();
+  scheduleFrequencyWrite();
 }
 
 function _stopTune() {
-  _tuneActive = false;
-  tuneSlider.value = "0";
-  cancelAnimationFrame(_tuneRaf);
-  _tuneRaf   = null;
-  _tuneLastT = null;
-  _tuneAccum = 0;
+  tuneSlider.classList.remove("tune-active");
+  requestAnimationFrame(() => { tuneSlider.value = "0"; });
   pauseFrequencyRead(600);
 }
 
@@ -622,8 +602,12 @@ tuneSlider.addEventListener("pointerdown", (e) => {
   _startTune();
 });
 
-tuneSlider.addEventListener("pointerup",     _stopTune);
+tuneSlider.addEventListener("input",        _onTuneInput);
+tuneSlider.addEventListener("pointerup",    _stopTune);
 tuneSlider.addEventListener("pointercancel", _stopTune);
+tuneSlider.addEventListener("change", () => {
+  if (!tuneSlider.classList.contains("tune-active")) tuneSlider.value = "0";
+});
 
 preampButton.addEventListener("click", () => {
   pausePreampReadUntil = Date.now() + 2000;

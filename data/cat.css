@@ -320,11 +320,14 @@ select,
   align-items: center;
   gap: 12px;
   margin-top: 18px;
+}
+
+.tune-slider-wrap {
+  flex: 1;
   position: relative;
 }
 
-.tune-strip::before {
-  content: '';
+.tune-center-mark {
   position: absolute;
   left: 50%;
   top: 50%;
@@ -338,10 +341,15 @@ select,
 }
 
 .tune-slider {
-  flex: 1;
-  accent-color: var(--blue);
+  width: 100%;
+  accent-color: var(--muted);
   cursor: ew-resize;
   touch-action: none;
+  display: block;
+}
+
+.tune-slider.tune-active {
+  accent-color: var(--blue);
 }
 
 .tune-step-select {

@@ -5,6 +5,35 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>IC-705 Web CAT</title>
   <link rel="stylesheet" href="/app.css">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #000000;
+      --panel: #07090b;
+      --ink: #e7eef8;
+      --muted: #91a2b9;
+      --line: #1f2731;
+      --accent: #3d9dff;
+      --accent-strong: #1a70d4;
+    }
+    body {
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top, rgba(40, 86, 146, 0.3), transparent 30%),
+        linear-gradient(180deg, #06080b 0, #000000 100%);
+    }
+    .topbar { background: rgba(5, 8, 12, 0.96); }
+    .tab-active { color: #d5e8ff; border-color: #2c4f77; background: rgba(46, 100, 165, 0.22); }
+    .hero, .card { background: linear-gradient(180deg, rgba(14,18,24,0.95), rgba(7,9,11,0.98)); box-shadow: 0 12px 35px rgba(0,0,0,0.5); }
+    .status-grid div { background: #0b1420; border-color: #152233; }
+    .diagnostic-panel { background: #0b1420; border-color: #152233; }
+    input { background: #05080d; border-color: #314152; color: var(--ink); }
+    button { background: linear-gradient(180deg, #102033, #0b1624); border: 1px solid #36506e; color: #d5e8ff; }
+    button:hover { background: linear-gradient(180deg, #163457, #0e223b); color: white; }
+    a { color: #3d9dff; }
+    .hero-link { background: #0d1520; border-color: #2c4f77; color: #d5e8ff; }
+    .hero-link:hover { background: #163457; }
+  </style>
 </head>
 <body>
   <header class="topbar">

@@ -6,6 +6,59 @@
   <title>IC-705 DataSync</title>
   <link rel="stylesheet" href="/app.css">
   <link rel="stylesheet" href="/datasync.css">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #2b312f;
+      --panel: #1b211f;
+      --ink: #e9efe7;
+      --muted: #98a49d;
+      --line: #3b4541;
+      --accent: #008800;
+      --accent-strong: #006600;
+      --surface: #1b211f;
+      --text: #e9efe7;
+    }
+    body {
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top, rgba(0, 136, 0, 0.14), transparent 28%),
+        linear-gradient(180deg, #313a36 0, #2b312f 100%);
+    }
+    .topbar { background: rgba(19, 24, 22, 0.96); }
+    .tab-active { color: #eaf6ee; border-color: #507163; background: rgba(0, 136, 0, 0.18); }
+    .hero, .card { background: #1b211f; box-shadow: 0 4px 18px rgba(0,0,0,0.35); }
+    .status-grid div { background: #111a14; border-color: #2a3a2d; }
+    input { background: #0f1312; border-color: #51605a; color: var(--ink); }
+    button { background: var(--accent); border: none; color: white; border-radius: 999px; }
+    button:hover { background: var(--accent-strong); }
+    a { color: var(--accent); }
+    .hero-link { background: #1b211f; border-color: #3b4541; color: var(--accent); }
+    .hero-link:hover { background: #243028; }
+
+    /* datasync.css hardcoded light overrides */
+    .ds-section { background: #1b211f; }
+    .ds-section-title { color: var(--muted); }
+    .ds-section[open] > .ds-section-title { background: var(--accent); color: #eaf6ee; }
+    .ds-section-title:hover { background: rgba(0,136,0,0.15); color: var(--ink); }
+    .ds-payload { background: #0f1312; border-color: #51605a; color: var(--ink); }
+    .ds-label-box { background: #1b211f; border-color: var(--line); }
+    .ds-label-input { background: #0f1312; border-color: #51605a; color: var(--ink); }
+    .ds-offer-found { background: #1b211f; }
+    .si-popup { background: #1b211f; border-color: var(--line); color: var(--ink); }
+    .si-note { background: #111a14; color: var(--muted); }
+    .si-browser { color: var(--ink); }
+    .ds-imp-box { background: #1b211f; border-color: var(--line); }
+    .ds-imp-title { color: var(--ink); }
+    .ds-imp-summary { background: #111a14; border-color: var(--line); color: var(--muted); }
+    .ds-imp-close { color: var(--muted); }
+    .ds-imp-row input { background: #0f1312; border-color: #51605a; color: var(--ink); }
+    .sg-grid-local div { background: #0f1d2a !important; border-color: #1a3a5c !important; }
+    .sg-grid-db div   { background: #1e1a0a !important; border-color: #4a3800 !important; }
+    .sg-grid-session div { background: #0f1a14 !important; border-color: #1a3a20 !important; }
+    .btn-cancel { background: transparent; border-color: var(--line); color: var(--muted); }
+    .btn-cancel:hover { background: rgba(255,255,255,0.05); }
+  </style>
 </head>
 <body>
   <header class="topbar">
@@ -130,7 +183,7 @@
 
     <!-- ── Backup / restore file (collapsible) ───────────────────────────────── -->
     <details class="ds-section">
-      <summary class="ds-section-title">Backup / restore database</summary>
+      <summary class="ds-section-title">Backup / Restore QSO database</summary>
       <div class="ds-section-body">
         <p class="lede">Export or import the complete database — QSOs, logs, settings and sync metadata.</p>
         <div class="actions">

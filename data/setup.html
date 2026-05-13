@@ -40,7 +40,7 @@
             <label>WiFi Password 1
               <div class="input-with-tip">
                 <input type="password" id="pwField1" name="pswd" maxlength="18" value="%PSWD%">
-                <button type="button" class="pw-toggle" data-target="pwField1" aria-label="Show password" title="Show / hide password"><svg class="pw-eye" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg></button>
+                <button type="button" class="pw-toggle" data-target="pwField1" aria-label="Show password" title="Show / hide password"><svg class="pw-eye" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg></button>
                 <span class="help-tip" data-tip="Password for WiFi network 1.">?</span>
               </div>
               <span class="msg">%PSWD_ERR%</span>
@@ -55,7 +55,7 @@
             <label>WiFi Password 2
               <div class="input-with-tip">
                 <input type="password" id="pwField2" name="pswd2" maxlength="18" value="%PSWD2%">
-                <button type="button" class="pw-toggle" data-target="pwField2" aria-label="Show password" title="Show / hide password"><svg class="pw-eye" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg></button>
+                <button type="button" class="pw-toggle" data-target="pwField2" aria-label="Show password" title="Show / hide password"><svg class="pw-eye" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg></button>
                 <span class="help-tip" data-tip="Password for WiFi network 2.">?</span>
               </div>
               <span class="msg">%PSWD2_ERR%</span>
@@ -64,7 +64,7 @@
         </details>
 
         <details class="setup-section">
-          <summary class="setup-section-title">Network ports <span class="setup-local-badge">eeprom</span></summary>
+          <summary class="setup-section-title">Network input ports <span class="setup-local-badge">eeprom</span></summary>
           <div class="setup-section-body">
             <label>HTTP CAT port
               <div class="input-with-tip">
@@ -117,14 +117,14 @@
               </div>
               <span class="msg">%MQTT_PORT_ERR%</span>
             </label>
-            <label>Topic TX
+            <label>Topic TX frequency TRX1
               <div class="input-with-tip">
                 <input type="text" name="mqtttopic" maxlength="20" value="%MQTT_TOPIC%">
                 <span class="help-tip" data-tip="MQTT topic the device publishes TRX data to (frequency, mode, signal reports).">?</span>
               </div>
               <span class="msg">%MQTT_TOPIC_ERR%</span>
             </label>
-            <label>Topic RX
+            <label>Topic RX frequency TRX1
               <div class="input-with-tip">
                 <input type="text" name="mqtttopicrx" maxlength="20" value="%MQTT_TOPIC_RX%">
                 <span class="help-tip" data-tip="MQTT topic the device subscribes to for incoming CAT commands.">?</span>
@@ -469,8 +469,8 @@
         var visible = inp.type === 'text';
         inp.type = visible ? 'password' : 'text';
         btn.classList.toggle('pw-visible', !visible);
-        btn.querySelector('.pw-eye').style.display     = visible ? '' : 'none';
-        btn.querySelector('.pw-eye-off').style.display = visible ? 'none' : '';
+        btn.querySelector('.pw-eye').style.display     = visible ? 'none' : '';
+        btn.querySelector('.pw-eye-off').style.display = visible ? '' : 'none';
       });
     });
   </script>

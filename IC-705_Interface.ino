@@ -83,7 +83,7 @@ bool Debug          = false;
 bool cwIpOnConnect  = false;      // announce WiFi IP via CW on first BT connect
 volatile bool cwIpSendPending = false;
 
-#define REV 20260509
+#define REV 20260513
 #define WIFI
 #define MQTT
 #define UDP_TO_CW
@@ -1162,7 +1162,8 @@ void handleConfigDownload() {
   snprintf(civHex, sizeof(civHex), "%02X", configuredCivAddress);
   String j;
   j.reserve(1024);
-  j += "{\"ssid\":\"";          j += configJsonEscape(SSID);          j += "\"";
+  j += "{\"fwRev\":";           j += (unsigned)REV;
+  j += ",\"ssid\":\"";          j += configJsonEscape(SSID);          j += "\"";
   j += ",\"pswd\":\"";          j += configJsonEscape(PSWD);          j += "\"";
   j += ",\"ssid2\":\"";         j += configJsonEscape(SSID2);         j += "\"";
   j += ",\"pswd2\":\"";         j += configJsonEscape(PSWD2);         j += "\"";
@@ -2093,16 +2094,44 @@ bool ConnectWiFiProfile(byte profile, int maxTryCount) {
 }
 
 //-------------------------------------------------------------------------------------------------------
+// saveToEEPROM=true: permanent AP mode (user action / no SSIDs configured)
+// saveToEEPROM=false: session-only AP mode (SSID configured but not reachable — next power cycle retries STA)
+void FallbackToAPmode(bool saveToEEPROM = false) {
+  APmode = true;
+  if (saveToEEPROM) {
+    EEPROM.writeBool(0, true);
+    EEPROM.commit();
+  }
+  delay(500);
+  ESP.restart();
+}
+
+//-------------------------------------------------------------------------------------------------------
 void ConnectWiFiAlternating() {
   WiFi.mode(WIFI_STA);
 
   if (WifiProfileConfigured(0) == false && WifiProfileConfigured(1) == false) {
     Serial.println("WIFI| no configured SSID, staying in AP mode");
-    APmode = true;
-    EEPROM.writeBool(0, true);
-    EEPROM.commit();
-    delay(500);
-    ESP.restart();
+    FallbackToAPmode(true);
+  }
+
+  // Scan before connecting — avoids infinite loop when SSIDs are configured but not in range
+  Serial.println("WIFI| scanning for configured networks...");
+  int n = WiFi.scanNetworks();
+  bool anyVisible = false;
+  for (int i = 0; i < n; i++) {
+    String scanned = WiFi.SSID(i);
+    if ((WifiProfileConfigured(0) && scanned == WifiProfileSSID(0)) ||
+        (WifiProfileConfigured(1) && scanned == WifiProfileSSID(1))) {
+      anyVisible = true;
+      break;
+    }
+  }
+  WiFi.scanDelete();
+
+  if (!anyVisible) {
+    Serial.println("WIFI| no configured SSID found in scan, switching to AP mode");
+    FallbackToAPmode(false);
   }
 
   byte wifiProfile = 0;
@@ -2111,9 +2140,16 @@ void ConnectWiFiAlternating() {
   }
 
   WifiTimer = millis();
+  int attempts = 0;
+  const int maxAttempts = 4;
   while (WiFi.status() != WL_CONNECTED) {
     if (ConnectWiFiProfile(wifiProfile, wifi_max_try)) {
       break;
+    }
+    attempts++;
+    if (attempts >= maxAttempts) {
+      Serial.println("WIFI| max retries reached, switching to AP mode");
+      FallbackToAPmode();
     }
     Serial.println("WIFI| switching to next configured SSID");
     wifiProfile = NextWifiProfile(wifiProfile);

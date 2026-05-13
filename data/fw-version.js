@@ -11,6 +11,8 @@
   function injectStyles() {
     var s = document.createElement('style');
     s.textContent =
+      'a.fw-version-link{color:inherit;text-decoration:none;}' +
+      'a.fw-version-link:hover{text-decoration:underline;}' +
       'a.fw-update-link{color:#d97706;font-weight:700;text-decoration:none;margin-left:4px;}' +
       'a.fw-update-link:hover{color:#b45309;text-decoration:underline;}';
     document.head.appendChild(s);
@@ -18,19 +20,26 @@
 
   function render() {
     if (!el || localRev === null) return;
-    var text = 'FW ' + localRev;
-    if (remoteRev !== null && Number(remoteRev) > Number(localRev)) {
-      var a = document.createElement('a');
-      a.href      = FLASHER_URL;
-      a.target    = '_blank';
-      a.rel       = 'noopener';
-      a.className = 'fw-update-link';
-      a.title     = 'New firmware available — click to open web installer';
-      a.textContent = '→ ' + remoteRev + ' ▲';
-      el.textContent = text;
-      el.appendChild(a);
-    } else {
-      el.textContent = text;
+    el.innerHTML = '';
+    var a = document.createElement('a');
+    a.href      = FLASHER_URL;
+    a.target    = '_blank';
+    a.rel       = 'noopener';
+    a.className = 'fw-version-link';
+    var hasUpdate = remoteRev !== null && Number(remoteRev) > Number(localRev);
+    a.title     = hasUpdate ? 'New firmware available — click to open web installer'
+                            : 'Open web installer';
+    a.textContent = 'FW ' + localRev;
+    el.appendChild(a);
+    if (hasUpdate) {
+      var upd = document.createElement('a');
+      upd.href      = FLASHER_URL;
+      upd.target    = '_blank';
+      upd.rel       = 'noopener';
+      upd.className = 'fw-update-link';
+      upd.title     = 'New firmware available — click to open web installer';
+      upd.textContent = ' → ' + remoteRev + ' ▲';
+      el.appendChild(upd);
     }
   }
 
