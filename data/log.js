@@ -1150,6 +1150,36 @@ function loadJournalFromDb(logId) {
   }).catch(() => {});
 }
 
+// ── Storage persistence warning ───────────────────────────────────────────────
+
+async function checkStoragePersistence() {
+  if (!navigator.storage || !navigator.storage.persisted) return;
+  let persisted = await navigator.storage.persisted().catch(() => false);
+  if (!persisted && navigator.storage.persist) {
+    persisted = await navigator.storage.persist().catch(() => false);
+  }
+  if (persisted) return;
+
+  const warn = document.getElementById('storageWarn');
+  if (!warn) return;
+  warn.classList.remove('ds-hidden');
+
+  document.getElementById('storageWarnClose').addEventListener('click',
+    () => warn.classList.add('ds-hidden'), { once: true });
+
+  const popup    = document.getElementById('storageFixPopup');
+  const originEl = document.getElementById('fixPopupOrigin');
+  if (originEl) originEl.textContent = window.location.origin;
+
+  function openFixPopup()  { popup.classList.remove('ds-hidden'); }
+  function closeFixPopup() { popup.classList.add('ds-hidden'); }
+
+  document.getElementById('storageWarnFix').addEventListener('click', openFixPopup);
+  document.getElementById('storageFixClose').addEventListener('click', closeFixPopup);
+  document.getElementById('storageFixOk').addEventListener('click', closeFixPopup);
+  popup.addEventListener('click', e => { if (e.target === popup) closeFixPopup(); });
+}
+
 // ── Initialisation ────────────────────────────────────────────────────────────
 
 function init() {
@@ -1157,6 +1187,7 @@ function init() {
   inpRst.value = rstDefault(app.mode);
   startClock();
   pollState();
+  checkStoragePersistence();
 
   // Load global LOG settings from ESP32 /log-config (shared across browsers)
   fetch('/log-config').then(r => r.json()).then(cfg => {

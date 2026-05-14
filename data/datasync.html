@@ -58,6 +58,39 @@
     .sg-grid-session div { background: #0f1a14 !important; border-color: #1a3a20 !important; }
     .btn-cancel { background: transparent; border-color: var(--line); color: var(--muted); }
     .btn-cancel:hover { background: rgba(255,255,255,0.05); }
+    .ds-storage-warn {
+      display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px;
+      background: #3a2000; border: 1px solid #7a4800; color: #ffc870;
+      border-radius: 6px; padding: 9px 14px; margin-bottom: 12px; font-size: 13px;
+    }
+    .ds-storage-warn strong { color: #ffd699; }
+    .ds-warn-fix-btn {
+      background: #7a4800; border: none; color: #ffd699; border-radius: 999px;
+      padding: 3px 12px; font-size: 12px; cursor: pointer; white-space: nowrap;
+    }
+    .ds-warn-fix-btn:hover { background: #9a5c00; }
+    .ds-warn-close {
+      margin-left: auto; background: transparent; border: none; color: #ffc870;
+      cursor: pointer; font-size: 14px; padding: 0 2px; border-radius: 3px; line-height: 1;
+    }
+    .ds-warn-close:hover { background: rgba(255,255,255,0.1); }
+    .ds-fix-popup {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+      display: flex; align-items: center; justify-content: center; z-index: 300;
+    }
+    .ds-fix-box {
+      background: #1b211f; border: 1px solid #3b4541; border-radius: 10px;
+      width: min(92vw, 480px); padding: 20px 22px; box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    }
+    .ds-fix-body { margin: 16px 0; font-size: 14px; line-height: 1.6; }
+    .ds-fix-body p { margin: 0 0 10px; }
+    .ds-fix-body kbd {
+      background: #2e3a35; border: 1px solid #51605a; border-radius: 4px;
+      padding: 1px 6px; font-size: 12px; font-family: monospace;
+    }
+    .ds-fix-body code { background: #0f1312; border-radius: 3px; padding: 1px 5px; font-size: 12px; }
+    .ds-fix-opt { font-weight: bold; color: #c8dcc0; margin-top: 14px !important; }
+    .ds-fix-footer { display: flex; justify-content: flex-end; margin-top: 4px; }
   </style>
 </head>
 <body>
@@ -74,6 +107,36 @@
   </header>
 
   <main class="shell">
+
+    <!-- Storage persistence warning — shown only when browser may clear IndexedDB -->
+    <div id="storageWarn" class="ds-storage-warn ds-hidden" role="alert">
+      <span>⚠ <strong>Database at risk</strong> — Firefox may erase QSOs when it closes.</span>
+      <button id="storageWarnFix" type="button" class="ds-warn-fix-btn">How to fix</button>
+      <button id="storageWarnClose" type="button" class="ds-warn-close" title="Dismiss">✕</button>
+    </div>
+
+    <!-- Storage fix popup -->
+    <div id="storageFixPopup" class="ds-fix-popup ds-hidden" role="dialog" aria-modal="true">
+      <div class="ds-fix-box">
+        <div class="ds-imp-header">
+          <span class="ds-imp-title">Protect the QSO database</span>
+          <button id="storageFixClose" type="button" class="ds-imp-close">✕</button>
+        </div>
+        <div class="ds-fix-body">
+          <p class="ds-fix-opt">Option 1 — Bookmark this page <em>(easiest)</em></p>
+          <p>Press <kbd>Ctrl+D</kbd> (Windows/Linux) or <kbd>⌘D</kbd> (Mac) to bookmark this page.
+             Firefox automatically protects IndexedDB storage for bookmarked origins — no settings change needed.</p>
+          <p class="ds-fix-opt">Option 2 — Firefox storage exception</p>
+          <p>Go to <em>Settings → Privacy &amp; Security → Cookies and Site Data → Manage Exceptions</em>
+             and add <code id="fixPopupOrigin"></code> as <strong>Allow</strong>.</p>
+          <p class="ds-fix-opt">Option 3 — Regular backup</p>
+          <p>Use the <em>Backup / Restore</em> section below to export a JSON file after each session.</p>
+        </div>
+        <div class="ds-fix-footer">
+          <button id="storageFixOk" type="button">Got it</button>
+        </div>
+      </div>
+    </div>
 
     <!-- ── 1: Device name ────────────────────────────────────────────────────── -->
     <div class="card">

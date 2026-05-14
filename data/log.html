@@ -21,6 +21,36 @@
 
   <main class="log-shell">
 
+    <!-- Storage persistence warning -->
+    <div id="storageWarn" class="sw-warn ds-hidden" role="alert">
+      <span>⚠ <strong>Database at risk</strong> — Firefox may erase QSOs when it closes.</span>
+      <button id="storageWarnFix" type="button" class="sw-fix-btn">How to fix</button>
+      <button id="storageWarnClose" type="button" class="sw-close" title="Dismiss">✕</button>
+    </div>
+
+    <!-- Storage fix popup -->
+    <div id="storageFixPopup" class="sw-popup ds-hidden" role="dialog" aria-modal="true">
+      <div class="sw-box">
+        <div class="sw-box-header">
+          <span class="sw-box-title">Protect the QSO database</span>
+          <button id="storageFixClose" type="button" class="sw-close">✕</button>
+        </div>
+        <div class="sw-box-body">
+          <p class="sw-opt">Option 1 — Bookmark this page <em>(easiest)</em></p>
+          <p>Press <kbd>Ctrl+D</kbd> (Windows/Linux) or <kbd>⌘D</kbd> (Mac) to bookmark this page.
+             Firefox automatically protects IndexedDB for bookmarked origins.</p>
+          <p class="sw-opt">Option 2 — Firefox storage exception</p>
+          <p>Go to <em>Settings → Privacy &amp; Security → Cookies and Site Data → Manage Exceptions</em>
+             and add <code id="fixPopupOrigin"></code> as <strong>Allow</strong>.</p>
+          <p class="sw-opt">Option 3 — Regular backup</p>
+          <p>Go to <a href="/datasync">LOGSYNC</a> → <em>Backup / Restore</em> and export a JSON file after each session.</p>
+        </div>
+        <div class="sw-box-footer">
+          <button id="storageFixOk" type="button">Got it</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Terminal journal — fills all remaining vertical space -->
     <div class="log-journal" id="logJournal">
       <div class="log-journal-header" id="logJournalHeader" aria-hidden="true">

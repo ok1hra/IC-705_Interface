@@ -1347,6 +1347,43 @@
     }
   }
 
+  // ── Storage persistence ───────────────────────────────────────────────────────
+
+  async function checkStoragePersistence() {
+    if (!navigator.storage || !navigator.storage.persisted) return;
+    let persisted = await navigator.storage.persisted().catch(() => false);
+    if (!persisted && navigator.storage.persist) {
+      // Firefox: auto-grants (true, no dialog) when page is bookmarked.
+      // Returns false when not bookmarked and user dismissed the permission prompt.
+      persisted = await navigator.storage.persist().catch(() => false);
+    }
+    const warn = document.getElementById('storageWarn');
+    if (!warn) return;
+    if (persisted) {
+      warn.classList.add('ds-hidden');
+      log('Storage: persistent (browser will not evict the database).');
+      return;
+    }
+    warn.classList.remove('ds-hidden');
+    log('WARNING: storage not persistent — Firefox may clear the database on close.');
+
+    document.getElementById('storageWarnClose').addEventListener('click',
+      () => warn.classList.add('ds-hidden'), { once: true });
+
+    const popup  = document.getElementById('storageFixPopup');
+    const origin = window.location.origin;
+    const originEl = document.getElementById('fixPopupOrigin');
+    if (originEl) originEl.textContent = origin;
+
+    function openFixPopup() { popup.classList.remove('ds-hidden'); }
+    function closeFixPopup() { popup.classList.add('ds-hidden'); }
+
+    document.getElementById('storageWarnFix').addEventListener('click', openFixPopup);
+    document.getElementById('storageFixClose').addEventListener('click', closeFixPopup);
+    document.getElementById('storageFixOk').addEventListener('click', closeFixPopup);
+    popup.addEventListener('click', e => { if (e.target === popup) closeFixPopup(); });
+  }
+
   // ── Init ─────────────────────────────────────────────────────────────────────
 
   async function init() {
@@ -1355,6 +1392,7 @@
       setPhase('idle');
       updateStats();
       await refreshInfo();
+      await checkStoragePersistence();
       log('Ready. Device: ' + deviceLabel() + ' (' + deviceId().slice(0, 8) + '…)');
     } catch (e) {
       log('INIT ERROR: ' + e.name + ': ' + e.message);

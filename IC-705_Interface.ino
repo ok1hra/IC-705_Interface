@@ -963,6 +963,9 @@ void renderSetupPage(){
   String out;
   out.reserve(256);
   while (file.available()) {
+    #if defined(WDT)
+      esp_task_wdt_reset();
+    #endif
     String line = file.readStringUntil('\n');
     out = "";
     int start = 0;
@@ -994,6 +997,9 @@ void renderIndexPage(){
   String out;
   out.reserve(256);
   while (file.available()) {
+    #if defined(WDT)
+      esp_task_wdt_reset();
+    #endif
     String line = file.readStringUntil('\n');
     out = "";
     int start = 0;
@@ -1109,17 +1115,31 @@ void handlePairingReject() {
 
 bool handleFileFromSPIFFS(const String &path){
   String contentType = "text/plain";
+  bool isStatic = false;
   if (path.endsWith(".html")) contentType = "text/html";
-  else if (path.endsWith(".css"))  contentType = "text/css";
-  else if (path.endsWith(".js"))   contentType = "application/javascript";
-  else if (path.endsWith(".ico"))  contentType = "image/x-icon";
-  else if (path.endsWith(".png"))  contentType = "image/png";
+  else if (path.endsWith(".css"))  { contentType = "text/css";                  isStatic = true; }
+  else if (path.endsWith(".js"))   { contentType = "application/javascript";    isStatic = true; }
+  else if (path.endsWith(".ico"))  { contentType = "image/x-icon";              isStatic = true; }
+  else if (path.endsWith(".png"))  { contentType = "image/png";                 isStatic = true; }
   if (!SPIFFS.exists(path)) return false;
   File f = SPIFFS.open(path, "r");
   if (!f) return false;
-  webServer.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-  webServer.sendHeader("Pragma", "no-cache");
-  webServer.streamFile(f, contentType);
+  if (isStatic) {
+    webServer.sendHeader("Cache-Control", "public, max-age=3600");
+  } else {
+    webServer.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    webServer.sendHeader("Pragma", "no-cache");
+  }
+  webServer.setContentLength(f.size());
+  webServer.send(200, contentType, "");
+  static uint8_t buf[512];
+  while (f.available()) {
+    #if defined(WDT)
+      esp_task_wdt_reset();
+    #endif
+    size_t n = f.read(buf, sizeof(buf));
+    if (n > 0) webServer.sendContent((const char*)buf, n);
+  }
   f.close();
   return true;
 }
@@ -1860,6 +1880,11 @@ void setup(){
 //-------------------------------------------------------------------------------------------------------
 
 void loop(){
+  static bool serialFlushed = false;
+  if (!serialFlushed && millis() > 2000) {
+    while (Serial.available()) Serial.read();
+    serialFlushed = true;
+  }
   Watchdog();
   Mqtt();
   httpCAT();
@@ -2087,7 +2112,7 @@ void Watchdog(){
 
   // WDT
   #if defined(WDT)
-    if(millis()-WdtTimer > 60000){
+    if(millis()-WdtTimer > 5000){
       esp_task_wdt_reset();
       WdtTimer=millis();
     }
@@ -2180,14 +2205,10 @@ bool ConnectWiFiProfile(byte profile, int maxTryCount) {
 }
 
 //-------------------------------------------------------------------------------------------------------
-// saveToEEPROM=true: permanent AP mode (user action / no SSIDs configured)
-// saveToEEPROM=false: session-only AP mode (SSID configured but not reachable — next power cycle retries STA)
-void FallbackToAPmode(bool saveToEEPROM = false) {
+void FallbackToAPmode() {
   APmode = true;
-  if (saveToEEPROM) {
-    EEPROM.writeBool(0, true);
-    EEPROM.commit();
-  }
+  EEPROM.writeBool(0, true);
+  EEPROM.commit();
   delay(500);
   ESP.restart();
 }
@@ -2198,7 +2219,7 @@ void ConnectWiFiAlternating() {
 
   if (WifiProfileConfigured(0) == false && WifiProfileConfigured(1) == false) {
     Serial.println("WIFI| no configured SSID, staying in AP mode");
-    FallbackToAPmode(true);
+    FallbackToAPmode();
   }
 
   // Scan before connecting — avoids infinite loop when SSIDs are configured but not in range
@@ -2217,7 +2238,7 @@ void ConnectWiFiAlternating() {
 
   if (!anyVisible) {
     Serial.println("WIFI| no configured SSID found in scan, switching to AP mode");
-    FallbackToAPmode(false);
+    FallbackToAPmode();
   }
 
   byte wifiProfile = 0;

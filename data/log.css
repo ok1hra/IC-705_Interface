@@ -1,5 +1,48 @@
 .ds-hidden { display: none !important; }
 
+/* ── Storage persistence warning ── */
+.sw-warn {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px;
+  background: #3a2000; border: 1px solid #7a4800; color: #ffc870;
+  border-radius: 6px; padding: 8px 12px; margin: 6px 8px 2px; font-size: 13px;
+}
+.sw-warn strong { color: #ffd699; }
+.sw-fix-btn {
+  background: #7a4800; border: none; color: #ffd699; border-radius: 999px;
+  padding: 3px 12px; font-size: 12px; cursor: pointer; white-space: nowrap;
+}
+.sw-fix-btn:hover { background: #9a5c00; }
+.sw-close {
+  margin-left: auto; background: transparent; border: none; color: #ffc870;
+  cursor: pointer; font-size: 14px; padding: 0 2px; border-radius: 3px; line-height: 1;
+}
+.sw-close:hover { background: rgba(255,255,255,0.1); }
+.sw-popup {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+  display: flex; align-items: center; justify-content: center; z-index: 300;
+}
+.sw-box {
+  background: #1b211f; border: 1px solid #3b4541; border-radius: 10px;
+  width: min(92vw, 480px); padding: 20px 22px; box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+}
+.sw-box-header { display: flex; align-items: center; justify-content: space-between; }
+.sw-box-title  { font-size: 15px; font-weight: bold; color: #e9efe7; }
+.sw-box-body   { margin: 14px 0; font-size: 14px; line-height: 1.6; color: #c8dcc0; }
+.sw-box-body p { margin: 0 0 8px; }
+.sw-box-body kbd {
+  background: #2e3a35; border: 1px solid #51605a; border-radius: 4px;
+  padding: 1px 6px; font-size: 12px; font-family: monospace; color: #e9efe7;
+}
+.sw-box-body code { background: #0f1312; border-radius: 3px; padding: 1px 5px; font-size: 12px; color: #e9efe7; }
+.sw-box-body a    { color: #008800; }
+.sw-opt { font-weight: bold; color: #e9efe7; margin-top: 12px !important; }
+.sw-box-footer { display: flex; justify-content: flex-end; }
+.sw-box-footer button {
+  background: #008800; border: none; color: white; border-radius: 999px;
+  padding: 6px 20px; font-size: 14px; cursor: pointer;
+}
+.sw-box-footer button:hover { background: #006600; }
+
 /* ── Storage info popup ── */
 .si-btn{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;
   border-radius:50%;border:1px solid #008800;background:none;cursor:pointer;
