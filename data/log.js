@@ -11,6 +11,7 @@ const app = {
 
   // TRX state from /state polling
   connected:  false,
+  dxcConnected: false,
   frequency:  0,
   mode:       'USB',
   tx:         false,
@@ -51,6 +52,7 @@ const trxButtons  = [
 const sbTime      = document.getElementById('sbTime');
 const sbFreq      = document.getElementById('sbFreq');
 const sbMode      = document.getElementById('sbMode');
+const macroPreview = document.getElementById('macroPreview');
 const sbContinent = document.getElementById('sbContinent');
 const sbCountry   = document.getElementById('sbCountry');
 const sbPrefix    = document.getElementById('sbPrefix');
@@ -102,8 +104,8 @@ function startClock() {
 function pollState() {
   clearTimeout(app._pollTimer);
   const trxIdx = app.activeTrx - 1;
-  const isOi3  = app.trxOi3[trxIdx] && trxIdx > 0 && app.trxIps[trxIdx];
-  const url    = isOi3 ? '/oi3/state?ip=' + encodeURIComponent(app.trxIps[trxIdx]) : '/state';
+  const isOi3  = app.trxOi3[trxIdx] && trxIdx > 0;
+  const url    = isOi3 ? '/oi3/state?trx=' + (trxIdx + 1) : '/state';
   fetch(url)
     .then(r => {
       if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -121,6 +123,9 @@ function pollState() {
 
 function applyState(data) {
   app.connected = !!data.connected;
+  if (typeof data.dxcConnected === 'boolean') {
+    app.dxcConnected = data.dxcConnected;
+  }
   if (data.fwRev && !app.fwRev) {
     app.fwRev = String(data.fwRev);
     if (window.setFwRev) {
@@ -145,14 +150,14 @@ function applyState(data) {
 
   renderStatusBar();
   renderConnStatus();
-  _updateDxcBand(app.frequency, !!data.dxcConnected);
+  try { _updateDxcBand(app.connected ? app.frequency : 0, app.dxcConnected); } catch (_) {}
 }
 
 function applyDisconnected() {
   app.connected = false;
   renderStatusBar();
   renderConnStatus();
-  _updateDxcBand(0, false);
+  try { _updateDxcBand(0, app.dxcConnected); } catch (_) {}
 }
 
 // ── Status bar rendering ──────────────────────────────────────────────────────
@@ -337,6 +342,7 @@ function setRunMode(mode) {
   // RUN: show *?, hide check  /  S&P: show check, hide *?
   btnCallQ.classList.toggle('btn-action-hidden', mode !== 'RUN');
   btnCheck.classList.toggle('btn-action-hidden', mode !== 'SP');
+  updateMacroPreview();
 }
 
 btnRunMode.addEventListener('click', () => {
@@ -344,16 +350,50 @@ btnRunMode.addEventListener('click', () => {
   inpCall.focus();
 });
 
+// ── TRX switching helper ──────────────────────────────────────────────────────
+
+function selectTrx(n) {
+  const btn = trxButtons[n - 1];
+  if (!btn || btn.style.display === 'none') return;
+  btn.click();
+}
+
+// ── Help modal ────────────────────────────────────────────────────────────────
+
+function openHelpModal() {
+  document.getElementById('helpModal').classList.remove('lm-hidden');
+}
+function closeHelpModal() {
+  document.getElementById('helpModal').classList.add('lm-hidden');
+}
+
+document.getElementById('btnHelp').addEventListener('click', openHelpModal);
+document.getElementById('helpModalClose').addEventListener('click', closeHelpModal);
+document.getElementById('helpModal').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeHelpModal();
+});
+
 // ── Global hotkeys ────────────────────────────────────────────────────────────
 
 document.addEventListener('keydown', e => {
-  // Esc — close QSO edit dialog if open
+  // Esc — close help modal, then QSO edit dialog
   if (e.key === 'Escape') {
+    const help = document.getElementById('helpModal');
+    if (help && !help.classList.contains('lm-hidden')) {
+      closeHelpModal();
+      return;
+    }
     const modal = document.getElementById('qsoEditModal');
     if (modal && !modal.classList.contains('lm-hidden')) {
       closeQsoEdit();
       return;
     }
+  }
+  // Alt+1/2/3 — select TRX
+  if (e.altKey && !e.ctrlKey && !e.shiftKey && (e.key === '1' || e.key === '2' || e.key === '3')) {
+    e.preventDefault();
+    selectTrx(Number(e.key));
+    return;
   }
   // Alt+U — toggle RUN / S&P
   if (e.altKey && !e.ctrlKey && !e.shiftKey && e.key === 'u') {
@@ -389,9 +429,15 @@ trxButtons.forEach(btn => {
   btn.addEventListener('click', () => {
     app.activeTrx = Number(btn.dataset.trx);
     trxButtons.forEach(b => b.classList.toggle('btn-trx-active', b === btn));
+    // clear stale frequency/mode so a different TRX's values don't leak into the log
+    app.frequency = 0;
+    app.connected = false;
+    sbManualFreq.value = '';
     updateTrxHeader();
     updateCatTabVisibility();
+    renderStatusBar();
     renderConnStatus();
+    try { _updateDxcBand(0, app.dxcConnected); } catch (_) {}
     clearTimeout(app._pollTimer);
     pollState();
     inpCall.focus();
@@ -522,6 +568,19 @@ function sendMacroText(macroType) {
   });
 }
 
+function sendRawText(text) {
+  if (!text || !window.LogMacros) return;
+  if (LogMacros.modeGroup(app.mode) === 'PHONE') { showHint('Phone mode — send manually'); return; }
+  const trxIdx = app.activeTrx - 1;
+  const isOi3  = app.trxOi3[trxIdx] && trxIdx > 0 && app.trxIps[trxIdx];
+  if (!app.connected && !isOi3) { showHint('TRX not connected'); return; }
+  const url  = isOi3 ? '/oi3/send' : '/cmd';
+  const body = isOi3 ? { ip: app.trxIps[trxIdx], text } : { type: 'sendCw', text };
+  fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    .catch(() => {});
+}
+
+
 // ── Enter key workflow ────────────────────────────────────────────────────────
 
 inpCall.addEventListener('keydown', handleCallEnter);
@@ -554,7 +613,7 @@ function handleCallEnter(e) {
     if (app.runMode === 'RUN') {
       sendMacroText('TXEXCH');
     } else {
-      sendMacroText('TXEXCHSP');
+      sendRawText((LogManager.getActiveLog() || {}).stationCall || '');
     }
     inpExch.focus();
     return;
@@ -564,6 +623,35 @@ function handleCallEnter(e) {
 }
 
 // ── Dupe check ────────────────────────────────────────────────────────────────
+
+function _bandFromHz(hz) {
+  const k = hz / 1000;
+  if (k >= 1800  && k < 2000)    return '160m';
+  if (k >= 3500  && k < 4000)    return '80m';
+  if (k >= 5000  && k < 6000)    return '60m';
+  if (k >= 7000  && k < 7300)    return '40m';
+  if (k >= 10000 && k < 10200)   return '30m';
+  if (k >= 14000 && k < 14400)   return '20m';
+  if (k >= 18000 && k < 18200)   return '17m';
+  if (k >= 21000 && k < 21500)   return '15m';
+  if (k >= 24800 && k < 25000)   return '12m';
+  if (k >= 28000 && k < 30000)   return '10m';
+  if (k >= 50000 && k < 54000)   return '6m';
+  if (k >= 70000 && k < 71000)   return '4m';
+  if (k >= 144000 && k < 148000) return '2m';
+  if (k >= 430000 && k < 440000) return '70cm';
+  if (k >= 1240000)              return 'shf';
+  return null;
+}
+
+function _parseDisplayFreqHz(display) {
+  if (!display) return 0;
+  const p = String(display).split('.');
+  if (p.length !== 3) return 0;
+  return (parseInt(p[0], 10) || 0) * 1_000_000
+       + (parseInt(p[1], 10) || 0) * 1_000
+       + (parseInt(p[2], 10) || 0) * 10;
+}
 
 function checkDupe(call) {
   const log = LogManager.getActiveLog();
@@ -586,10 +674,11 @@ function checkDupe(call) {
     function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
     function hlCall(c, frag) {
       const idx = c.indexOf(frag);
-      if (idx < 0) return esc(c);
-      return esc(c.slice(0, idx))
+      const dim = s => s ? '<span class="dp-partial-dim">' + esc(s) + '</span>' : '';
+      if (idx < 0) return dim(c);
+      return dim(c.slice(0, idx))
         + '<span class="dp-partial-hl">' + esc(c.slice(idx, idx + frag.length)) + '</span>'
-        + esc(c.slice(idx + frag.length));
+        + dim(c.slice(idx + frag.length));
     }
 
     const logMap = Object.fromEntries((allLogs || []).map(l => [l.id, l]));
@@ -626,18 +715,29 @@ function checkDupe(call) {
         + esc(d.call) + ' ' + esc(d.timeOnUtc||'') + ' '
         + esc(d.frequencyDisplay||'') + ' ' + esc(d.mode||'');
 
+      const trxBand = _bandFromHz(app.frequency);
+      const dupeCls = d => {
+        const b = _bandFromHz(_parseDisplayFreqHz(d.frequencyDisplay));
+        return (trxBand && b && b === trxBand) ? 'dp-dupe' : 'dp-dupe-other';
+      };
+
       if (!isGlobal) {
-        activeDupes.forEach(d => { htmlDupe += '<div class="dp-line dp-dupe">' + fmtD(d) + '</div>'; });
+        activeDupes.forEach(d => { htmlDupe += '<div class="dp-line ' + dupeCls(d) + '">' + fmtD(d) + '</div>'; });
       } else {
+        const logSuffix = d => {
+          const l = logMap[d.logId] || {};
+          const ts = (l.createdAtUtc || '').slice(0, 10);
+          return ' <span class="dp-log-name">| ' + esc((ts ? ts + ' ' : '') + (l.contestName || '')) + '</span>';
+        };
         const cat1 = [], cat2 = [], cat3 = [];
         activeDupes.forEach(d => {
           if (d.logId === log.id) { cat3.push(d); return; }
           const sc = (logMap[d.logId] || {}).stationCall || '';
           (sc === myCall ? cat2 : cat1).push(d);
         });
-        cat1.forEach(d => { htmlDupe += '<div class="dp-line dp-dupe-other">'   + fmtD(d) + '</div>'; });
-        cat2.forEach(d => { htmlDupe += '<div class="dp-line dp-dupe-samecall">' + fmtD(d) + '</div>'; });
-        cat3.forEach(d => { htmlDupe += '<div class="dp-line dp-dupe">'          + fmtD(d) + '</div>'; });
+        cat1.forEach(d => { htmlDupe += '<div class="dp-line dp-dupe-other">'   + fmtD(d) + logSuffix(d) + '</div>'; });
+        cat2.forEach(d => { htmlDupe += '<div class="dp-line dp-dupe-samecall">' + fmtD(d) + logSuffix(d) + '</div>'; });
+        cat3.forEach(d => { htmlDupe += '<div class="dp-line ' + dupeCls(d) + '">' + fmtD(d) + logSuffix(d) + '</div>'; });
       }
     }
 
@@ -669,12 +769,16 @@ function handleExchEnter(e) {
     if (app.runMode === 'RUN') {
       sendMacroText('TXEXCH');
     } else {
-      sendMacroText('TXEXCHSP');
+      sendRawText((LogManager.getActiveLog() || {}).stationCall || '');
     }
     showHint('Enter exchange');
     return;
   }
 
+  // Both filled → S&P sends exchange memory first, then log QSO
+  if (app.runMode !== 'RUN') {
+    sendMacroText('TXEXCHSP');
+  }
   // Both filled → log QSO
   logQso(call, exch);
 }
@@ -1076,19 +1180,12 @@ const btnPrevEx = document.getElementById('btnPrevEx');
 const btnCheck  = document.getElementById('btnCheck');
 
 btnCallQ.addEventListener('click', () => {
-  if (window.LogMacros) {
-    LogMacros.sendMacro('TXEXCHSP', macroCtx({ call: (inpCall.value.trim() || '') + '?' }));
-  }
-  checkDupe(inpCall.value.trim());
+  sendRawText((inpCall.value.trim() || '') + '?');
   inpCall.focus();
 });
 
 btnNrQ.addEventListener('click', () => {
-  if (window.LogMacros) {
-    const type = app.runMode === 'RUN' ? 'NR?' : 'NR?';
-    // send a literal "nr?" text
-    LogMacros.sendMacro('TXEXCHSP', macroCtx({ exchange: 'nr?' }));
-  }
+  sendRawText('nr?');
   inpExch.focus();
 });
 
@@ -1235,9 +1332,12 @@ function init() {
 
   _initBackup();
 
+  _alignMacroPreview();
+
   // Restore last active log, then focus Call
   LogManager.restoreActiveLog().then(() => {
     inpCall.focus();
+    updateMacroPreview();
   }).catch(() => {
     inpCall.focus();
   });
@@ -1260,6 +1360,50 @@ try {
   });
 } catch (_) {}
 
+// ── Macro preview ────────────────────────────────────────────────────────────
+
+function updateMacroPreview() {
+  if (!macroPreview || !window.LogMacros) return;
+  const focused  = document.activeElement;
+  const state    = formStateOf();
+  const isRun    = app.runMode === 'RUN';
+  const myCall   = (LogManager.getActiveLog() || {}).stationCall || '';
+  let text = '';
+
+  if (focused === inpCall) {
+    if (state === 'IDLE' && isRun) {
+      text = LogMacros.buildMacro('CQ', macroCtx()) || '';
+    } else if (state === 'CALL_ENTERED') {
+      text = isRun ? (LogMacros.buildMacro('TXEXCH', macroCtx()) || '') : myCall;
+    }
+  } else if (focused === inpExch) {
+    const call = inpCall.value.trim();
+    const exch = inpExch.value.trim();
+    if (call && !exch) {
+      text = isRun ? (LogMacros.buildMacro('TXEXCH', macroCtx()) || '') : myCall;
+    } else if (call && exch && !isRun) {
+      text = LogMacros.buildMacro('TXEXCHSP', macroCtx()) || '';
+    }
+  }
+
+  macroPreview.textContent = text;
+}
+
+function _alignMacroPreview() {
+  if (!macroPreview) return;
+  requestAnimationFrame(() => {
+    const cl = inpCall.getBoundingClientRect().left;
+    const pl = macroPreview.getBoundingClientRect().left;
+    if (cl > pl) macroPreview.style.paddingLeft = (cl - pl) + 'px';
+  });
+}
+
+[inpCall, inpExch].forEach(inp => {
+  inp.addEventListener('focus', updateMacroPreview);
+  inp.addEventListener('input', updateMacroPreview);
+  inp.addEventListener('blur',  updateMacroPreview);
+});
+
 // ── DXC Band Display ──────────────────────────────────────────────────────────
 
 const dxcBandBox = document.getElementById('dxcBandBox');
@@ -1278,6 +1422,7 @@ const _DXC_LINE_COL = '#ff4444';
 
 let _dxcSpots     = [];
 let _dxcBandStart = -1;
+let _dxcBandWidth = 100;
 let _dxcActive    = false;
 let _svgScale     = null;
 let _svgSpots     = null;
@@ -1288,7 +1433,7 @@ function _dxcW() {
 }
 
 function _dxcX(freqKhz) {
-  return ((freqKhz - _dxcBandStart) / 100) * _dxcW();
+  return ((freqKhz - _dxcBandStart) / _dxcBandWidth) * _dxcW();
 }
 
 function _dxcScaleLabel(khz) {
@@ -1331,8 +1476,10 @@ function _renderDxcScale() {
     stroke: _DXC_TICK_COL, 'stroke-width': '1'
   }));
 
-  for (let i = 0; i <= 100; i++) {
-    const x  = (i / 100) * W;
+  const labelStep = _dxcBandWidth === 50 ? 10 : _dxcBandWidth === 200 ? 50 : 25;
+
+  for (let i = 0; i <= _dxcBandWidth; i++) {
+    const x  = (i / _dxcBandWidth) * W;
     const y1 = i % 10 === 0 ? _DXC_SCALE_Y - 10
              : i % 5  === 0 ? _DXC_SCALE_Y - 7
              :                 _DXC_SCALE_Y - 4;
@@ -1342,7 +1489,7 @@ function _renderDxcScale() {
       stroke: _DXC_TICK_COL, 'stroke-width': '1'
     }));
 
-    if (i % 25 === 0) {
+    if (i % labelStep === 0) {
       const lbl = _dxcEl('text', {
         x: String(x), y: String(_DXC_LABEL_Y),
         'text-anchor': 'middle',
@@ -1369,7 +1516,7 @@ function _renderDxcSpots() {
 
   const visible = _dxcSpots.filter(s => {
     const f = parseFloat(s.freq);
-    return f >= _dxcBandStart && f < _dxcBandStart + 100;
+    return f >= _dxcBandStart && f < _dxcBandStart + _dxcBandWidth;
   });
   visible.sort((a, b) => (a.time || '').localeCompare(b.time || ''));
 
@@ -1431,7 +1578,7 @@ function _updateDxcBand(freqHz, dxcConnected) {
     return;
   }
 
-  const bandStart = Math.floor(freqHz / 100000) * 100;
+  const bandStart = Math.floor(freqHz / (_dxcBandWidth * 1000)) * _dxcBandWidth;
 
   if (!_dxcActive) {
     _dxcActive    = true;
@@ -1459,10 +1606,41 @@ try {
 
 window.addEventListener('resize', () => {
   if (_dxcActive) _renderDxcScale();
+  _alignMacroPreview();
 });
 
-const dxcBandToggle = document.getElementById('dxcBandToggle');
+const dxcBandToggle  = document.getElementById('dxcBandToggle');
+const dxcBwBtn       = document.getElementById('dxcBwBtn');
+const dxcBwPalette   = document.getElementById('dxcBwPalette');
+
 dxcBandToggle.addEventListener('click', () => {
   const collapsed = dxcBandBox.classList.toggle('dxc-collapsed');
   dxcBandToggle.textContent = collapsed ? '▲' : '▼';
 });
+
+dxcBwBtn.addEventListener('click', e => {
+  e.stopPropagation();
+  dxcBwPalette.classList.toggle('dxc-bw-open');
+});
+
+dxcBwPalette.addEventListener('click', e => {
+  const btn = e.target.closest('.dxc-bw-opt');
+  if (!btn) return;
+  const bw = parseInt(btn.dataset.bw, 10);
+  if (!bw || bw === _dxcBandWidth) { dxcBwPalette.classList.remove('dxc-bw-open'); return; }
+
+  _dxcBandWidth = bw;
+  dxcBwPalette.querySelectorAll('.dxc-bw-opt').forEach(b => {
+    b.classList.toggle('dxc-bw-active', parseInt(b.dataset.bw, 10) === bw);
+  });
+  dxcBwPalette.classList.remove('dxc-bw-open');
+
+  if (_dxcActive && app.frequency) {
+    _dxcBandStart = Math.floor(app.frequency / (_dxcBandWidth * 1000)) * _dxcBandWidth;
+    _renderDxcScale();
+    _renderDxcSpots();
+    _renderDxcLine(app.frequency);
+  }
+});
+
+document.addEventListener('click', () => dxcBwPalette.classList.remove('dxc-bw-open'));

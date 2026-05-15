@@ -423,9 +423,7 @@ label.setup-trx-col .msg {
 .spiffs-form {
   display: grid;
   gap: 16px;
-  margin-top: 32px;
-  padding-top: 24px;
-  border-top: 1px solid var(--line);
+  margin-top: 16px;
 }
 
 .backup-row {

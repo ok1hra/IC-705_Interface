@@ -26,7 +26,7 @@
         <p class="meta">%APMODE_TEXT% | MAC %MAC% | FW %REV% | HW %HWREV%</p>
       </header>
 
-      <form action="/setup" method="post" class="setup-form">
+      <form action="/setup" method="post" class="setup-form" id="setup-form">
 
         <details class="setup-section">
           <summary class="setup-section-title">WiFi <span class="setup-local-badge">eeprom</span></summary>
@@ -189,10 +189,19 @@
               </div>
             </label>
             <label class="checkbox-row">
-              <input type="checkbox" id="ls_trx2Oi3">
-              OI3 — simple mode: read freq/mode via HTTP :81, send CW/RTTY via UDP :89
-              <span class="help-tip" data-tip="OI3 protocol: frequency and mode are read by HTTP GET from port 81 of the backend IP (format: 21023630|CW|). CW and RTTY messages are sent via UDP to port 89. The CAT page is not used with this option.">?</span>
+              <input type="checkbox" id="ls_trx2Oi3" name="trx2Oi3" %TRX2_OI3_CHK% onchange="document.getElementById('trx2Oi3Fields').style.display=this.checked?'block':'none'">
+              OI3 — receive freq/mode via MQTT, send CW/RTTY via UDP :89
+              <a href="https://github.com/ok1hra/k3ng_cw_keyer" target="_blank" rel="noopener" class="oi3-ref">&#8599;</a>
+              <span class="help-tip" data-tip="OI3 protocol: frequency and mode are received via MQTT (topics root+hz and root+mode). CW and RTTY messages are sent via UDP to port 89 of the backend IP. The CAT page is not used with this option.">?</span>
             </label>
+            <div id="trx2Oi3Fields" style="%TRX2_OI3_STYLE%">
+              <label>MQTT root topic
+                <div class="input-with-tip">
+                  <input type="text" name="trx2mqttroot" maxlength="20" placeholder="OK1HRA/OI3/2/" value="%TRX2_MQTT_ROOT%">
+                  <span class="help-tip" data-tip="MQTT root topic for TRX2 freq/mode. Firmware subscribes to root+hz (frequency in Hz) and root+mode (OI3 mode number 1-9). Saved to EEPROM — click Save &amp; Restart.">?</span>
+                </div>
+              </label>
+            </div>
 
             <div class="setup-trx-divider"></div>
             <div class="setup-trx-head">TRX3</div>
@@ -211,10 +220,19 @@
               </div>
             </label>
             <label class="checkbox-row">
-              <input type="checkbox" id="ls_trx3Oi3">
-              OI3 — simple mode: read freq/mode via HTTP :81, send CW/RTTY via UDP :89
-              <span class="help-tip" data-tip="OI3 protocol: frequency and mode are read by HTTP GET from port 81 of the backend IP (format: 21023630|CW|). CW and RTTY messages are sent via UDP to port 89. The CAT page is not used with this option.">?</span>
+              <input type="checkbox" id="ls_trx3Oi3" name="trx3Oi3" %TRX3_OI3_CHK% onchange="document.getElementById('trx3Oi3Fields').style.display=this.checked?'block':'none'">
+              OI3 — receive freq/mode via MQTT, send CW/RTTY via UDP :89
+              <a href="https://github.com/ok1hra/k3ng_cw_keyer" target="_blank" rel="noopener" class="oi3-ref">&#8599;</a>
+              <span class="help-tip" data-tip="OI3 protocol: frequency and mode are received via MQTT (topics root+hz and root+mode). CW and RTTY messages are sent via UDP to port 89 of the backend IP. The CAT page is not used with this option.">?</span>
             </label>
+            <div id="trx3Oi3Fields" style="%TRX3_OI3_STYLE%">
+              <label>MQTT root topic
+                <div class="input-with-tip">
+                  <input type="text" name="trx3mqttroot" maxlength="20" placeholder="OK1HRA/OI3/3/" value="%TRX3_MQTT_ROOT%">
+                  <span class="help-tip" data-tip="MQTT root topic for TRX3 freq/mode. Firmware subscribes to root+hz (frequency in Hz) and root+mode (OI3 mode number 1-9). Saved to EEPROM — click Save &amp; Restart.">?</span>
+                </div>
+              </label>
+            </div>
           </div>
         </details>
 
@@ -248,10 +266,6 @@
           </div>
         </details>
 
-        <div class="actions">
-          <button type="submit">Save EEPROM and Restart</button>
-        </div>
-        <p class="footnote">After reboot the interface alternates between WiFi profile 1 and 2 until it connects. AP mode remains available from the USB-C serial console.</p>
       </form>
 
       <div class="setup-form spiffs-form">
@@ -261,24 +275,24 @@
           <div class="setup-section-body">
             <label>RST default SSB/FM
               <div class="input-with-tip">
-                <input type="text" id="ls_rstSsb" maxlength="3" value="59" placeholder="59">
+                <input type="text" id="ls_rstSsb" name="rstSsb" form="setup-form" maxlength="3" value="%RST_SSB%" placeholder="59">
                 <span class="help-tip" data-tip="Default RST/RS pre-filled for SSB and FM QSOs.">?</span>
               </div>
             </label>
             <label>RST default CW/RTTY
               <div class="input-with-tip">
-                <input type="text" id="ls_rstCwRtty" maxlength="3" value="599" placeholder="599">
+                <input type="text" id="ls_rstCwRtty" name="rstCwRtty" form="setup-form" maxlength="3" value="%RST_CW_RTTY%" placeholder="599">
                 <span class="help-tip" data-tip="Default RST pre-filled for CW and digital mode QSOs.">?</span>
               </div>
             </label>
             <label class="checkbox-row">
-              <input type="checkbox" id="ls_manualModeForPhone" checked>
+              <input type="checkbox" id="ls_manualModeForPhone" name="manualModeForPhone" form="setup-form" %MANUAL_MODE_FOR_PHONE_CHK%>
               Manual mode for Phone (SSB/FM) — no automatic macros
               <span class="help-tip" data-tip="When checked, pressing Enter on an SSB/FM QSO logs it immediately without sending any CW/RTTY macro.">?</span>
             </label>
             <label>Blocked DXCC list (one per line)
               <div class="input-with-tip input-with-tip-top">
-                <textarea id="ls_blockedDxcc" rows="3" placeholder="Russia&#10;Kaliningrad"></textarea>
+                <textarea id="ls_blockedDxcc" name="blockedDxcc" form="setup-form" rows="3" placeholder="Russia&#10;Kaliningrad">%BLOCKED_DXCC%</textarea>
                 <span class="help-tip" data-tip="DXCC entity names to flag as blocked (one per line, e.g. Russia). Matching callsigns are highlighted in red in the log journal.">?</span>
               </div>
             </label>
@@ -290,25 +304,25 @@
           <div class="setup-section-body">
             <label>CW memory 1
               <div class="input-with-tip">
-                <input type="text" id="cwmem1" maxlength="30" value="%CW_MEM1%">
+                <input type="text" id="cwmem1" name="cwmem1" form="setup-form" maxlength="30" value="%CW_MEM1%">
                 <span class="help-tip" data-tip="Plain CW/RTTY text keyed when memory key 1 is activated. Mode determines keying method (CW via CI-V, RTTY via FSK GPIO). Max 30 characters.">?</span>
               </div>
             </label>
             <label>CW memory 2
               <div class="input-with-tip">
-                <input type="text" id="cwmem2" maxlength="30" value="%CW_MEM2%">
+                <input type="text" id="cwmem2" name="cwmem2" form="setup-form" maxlength="30" value="%CW_MEM2%">
                 <span class="help-tip" data-tip="Plain CW/RTTY text keyed when memory key 2 is activated. Max 30 characters.">?</span>
               </div>
             </label>
             <label>CW memory 3
               <div class="input-with-tip">
-                <input type="text" id="cwmem3" maxlength="30" value="%CW_MEM3%">
+                <input type="text" id="cwmem3" name="cwmem3" form="setup-form" maxlength="30" value="%CW_MEM3%">
                 <span class="help-tip" data-tip="Plain CW/RTTY text keyed when memory key 3 is activated. Max 30 characters.">?</span>
               </div>
             </label>
             <label>CW memory 4
               <div class="input-with-tip">
-                <input type="text" id="cwmem4" maxlength="30" value="%CW_MEM4%">
+                <input type="text" id="cwmem4" name="cwmem4" form="setup-form" maxlength="30" value="%CW_MEM4%">
                 <span class="help-tip" data-tip="Plain CW/RTTY text keyed when memory key 4 is activated. Max 30 characters.">?</span>
               </div>
             </label>
@@ -321,61 +335,61 @@
             <p class="footnote">Use compact format like <code>14074000 USB</code> or <code>144174000 FM</code>.</p>
             <label>Memory 1
               <div class="input-with-tip">
-                <input type="text" id="freqmem1" maxlength="20" value="%FREQ_MEM1%">
+                <input type="text" id="freqmem1" name="freqmem1" form="setup-form" maxlength="20" value="%FREQ_MEM1%">
                 <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM). Selectable from the CAT page.">?</span>
               </div>
             </label>
             <label>Memory 2
               <div class="input-with-tip">
-                <input type="text" id="freqmem2" maxlength="20" value="%FREQ_MEM2%">
+                <input type="text" id="freqmem2" name="freqmem2" form="setup-form" maxlength="20" value="%FREQ_MEM2%">
                 <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
               </div>
             </label>
             <label>Memory 3
               <div class="input-with-tip">
-                <input type="text" id="freqmem3" maxlength="20" value="%FREQ_MEM3%">
+                <input type="text" id="freqmem3" name="freqmem3" form="setup-form" maxlength="20" value="%FREQ_MEM3%">
                 <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
               </div>
             </label>
             <label>Memory 4
               <div class="input-with-tip">
-                <input type="text" id="freqmem4" maxlength="20" value="%FREQ_MEM4%">
+                <input type="text" id="freqmem4" name="freqmem4" form="setup-form" maxlength="20" value="%FREQ_MEM4%">
                 <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
               </div>
             </label>
             <label>Memory 5
               <div class="input-with-tip">
-                <input type="text" id="freqmem5" maxlength="20" value="%FREQ_MEM5%">
+                <input type="text" id="freqmem5" name="freqmem5" form="setup-form" maxlength="20" value="%FREQ_MEM5%">
                 <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
               </div>
             </label>
             <label>Memory 6
               <div class="input-with-tip">
-                <input type="text" id="freqmem6" maxlength="20" value="%FREQ_MEM6%">
+                <input type="text" id="freqmem6" name="freqmem6" form="setup-form" maxlength="20" value="%FREQ_MEM6%">
                 <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
               </div>
             </label>
             <label>Memory 7
               <div class="input-with-tip">
-                <input type="text" id="freqmem7" maxlength="20" value="%FREQ_MEM7%">
+                <input type="text" id="freqmem7" name="freqmem7" form="setup-form" maxlength="20" value="%FREQ_MEM7%">
                 <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
               </div>
             </label>
             <label>Memory 8
               <div class="input-with-tip">
-                <input type="text" id="freqmem8" maxlength="20" value="%FREQ_MEM8%">
+                <input type="text" id="freqmem8" name="freqmem8" form="setup-form" maxlength="20" value="%FREQ_MEM8%">
                 <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
               </div>
             </label>
             <label>Memory 9
               <div class="input-with-tip">
-                <input type="text" id="freqmem9" maxlength="20" value="%FREQ_MEM9%">
+                <input type="text" id="freqmem9" name="freqmem9" form="setup-form" maxlength="20" value="%FREQ_MEM9%">
                 <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
               </div>
             </label>
             <label>Memory 10
               <div class="input-with-tip">
-                <input type="text" id="freqmem10" maxlength="20" value="%FREQ_MEM10%">
+                <input type="text" id="freqmem10" name="freqmem10" form="setup-form" maxlength="20" value="%FREQ_MEM10%">
                 <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
               </div>
             </label>
@@ -383,9 +397,9 @@
         </details>
 
         <div class="actions">
-          <button type="button" id="spiffsSaveBtn">Save SPIFFS settings</button>
-          <span id="spiffsSaveMsg" class="backup-msg"></span>
+          <button type="submit" form="setup-form">Save &amp; Restart</button>
         </div>
+        <p class="footnote">After reboot the interface alternates between WiFi profile 1 and 2 until it connects. AP mode remains available from the USB-C serial console.</p>
       </div>
 
       <div class="backup-row">
@@ -401,6 +415,14 @@
   </main>
 
   <style>
+    .oi3-ref {
+      color: #777;
+      font-size: 13px;
+      text-decoration: none;
+      margin-left: 4px;
+      vertical-align: middle;
+    }
+    .oi3-ref:hover { color: #aaa; }
     .setup-local-badge {
       font-size: 10px;
       background: rgba(0, 136, 0, 0.12);
@@ -416,80 +438,17 @@
   <script>
     // ── SPIFFS settings (LOG config + CW/Freq memories) ─────────────────────
     (function () {
-      var TRX_DEFAULTS = { trx1Label: 'IC-705', trx2Label: 'TRX2', trx3Label: 'TRX3' };
-
-      window.loadLogSettings = function loadLogSettings() {
-        fetch('/log-config').then(function(r){ return r.json(); }).then(function(cfg) {
-          var keys = ['trx1Label','trx2Label','trx3Label',
-                      'trx2Civ','trx3Civ',
-                      'trx2Ip','trx3Ip',
-                      'trx2Oi3','trx3Oi3',
-                      'rstSsb','rstCwRtty','manualModeForPhone','blockedDxcc'];
-          keys.forEach(function(k) {
-            var v = cfg[k];
-            if (v == null || v === '') v = TRX_DEFAULTS[k] != null ? TRX_DEFAULTS[k] : null;
-            if (v == null) return;
-            var el = document.getElementById('ls_' + k);
-            if (!el) return;
-            if (el.type === 'checkbox') el.checked = !!v;
-            else el.value = v;
-          });
-        }).catch(function(){});
+      function updateOi3Fields(n) {
+        var cb  = document.getElementById('ls_trx' + n + 'Oi3');
+        var div = document.getElementById('trx' + n + 'Oi3Fields');
+        if (cb && div) div.style.display = cb.checked ? 'block' : 'none';
       }
 
-      function saveSpiffs() {
-        var msg = document.getElementById('spiffsSaveMsg');
-
-        var logData = {
-          trx1Label:       document.getElementById('ls_trx1Label').value.trim() || 'IC-705',
-          trx2Label:       document.getElementById('ls_trx2Label').value.trim() || 'TRX2',
-          trx3Label:       document.getElementById('ls_trx3Label').value.trim() || 'TRX3',
-          trx2Civ:         document.getElementById('ls_trx2Civ').value.trim(),
-          trx3Civ:         document.getElementById('ls_trx3Civ').value.trim(),
-          trx2Ip:          document.getElementById('ls_trx2Ip').value.trim(),
-          trx3Ip:          document.getElementById('ls_trx3Ip').value.trim(),
-          trx2Oi3:         document.getElementById('ls_trx2Oi3').checked,
-          trx3Oi3:         document.getElementById('ls_trx3Oi3').checked,
-          rstSsb:          document.getElementById('ls_rstSsb').value.trim()    || '59',
-          rstCwRtty:       document.getElementById('ls_rstCwRtty').value.trim() || '599',
-          manualModeForPhone: document.getElementById('ls_manualModeForPhone').checked,
-          blockedDxcc:     document.getElementById('ls_blockedDxcc').value,
-        };
-
-        var memData = {};
-        [1,2,3,4].forEach(function(i) {
-          var el = document.getElementById('cwmem' + i);
-          if (el) memData['cwmem' + i] = el.value;
-        });
-        [1,2,3,4,5,6,7,8,9,10].forEach(function(i) {
-          var el = document.getElementById('freqmem' + i);
-          if (el) memData['freqmem' + i] = el.value;
-        });
-
-        msg.textContent = 'Saving…';
-        Promise.all([
-          fetch('/log-config', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(logData)
-          }).then(function(r){ return r.json(); }),
-          fetch('/config/upload', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(memData)
-          }).then(function(r){ return r.json(); })
-        ]).then(function(results) {
-          var ok = results[0].ok && results[1].ok;
-          msg.textContent = ok ? 'Saved.' : 'Error saving — check connection.';
-          setTimeout(function(){ msg.textContent = ''; }, 2000);
-        }).catch(function() {
-          msg.textContent = 'Save failed.';
-        });
-      }
-
-      document.getElementById('spiffsSaveBtn').addEventListener('click', saveSpiffs);
-
-      loadLogSettings();
+      [2, 3].forEach(function(n) {
+        var cb = document.getElementById('ls_trx' + n + 'Oi3');
+        if (cb) cb.addEventListener('change', function() { updateOi3Fields(n); });
+        updateOi3Fields(n); // sync div visibility with server-rendered checkbox state
+      });
     }());
   </script>
 
@@ -516,12 +475,10 @@
       const h   = String(d.getHours()).padStart(2, '0');
       const mi  = String(d.getMinutes()).padStart(2, '0');
       const filename = y + mo + day + '-' + h + mi + '-ic705-config.json';
-      Promise.all([
-        fetch('/config/download').then(function(r) { return r.json(); }),
-        fetch('/log-config').then(function(r) { return r.json(); }).catch(function() { return {}; })
-      ]).then(function(results) {
-        var combined = Object.assign({}, results[0], { logConfig: results[1] });
-        var blob = new Blob([JSON.stringify(combined, null, 2)], { type: 'application/json' });
+      fetch('/config/download', { cache: 'no-store' }).then(function(r) {
+        if (!r.ok) throw new Error('download ' + r.status);
+        return r.blob();
+      }).then(function(blob) {
         var url = URL.createObjectURL(blob);
         var a = document.createElement('a');
         a.href = url;
@@ -545,34 +502,36 @@
           msg.textContent = "Error: invalid JSON";
           return;
         }
-        var logCfg   = parsed.logConfig || null;
-        var eepromCopy = Object.assign({}, parsed);
-        delete eepromCopy.logConfig;
-
-        var tasks = [
-          fetch("/config/upload", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(eepromCopy)
-          }).then(function(r) { return r.json(); })
-        ];
-        if (logCfg && typeof logCfg === 'object') {
-          tasks.push(
-            fetch("/log-config", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(logCfg)
-            }).then(function(r) { return r.json(); })
-          );
-        }
-        Promise.all(tasks)
-          .then(function(results) {
-            var ok = results.every(function(r) { return r.ok; });
-            if (ok) {
-              msg.textContent = "Uploaded. Reload this page to apply EEPROM values, then click Save EEPROM and Restart.";
-              loadLogSettings();
+        fetch("/config/upload", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(parsed)
+        }).then(function(r) {
+          if (!r.ok) throw new Error('upload ' + r.status);
+          return r.json();
+        })
+          .then(function(result) {
+            if (result.ok) {
+              msg.textContent = "Uploaded. Restarting…";
+              fetch('/restart', { method: 'POST' }).catch(function(){});
+              var dots = 0;
+              var dot = setInterval(function() {
+                dots = (dots + 1) % 4;
+                msg.textContent = 'Restarting' + Array(dots + 1).join('.');
+              }, 500);
+              setTimeout(function() {
+                clearInterval(dot);
+                msg.textContent = 'Waiting for device…';
+                var poll = setInterval(function() {
+                  fetch('/setup', { method: 'GET', cache: 'no-store' })
+                    .then(function(r) {
+                      if (r.ok) { clearInterval(poll); window.location.reload(); }
+                    })
+                    .catch(function(){});
+                }, 1000);
+              }, 5000);
             } else {
-              msg.textContent = "Error: " + (results.map(function(r){ return r.error||''; }).join(', '));
+              msg.textContent = "Error: " + (result.error || 'upload');
             }
           })
           .catch(function () { msg.textContent = "Upload failed — check connection."; });
@@ -588,30 +547,77 @@
       if (!form) return;
       form.addEventListener('submit', function (e) {
         e.preventDefault();
-        var data = new FormData(form);
-        fetch('/setup', { method: 'POST', body: data }).catch(function () {});
-        form.style.display = 'none';
+        var shell = document.querySelector('main.setup-shell') || form.parentNode;
+        shell.style.display = 'none';
         var msg = document.createElement('p');
         msg.style.cssText = 'padding:2em;font-size:1.1em;';
-        msg.textContent = 'Saved. Restarting…';
-        form.parentNode.insertBefore(msg, form);
-        var dots = 0, polling = false;
-        var dot = setInterval(function () {
-          dots = (dots + 1) % 4;
-          msg.textContent = 'Saved. Restarting' + Array(dots + 1).join('.');
-        }, 500);
-        setTimeout(function () {
-          clearInterval(dot);
-          polling = true;
-          msg.textContent = 'Waiting for device…';
-          var poll = setInterval(function () {
-            fetch('/setup', { method: 'GET', cache: 'no-store' })
-              .then(function (r) {
-                if (r.ok) { clearInterval(poll); window.location.reload(); }
-              })
-              .catch(function () {});
-          }, 1000);
-        }, 5000);
+        msg.textContent = 'Saving…';
+        shell.parentNode.insertBefore(msg, shell);
+
+        function startRestartPolling() {
+          if (startRestartPolling.started) return;
+          startRestartPolling.started = true;
+          var dots = 0;
+          var dot = setInterval(function () {
+            dots = (dots + 1) % 4;
+            msg.textContent = 'Restarting' + Array(dots + 1).join('.');
+          }, 500);
+          setTimeout(function () {
+            clearInterval(dot);
+            msg.textContent = 'Waiting for device…';
+            var poll = setInterval(function () {
+              fetch('/setup', { method: 'GET', cache: 'no-store' })
+                .then(function (r) {
+                  if (r.ok) { clearInterval(poll); window.location.reload(); }
+                })
+                .catch(function () {});
+            }, 1000);
+          }, 5000);
+        }
+
+        var data = new FormData(form);
+        document.querySelectorAll('[form="setup-form"]').forEach(function(el) {
+          if (!el.name) return;
+          if ((el.type === 'checkbox' || el.type === 'radio')) {
+            data.delete(el.name);
+            if (el.checked) data.append(el.name, el.value || 'on');
+            return;
+          }
+          data.delete(el.name);
+          data.append(el.name, el.value);
+        });
+        data.append('noRestart', '1');
+        var encoded = new URLSearchParams();
+        data.forEach(function(value, key) {
+          encoded.append(key, value);
+        });
+        fetch('/setup/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+          body: encoded.toString()
+        })
+          .then(function (r) {
+            if (!r.ok) throw new Error('/setup/save ' + r.status);
+            return r.json();
+          })
+          .then(function (result) {
+            if (!result.ok) throw new Error('save failed');
+            return fetch('/restart', { method: 'POST' });
+          })
+          .then(function (r) {
+            if (!r.ok) throw new Error('/restart ' + r.status);
+            startRestartPolling();
+          })
+          .catch(function (err) {
+            var message = err && err.message ? err.message : String(err || '');
+            if (message.indexOf('NetworkError') >= 0 || message.indexOf('Failed to fetch') >= 0 || message.indexOf('Load failed') >= 0) {
+              startRestartPolling();
+              return;
+            }
+            shell.style.display = '';
+            msg.parentNode.removeChild(msg);
+            alert('Save failed: ' + message + '\nCheck device connection and try again.');
+          });
       });
     }());
   </script>

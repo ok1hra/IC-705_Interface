@@ -71,8 +71,10 @@ String SSID2        = "";
 String PSWD2        = "";
 byte mqttBroker[4]  = {0,0,0,0};
 int MQTT_PORT       = 0;
-String MQTT_TOPIC   = "";
-String MQTT_TOPIC_RX = "";
+String MQTT_TOPIC        = "";
+String MQTT_TOPIC_RX     = "";
+String TRX2_MQTT_ROOT    = "";
+String TRX3_MQTT_ROOT    = "";
 int HTTP_CAT_PORT   = 0;
 int udpPort         = 0; // UDP port | echo -n "cq de ok1hra ok1hra test k;" | nc -u -w1 192.168.1.19 89
 int udpCatPort      = 0;
@@ -83,7 +85,7 @@ bool Debug          = false;
 bool cwIpOnConnect  = false;      // announce WiFi IP via CW on first BT connect
 volatile bool cwIpSendPending = false;
 
-#define REV 20260513
+#define REV 20260515
 #define WIFI
 #define MQTT
 #define UDP_TO_CW
@@ -98,7 +100,7 @@ volatile bool cwIpSendPending = false;
 // #define RESET_AFTER_DISCONNECT  // enable reset after each disconnect + short CW msg
 
 #include "EEPROM.h"
-#define EEPROM_SIZE 225
+#define EEPROM_SIZE 267
 /*
   0|Byte    1|128
   1|Char    1|A
@@ -133,6 +135,8 @@ volatile bool cwIpSendPending = false;
   201-202 DXC port (UShort)
   203-218 DXC callsign (16B)
   219-224 DXC locator (6B)
+  225-245 TRX2 MQTT root topic (21B)
+  246-266 TRX3 MQTT root topic (21B)
 
   !! Increment EEPROM_SIZE #define !!
 */
@@ -253,7 +257,6 @@ bool mqttPostponeStatus = 1;
   String MACString;
 
   #include <ESPmDNS.h>
-  #include <HTTPClient.h>
 
   const char* ssidAP     = "IC705-if";
   const char* passwordAP = "remoteqth";
@@ -343,6 +346,29 @@ int incomingByte = 0;   // for incoming serial data
   uint16_t DxcPort = 7300;
   String DxcCallsign = "";
   String DxcLocator = "";
+
+  static const char* LOG_CONFIG_PATH = "/log-config.json";
+
+  // In-memory cache of log-config.json fields used by setupTemplateProcessor.
+  String g_lcTrx1Label = "IC-705";
+  String g_lcTrx2Label = "TRX2";
+  String g_lcTrx3Label = "TRX3";
+  String g_lcTrx2Civ   = "";
+  String g_lcTrx3Civ   = "";
+  String g_lcTrx2Ip    = "";
+  String g_lcTrx3Ip    = "";
+  bool   g_lcTrx2Oi3   = false;
+  bool   g_lcTrx3Oi3   = false;
+  String g_lcRstSsb    = "59";
+  String g_lcRstCwRtty = "599";
+  bool   g_lcManualModeForPhone = true;
+  String g_lcBlockedDxcc = "";
+
+  // OI3 MQTT cache for TRX2 (index 0) and TRX3 (index 1) — written by MqttRx, read by handleOi3State
+  static volatile long g_mqttFreq[2]    = {0, 0};
+  static char          g_mqttMode[2][8] = {"USB", "USB"};
+  static volatile bool g_mqttHasData[2] = {false, false};
+
   bool DxcTelnetStatus = false;
   bool DxcWsStatus = false;
   bool DxcTelnetLoginPending = false;
@@ -390,6 +416,7 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   String setupUdpPortErr = "";
   String setupUdpCatPortErr = "";
   String setupCivAddrErr = "";
+  bool setupSaveOk = false;
   String transceiverType = "IC-705-BT";
   uint8_t configuredCivAddress = CIV_ADDRESS_DEFAULT;
   String cwMemoryText[CW_MEMORY_COUNT];
@@ -426,6 +453,7 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   void setModesText(const char *value);
   void copyModesText(char *dest, size_t destSize);
   String extractJsonString(const String &json, const char *key);
+  String extractJsonObject(const String &json, const char *key);
   bool extractJsonBool(const String &json, const char *key, bool defaultValue);
   bool parseHexPayload(const String &hex, uint8_t *buffer, size_t &bufferLen, size_t maxLen);
   bool parseModeId(const String &modeName, uint8_t &modeId);
@@ -557,7 +585,7 @@ void loadMemoryConfig(void){
 }
 
 void saveMemoryConfig(void){
-  File file = SPIFFS.open(MEMORY_CONFIG_PATH, FILE_WRITE);
+  File file = SPIFFS.open(MEMORY_CONFIG_PATH, "w");
   if (!file) {
     return;
   }
@@ -575,6 +603,35 @@ void saveMemoryConfig(void){
   file.println(String(configuredCivAddress, HEX));
 
   file.close();
+}
+
+// Parse log-config.json into g_lc* variables so setupTemplateProcessor can serve them.
+void loadLogConfigVars(void){
+  if (!SPIFFS.exists(LOG_CONFIG_PATH)) return;
+  File f = SPIFFS.open(LOG_CONFIG_PATH, "r");
+  if (!f) return;
+  String j = f.readString();
+  f.close();
+  j.trim();
+  if (!j.startsWith("{")) return;
+
+  String v;
+  v = extractJsonString(j, "trx1Label"); if (v.length() > 0) g_lcTrx1Label = v;
+  v = extractJsonString(j, "trx2Label"); if (v.length() > 0) g_lcTrx2Label = v;
+  v = extractJsonString(j, "trx3Label"); if (v.length() > 0) g_lcTrx3Label = v;
+  v = extractJsonString(j, "trx2Civ");   g_lcTrx2Civ = v;
+  v = extractJsonString(j, "trx3Civ");   g_lcTrx3Civ = v;
+  v = extractJsonString(j, "trx2Ip");    g_lcTrx2Ip  = v;
+  v = extractJsonString(j, "trx3Ip");    g_lcTrx3Ip  = v;
+  v = extractJsonString(j, "rstSsb");    if (v.length() > 0) g_lcRstSsb = v;
+  v = extractJsonString(j, "rstCwRtty"); if (v.length() > 0) g_lcRstCwRtty = v;
+  v = extractJsonString(j, "blockedDxcc"); g_lcBlockedDxcc = v;
+  g_lcManualModeForPhone = extractJsonBool(j, "manualModeForPhone", true);
+  // booleans
+  int idx2 = j.indexOf("\"trx2Oi3\"");
+  if (idx2 >= 0) { int c = j.indexOf(':', idx2)+1; while(c<(int)j.length()&&j[c]==' ')c++; g_lcTrx2Oi3 = j.substring(c,c+4)=="true"; }
+  int idx3 = j.indexOf("\"trx3Oi3\"");
+  if (idx3 >= 0) { int c = j.indexOf(':', idx3)+1; while(c<(int)j.length()&&j[c]==' ')c++; g_lcTrx3Oi3 = j.substring(c,c+4)=="true"; }
 }
 
 String jsonEscape(const String &value){
@@ -717,6 +774,82 @@ bool extractJsonBool(const String &json, const char *key, bool defaultValue){
     return false;
   }
   return defaultValue;
+}
+
+static String readLogConfigJson() {
+  if (!SPIFFS.exists(LOG_CONFIG_PATH)) {
+    return String();
+  }
+  File f = SPIFFS.open(LOG_CONFIG_PATH, "r");
+  if (!f) {
+    return String();
+  }
+  String json = f.readString();
+  f.close();
+  json.trim();
+  return json;
+}
+
+static String buildLogConfigJson(
+  const String &existingJson,
+  const String &trx1Label,
+  const String &trx2Label,
+  const String &trx3Label,
+  const String &trx2Civ,
+  const String &trx3Civ,
+  const String &trx2Ip,
+  const String &trx3Ip,
+  bool trx2Oi3,
+  bool trx3Oi3,
+  const String &rstSsb,
+  const String &rstCwRtty,
+  bool manualModeForPhone,
+  const String &blockedDxcc
+) {
+  String json;
+  json.reserve(512);
+  json += "{";
+  json += "\"trx1Label\":\""; json += jsonEscape(trx1Label); json += "\"";
+  json += ",\"trx2Label\":\""; json += jsonEscape(trx2Label); json += "\"";
+  json += ",\"trx3Label\":\""; json += jsonEscape(trx3Label); json += "\"";
+  json += ",\"trx2Civ\":\"";   json += jsonEscape(trx2Civ);   json += "\"";
+  json += ",\"trx3Civ\":\"";   json += jsonEscape(trx3Civ);   json += "\"";
+  json += ",\"trx2Ip\":\"";    json += jsonEscape(trx2Ip);    json += "\"";
+  json += ",\"trx3Ip\":\"";    json += jsonEscape(trx3Ip);    json += "\"";
+  json += ",\"trx2Oi3\":";     json += trx2Oi3 ? "true" : "false";
+  json += ",\"trx3Oi3\":";     json += trx3Oi3 ? "true" : "false";
+  json += ",\"rstSsb\":\"";    json += jsonEscape(rstSsb);    json += "\"";
+  json += ",\"rstCwRtty\":\""; json += jsonEscape(rstCwRtty); json += "\"";
+  json += ",\"manualModeForPhone\":"; json += manualModeForPhone ? "true" : "false";
+  json += ",\"blockedDxcc\":\""; json += jsonEscape(blockedDxcc); json += "\"";
+  json += "}";
+  return json;
+}
+
+static bool saveLogConfigJson(const String &json) {
+  File f = SPIFFS.open(LOG_CONFIG_PATH, "w");
+  if (!f) {
+    return false;
+  }
+  f.print(json);
+  f.close();
+  loadLogConfigVars();
+  return true;
+}
+
+String extractJsonObject(const String &json, const char *key) {
+  String token = "\"" + String(key) + "\":";
+  int start = json.indexOf(token);
+  if (start < 0) return String();
+  start += token.length();
+  while (start < (int)json.length() && (json[start] == ' ' || json[start] == '\t')) start++;
+  if (start >= (int)json.length() || json[start] != '{') return String();
+  int depth = 0, end = start;
+  for (; end < (int)json.length(); end++) {
+    if (json[end] == '{') depth++;
+    else if (json[end] == '}') { if (--depth == 0) { end++; break; } }
+  }
+  return json.substring(start, end);
 }
 
 bool parseHexPayload(const String &hex, uint8_t *buffer, size_t &bufferLen, size_t maxLen){
@@ -874,6 +1007,7 @@ void resetSetupMessages(void){
   setupUdpPortErr = "";
   setupUdpCatPortErr = "";
   setupCivAddrErr = "";
+  setupSaveOk = false;
 }
 
 String setupTemplateProcessor(const String &key){
@@ -895,6 +1029,23 @@ String setupTemplateProcessor(const String &key){
   if (key == "MQTT_PORT") return String(MQTT_PORT);
   if (key == "MQTT_TOPIC") return MQTT_TOPIC;
   if (key == "MQTT_TOPIC_RX") return MQTT_TOPIC_RX;
+  if (key == "TRX2_MQTT_ROOT") return TRX2_MQTT_ROOT;
+  if (key == "TRX3_MQTT_ROOT") return TRX3_MQTT_ROOT;
+  if (key == "TRX1_LABEL") return g_lcTrx1Label;
+  if (key == "TRX2_LABEL") return g_lcTrx2Label;
+  if (key == "TRX3_LABEL") return g_lcTrx3Label;
+  if (key == "TRX2_CIV")   return g_lcTrx2Civ;
+  if (key == "TRX3_CIV")   return g_lcTrx3Civ;
+  if (key == "TRX2_IP")    return g_lcTrx2Ip;
+  if (key == "TRX3_IP")    return g_lcTrx3Ip;
+  if (key == "TRX2_OI3_CHK") return g_lcTrx2Oi3 ? "checked" : "";
+  if (key == "TRX3_OI3_CHK") return g_lcTrx3Oi3 ? "checked" : "";
+  if (key == "TRX2_OI3_STYLE") return g_lcTrx2Oi3 ? "display:block" : "display:none";
+  if (key == "TRX3_OI3_STYLE") return g_lcTrx3Oi3 ? "display:block" : "display:none";
+  if (key == "RST_SSB") return g_lcRstSsb;
+  if (key == "RST_CW_RTTY") return g_lcRstCwRtty;
+  if (key == "MANUAL_MODE_FOR_PHONE_CHK") return g_lcManualModeForPhone ? "checked" : "";
+  if (key == "BLOCKED_DXCC") return g_lcBlockedDxcc;
   if (key == "SSID_ERR") return setupSsidErr;
   if (key == "PSWD_ERR") return setupPswdErr;
   if (key == "SSID2_ERR") return setupSsid2Err;
@@ -1223,7 +1374,7 @@ void handleConfigDownload() {
   char civHex[3];
   snprintf(civHex, sizeof(civHex), "%02X", configuredCivAddress);
   String j;
-  j.reserve(1024);
+  j.reserve(2048);
   j += "{\"fwRev\":";           j += (unsigned)REV;
   j += ",\"ssid\":\"";          j += configJsonEscape(SSID);          j += "\"";
   j += ",\"pswd\":\"";          j += configJsonEscape(PSWD);          j += "\"";
@@ -1234,8 +1385,10 @@ void handleConfigDownload() {
   j += ",\"mqttip2\":";         j += mqttBroker[2];
   j += ",\"mqttip3\":";         j += mqttBroker[3];
   j += ",\"mqttport\":";        j += MQTT_PORT;
-  j += ",\"mqtttopic\":\"";     j += configJsonEscape(MQTT_TOPIC);    j += "\"";
-  j += ",\"mqtttopicrx\":\"";   j += configJsonEscape(MQTT_TOPIC_RX); j += "\"";
+  j += ",\"mqtttopic\":\"";      j += configJsonEscape(MQTT_TOPIC);        j += "\"";
+  j += ",\"mqtttopicrx\":\"";   j += configJsonEscape(MQTT_TOPIC_RX);     j += "\"";
+  j += ",\"trx2mqttroot\":\"";  j += configJsonEscape(TRX2_MQTT_ROOT);    j += "\"";
+  j += ",\"trx3mqttroot\":\"";  j += configJsonEscape(TRX3_MQTT_ROOT);    j += "\"";
   j += ",\"httpcatport\":";     j += HTTP_CAT_PORT;
   j += ",\"udpport\":";         j += udpPort;
   j += ",\"udpcatport\":";      j += udpCatPort;
@@ -1249,7 +1402,18 @@ void handleConfigDownload() {
   for (uint8_t i = 0; i < FREQ_MEMORY_COUNT; i++) {
     j += ",\"freqmem"; j += (i + 1); j += "\":\""; j += configJsonEscape(freqMemoryText[i]); j += "\"";
   }
+  j += ",\"dxchost\":\"";    j += configJsonEscape(DxcHost);     j += "\"";
+  j += ",\"dxcport\":";      j += DxcPort;
+  j += ",\"dxccall\":\"";    j += configJsonEscape(DxcCallsign); j += "\"";
+  j += ",\"dxclocator\":\""; j += configJsonEscape(DxcLocator);  j += "\"";
+  String lc = readLogConfigJson();
+  if (lc.startsWith("{")) {
+    j += ",\"logConfig\":";
+    j += lc;
+  }
   j += "}";
+  webServer.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  webServer.sendHeader("Pragma", "no-cache");
   webServer.sendHeader("Content-Disposition", "attachment; filename=\"ic705-config.json\"");
   webServer.send(200, "application/json", j);
 }
@@ -1265,17 +1429,33 @@ void handleConfigUpload() {
   String pswd = extractJsonString(body, "pswd");
   if (pswd.length() >= 1 && pswd.length() <= 18) { PSWD = pswd; eepromWriteStr(PSWD, 22, 18); }
 
-  String ssid2 = extractJsonString(body, "ssid2");
-  if (ssid2.length() <= 20) { SSID2 = ssid2; eepromWriteStr(SSID2, 76, 20); }
+  if (body.indexOf("\"ssid2\"") >= 0) {
+    String ssid2 = extractJsonString(body, "ssid2");
+    if (ssid2.length() <= 20) { SSID2 = ssid2; eepromWriteStr(SSID2, 76, 20); }
+  }
 
-  String pswd2 = extractJsonString(body, "pswd2");
-  if (pswd2.length() <= 18) { PSWD2 = pswd2; eepromWriteStr(PSWD2, 97, 18); }
+  if (body.indexOf("\"pswd2\"") >= 0) {
+    String pswd2 = extractJsonString(body, "pswd2");
+    if (pswd2.length() <= 18) { PSWD2 = pswd2; eepromWriteStr(PSWD2, 97, 18); }
+  }
 
   String mqtttopic = extractJsonString(body, "mqtttopic");
   if (mqtttopic.length() >= 1 && mqtttopic.length() <= 20) { MQTT_TOPIC = mqtttopic; eepromWriteStr(MQTT_TOPIC, 47, 20); }
 
-  String mqtttopicrx = extractJsonString(body, "mqtttopicrx");
-  if (mqtttopicrx.length() <= 20) { MQTT_TOPIC_RX = mqtttopicrx; eepromWriteStr(MQTT_TOPIC_RX, 115, 21); }
+  if (body.indexOf("\"mqtttopicrx\"") >= 0) {
+    String mqtttopicrx = extractJsonString(body, "mqtttopicrx");
+    if (mqtttopicrx.length() <= 20) { MQTT_TOPIC_RX = mqtttopicrx; eepromWriteStr(MQTT_TOPIC_RX, 115, 21); }
+  }
+
+  if (body.indexOf("\"trx2mqttroot\"") >= 0) {
+    String trx2mqttroot = extractJsonString(body, "trx2mqttroot");
+    if (trx2mqttroot.length() <= 20) { TRX2_MQTT_ROOT = trx2mqttroot; eepromWriteStr(TRX2_MQTT_ROOT, 225, 21); }
+  }
+
+  if (body.indexOf("\"trx3mqttroot\"") >= 0) {
+    String trx3mqttroot = extractJsonString(body, "trx3mqttroot");
+    if (trx3mqttroot.length() <= 20) { TRX3_MQTT_ROOT = trx3mqttroot; eepromWriteStr(TRX3_MQTT_ROOT, 246, 21); }
+  }
 
   String trx = extractJsonString(body, "trxprofile");
   if (trx == "IC-7610-CI-V") transceiverType = trx;
@@ -1332,13 +1512,26 @@ void handleConfigUpload() {
     freqMemoryText[i] = trimMemoryValue(extractJsonString(body, key), FREQ_MEMORY_MAX_LEN);
   }
 
-  String dxchost = extractJsonString(body, "dxchost");
-  if(dxchost.length() <= 64){ DxcHost = dxchost; eepromWriteStr(DxcHost, 137, 64); }
+  if (body.indexOf("\"dxchost\"") >= 0) {
+    String dxchost = extractJsonString(body, "dxchost");
+    if(dxchost.length() <= 64){ DxcHost = dxchost; eepromWriteStr(DxcHost, 137, 64); }
+  }
   v = parseField("dxcport", 1, 65534); if(v >= 0){ DxcPort = v; EEPROM.writeUShort(201, v); }
-  String dxccall = extractJsonString(body, "dxccall");
-  if(dxccall.length() <= 16){ DxcCallsign = dxccall; eepromWriteStr(DxcCallsign, 203, 16); }
-  String dxclocator = extractJsonString(body, "dxclocator");
-  if(dxclocator.length() <= 6){ DxcLocator = dxclocator; eepromWriteStr(DxcLocator, 219, 6); }
+  if (body.indexOf("\"dxccall\"") >= 0) {
+    String dxccall = extractJsonString(body, "dxccall");
+    if(dxccall.length() <= 16){ DxcCallsign = dxccall; eepromWriteStr(DxcCallsign, 203, 16); }
+  }
+  if (body.indexOf("\"dxclocator\"") >= 0) {
+    String dxclocator = extractJsonString(body, "dxclocator");
+    if(dxclocator.length() <= 6){ DxcLocator = dxclocator; eepromWriteStr(DxcLocator, 219, 6); }
+  }
+
+  {
+    String logCfg = extractJsonObject(body, "logConfig");
+    if (logCfg.length() > 0 && logCfg.length() <= 2048) {
+      saveLogConfigJson(logCfg);
+    }
+  }
 
   EEPROM.writeBool(0, false);
   EEPROM.commit();
@@ -1347,8 +1540,6 @@ void handleConfigUpload() {
   webServer.send(200, "application/json", "{\"ok\":true}");
 }
 
-static const char* LOG_CONFIG_PATH = "/log-config.json";
-
 void handleGetLogConfig() {
   if (!SPIFFS.exists(LOG_CONFIG_PATH)) {
     webServer.send(200, "application/json", "{}");
@@ -1356,6 +1547,8 @@ void handleGetLogConfig() {
   }
   File f = SPIFFS.open(LOG_CONFIG_PATH, "r");
   if (!f) { webServer.send(500, "application/json", "{\"error\":\"open\"}"); return; }
+  webServer.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  webServer.sendHeader("Pragma", "no-cache");
   webServer.streamFile(f, "application/json");
   f.close();
 }
@@ -1375,46 +1568,37 @@ void handlePostLogConfig() {
   if (!f) { webServer.send(500, "application/json", "{\"error\":\"write\"}"); return; }
   f.print(body);
   f.close();
+  loadLogConfigVars();
   webServer.send(200, "application/json", "{\"ok\":true}");
 }
 
+// Translate OI3 mode number (from k3ng MQTT) to mode string.
+// Returns nullptr when the value should be ignored (0=No mode, 8=Tune).
+static const char* oi3ModeToString(int modeNum) {
+  switch (modeNum) {
+    case 1: return "CW";
+    case 2: return "SSB";
+    case 3: return "CW";
+    case 4: return "RTTY";
+    case 5: return "AM";
+    case 6: return "RTTY";
+    case 7: return "CW";   // CW-R
+    case 9: return "RTTY"; // RTTY-R
+    default: return nullptr; // 0=No mode, 8=Tune — keep last value
+  }
+}
+
 void handleOi3State() {
-  String ip = webServer.arg("ip");
-  if (ip.length() == 0) {
-    webServer.send(400, "application/json", "{\"error\":\"missing_ip\"}");
+  String trxArg = webServer.arg("trx");
+  int idx = trxArg.toInt() - 2; // trx=2 → 0, trx=3 → 1
+  if (idx < 0 || idx > 1) {
+    webServer.send(400, "application/json", "{\"error\":\"invalid_trx\"}");
     return;
   }
-  HTTPClient http;
-  String url = "http://" + ip + ":81/";
-  if (!http.begin(url)) {
-    webServer.send(200, "application/json", "{\"connected\":false,\"frequency\":0,\"mode\":\"USB\"}");
-    return;
-  }
-  http.setTimeout(1000);
-  int code = http.GET();
-  if (code != 200) {
-    http.end();
-    webServer.send(200, "application/json", "{\"connected\":false,\"frequency\":0,\"mode\":\"USB\"}");
-    return;
-  }
-  String resp = http.getString();
-  http.end();
-  resp.trim();
-  int p1 = resp.indexOf('|');
-  if (p1 < 0) {
-    webServer.send(200, "application/json", "{\"connected\":false,\"frequency\":0,\"mode\":\"USB\"}");
-    return;
-  }
-  long freq = resp.substring(0, p1).toInt();
-  int p2 = resp.indexOf('|', p1 + 1);
-  String modeStr = (p2 > p1) ? resp.substring(p1 + 1, p2) : resp.substring(p1 + 1);
-  modeStr.trim();
-  String j = "{\"connected\":true,\"frequency\":";
-  j += freq;
-  j += ",\"mode\":\"";
-  j += modeStr;
-  j += "\"}";
-  webServer.send(200, "application/json", j);
+  char jbuf[64];
+  snprintf(jbuf, sizeof(jbuf), "{\"connected\":%s,\"frequency\":%ld,\"mode\":\"%s\"}",
+    g_mqttHasData[idx] ? "true" : "false", g_mqttFreq[idx], g_mqttMode[idx]);
+  webServer.send(200, "application/json", jbuf);
 }
 
 void handleOi3Send() {
@@ -1447,8 +1631,21 @@ void setupWebServer(void){
     renderIndexPage();
   });
 
-  webServer.on("/setup",  HTTP_GET,  [](){ renderSetupPage(); });
-  webServer.on("/setup",  HTTP_POST, [](){ handleSet(); renderSetupPage(); });
+  webServer.on("/setup/save", HTTP_POST, [](){
+    handleSet();
+    if (setupSaveOk) {
+      webServer.send(200, "application/json", "{\"ok\":true}");
+    } else {
+      webServer.send(400, "application/json", "{\"ok\":false}");
+    }
+  });
+  webServer.on("/setup",   HTTP_GET,  [](){ renderSetupPage(); });
+  webServer.on("/setup",   HTTP_POST, [](){ handleSet(); renderSetupPage(); });
+  webServer.on("/restart", HTTP_POST, [](){
+    webServer.send(200, "application/json", "{\"ok\":true}");
+    delay(500);
+    ESP.restart();
+  });
   webServer.on("/ws-cat",   HTTP_GET,  [](){ handleFileFromSPIFFS("/ws-cat.html"); });
   webServer.on("/log",      HTTP_GET,  [](){ handleFileFromSPIFFS("/log.html"); });
   webServer.on("/datasync", HTTP_GET,  [](){ handleFileFromSPIFFS("/datasync.html"); });
@@ -1619,6 +1816,24 @@ void setup(){
       }
     }
 
+    // 225-245 TRX2_MQTT_ROOT
+    if(EEPROM.read(225)!=0xff){
+      for (int i=225; i<246; i++){
+        if(EEPROM.read(i)!=0xff){
+          TRX2_MQTT_ROOT=TRX2_MQTT_ROOT+char(EEPROM.read(i));
+        }
+      }
+    }
+
+    // 246-266 TRX3_MQTT_ROOT
+    if(EEPROM.read(246)!=0xff){
+      for (int i=246; i<267; i++){
+        if(EEPROM.read(i)!=0xff){
+          TRX3_MQTT_ROOT=TRX3_MQTT_ROOT+char(EEPROM.read(i));
+        }
+      }
+    }
+
     // 68-69 HTTP_CAT_PORT
     if(EEPROM.read(68)==0xff){
       HTTP_CAT_PORT=81;
@@ -1731,6 +1946,7 @@ void setup(){
     } else {
       Serial.println("SPIFFS| mounted");
       loadMemoryConfig();
+      loadLogConfigVars();
     }
 
     if(APmode==true){
@@ -1875,6 +2091,7 @@ void setup(){
 
     // Flush any garbage bytes accumulated in Serial RX buffer during boot/USB re-enumeration
     while (Serial.available()) Serial.read();
+
   }
 }
 //-------------------------------------------------------------------------------------------------------
@@ -2844,6 +3061,22 @@ void Mqtt(){
               Serial.println(mqttPath);
             }
           }
+          // Subscribe to TRX2/TRX3 OI3 MQTT topics (freq and mode)
+          auto mqttSubscribeOi3Root = [&](const String &root) {
+            if (root.length() == 0) return;
+            String r = root;
+            if (r[r.length()-1] != '/') r += '/';
+            String tHz   = r + "hz";
+            String tMode = r + "mode";
+            tHz.toCharArray(mqttPath, sizeof(mqttPath));
+            mqttClient.subscribe(mqttPath);
+            Serial.print("MQTT| subscribe "); Serial.println(mqttPath);
+            tMode.toCharArray(mqttPath, sizeof(mqttPath));
+            mqttClient.subscribe(mqttPath);
+            Serial.print("MQTT| subscribe "); Serial.println(mqttPath);
+          };
+          mqttSubscribeOi3Root(TRX2_MQTT_ROOT);
+          mqttSubscribeOi3Root(TRX3_MQTT_ROOT);
         }else{
           Serial.println("MQTT| mqttReconnect-not-connected");
         }
@@ -2855,22 +3088,46 @@ void Mqtt(){
 void MqttRx(char *topic, byte *payload, unsigned int length) {
   #if defined(MQTT)
     if(mqttEnable==true){
-      if (MQTT_TOPIC_RX.length() == 0) {
-        return;
-      }
-
-      String rxTopic = String(topic);
-      if (rxTopic != MQTT_TOPIC_RX) {
-        return;
-      }
-
       char payloadBuf[32];
-      unsigned int copyLen = length;
-      if (copyLen >= sizeof(payloadBuf)) {
-        copyLen = sizeof(payloadBuf) - 1;
-      }
+      unsigned int copyLen = length < sizeof(payloadBuf)-1 ? length : sizeof(payloadBuf)-1;
       memcpy(payloadBuf, payload, copyLen);
       payloadBuf[copyLen] = '\0';
+
+      String rxTopic = String(topic);
+
+      // Check TRX2 / TRX3 OI3 MQTT topics first
+      auto checkOi3Root = [&](const String &root, int idx) -> bool {
+        if (root.length() == 0) return false;
+        String r = root;
+        if (r[r.length()-1] != '/') r += '/';
+        if (rxTopic == r + "hz") {
+          long freq = atol(payloadBuf);
+          if (freq > 0) {
+            g_mqttFreq[idx] = freq;
+            g_mqttHasData[idx] = true;
+            Serial.printf("OI3 | TRX%d freq=%ld\n", idx+2, freq);
+          }
+          return true;
+        }
+        if (rxTopic == r + "mode") {
+          int modeNum = atoi(payloadBuf);
+          const char *modeStr = oi3ModeToString(modeNum);
+          if (modeStr != nullptr) {
+            strlcpy(g_mqttMode[idx], modeStr, sizeof(g_mqttMode[idx]));
+            g_mqttHasData[idx] = true;
+            Serial.printf("OI3 | TRX%d mode=%s\n", idx+2, modeStr);
+          }
+          return true;
+        }
+        return false;
+      };
+
+      if (checkOi3Root(TRX2_MQTT_ROOT, 0)) return;
+      if (checkOi3Root(TRX3_MQTT_ROOT, 1)) return;
+
+      // MQTT_TOPIC_RX: set TRX1 VFO frequency
+      if (MQTT_TOPIC_RX.length() == 0) return;
+      if (rxTopic != MQTT_TOPIC_RX) return;
 
       uint32_t newFreq = strtoul(payloadBuf, NULL, 10);
       Serial.print("RXmqtt < ");
@@ -3803,6 +4060,28 @@ void handleSet() {
       }
     }
 
+    // 225-245 TRX2_MQTT_ROOT
+    if (requestArg("trx2mqttroot").length() > 20) {
+      ERRdetect=1;
+    } else {
+      String str = requestArg("trx2mqttroot");
+      if (TRX2_MQTT_ROOT != str) {
+        TRX2_MQTT_ROOT = str;
+        eepromWriteStr(TRX2_MQTT_ROOT, 225, 21);
+      }
+    }
+
+    // 246-266 TRX3_MQTT_ROOT
+    if (requestArg("trx3mqttroot").length() > 20) {
+      ERRdetect=1;
+    } else {
+      String str = requestArg("trx3mqttroot");
+      if (TRX3_MQTT_ROOT != str) {
+        TRX3_MQTT_ROOT = str;
+        eepromWriteStr(TRX3_MQTT_ROOT, 246, 21);
+      }
+    }
+
     // 74-75 BaudRate *
     static int BaudRateTmp=115200;
     switch (requestArg("baud").toInt()) {
@@ -3855,25 +4134,81 @@ void handleSet() {
       if(dxclocator.length() <= 6){ DxcLocator = dxclocator; eepromWriteStr(DxcLocator, 219, 6); }
     }
 
-    for (uint8_t i = 0; i < CW_MEMORY_COUNT; i++) {
-      char fieldName[10];
-      snprintf(fieldName, sizeof(fieldName), "cwmem%u", i + 1);
-      cwMemoryText[i] = trimMemoryValue(requestArg(fieldName), CW_MEMORY_MAX_LEN);
+    {
+      String trx1Label = trimMemoryValue(requestArg("trx1label"), 10);
+      if (trx1Label.length() == 0) trx1Label = "IC-705";
+      String trx2Label = trimMemoryValue(requestArg("trx2label"), 10);
+      if (trx2Label.length() == 0) trx2Label = "TRX2";
+      String trx3Label = trimMemoryValue(requestArg("trx3label"), 10);
+      if (trx3Label.length() == 0) trx3Label = "TRX3";
+      String trx2Civ = trimMemoryValue(requestArg("trx2civ"), 2);
+      trx2Civ.toUpperCase();
+      String trx3Civ = trimMemoryValue(requestArg("trx3civ"), 2);
+      trx3Civ.toUpperCase();
+      String trx2Ip = trimMemoryValue(requestArg("trx2ip"), 32);
+      String trx3Ip = trimMemoryValue(requestArg("trx3ip"), 32);
+      bool trx2Oi3 = requestHasArg("trx2Oi3");
+      bool trx3Oi3 = requestHasArg("trx3Oi3");
+      String rstSsb = trimMemoryValue(requestArg("rstSsb"), 3);
+      if (rstSsb.length() == 0) rstSsb = "59";
+      String rstCwRtty = trimMemoryValue(requestArg("rstCwRtty"), 3);
+      if (rstCwRtty.length() == 0) rstCwRtty = "599";
+      bool manualModeForPhone = requestHasArg("manualModeForPhone");
+      String blockedDxcc = requestArg("blockedDxcc");
+
+      g_lcTrx1Label = trx1Label;
+      g_lcTrx2Label = trx2Label;
+      g_lcTrx3Label = trx3Label;
+      g_lcTrx2Civ = trx2Civ;
+      g_lcTrx3Civ = trx3Civ;
+      g_lcTrx2Ip = trx2Ip;
+      g_lcTrx3Ip = trx3Ip;
+      g_lcTrx2Oi3 = trx2Oi3;
+      g_lcTrx3Oi3 = trx3Oi3;
+      g_lcRstSsb = rstSsb;
+      g_lcRstCwRtty = rstCwRtty;
+      g_lcManualModeForPhone = manualModeForPhone;
+      g_lcBlockedDxcc = blockedDxcc;
+
+      String nextLogConfig = buildLogConfigJson(
+        readLogConfigJson(),
+        trx1Label, trx2Label, trx3Label,
+        trx2Civ, trx3Civ,
+        trx2Ip, trx3Ip,
+        trx2Oi3, trx3Oi3,
+        rstSsb, rstCwRtty,
+        manualModeForPhone, blockedDxcc
+      );
+      if (!saveLogConfigJson(nextLogConfig)) {
+        ERRdetect = 1;
+      }
     }
 
-    for (uint8_t i = 0; i < FREQ_MEMORY_COUNT; i++) {
-      char fieldName[12];
-      snprintf(fieldName, sizeof(fieldName), "freqmem%u", i + 1);
-      freqMemoryText[i] = trimMemoryValue(requestArg(fieldName), FREQ_MEMORY_MAX_LEN);
+    // Only overwrite memories when they are actually present in the request
+    // (CW/freq memory inputs live outside the EEPROM <form> — absent = empty string from requestArg).
+    if (requestHasArg("cwmem1")) {
+      for (uint8_t i = 0; i < CW_MEMORY_COUNT; i++) {
+        char fieldName[10];
+        snprintf(fieldName, sizeof(fieldName), "cwmem%u", i + 1);
+        cwMemoryText[i] = trimMemoryValue(requestArg(fieldName), CW_MEMORY_MAX_LEN);
+      }
+      for (uint8_t i = 0; i < FREQ_MEMORY_COUNT; i++) {
+        char fieldName[12];
+        snprintf(fieldName, sizeof(fieldName), "freqmem%u", i + 1);
+        freqMemoryText[i] = trimMemoryValue(requestArg(fieldName), FREQ_MEMORY_MAX_LEN);
+      }
+      saveMemoryConfig();
     }
-
-    saveMemoryConfig();
 
 
     if(ERRdetect==0){
+      setupSaveOk = true;
       // // APmode
       EEPROM.writeBool(0, false);
       EEPROM.commit();
+      if (requestHasArg("noRestart")) {
+        return;
+      }
       Serial.println("Interface will be restarted...");
       delay(3000);
       ESP.restart();

@@ -82,7 +82,17 @@
 
     <!-- DXC band display (visible when DXC Telnet is active) -->
     <div id="dxcBandBox" class="dxc-band-box">
-      <button id="dxcBandToggle" class="dxc-band-toggle" type="button" title="Toggle bandmap">▼</button>
+      <div class="dxc-band-btns">
+        <div class="dxc-bw-wrap">
+          <div id="dxcBwPalette" class="dxc-bw-palette">
+            <button class="dxc-bw-opt" data-bw="50"  type="button">50 kHz</button>
+            <button class="dxc-bw-opt dxc-bw-active" data-bw="100" type="button">100 kHz</button>
+            <button class="dxc-bw-opt" data-bw="200" type="button">200 kHz</button>
+          </div>
+          <button id="dxcBwBtn" class="dxc-bw-btn" type="button" title="Select bandwidth">^</button>
+        </div>
+        <button id="dxcBandToggle" class="dxc-band-toggle" type="button" title="Toggle bandmap">▼</button>
+      </div>
       <svg id="dxcBandSvg" width="100%" height="80"></svg>
     </div>
 
@@ -145,7 +155,8 @@
                  spellcheck="false"
                  enterkeyhint="next"
                  placeholder="">
-          <button id="btnCallQ" class="btn-action btn-merged-r" type="button" title="Send CALL?">*?</button>
+          <span class="call-key-tip">SPACE = search in log | ENTER = send memory below</span>
+          <button id="btnCallQ" class="btn-action btn-merged-r" type="button">*?</button>
           <button id="btnCheck" class="btn-action btn-merged-r btn-action-hidden" type="button" title="Check call in log">check</button>
         </div>
       </div>
@@ -181,6 +192,9 @@
       </label>
     </div>
 
+    <!-- Macro preview — shows what Enter would send, aligned with Call field -->
+    <div id="macroPreview" class="macro-preview"></div>
+
     <!-- Bottom button bar -->
     <div class="log-btn-bar">
       <div class="log-btn-group">
@@ -199,12 +213,35 @@
       </div>
       <div class="log-btn-spacer"></div>
       <div class="log-btn-group">
+        <button id="btnHelp" class="btn-help" type="button" title="Keyboard shortcuts">?</button>
         <button id="btnOpenLog" class="btn-trx" type="button" title="Open / create log">LOG</button>
         <button id="btnBackup" class="btn-trx" type="button" title="Download QSO database backup">BACKUP</button>
       </div>
     </div>
 
   </main>
+
+  <!-- Keyboard shortcuts help modal -->
+  <div id="helpModal" class="lm-modal lm-hidden" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
+    <div class="lm-box hk-box">
+      <div class="lm-header">
+        <span class="lm-title">Keyboard shortcuts</span>
+        <button id="helpModalClose" class="lm-close" type="button" title="Close">✕</button>
+      </div>
+      <div class="lm-body">
+        <table class="hk-table">
+          <tbody>
+            <tr><td><kbd>Alt+1</kbd></td><td>Select TRX1</td></tr>
+            <tr><td><kbd>Alt+2</kbd></td><td>Select TRX2</td></tr>
+            <tr><td><kbd>Alt+3</kbd></td><td>Select TRX3</td></tr>
+            <tr><td><kbd>Alt+U</kbd></td><td>Toggle RUN / S&amp;P</td></tr>
+            <tr><td><kbd>Alt+W</kbd></td><td>Clear form</td></tr>
+            <tr><td><kbd>Esc</kbd></td><td>Close dialog</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
 
   <script src="/fw-version.js"></script>
   <script src="/dxcc.js"></script>
