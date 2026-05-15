@@ -389,7 +389,7 @@ cat > "${OUTPUT_DIR}/index.html" <<EOF
       </ul>
 
       <div class="cta">
-        <esp-web-install-button manifest="manifest.json"></esp-web-install-button>
+        <esp-web-install-button manifest="manifest.json" baudrate="9600"></esp-web-install-button>
       </div>
 
       <p class="muted">

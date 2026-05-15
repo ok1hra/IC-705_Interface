@@ -82,7 +82,7 @@ int BaudRate        = 9600;
 // char* BTname        = "";
 const char* BTname  = "IC705-interface";
 bool Debug          = false;
-bool cwIpOnConnect  = false;      // announce WiFi IP via CW on first BT connect
+bool cwIpOnConnect  = true;       // announce WiFi IP via CW on first BT connect
 volatile bool cwIpSendPending = false;
 
 #define REV 20260515
