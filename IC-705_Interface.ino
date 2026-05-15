@@ -26,7 +26,7 @@
 
 1. Increase REV value in this .ino
 2. Arduino IDE 1.8.19 menu: Sketch/Export compiled Binary (for "ESP32 Dev Module" + Tools/Partition Scheme:"No OTA (2MB APP/2MB SPIFFS)")
-3. generate all .bin and publish to GitHub web page: $ ./tools/all.sh --publish
+3. generate all .bin and publish to GitHub web page: $ ./tools/gh-pages.sh --publish
 4. git commit with comment Release number and push
 
 
