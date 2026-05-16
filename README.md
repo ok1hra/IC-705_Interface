@@ -3,7 +3,7 @@
 ## Key features
 - running on ESP32
 - connected to IC-705 via bluetooth (no wire)
-- QRPlog web logbook
+- QRPlog web (multiplatform) logbook
 - logbook database stored directly in web browser
 - works decentralized/offline, without internet usable on portable
 - logbook import/export function
