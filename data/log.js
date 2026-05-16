@@ -21,8 +21,12 @@ const app = {
   rstDirty:   false,
 
   // Form state machine
-  formState:  'IDLE',  // IDLE | CALL_ENTERED | EXCHANGE_ENTERED | LOGGED
-  prevCallSent: '',    // call as sent in TXEXCH, for TU/CALL-TU decision
+  formState:      'IDLE',  // IDLE | CALL_ENTERED | EXCHANGE_ENTERED | LOGGED
+  prevCallSent:   '',      // call as sent in TXEXCH, for TU/CALL-TU decision
+  skipNextTu:     false,   // true when CALLTU was already sent, suppress regular TU
+
+  // Blocked DXCC list (parsed from /log-config at startup)
+  blockedDxccList: [],     // lowercase country names, e.g. ['russia', 'kaliningrad']
 
   _pollTimer:  null,
   _hintTimer:  null,
@@ -181,6 +185,10 @@ function renderStatusBar() {
 }
 
 const sbDxccGroup      = document.getElementById('sbDxccGroup');
+const sbExchLocGroup   = document.getElementById('sbExchLocGroup');
+const sbExchLoc        = document.getElementById('sbExchLoc');
+const sbExchAz         = document.getElementById('sbExchAz');
+const sbExchQrb        = document.getElementById('sbExchQrb');
 const azIndicator      = document.getElementById('azIndicator');
 const sbFreqModeGroup  = document.getElementById('sbFreqModeGroup');
 const sbManualGroup    = document.getElementById('sbManualGroup');
@@ -213,6 +221,45 @@ function renderDxccStatus(dxcc) {
   sbAz.textContent        = dxcc.azimuthDeg != null ? 'Az ' + dxcc.azimuthDeg + '°' : 'Az --';
 }
 
+// ── Exchange locator preview (VHF/UHF — triggered on spacebar in inpExch) ────
+
+function updateExchLocatorPreview() {
+  if (app.frequency <= 49_000_000) {
+    sbExchLocGroup.style.display = 'none';
+    return;
+  }
+  const text = inpExch.value;
+  const m    = text.match(/(?:^| )([A-R]{2}[0-9]{2}[A-X]{2})(?= |$)/i);
+  if (!m) {
+    sbExchLocGroup.style.display = 'none';
+    return;
+  }
+  const loc   = m[1].toUpperCase();
+  const myLoc = (window._logSettings && window._logSettings.myLocator) || '';
+  sbExchLoc.textContent = loc;
+  if (myLoc && window.DXCC) {
+    const dxPos = DXCC.locatorToLatLon(loc);
+    const myPos = DXCC.locatorToLatLon(myLoc);
+    if (dxPos && myPos) {
+      const { qrbKm, azimuthDeg } = DXCC.calculateQrbAzimuth(
+        myPos.lat, myPos.lon, dxPos.lat, dxPos.lon
+      );
+      sbExchAz.textContent  = azimuthDeg + '°';
+      sbExchQrb.textContent = qrbKm + ' km';
+      azIndicator.textContent = '↑';
+      azIndicator.style.transform = 'rotate(' + azimuthDeg + 'deg)';
+      azIndicator.classList.add('az-active');
+    } else {
+      sbExchAz.textContent  = '--';
+      sbExchQrb.textContent = '--';
+    }
+  } else {
+    sbExchAz.textContent  = '--';
+    sbExchQrb.textContent = '--';
+  }
+  sbExchLocGroup.style.display = '';
+}
+
 // ── Connection status indicator ───────────────────────────────────────────────
 
 function renderConnStatus() {
@@ -224,12 +271,12 @@ function renderConnStatus() {
   });
 }
 
-// ── Hint message (2 s auto-clear) ─────────────────────────────────────────────
+// ── Hint message (auto-clear) ─────────────────────────────────────────────────
 
-function showHint(msg) {
+function showHint(msg, durationMs) {
   logHint.textContent = msg;
   clearTimeout(app._hintTimer);
-  app._hintTimer = setTimeout(() => { logHint.textContent = ''; }, 2000);
+  app._hintTimer = setTimeout(() => { logHint.textContent = ''; }, durationMs || 2000);
 }
 
 // ── Auto-backup: helpers, idle timer, close warning (C + D) ──────────────────
@@ -456,6 +503,7 @@ function normaliseUpper(inp) {
 
 normaliseUpper(inpCall);
 normaliseUpper(inpExch);
+inpExch.addEventListener('input', updateExchLocatorPreview);
 
 inpRst.addEventListener('input', () => { app.rstDirty = true; });
 
@@ -495,6 +543,16 @@ function updateDxccFromCall() {
   renderDxccStatus(dxcc);
 }
 
+// ── Blocked DXCC check ────────────────────────────────────────────────────────
+
+function blockedCountryForCall(call) {
+  if (!app.blockedDxccList.length || !window.DXCC) return null;
+  const dxcc = DXCC.lookupDxcc(call);
+  if (!dxcc || !dxcc.country) return null;
+  const country = dxcc.country.toLowerCase();
+  return app.blockedDxccList.some(b => country.includes(b)) ? dxcc.country : null;
+}
+
 // ── Dupe panel reference (needed by clearForm below) ─────────────────────────
 
 const dupePanel = document.getElementById('dupePanel');
@@ -521,8 +579,10 @@ function clearForm() {
   inpRst.value     = rstDefault(app.mode);
   app.rstDirty     = false;
   app.prevCallSent = '';
+  app.skipNextTu   = false;
   app.formState    = 'IDLE';
   renderDxccStatus(null);
+  sbExchLocGroup.style.display = 'none';
   clearDupePanel();
   setPrevExchVisible(false);
 }
@@ -532,19 +592,20 @@ function clearForm() {
 function macroCtx(overrides) {
   const log    = LogManager.getActiveLog() || {};
   const trxIdx = app.activeTrx - 1;
+  const de     = log.defaultExchange || '';
   return Object.assign({
     mode:         app.mode,
     freqHz:       app.frequency,
-    stationCall:  log.stationCall     || '',
+    stationCall:  log.stationCall  || '',
     call:         inpCall.value.trim(),
-    exchangeType: (log.defaultExchange === 'NR' || log.defaultExchange === 'NRUTC')
-                    ? log.defaultExchange : 'STATIC',
-    exchange:     log.defaultExchange || '',
-    qsoNumber:    log.nextQsoNumber   || 1,
-    prevQsoNumber:(log.nextQsoNumber  || 1) - 1,
-    myLocator:    log.myLocator       || '',
+    exchangeType: ['NR','NRUTC','NRLOC'].includes(de) ? de : 'STATIC',
+    exchange:     de,
+    qsoNumber:    log.nextQsoNumber    || 1,
+    prevQsoNumber:(log.nextQsoNumber   || 1) - 1,
+    myLocator:    log.myLocator        || '',
+    cwAbbrev:     log.cwAbbrev !== false,
     _oi3:         app.trxOi3[trxIdx] && trxIdx > 0,
-    _trxIp:       app.trxIps[trxIdx] || '',
+    _trxIp:       app.trxIps[trxIdx]  || '',
   }, overrides);
 }
 
@@ -608,6 +669,15 @@ function handleCallEnter(e) {
   }
 
   if (state === 'CALL_ENTERED') {
+    const blockedCountry = blockedCountryForCall(call);
+    if (blockedCountry) {
+      inpCall.value = '';
+      renderDxccStatus(null);
+      clearDupePanel();
+      showHint('⛔ BLOCKED: ' + blockedCountry, 5000);
+      if (app.runMode === 'RUN') sendMacroText('CQ');
+      return;
+    }
     app.prevCallSent = call;
     checkDupe(call);
     if (app.runMode === 'RUN') {
@@ -767,12 +837,19 @@ function handleExchEnter(e) {
 
   if (!exch) {
     if (app.runMode === 'RUN') {
+      app.prevCallSent = call;
       sendMacroText('TXEXCH');
     } else {
       sendRawText((LogManager.getActiveLog() || {}).stationCall || '');
     }
     showHint('Enter exchange');
     return;
+  }
+
+  // RUN mode: if call was corrected after TXEXCH was sent, re-announce and suppress regular TU
+  if (app.runMode === 'RUN' && app.prevCallSent && call !== app.prevCallSent) {
+    app.skipNextTu = true;
+    sendMacroText('CALLTU');
   }
 
   // Both filled → S&P sends exchange memory first, then log QSO
@@ -816,12 +893,15 @@ function logQso(call, exch) {
     }
   }
 
-  // VHF/UHF: extract Maidenhead locator from Exch text
+  // LOC mode: explicit NRLOC exchange type, or auto-triggered on 6m and up
+  const locMode = (log.defaultExchange === 'NRLOC') || (app.frequency > 49_000_000);
+
+  // Extract Maidenhead locator from received exchange in LOC mode
   let locatorReceived = '';
-  if (app.frequency > 140_000_000) {
+  if (locMode) {
     const m = exch.match(/\b([A-R]{2}\d{2}[A-X]{2})\b/i);
     if (m) locatorReceived = m[1].toUpperCase();
-    // if we got a locator from exchange, recalculate QRB more precisely
+    // Recalculate QRB/azimuth from received locator when available
     if (locatorReceived && dxcc && window.DXCC) {
       const myLoc = log.myLocator || '';
       const dxPos = DXCC.locatorToLatLon(locatorReceived);
@@ -852,7 +932,7 @@ function logQso(call, exch) {
     trx:              app.trxLabels[app.activeTrx - 1],
     dxcc:             dxcc || null,
     locatorReceived:  locatorReceived,
-    bandClass:        app.frequency > 140_000_000 ? 'VHF_PLUS' : 'HF',
+    bandClass:        locMode ? 'VHF_PLUS' : 'HF',
     note:             '',
   };
 
@@ -875,9 +955,12 @@ function logQso(call, exch) {
 }
 
 function sendTuAndResetRit() {
-  // Send TU macro
   if (app.runMode === 'RUN') {
-    sendMacroText('TU');
+    if (app.skipNextTu) {
+      app.skipNextTu = false;
+    } else {
+      sendMacroText('TU');
+    }
   }
   // Reset RIT via HTTP POST /cmd
   if (app.connected) {
@@ -908,7 +991,8 @@ function appendJournalRow(qso, displayNr) {
     if (!d) return '';
     const parts = [];
     if (d.country) parts.push(d.country);
-    if (d.qrbKm != null) parts.push(d.qrbKm + 'km');
+    if (d.qrbKm != null) parts.push(d.qrbKm + ' km');
+    if (d.azimuthDeg != null && qso.bandClass === 'VHF_PLUS') parts.push(d.azimuthDeg + '°');
     return parts.join(' | ');
   })();
 
@@ -1293,6 +1377,8 @@ function init() {
     if (cfg.trx3Label) app.trxLabels[2] = cfg.trx3Label;
     if (cfg.trx2Ip)   app.trxIps[1]   = cfg.trx2Ip;
     if (cfg.trx3Ip)   app.trxIps[2]   = cfg.trx3Ip;
+    app.blockedDxccList = (cfg.blockedDxcc || '').split('\n')
+      .map(s => s.trim().toLowerCase()).filter(Boolean);
     app.trxOi3[1] = !!cfg.trx2Oi3;
     app.trxOi3[2] = !!cfg.trx3Oi3;
     trxButtons.forEach((b, i) => { b.textContent = app.trxLabels[i]; });

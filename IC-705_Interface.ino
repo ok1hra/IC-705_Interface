@@ -85,7 +85,7 @@ bool Debug          = false;
 bool cwIpOnConnect  = true;       // announce WiFi IP via CW on first BT connect
 volatile bool cwIpSendPending = false;
 
-#define REV 20260515
+#define REV 20260516
 #define WIFI
 #define MQTT
 #define UDP_TO_CW
@@ -162,6 +162,7 @@ volatile bool cwIpSendPending = false;
 
 #if defined(BLUETOOTH)
   #include "BluetoothSerial.h"
+  #include <esp_bt.h>
   //#define DEBUG 1
   //#define MIRRORCAT 1
   //#define MIRRORCAT_SPEED 9600
@@ -211,7 +212,7 @@ volatile bool cwIpSendPending = false;
 
   char modes[12] = "OFF";
   BluetoothSerial CAT;
-  bool btClientConnected = false;
+  volatile bool btClientConnected = false;
 #endif
 
 short HardwareRev = 99;
@@ -231,6 +232,7 @@ bool TrxNeedSet         = 0;
 bool TrxSetupDone       = false;
 volatile bool btStateBroadcastPending = false;
 volatile bool btDisconnectPending = false;
+volatile bool btConnectPending = false;
 long mqttPostponeTimer  = 0;
 bool mqttPostponeStatus = 1;
 
@@ -739,7 +741,14 @@ String extractJsonString(const String &json, const char *key){
     for (int i = start; i < (int)json.length(); i++) {
       char c = json.charAt(i);
       if (escaped) {
-        out += c;
+        switch (c) {
+          case 'n':  out += '\n'; break;
+          case 'r':  out += '\r'; break;
+          case 't':  out += '\t'; break;
+          case '\\': out += '\\'; break;
+          case '"':  out += '"';  break;
+          default:   out += c;    break;
+        }
         escaped = false;
       } else if (c == '\\') {
         escaped = true;
@@ -2141,12 +2150,30 @@ void handleBtEvents(){
     btStateBroadcastPending = false;
   }
 
+  if (btConnectPending == true) {
+    btConnectPending = false;
+    btClientConnected = true;
+    radio_address = configuredCivAddress;
+    frequency = 0;
+    frequencyTmp = 0;
+    if (TrxSetupDone == false) {
+      TrxNeedSet = 1;
+      if (cwIpOnConnect) cwIpSendPending = true;
+    }
+    Serial.println("    | Client Connected");
+  }
+
   if (btDisconnectPending == true) {
     btDisconnectPending = false;
+    btClientConnected = false;
+    radio_address = 0x00;
+    TrxNeedSet = 0;
     powerTimer = 0;
     frequency = 0;
+    frequencyTmp = 0;
     setModesText("OFF");
     mqttPostponeStatus = 1;
+    Serial.println("    | Client Disconnected");
     if (statusPower == 1 && mqttEnable == true) {
       MqttPubString(MQTT_TOPIC, "0", 0);
     }
@@ -2760,27 +2787,11 @@ void processCatMessages(){
 void callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param){
   (void)param;
   if (event == ESP_SPP_SRV_OPEN_EVT) {
-    btClientConnected = true;
-    radio_address = configuredCivAddress;
-    frequency = 0;
-    frequencyTmp = 0;
-    if (TrxSetupDone == false) {
-      TrxNeedSet = 1;
-      if (cwIpOnConnect) cwIpSendPending = true;
-    }
-
-    Serial.println("    | Client Connected");
-    // Serial.println("    | CHANGE frequency on IC-705, for initialize CAT");
-    // Serial.println("    | -----------------------------------------------------------------------------");
+    btConnectPending = true;
     btStateBroadcastPending = true;
   }
-
   if (event == ESP_SPP_CLOSE_EVT) {
-    btClientConnected = false;
-    radio_address = 0x00;
-    TrxNeedSet = 0;
     btDisconnectPending = true;
-    Serial.println("    | Client Disconnected");
     btStateBroadcastPending = true;
   }
 }
@@ -2803,6 +2814,7 @@ void configRadioBaud(uint16_t baudrate){
     static bool btInitDone = false;
     if (btInitDone) return;
 
+    esp_bt_mem_release(ESP_BT_MODE_BLE);
     if (!CAT.begin(BTname)) {
       Serial.println(" BT | An error occurred initializing Bluetooth");
     } else {

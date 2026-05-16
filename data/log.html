@@ -137,6 +137,14 @@
         <span class="sb-sep">|</span>
         <span id="sbAz">Az --</span>
       </span>
+      <span id="sbExchLocGroup" style="display:none">
+        <span class="sb-sep">|</span>
+        <span id="sbExchLoc">--</span>
+        <span class="sb-sep">|</span>
+        <span id="sbExchAz">--</span>
+        <span class="sb-sep">|</span>
+        <span id="sbExchQrb">--</span>
+      </span>
     </div>
 
     <!-- Input row -->
@@ -155,7 +163,6 @@
                  spellcheck="false"
                  enterkeyhint="next"
                  placeholder="">
-          <span class="call-key-tip">SPACE = search in log | ENTER = send memory below</span>
           <button id="btnCallQ" class="btn-action btn-merged-r" type="button">*?</button>
           <button id="btnCheck" class="btn-action btn-merged-r btn-action-hidden" type="button" title="Check call in log">check</button>
         </div>
@@ -237,6 +244,8 @@
             <tr><td><kbd>Alt+U</kbd></td><td>Toggle RUN / S&amp;P</td></tr>
             <tr><td><kbd>Alt+W</kbd></td><td>Clear form</td></tr>
             <tr><td><kbd>Esc</kbd></td><td>Close dialog</td></tr>
+            <tr><td colspan="2" class="hk-sep"></td></tr>
+            <tr><td><kbd>Space</kbd> in Call</td><td>Search log for partial call / duplicate check</td></tr>
           </tbody>
         </table>
       </div>

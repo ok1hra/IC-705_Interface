@@ -93,7 +93,7 @@ TRX2 and TRX3 connect to additional CI-V adapters over the network.
 | RST default SSB/FM | Default RS(T) pre-filled for SSB and FM QSOs (e.g. `59`). |
 | RST default CW/RTTY | Default RST pre-filled for CW and digital mode QSOs (e.g. `599`). |
 | Manual mode for Phone (SSB/FM) | When checked, pressing Enter on an SSB/FM QSO logs it immediately without sending any macro. |
-| Blocked DXCC list | One DXCC entity name per line (e.g. `Russia`). Matching callsigns are highlighted red in the log journal. |
+| Blocked DXCC list | One DXCC entity name per line (e.g. `Russia`). Matching callsigns are highlighted red in the log journal. When Enter is pressed on a blocked call the call field is cleared and a ⛔ warning is shown for 5 seconds; in RUN mode the CQ macro is re-sent automatically. |
 
 ### CW memories `spiffs`
 
@@ -183,9 +183,22 @@ To create a new log, fill in the form at the bottom of the log manager:
 |-------|-------------|
 | Contest name | Name of the contest or activation (e.g. `CQWW`, `SOTA`). Required. |
 | My callsign | Your station callsign. Used in CW/RTTY macros as `{mycall}`. Required. |
-| Default exchange | What you send as your exchange. Enter `NR` for a serial number, `NRUTC` for serial+UTC time, or any fixed string (e.g. `JO70FD` for a locator). Leave blank for no exchange. |
-| My locator | Your Maidenhead locator (optional). Used for QRB and azimuth calculations in the status bar. |
+| Exchange type | What you send as your exchange — selected from a dropdown. See the table below. Click **?** next to the label for a built-in description of each type. |
+| Exch value | Visible only when **STATIC** is selected. Enter the fixed exchange text (e.g. `SK1`, `14`, `A`). |
+| Exchange preview | Live preview of the exchange string (e.g. `5NN TT1`) shown immediately below the type selector. |
+| My locator | Your Maidenhead locator (optional, e.g. `JO70FD`). Required for NRLOC. Also used for QRB and azimuth in the status bar. |
 | Starting QSO number | Serial number of the first QSO. Default: 1. |
+| CW numbers | **CW abbreviation** checkbox (default: on). When enabled, CW numbers use the 0→T and 9→N abbreviations (e.g. 001 → `TT1`, 599 → `5NN`). Uncheck to send plain digits. |
+
+**Exchange type options:**
+
+| Type | Exchange sent | Typical use |
+|------|---------------|-------------|
+| NONE | — | Expedition / casual QSO |
+| NR | Sequential QSO number (001, 002, …) | Most HF contests |
+| NR+UTC | Sequential number + UTC time (e.g. `001-1430`) | NRAU, Baltic, some RTTY contests |
+| NR+LOC | Sequential number + your Maidenhead locator (e.g. `001 JO70FD`) | VHF/UHF contests (6 m and above) |
+| STATIC | A fixed text you define | Contests with a zone, district, or region exchange |
 
 Click an existing log in the list to switch to it. The active log name and callsign are shown in the log journal header.
 
@@ -215,8 +228,14 @@ Macros are generated automatically based on mode and RUN/S&P state:
 | Macro | CW (RUN) | RTTY (RUN) |
 |-------|----------|------------|
 | CQ | `OK1HRA OK1HRA TEST` | `OK1HRA OK1HRA OK1HRA TEST` |
-| TXEXCH | `{call} {serial} {exchange}` | same |
+| TXEXCH | `{call} {rst} {exchange}` | same |
 | TU | `tu OK1HRA` | `{call} tu OK1HRA` |
+
+When the **CW abbreviation** option is enabled (the default), RST is sent as `5NN` and QSO numbers use T for 0 and N for 9 (e.g. `TT1`, `TT7`, `1N2`). Uncheck *CW numbers* in the log manager to send plain digits.
+
+The exchange field of TXEXCH depends on the exchange type set in the log: a serial number (NR), serial+UTC (NR+UTC), serial+locator (NR+LOC), or a fixed string (STATIC). For NR+LOC and VHF contests the locator from *My locator* is appended automatically.
+
+**Corrected callsign (CALLTU):** In RUN mode, if you edit the callsign in the Call field after TXEXCH has already been sent, pressing Enter will first transmit `{call} tu` (CW) or `{call} tu {mycall}` (RTTY) to announce the corrected call before logging the QSO. The regular TU macro is suppressed in this case.
 
 A preview of the macro that Enter would send is shown above the bottom button bar.
 
@@ -227,6 +246,7 @@ The status bar below the entry fields shows:
 - **UTC time**
 - **Frequency and mode** from the active TRX (or a manual entry field when no TRX is connected)
 - **DXCC information** — continent, country, prefix, CQ zone, ITU zone, UTC offset, QRB distance, and azimuth for the callsign in the Call field
+- **Exchange locator preview** (6 m and above only) — when a valid Maidenhead locator is typed in the Exchange field and Space is pressed, a temporary group appears in the status bar showing the parsed locator, azimuth to it, and QRB distance in km. The bearing arrow rotates accordingly. The group disappears when the form is cleared.
 
 ### Band map
 
@@ -248,6 +268,8 @@ Click **BACKUP** to download the entire QSO database as a JSON file. This is the
 
 ![Keyboard shortcuts](LOGkey.png)
 
+**Global shortcuts:**
+
 | Shortcut | Action |
 |----------|--------|
 | `Alt+1` | Select TRX1 |
@@ -258,6 +280,15 @@ Click **BACKUP** to download the entire QSO database as a JSON file. This is the
 | `Esc` | Close dialog |
 
 Press the **?** button in the bottom bar to show this table at any time.
+
+**Entry field shortcuts** (click the **?** button next to the hint area in the input row):
+
+| Field | Key | Action |
+|-------|-----|--------|
+| Call | `Space` | Search the log for a partial call match (duplicate check) |
+| Call | `Enter` | Send exchange memory (RUN mode), or send CQ when the field is empty |
+| Exchange | `Enter` | Log the QSO; in S&P mode sends your exchange first |
+| Exchange | `Space` after locator | On 6 m and above: parse the Maidenhead locator and show azimuth and distance in the status bar |
 
 ---
 

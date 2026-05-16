@@ -273,10 +273,24 @@
               <span>My call</span>
               <input id="lmMyCall" maxlength="16" placeholder="OK1ABC" required>
             </label>
-            <label class="lm-row">
-              <span>Exchange</span>
-              <input id="lmExch" maxlength="10" placeholder="NR / JO70FD">
-            </label>
+            <div class="lm-row">
+              <span>Exchange <button type="button" class="lm-help-btn" id="lmExchHelpBtn" title="Exchange type help">?</button></span>
+              <select id="lmExchType" class="lm-row-select">
+                <option value="">NONE</option>
+                <option value="NR">NR</option>
+                <option value="NRUTC">NR+UTC</option>
+                <option value="NRLOC">NR+LOC (6m and up)</option>
+                <option value="STATIC">STATIC</option>
+              </select>
+            </div>
+            <div class="lm-row" id="lmStaticRow" style="display:none">
+              <span>Exch value</span>
+              <input id="lmExchStatic" maxlength="20" placeholder="e.g. SK1, 14, A">
+            </div>
+            <div class="lm-row" id="lmExchPreviewRow">
+              <span class="lm-preview-label">Preview</span>
+              <span class="lm-exch-preview" id="lmExchPreviewText">— no exchange —</span>
+            </div>
             <label class="lm-row">
               <span>My locator</span>
               <input id="lmLoc" maxlength="6" placeholder="JO70FD">
@@ -285,6 +299,13 @@
               <span>Start QSO#</span>
               <input id="lmStartNr" type="number" min="1" value="1">
             </label>
+            <div class="lm-row lm-row-check">
+              <span>CW numbers</span>
+              <label class="lm-check-wrap">
+                <input type="checkbox" id="lmCwAbbrev" checked>
+                <span class="lm-check-text">CW abbreviation &mdash; 0&rarr;T, 9&rarr;N &nbsp;(e.g. 001&rarr;TT1, 599&rarr;5NN)</span>
+              </label>
+            </div>
             <div class="lm-actions">
               <button type="submit" class="lm-btn lm-btn-primary">Create &amp; activate</button>
             </div>
@@ -303,8 +324,9 @@
     document.getElementById('lmDeleteAll').addEventListener('click', onDeleteAll);
 
     // uppercase fields
-    ['lmContest','lmMyCall','lmExch','lmLoc'].forEach(id => {
+    ['lmContest','lmMyCall','lmExchStatic','lmLoc'].forEach(id => {
       const inp = document.getElementById(id);
+      if (!inp) return;
       inp.addEventListener('input', () => {
         const pos = inp.selectionStart;
         inp.value = inp.value.toUpperCase();
@@ -312,7 +334,108 @@
       });
     });
 
+    document.getElementById('lmExchType').addEventListener('change', _onExchTypeChange);
+    document.getElementById('lmExchStatic').addEventListener('input', _updateExchPreview);
+    document.getElementById('lmLoc').addEventListener('input', _updateExchPreview);
+    document.getElementById('lmCwAbbrev').addEventListener('change', _updateExchPreview);
+    document.getElementById('lmExchHelpBtn').addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      _ensureExchHelpPopup();
+      document.getElementById('lmExchHelpPopup').classList.toggle('si-open');
+    });
+    _updateExchPreview();
+
     return el;
+  }
+
+  // ── Exchange type helpers ──────────────────────────────────────────────────
+
+  function _exchDisplayLabel(de) {
+    if (!de) return 'NONE';
+    if (de === 'NR')    return 'NR';
+    if (de === 'NRUTC') return 'NR+UTC';
+    if (de === 'NRLOC') return 'NR+LOC';
+    return de;
+  }
+
+  function _onExchTypeChange() {
+    const type = document.getElementById('lmExchType').value;
+    const row  = document.getElementById('lmStaticRow');
+    if (row) row.style.display = (type === 'STATIC') ? '' : 'none';
+    _updateExchPreview();
+  }
+
+  function _cwNum(n, abbrev) {
+    const s = String(n).padStart(3, '0');
+    if (!abbrev) return s;
+    return s.replace(/0/g, 'T').replace(/9/g, 'N');
+  }
+
+  function _updateExchPreview() {
+    const typeEl    = document.getElementById('lmExchType');
+    const locEl     = document.getElementById('lmLoc');
+    const staticEl  = document.getElementById('lmExchStatic');
+    const abbrevEl  = document.getElementById('lmCwAbbrev');
+    const previewEl = document.getElementById('lmExchPreviewText');
+    if (!typeEl || !previewEl) return;
+
+    const type   = typeEl.value;
+    const loc    = locEl    ? locEl.value.trim()    : '';
+    const stat   = staticEl ? staticEl.value.trim() : '';
+    const abbrev = abbrevEl ? abbrevEl.checked       : true;
+    const rst    = abbrev ? '5NN' : '599';
+    const nr     = _cwNum(1, abbrev);
+    let text = '';
+    let warn = false;
+
+    if (!type) {
+      text = '— no exchange —';
+    } else if (type === 'NR') {
+      text = rst + ' ' + nr;
+    } else if (type === 'NRUTC') {
+      const d    = new Date();
+      const hhmm = String(d.getUTCHours()).padStart(2,'0') + String(d.getUTCMinutes()).padStart(2,'0');
+      text = rst + ' ' + nr + '-' + hhmm;
+    } else if (type === 'NRLOC') {
+      if (!loc) { text = rst + ' ' + nr + ' ⚠ set locator'; warn = true; }
+      else       { text = rst + ' ' + nr + ' ' + loc; }
+    } else if (type === 'STATIC') {
+      if (!stat) { text = rst + ' ⚠ enter exchange'; warn = true; }
+      else        { text = rst + ' ' + stat; }
+    }
+
+    previewEl.textContent = text;
+    previewEl.classList.toggle('lm-exch-preview-warn', warn);
+  }
+
+  function _ensureExchHelpPopup() {
+    if (document.getElementById('lmExchHelpPopup')) return;
+    const d = document.createElement('div');
+    d.className = 'si-popup lm-exch-help-popup';
+    d.id = 'lmExchHelpPopup';
+    d.innerHTML = `
+      <p class="si-popup-head">Exchange type <button class="si-popup-close" id="lmExchHelpClose">&#x2715;</button></p>
+      <dl class="lm-exch-help-list">
+        <dt>NONE</dt>
+        <dd>No exchange code is sent. Suitable for expedition-style operation or casual QSOs.</dd>
+        <dt>NR</dt>
+        <dd>A sequential QSO number is sent (001, 002, …). Standard for most HF contests.</dd>
+        <dt>NR+UTC</dt>
+        <dd>Sequential number plus current UTC time (e.g. 001-1430). Used in some RTTY contests (e.g. NRAU, Baltic).</dd>
+        <dt>NR+LOC <small>(6m and up)</small></dt>
+        <dd>Sequential number plus your Maidenhead locator (e.g. 001 JO70FD). Standard for VHF/UHF contests. Locator is taken from the <em>My locator</em> field.</dd>
+        <dt>STATIC</dt>
+        <dd>A fixed text you define (e.g. zone, district, region). Used in contests where the exchange does not change between QSOs.</dd>
+      </dl>`;
+    document.body.appendChild(d);
+    document.getElementById('lmExchHelpClose').addEventListener('click', e => {
+      e.stopPropagation();
+      d.classList.remove('si-open');
+    });
+    document.addEventListener('click', e => {
+      if (!d.contains(e.target) && e.target.id !== 'lmExchHelpBtn') d.classList.remove('si-open');
+    });
   }
 
   function renderLogList() {
@@ -359,7 +482,7 @@
       row.innerHTML  = `
         <div class="lm-log-info">
           <span class="lm-log-name">${_esc(log.contestName)}</span>
-          <span class="lm-log-meta">${_esc(log.stationCall)}${log.myLocator ? ' | ' + _esc(log.myLocator) : ''}${log.defaultExchange ? ' | ' + _esc(log.defaultExchange) : ''} | #${count}</span>
+          <span class="lm-log-meta">${_esc(log.stationCall)}${log.myLocator ? ' | ' + _esc(log.myLocator) : ''} | ${_esc(_exchDisplayLabel(log.defaultExchange))} | #${count}</span>
         </div>
         <div class="lm-log-btns">
           ${!isActive ? `<button class="lm-btn lm-btn-sm" data-act="open" data-id="${_esc(log.id)}">Open</button>` : '<span class="lm-active-tag">active</span>'}
@@ -456,15 +579,19 @@
 
   function onNewFormSubmit(e) {
     e.preventDefault();
-    const contestName     = document.getElementById('lmContest').value.trim();
-    const stationCall     = document.getElementById('lmMyCall').value.trim();
-    const defaultExchange = document.getElementById('lmExch').value.trim();
-    const myLocator       = document.getElementById('lmLoc').value.trim();
-    const startQsoNumber  = parseInt(document.getElementById('lmStartNr').value, 10) || 1;
+    const contestName    = document.getElementById('lmContest').value.trim();
+    const stationCall    = document.getElementById('lmMyCall').value.trim();
+    const myLocator      = document.getElementById('lmLoc').value.trim();
+    const startQsoNumber = parseInt(document.getElementById('lmStartNr').value, 10) || 1;
+    const cwAbbrev       = document.getElementById('lmCwAbbrev').checked;
+    const exchType       = document.getElementById('lmExchType').value;
+    const defaultExchange = exchType === 'STATIC'
+      ? (document.getElementById('lmExchStatic').value.trim())
+      : exchType;
 
     if (!contestName || !stationCall) return;
 
-    LogDB.createLog({ contestName, stationCall, defaultExchange, myLocator, startQsoNumber })
+    LogDB.createLog({ contestName, stationCall, defaultExchange, myLocator, startQsoNumber, cwAbbrev })
       .then(log => {
         activateLog(log);
         closeModal();

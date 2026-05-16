@@ -19,15 +19,15 @@
   }
 
   function isVhfPlus(freqHz) {
-    return Number(freqHz) > 140_000_000;
+    return Number(freqHz) > 49_000_000;
   }
 
-  // ── CW number padding: 3 chars, leading zeros → T  (TT1, TT7, T42, 123) ──
+  // ── CW number: 3-char padded, 0→T and 9→N when abbrev enabled ─────────────
 
-  function cwNumber(n) {
-    const s = String(n);
-    if (s.length >= 3) return s;
-    return s.padStart(3, 'T').replace(/0/g, 'T');
+  function cwNumber(n, abbrev) {
+    const s = String(n).padStart(3, '0');
+    if (!abbrev) return s;
+    return s.replace(/0/g, 'T').replace(/9/g, 'N');
   }
 
   // ── UTC HHMM ───────────────────────────────────────────────────────────────
@@ -37,6 +37,12 @@
     return String(d.getUTCHours()).padStart(2,'0') + String(d.getUTCMinutes()).padStart(2,'0');
   }
 
+  function utcHHMMcw(abbrev) {
+    const s = utcHHMM();
+    if (!abbrev) return s;
+    return s.replace(/0/g, 'T').replace(/9/g, 'N');
+  }
+
   // ── Build macro text ───────────────────────────────────────────────────────
 
   /**
@@ -44,24 +50,20 @@
    *
    * ctx = {
    *   mode, freqHz, stationCall, call, exchangeType,
-   *   exchange, qsoNumber, prevQsoNumber, myLocator
+   *   exchange, qsoNumber, prevQsoNumber, myLocator, cwAbbrev
    * }
    * type: 'CQ' | 'TXEXCH' | 'TXEXCHSP' | 'TXEXCHSP2' | 'TU'
    */
   function buildMacro(type, ctx) {
     const mg     = modeGroup(ctx.mode);
     const vhf    = isVhfPlus(ctx.freqHz);
-    const nr     = cwNumber(ctx.qsoNumber  || 1);
-    const prevNr = cwNumber(ctx.prevQsoNumber || Math.max(1, (ctx.qsoNumber || 1) - 1));
-    const exch   = ctx.exchangeType === 'NR'     ? nr :
-                   ctx.exchangeType === 'NRUTC'  ? (nr + '-' + utcHHMM()) :
-                   (ctx.exchange || '');
-    const prevExch = ctx.exchangeType === 'NR'    ? prevNr :
-                     ctx.exchangeType === 'NRUTC' ? (prevNr + '-' + utcHHMM()) :
-                     (ctx.exchange || '');
+    const abbrev = ctx.cwAbbrev !== false;
+    const rst    = abbrev ? '5nn' : '599';
+    const nr     = cwNumber(ctx.qsoNumber  || 1, abbrev);
+    const prevNr = cwNumber(ctx.prevQsoNumber || Math.max(1, (ctx.qsoNumber || 1) - 1), abbrev);
+    const loc    = ctx.myLocator || '';
     const myCall = ctx.stationCall || 'MYCALL';
     const dxCall = ctx.call        || '';
-    const loc    = ctx.myLocator   || '';
 
     switch (type) {
 
@@ -70,52 +72,65 @@
         if (mg === 'CW')   return myCall + ' ' + myCall + ' TEST';
         return '';  // PHONE — manual
 
-      case 'TXEXCH':
+      case 'TXEXCH': {
         if (mg === 'RTTY') {
-          const excStr = ctx.exchangeType === 'NRUTC'
-            ? ('599-' + String(ctx.qsoNumber).padStart(3,'0') + '-' + utcHHMM())
-            : '599-' + (ctx.exchangeType === 'NR' ? String(ctx.qsoNumber).padStart(3,'0') : ctx.exchange);
+          const nrStr  = String(ctx.qsoNumber || 1).padStart(3, '0');
+          const excStr = ctx.exchangeType === 'NRUTC' ? ('599-' + nrStr + '-' + utcHHMM())
+                       : ctx.exchangeType === 'NRLOC' ? ('599-' + nrStr + '-' + loc)
+                       : ctx.exchangeType === 'NR'    ? '599-' + nrStr
+                       : (ctx.exchange ? '599-' + ctx.exchange : '599');
           return '\r\n ' + dxCall + ' ' + dxCall + ' ' + excStr + ' ' + excStr;
         }
         if (mg === 'CW') {
           if (ctx.exchangeType === 'NR' || ctx.exchangeType === 'NRUTC') {
-            return vhf
-              ? dxCall + ' 5nn ' + nr + ' ' + loc
-              : dxCall + ' 5nn ' + nr;
+            const nrPart = ctx.exchangeType === 'NRUTC' ? nr + '-' + utcHHMMcw(abbrev) : nr;
+            return vhf ? dxCall + ' ' + rst + ' ' + nrPart + ' ' + loc
+                       : dxCall + ' ' + rst + ' ' + nrPart;
           }
-          return dxCall + ' 5nn ' + ctx.exchange;
-        }
-        return '';  // PHONE
-
-      case 'TXEXCHSP':
-        if (mg === 'RTTY') {
-          const excStr = ctx.exchangeType === 'NRUTC'
-            ? ('599-' + String(ctx.qsoNumber).padStart(3,'0') + '-' + utcHHMM())
-            : '599-' + (ctx.exchangeType === 'NR' ? String(ctx.qsoNumber).padStart(3,'0') : ctx.exchange);
-          return '\r\n ' + dxCall + ' ' + dxCall + ' ' + excStr + ' ' + excStr;
-        }
-        if (mg === 'CW') {
-          if (ctx.exchangeType === 'NR' || ctx.exchangeType === 'NRUTC') {
-            return vhf ? '5nn ' + nr + ' ' + loc + ' tu' : '5nn ' + nr;
-          }
-          return '5nn ' + ctx.exchange;
+          if (ctx.exchangeType === 'NRLOC') return dxCall + ' ' + rst + ' ' + nr + ' ' + loc;
+          return dxCall + ' ' + rst + ' ' + ctx.exchange;
         }
         return '';
+      }
 
-      case 'TXEXCHSP2': {
-        const pn = ctx.prevQsoNumber || Math.max(1,(ctx.qsoNumber||1)-1);
-        const pnCw = cwNumber(pn);
+      case 'TXEXCHSP': {
         if (mg === 'RTTY') {
-          const excStr = ctx.exchangeType === 'NRUTC'
-            ? ('599-' + String(pn).padStart(3,'0') + '-' + utcHHMM())
-            : '599-' + (ctx.exchangeType === 'NR' ? String(pn).padStart(3,'0') : ctx.exchange);
+          const nrStr  = String(ctx.qsoNumber || 1).padStart(3, '0');
+          const excStr = ctx.exchangeType === 'NRUTC' ? ('599-' + nrStr + '-' + utcHHMM())
+                       : ctx.exchangeType === 'NRLOC' ? ('599-' + nrStr + '-' + loc)
+                       : ctx.exchangeType === 'NR'    ? '599-' + nrStr
+                       : (ctx.exchange ? '599-' + ctx.exchange : '599');
           return '\r\n ' + dxCall + ' ' + dxCall + ' ' + excStr + ' ' + excStr;
         }
         if (mg === 'CW') {
           if (ctx.exchangeType === 'NR' || ctx.exchangeType === 'NRUTC') {
-            return vhf ? '5nn ' + pnCw + ' ' + loc : '5nn ' + pnCw;
+            const nrPart = ctx.exchangeType === 'NRUTC' ? nr + '-' + utcHHMMcw(abbrev) : nr;
+            return vhf ? rst + ' ' + nrPart + ' ' + loc + ' tu' : rst + ' ' + nrPart;
           }
-          return '5nn ' + ctx.exchange;
+          if (ctx.exchangeType === 'NRLOC') return rst + ' ' + nr + ' ' + loc + ' tu';
+          return ctx.exchange ? rst + ' ' + ctx.exchange : rst + ' tu';
+        }
+        return '';
+      }
+
+      case 'TXEXCHSP2': {
+        const pn    = ctx.prevQsoNumber || Math.max(1, (ctx.qsoNumber || 1) - 1);
+        const pnCw  = cwNumber(pn, abbrev);
+        const pnStr = String(pn).padStart(3, '0');
+        if (mg === 'RTTY') {
+          const excStr = ctx.exchangeType === 'NRUTC' ? ('599-' + pnStr + '-' + utcHHMM())
+                       : ctx.exchangeType === 'NRLOC' ? ('599-' + pnStr + '-' + loc)
+                       : ctx.exchangeType === 'NR'    ? '599-' + pnStr
+                       : (ctx.exchange ? '599-' + ctx.exchange : '599');
+          return '\r\n ' + dxCall + ' ' + dxCall + ' ' + excStr + ' ' + excStr;
+        }
+        if (mg === 'CW') {
+          if (ctx.exchangeType === 'NR' || ctx.exchangeType === 'NRUTC') {
+            const pnPart = ctx.exchangeType === 'NRUTC' ? pnCw + '-' + utcHHMMcw(abbrev) : pnCw;
+            return vhf ? rst + ' ' + pnPart + ' ' + loc : rst + ' ' + pnPart;
+          }
+          if (ctx.exchangeType === 'NRLOC') return rst + ' ' + pnCw + ' ' + loc;
+          return ctx.exchange ? rst + ' ' + ctx.exchange : rst + ' tu';
         }
         return '';
       }
@@ -123,6 +138,11 @@
       case 'TU':
         if (mg === 'RTTY') return dxCall + ' tu ' + myCall;
         if (mg === 'CW')   return 'tu ' + myCall;
+        return '';
+
+      case 'CALLTU':
+        if (mg === 'RTTY') return dxCall + ' tu ' + myCall;
+        if (mg === 'CW')   return dxCall + ' tu';
         return '';
 
       default:

@@ -240,7 +240,7 @@ body {
 .jcol-rcv     { width: 57px;  }
 .jcol-exch    { width: 125px; }
 .jcol-trx     { width: 80px;  }
-.jcol-dxcc    { width: 220px; text-align: left; }
+.jcol-dxcc    { width: 280px; text-align: left; }
 
 /* Call header — clickable search trigger */
 .log-hdr-call {
@@ -413,6 +413,11 @@ body {
   display: inline;
 }
 
+#sbExchLocGroup {
+  display: inline;
+  font-weight: bold;
+}
+
 .sb-manual-freq,
 .sb-manual-mode {
   font-family: var(--font-mono);
@@ -485,23 +490,6 @@ body {
   position: relative;
 }
 
-.call-key-tip {
-  display: none;
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  background: var(--dark-header);
-  color: var(--dark-muted);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  padding: 3px 8px;
-  white-space: nowrap;
-  border: 1px solid #444;
-  pointer-events: none;
-  z-index: 20;
-}
-
-#inpCall:hover + .call-key-tip { display: block; }
 
 .log-field-lbl {
   font-size: 14px;
@@ -603,6 +591,8 @@ body {
   padding-left: 10px;
   min-height: 26px;
 }
+
+.hk-sep td { padding-top: 6px; border-top: 1px solid #444; }
 
 /* ── Bottom button bar — dark, same as journal ───────────────────────────── */
 
@@ -915,6 +905,69 @@ body {
 .lm-row-select:focus {
   border-color: var(--btn-on-bd);
 }
+
+.lm-help-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 1px solid #33cc55;
+  background: none;
+  color: #33cc55;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  padding: 0;
+  margin-left: 4px;
+  vertical-align: middle;
+  line-height: 1;
+}
+.lm-help-btn:hover { border-color: #66ee88; color: #66ee88; }
+
+.lm-preview-label { min-width: 104px; color: var(--dark-muted); font-size: 15px; }
+
+.lm-exch-preview {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  color: var(--btn-on-tx);
+  letter-spacing: 0.04em;
+}
+.lm-exch-preview-warn { color: #33cc55; }
+
+.lm-row-check { align-items: flex-start; padding-top: 2px; }
+.lm-check-wrap {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  flex: 1;
+  cursor: pointer;
+}
+.lm-check-wrap input[type=checkbox] {
+  margin-top: 3px;
+  flex-shrink: 0;
+  accent-color: var(--btn-on-bd);
+}
+.lm-check-text { font-size: 13px; color: var(--dark-muted); line-height: 1.4; }
+
+.lm-exch-help-popup { width: 340px; }
+
+.lm-exch-help-list { margin: 8px 0 0; padding: 0; }
+.lm-exch-help-list dt {
+  font-weight: bold;
+  color: var(--btn-on-tx);
+  font-size: 13px;
+  margin-top: 10px;
+}
+.lm-exch-help-list dt:first-child { margin-top: 0; }
+.lm-exch-help-list dd {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--dark-muted);
+  line-height: 1.4;
+}
+.lm-exch-help-list small { font-size: 11px; }
 
 .qe-actions {
   display: flex;

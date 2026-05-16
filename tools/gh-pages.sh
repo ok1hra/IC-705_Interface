@@ -344,6 +344,17 @@ cat > "${OUTPUT_DIR}/index.html" <<EOF
     }
     li { margin-bottom: 0.35rem; }
     .highlight { color: #fde68a; }
+    .warn-box {
+      background: rgba(220, 38, 38, 0.15);
+      border: 2px solid #dc2626;
+      border-radius: 0.75rem;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1.5rem;
+      color: #fca5a5;
+    }
+    .warn-box strong { color: #f87171; }
+    .warn-box p { margin: 0; color: #fca5a5; font-size: 0.97rem; line-height: 1.6; }
+    .warn-box p + p { margin-top: 0.4rem; }
     code {
       background: rgba(148, 163, 184, 0.15);
       padding: 0.1rem 0.35rem;
@@ -372,6 +383,16 @@ cat > "${OUTPUT_DIR}/index.html" <<EOF
 
       <hr class="divider">
 
+      <div class="warn-box">
+        <p><strong>⚠ Back up your configuration before upgrading firmware!</strong></p>
+        <p>
+          Flashing new firmware <strong>erases your entire configuration</strong> — all radio settings,
+          TRX addresses, contest logs, and setup options will be lost.
+          Before proceeding, open the <strong>Setup page</strong> on your device and
+          download a configuration backup.
+        </p>
+      </div>
+
       <h2>Flash firmware via USB</h2>
       <p>
         Open this page in <strong>Google Chrome</strong> or <strong>Microsoft Edge</strong>
@@ -379,7 +400,6 @@ cat > "${OUTPUT_DIR}/index.html" <<EOF
         Connect the ESP32 to your computer via USB, then click the button below.
       </p>
       <ul>
-        <li class="highlight">First time install erases the flash — your previous config will be lost.</li>
         <li>After connecting, select the correct <code>CP210x</code> / <code>CH340</code> / <code>JTAG</code> serial device.</li>
         <li>Choose <strong>Install IC-705 Interface</strong> and follow the prompts.</li>
         <li>
