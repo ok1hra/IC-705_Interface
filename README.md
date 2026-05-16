@@ -1,10 +1,11 @@
-# IC-705 IP Interface
+# ESP32 QRPlog for IC-705
 
 ## Key features
 - running on ESP32
-- connected to IC-705 via bluetooth
+- connected to IC-705 via bluetooth (no wire)
+- QRPlog web logbook
 - logbook database stored directly in web browser
-- works offline, without internet
+- works decentralized/offline, without internet usable on portable
 - logbook import/export function
 - network synchronization between web browsers in local network - same database on multiple devices (phone, tablet, pc)
 - integrated DX cluster client
