@@ -1,5 +1,16 @@
 # IC-705 IP Interface
 
+## Key features
+- running on ESP32
+- connected to IC-705 via bluetooth
+- logbook database stored directly in web browser
+- works offline, without internet
+- logbook import/export function
+- network synchronization between web browsers in local network - same database on multiple devices (phone, tablet, pc)
+- integrated DX cluster client
+- web CAT interface
+- option to backup settings or entire logbook database
+
 <img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/docs/CAT.png" height="700">
 
 <img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/docs/LOG.png" height="400"><img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/docs/DXC.png" height="400">
