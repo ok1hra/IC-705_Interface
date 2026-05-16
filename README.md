@@ -8,7 +8,7 @@
 - works decentralized/offline, without internet usable on portable
 - logbook import/export function
 - network synchronization between web browsers in local network - same database on multiple devices (phone, tablet, pc)
-- integrated DX cluster client
+- integrated DX cluster client and band map
 - web CAT interface
 - option to backup settings or entire logbook database
 
