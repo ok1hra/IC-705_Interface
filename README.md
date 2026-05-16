@@ -32,7 +32,7 @@
 - Set Baudrate to 9600
 - Press ? and Enter
 - Read IP address from terminal debug
-<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/cli.png" height="300">
+<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/docs/cli.png" height="500">
 
 ### via Terminal
 - Turn on the interface
