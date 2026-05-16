@@ -9,6 +9,7 @@ The IC-705 IP Interface connects an ICOM IC-705 to your local network via Blueto
 | QRPLog | `/log` | Contest logging |
 | DXC | `/dxc.html` | DX cluster client (opens as a separate window) |
 | LOGSYNC | `/datasync` | QSO database synchronisation and import/export |
+| BD | `/bd` | Band decoder – frequency to output mapping |
 | DEBUG | `/ws-cat` | Raw CI-V WebSocket stream |
 
 ---
@@ -64,6 +65,8 @@ Up to three transceivers can be configured:
 | Label | Name shown in the log UI (max 10 characters). |
 | CI-V address | Hex address of the radio (IC-705 default: `A4`). Check MENU → SET → Connectors → CI-V → CI-V Address. |
 | Announce WiFi IP via CW on first BT connect | Sends the device IP in Morse code after the first Bluetooth connection — useful when DHCP assigns an unknown address. |
+
+**Bluetooth device name** — custom name advertised over Bluetooth (1–20 characters; letters, digits, spaces, hyphens and underscores are allowed). Defaults to `IC705-XXXXXX` where `XXXXXX` is derived from the device MAC address. The new name takes effect after **Save & Restart**.
 
 #### TRX2 and TRX3 — network backends
 
@@ -406,7 +409,45 @@ The format is detected automatically. Click *Select log file…* and choose the 
 
 ---
 
-## 6. DEBUG Page
+## 6. BD Page
+
+**`http://ic705.local/bd`**
+
+![Band Decoder page](BD.png)
+
+The Band Decoder page maps the current operating frequency to up to 16 binary outputs driven by a shift register (SPI: clock GPIO 15, latch GPIO 13, data GPIO 14). It is available on hardware revision 4 and above.
+
+### Frequency source
+
+The **Source** dropdown in the toolbar selects which transceiver's frequency is used to determine the active band. Only TRX entries whose label has been changed from the default are shown. Selecting a source starts real-time polling:
+
+| Source | Poll endpoint | Interval |
+|--------|---------------|----------|
+| TRX1 | `/state` | 1 s |
+| TRX2 / TRX3 | `/api/status` | 2 s |
+
+### Band table
+
+The table has **16 rows**, each representing one band segment. For each row you set:
+
+| Column | Description |
+|--------|-------------|
+| From (Hz) | Lower edge of the frequency range. |
+| To (Hz) | Upper edge of the frequency range. |
+| OUT 1–16 | Checkbox for each of the 16 shift-register outputs. Check the outputs that should be active when the radio is inside this band segment. |
+
+When the current frequency falls within a row's range, that row is highlighted and the corresponding outputs are driven high. Only one row is active at a time (first match wins).
+
+### Buttons
+
+| Button | Function |
+|--------|---------|
+| Save | Stores the current table and source selection to EEPROM. |
+| Defaults | Reloads the factory IARU band plan (160 m – 70 cm, 16 entries) and resets all outputs to unchecked. |
+
+---
+
+## 7. DEBUG Page
 
 **`http://ic705.local/ws-cat`**
 
@@ -414,4 +455,4 @@ Shows a raw WebSocket stream of all CI-V frames passing between the ESP32 and th
 
 ---
 
-*Document updated 2026-05-16*
+*Document updated 2026-05-17*

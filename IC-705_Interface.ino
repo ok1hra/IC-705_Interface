@@ -80,17 +80,17 @@ int udpPort         = 0; // UDP port | echo -n "cq de ok1hra ok1hra test k;" | n
 int udpCatPort      = 0;
 int BaudRate        = 9600;
 // char* BTname        = "";
-const char* BTname  = "IC705-interface";
+// const char* BTname  = "IC705-interface";
+String BT_NAME;  // loaded from EEPROM; default IC705-XXXXXX from MAC
 bool Debug          = false;
 bool cwIpOnConnect  = true;       // announce WiFi IP via CW on first BT connect
 volatile bool cwIpSendPending = false;
 
-#define REV 20260516
+#define REV 20260517
 #define WIFI
 #define MQTT
 #define UDP_TO_CW
 #define UDP_TO_FSK
-#define SELECT_ANT  // enable external shift registrer antenna switching (not tested)
 #define HTTP        // http propagation freq|mode|
 #define WDT         // watchdog timer
 #define CIV_OUT     // send freq to CIV out with BaudRate
@@ -100,7 +100,7 @@ volatile bool cwIpSendPending = false;
 // #define RESET_AFTER_DISCONNECT  // enable reset after each disconnect + short CW msg
 
 #include "EEPROM.h"
-#define EEPROM_SIZE 267
+#define EEPROM_SIZE 288
 /*
   0|Byte    1|128
   1|Char    1|A
@@ -137,28 +137,10 @@ volatile bool cwIpSendPending = false;
   219-224 DXC locator (6B)
   225-245 TRX2 MQTT root topic (21B)
   246-266 TRX3 MQTT root topic (21B)
+  267-287 BT_NAME (21B)
 
   !! Increment EEPROM_SIZE #define !!
 */
-
-#if defined(SELECT_ANT)
-  unsigned long ANTrange[8][2] = {/* TRXfreq[0]
-  Freq Hz from       to        ANT
-  */  {1810000,   2000000},  // #1
-      {3500000,   3800000},  // #2
-      {7000000,   7200000},  // #3
-      {10100000, 10150000},  // #4
-      {14000000, 14350000},  // #5
-      {21000000, 21450000},  // #6
-      {28000000, 29700000},  // #7
-      {50000000, 52000000}   // #8
-  };
-  int TRXselectANT = 42; // how antenna selcted - blocked for second TRX - don't be the same!
-  const int ShiftOutClockPin = 12;
-  const int ShiftOutDataPin  = 13;
-  const int ShiftOutLatchPin = 14;
-  byte ShiftOutByte;
-#endif
 
 #if defined(BLUETOOTH)
   #include "BluetoothSerial.h"
@@ -370,6 +352,24 @@ int incomingByte = 0;   // for incoming serial data
   static volatile long g_mqttFreq[2]    = {0, 0};
   static char          g_mqttMode[2][8] = {"USB", "USB"};
   static volatile bool g_mqttHasData[2] = {false, false};
+
+// Band Decoder
+#define BD_CLOCK_PIN  15
+#define BD_LATCH_PIN  13
+#define BD_DATA_PIN   14
+#define BD_ROWS       16
+#define BD_CONFIG_PATH "/bd-config.json"
+
+struct BdRow {
+    uint32_t fMin;
+    uint32_t fMax;
+    uint16_t outputs;
+};
+
+BdRow     bdRows[BD_ROWS];
+int       bdSource         = 1;
+uint16_t  bdCurrentOutputs = 0;
+bool      bdEnabled        = false;
 
   bool DxcTelnetStatus = false;
   bool DxcWsStatus = false;
@@ -861,6 +861,100 @@ String extractJsonObject(const String &json, const char *key) {
   return json.substring(start, end);
 }
 
+int extractJsonInt(const String &j, const String &key) {
+  String needle = "\"" + key + "\":";
+  int idx = j.indexOf(needle);
+  if (idx < 0) return 0;
+  return j.substring(idx + needle.length()).toInt();
+}
+
+void bdLoadDefaults() {
+  const uint32_t fMin[BD_ROWS] = {
+    1810, 3500, 5351, 7000, 10100, 14000, 18068,
+    21000, 24890, 28000, 50000, 70000, 144000, 430000, 0, 0
+  };
+  const uint32_t fMax[BD_ROWS] = {
+    2000, 3800, 5367, 7200, 10150, 14350, 18168,
+    21450, 24990, 29700, 54000, 70500, 146000, 440000, 0, 0
+  };
+  for (int i = 0; i < BD_ROWS; i++) {
+    bdRows[i].fMin    = fMin[i];
+    bdRows[i].fMax    = fMax[i];
+    bdRows[i].outputs = (i < 14) ? (uint16_t)(1 << i) : 0;
+  }
+  bdSource = 1;
+}
+
+void bdLoadConfig() {
+  if (!SPIFFS.exists(BD_CONFIG_PATH)) { bdLoadDefaults(); return; }
+  File f = SPIFFS.open(BD_CONFIG_PATH, FILE_READ);
+  if (!f) { bdLoadDefaults(); return; }
+  String j = f.readString();
+  f.close();
+  int si = j.indexOf("\"source\":");
+  if (si >= 0) bdSource = j.substring(si + 9).toInt();
+  int arrStart = j.indexOf("\"rows\":[");
+  if (arrStart < 0) { bdLoadDefaults(); return; }
+  arrStart += 8;
+  for (int i = 0; i < BD_ROWS; i++) {
+    int ob = j.indexOf('{', arrStart);
+    int cb = j.indexOf('}', ob);
+    if (ob < 0 || cb < 0) break;
+    String row = j.substring(ob, cb + 1);
+    bdRows[i].fMin    = (uint32_t)extractJsonInt(row, "fMin");
+    bdRows[i].fMax    = (uint32_t)extractJsonInt(row, "fMax");
+    bdRows[i].outputs = (uint16_t)extractJsonInt(row, "outputs");
+    arrStart = cb + 1;
+  }
+}
+
+void bdSaveConfig() {
+  File f = SPIFFS.open(BD_CONFIG_PATH, "w");
+  if (!f) return;
+  f.print("{\"source\":"); f.print(bdSource);
+  f.print(",\"rows\":[");
+  for (int i = 0; i < BD_ROWS; i++) {
+    if (i > 0) f.print(",");
+    f.print("{\"fMin\":"); f.print(bdRows[i].fMin);
+    f.print(",\"fMax\":"); f.print(bdRows[i].fMax);
+    f.print(",\"outputs\":"); f.print(bdRows[i].outputs);
+    f.print("}");
+  }
+  f.print("]}");
+  f.close();
+}
+
+void bdWriteOutputs(uint16_t mask) {
+  uint8_t hi = (mask >> 8) & 0xFF;
+  uint8_t lo = mask & 0xFF;
+  digitalWrite(BD_LATCH_PIN, LOW);
+  shiftOut(BD_DATA_PIN, BD_CLOCK_PIN, MSBFIRST, hi);
+  shiftOut(BD_DATA_PIN, BD_CLOCK_PIN, MSBFIRST, lo);
+  digitalWrite(BD_LATCH_PIN, HIGH);
+  bdCurrentOutputs = mask;
+}
+
+void bdInit() {
+  if (!bdEnabled) return;
+  pinMode(BD_CLOCK_PIN, OUTPUT); digitalWrite(BD_CLOCK_PIN, LOW);
+  pinMode(BD_LATCH_PIN, OUTPUT); digitalWrite(BD_LATCH_PIN, HIGH);
+  pinMode(BD_DATA_PIN,  OUTPUT); digitalWrite(BD_DATA_PIN,  LOW);
+  bdWriteOutputs(0);
+}
+
+void bdUpdate(uint32_t freqHz) {
+  if (!bdEnabled) return;
+  uint32_t freqKhz = freqHz / 1000;
+  uint16_t mask = 0;
+  for (int i = 0; i < BD_ROWS; i++) {
+    if (bdRows[i].fMin == 0 && bdRows[i].fMax == 0) continue;
+    if (freqKhz >= bdRows[i].fMin && freqKhz <= bdRows[i].fMax) {
+      mask |= bdRows[i].outputs;
+    }
+  }
+  if (mask != bdCurrentOutputs) bdWriteOutputs(mask);
+}
+
 bool parseHexPayload(const String &hex, uint8_t *buffer, size_t &bufferLen, size_t maxLen){
   bufferLen = 0;
   int nibble = -1;
@@ -1108,6 +1202,7 @@ String setupTemplateProcessor(const String &key){
   if (key == "DXC_PORT") return DxcPort > 0 ? String(DxcPort) : "";
   if (key == "DXC_CALL") return DxcCallsign;
   if (key == "DXC_LOCATOR") return DxcLocator;
+  if (key == "BT_NAME") return BT_NAME;
   return String();
 }
 
@@ -1415,10 +1510,23 @@ void handleConfigDownload() {
   j += ",\"dxcport\":";      j += DxcPort;
   j += ",\"dxccall\":\"";    j += configJsonEscape(DxcCallsign); j += "\"";
   j += ",\"dxclocator\":\""; j += configJsonEscape(DxcLocator);  j += "\"";
+  j += ",\"btname\":\"";     j += configJsonEscape(BT_NAME);     j += "\"";
   String lc = readLogConfigJson();
   if (lc.startsWith("{")) {
     j += ",\"logConfig\":";
     j += lc;
+  }
+  if (bdEnabled) {
+    j += ",\"bd\":{\"source\":"; j += bdSource;
+    j += ",\"rows\":[";
+    for (int i = 0; i < BD_ROWS; i++) {
+      if (i > 0) j += ",";
+      j += "{\"fMin\":"; j += bdRows[i].fMin;
+      j += ",\"fMax\":"; j += bdRows[i].fMax;
+      j += ",\"outputs\":"; j += bdRows[i].outputs;
+      j += "}";
+    }
+    j += "]}";
   }
   j += "}";
   webServer.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
@@ -1535,10 +1643,39 @@ void handleConfigUpload() {
     if(dxclocator.length() <= 6){ DxcLocator = dxclocator; eepromWriteStr(DxcLocator, 219, 6); }
   }
 
+  if (body.indexOf("\"btname\"") >= 0) {
+    String btname = extractJsonString(body, "btname");
+    if (btname.length() >= 1 && btname.length() <= 20) { BT_NAME = btname; eepromWriteStr(BT_NAME, 267, 21); }
+  }
+
   {
     String logCfg = extractJsonObject(body, "logConfig");
     if (logCfg.length() > 0 && logCfg.length() <= 2048) {
       saveLogConfigJson(logCfg);
+    }
+  }
+
+  if (bdEnabled) {
+    int bdIdx = body.indexOf("\"bd\":{");
+    if (bdIdx >= 0) {
+      String bdSection = body.substring(bdIdx + 5);
+      int si = bdSection.indexOf("\"source\":");
+      if (si >= 0) bdSource = bdSection.substring(si + 9).toInt();
+      int arrStart = bdSection.indexOf("\"rows\":[");
+      if (arrStart >= 0) {
+        arrStart += 8;
+        for (int i = 0; i < BD_ROWS; i++) {
+          int ob = bdSection.indexOf('{', arrStart);
+          int cb = bdSection.indexOf('}', ob);
+          if (ob < 0 || cb < 0) break;
+          String row = bdSection.substring(ob, cb + 1);
+          bdRows[i].fMin    = (uint32_t)extractJsonInt(row, "fMin");
+          bdRows[i].fMax    = (uint32_t)extractJsonInt(row, "fMax");
+          bdRows[i].outputs = (uint16_t)extractJsonInt(row, "outputs");
+          arrStart = cb + 1;
+        }
+      }
+      bdSaveConfig();
     }
   }
 
@@ -1672,6 +1809,65 @@ void setupWebServer(void){
   webServer.on("/pairing/answer", HTTP_GET,     handlePairingAnswerGet);
   webServer.on("/pairing/reject", HTTP_OPTIONS, handlePairingOptions);
   webServer.on("/pairing/reject", HTTP_POST,    handlePairingReject);
+
+  // Band Decoder
+  webServer.on("/bd", HTTP_GET, [](){
+    if (!bdEnabled) {
+      webServer.send(200, "text/html",
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<title>Band Decoder</title>"
+        "<link rel='stylesheet' href='/app.css'></head>"
+        "<body><p style='margin:2em;font-family:sans-serif'>"
+        "Band Decoder is available from RemoteQTH interface HW rev 04.</p></body></html>");
+      return;
+    }
+    handleFileFromSPIFFS("/bd.html");
+  });
+  webServer.on("/api/bd-config", HTTP_GET, [](){
+    if (!bdEnabled) { webServer.send(403, "application/json", "{\"error\":\"hw\"}"); return; }
+    File f = SPIFFS.open(BD_CONFIG_PATH, FILE_READ);
+    if (!f) { webServer.send(404, "application/json", "{}"); return; }
+    webServer.streamFile(f, "application/json");
+    f.close();
+  });
+  webServer.on("/api/bd-config", HTTP_POST, [](){
+    if (!bdEnabled) { webServer.send(403, "application/json", "{\"error\":\"hw\"}"); return; }
+    String body = webServer.arg("plain");
+    int si = body.indexOf("\"source\":");
+    if (si >= 0) bdSource = body.substring(si + 9).toInt();
+    int arrStart = body.indexOf("\"rows\":[");
+    if (arrStart >= 0) {
+      arrStart += 8;
+      for (int i = 0; i < BD_ROWS; i++) {
+        int ob = body.indexOf('{', arrStart);
+        int cb = body.indexOf('}', ob);
+        if (ob < 0 || cb < 0) break;
+        String row = body.substring(ob, cb + 1);
+        bdRows[i].fMin    = (uint32_t)extractJsonInt(row, "fMin");
+        bdRows[i].fMax    = (uint32_t)extractJsonInt(row, "fMax");
+        bdRows[i].outputs = (uint16_t)extractJsonInt(row, "outputs");
+        arrStart = cb + 1;
+      }
+    }
+    bdSaveConfig();
+    uint32_t f = (bdSource == 1) ? frequency :
+                 (bdSource == 2) ? (uint32_t)g_mqttFreq[0] :
+                                   (uint32_t)g_mqttFreq[1];
+    bdUpdate(f);
+    webServer.send(200, "application/json", "{\"ok\":true}");
+  });
+  webServer.on("/api/status", HTTP_GET, [](){
+    String j = "{";
+    j += "\"hwrev\":"; j += HardwareRev;
+    j += ",\"trx1Label\":\""; j += g_lcTrx1Label; j += "\"";
+    j += ",\"trx2Label\":\""; j += g_lcTrx2Label; j += "\"";
+    j += ",\"trx3Label\":\""; j += g_lcTrx3Label; j += "\"";
+    j += ",\"trx2freq\":"; j += g_mqttFreq[0];
+    j += ",\"trx3freq\":"; j += g_mqttFreq[1];
+    j += "}";
+    webServer.sendHeader("Cache-Control", "no-cache");
+    webServer.send(200, "application/json", j);
+  });
 
   webServer.onNotFound([](){
     String path = webServer.uri();
@@ -1843,6 +2039,15 @@ void setup(){
       }
     }
 
+    // 267-287 BT_NAME (21B)
+    if(EEPROM.read(267)!=0xff){
+      for (int i=267; i<288; i++){
+        if(EEPROM.read(i)!=0xff){
+          BT_NAME=BT_NAME+char(EEPROM.read(i));
+        }
+      }
+    }
+
     // 68-69 HTTP_CAT_PORT
     if(EEPROM.read(68)==0xff){
       HTTP_CAT_PORT=81;
@@ -1908,12 +2113,10 @@ void setup(){
       HardwareRev=1;
     }else if(HWidValue>150 && HWidValue<=406){
       HardwareRev=2;  // 253
-     }else if(HWidValue>406 && HWidValue<=713){
+     }else if(HWidValue>406 && HWidValue<=693){
        HardwareRev=3;  // 560
-    // }else if(HWidValue>700 && HWidValue<=900){
-    //   HardwareRev=5;  // 807
-    // }else if(HWidValue>900){
-    //   HardwareRev=6;  // 1036
+    }else if(HWidValue>693 && HWidValue<=900){
+      HardwareRev=4;  // 827
     }
   Serial.print(" HW | ");
   Serial.print(HardwareRev);
@@ -1935,20 +2138,6 @@ void setup(){
   pinMode(CIVmutePin, OUTPUT);
     digitalWrite(CIVmutePin, HIGH);
 
-  #if defined(SELECT_ANT)
-    pinMode(ShiftOutLatchPin, OUTPUT);
-      digitalWrite(ShiftOutLatchPin, HIGH);
-    pinMode(ShiftOutClockPin, OUTPUT);
-      digitalWrite(ShiftOutClockPin, LOW);
-    pinMode(ShiftOutDataPin, OUTPUT);
-      digitalWrite(ShiftOutDataPin, LOW);
-
-    digitalWrite(ShiftOutLatchPin, LOW);
-    shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, B10000000);
-    shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, B00000000);
-    digitalWrite(ShiftOutLatchPin, HIGH);
-  #endif
-
   #if defined(WIFI)
     if (!SPIFFS.begin(true)) {
       Serial.println("SPIFFS| mount failed");
@@ -1956,6 +2145,12 @@ void setup(){
       Serial.println("SPIFFS| mounted");
       loadMemoryConfig();
       loadLogConfigVars();
+      bdEnabled = (HardwareRev >= 4);
+      if (bdEnabled) {
+        bdLoadConfig();
+        bdInit();
+        Serial.println("BD   | enabled");
+      }
     }
 
     if(APmode==true){
@@ -2282,9 +2477,9 @@ void Watchdog(){
     }
     frequencyTmp=frequency;
     mqttFreqTimer=millis();
-    #if defined(SELECT_ANT)
-      SelectANT();
-    #endif
+
+    // Band Decoder update on TRX1 frequency change
+    if (bdEnabled && bdSource == 1) bdUpdate(frequency);
 
     // CAT out
     #if defined(CIV_OUT)
@@ -2541,52 +2736,6 @@ byte stringToByte(String str) {
 }
 
 //-------------------------------------------------------------------------------------------------------
-// void SelectANT(){
-//   #if defined(SELECT_ANT)
-//     TRXselectANT = 42;
-//     for(int ant=0; ant<8; ant++){
-//       if(ANTrange[ant][0]<frequency && frequency<ANTrange[ant][1]){
-//         TRXselectANT=ant;
-//       }else{
-//       }
-//     }
-//     ShiftOutByte=0x00;
-//     bitSet(ShiftOutByte, TRXselectANT);
-//     digitalWrite(ShiftOutLatchPin, LOW);
-//       shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, ShiftOutByte);
-//     digitalWrite(ShiftOutLatchPin, HIGH);
-//   #endif
-// }
-void SelectANT(){
-  #if defined(SELECT_ANT)
-    int foundAnt = -1;
-
-    for (int ant = 0; ant < 8; ant++) {
-      if (ANTrange[ant][0] < frequency && frequency < ANTrange[ant][1]) {
-        foundAnt = ant;
-        break;
-      }
-    }
-
-    if (foundAnt < 0 || foundAnt > 7) {
-      if (Debug == true) {
-        Serial.print("ANT | no matching range for frequency ");
-        Serial.println(frequency);
-      }
-      return;
-    }
-
-    TRXselectANT = foundAnt;
-    ShiftOutByte = 0x00;
-    bitSet(ShiftOutByte, TRXselectANT);
-
-    digitalWrite(ShiftOutLatchPin, LOW);
-    shiftOut(ShiftOutDataPin, ShiftOutClockPin, LSBFIRST, ShiftOutByte);
-    digitalWrite(ShiftOutLatchPin, HIGH);
-  #endif
-}
-
-//-------------------------------------------------------------------------------------------------------
 // uint32_t readADC_Cal(int ADC_Raw)
 // {
 //   esp_adc_cal_characteristics_t adc_chars;
@@ -2815,13 +2964,20 @@ void configRadioBaud(uint16_t baudrate){
     if (btInitDone) return;
 
     esp_bt_mem_release(ESP_BT_MODE_BLE);
-    if (!CAT.begin(BTname)) {
+    if (BT_NAME.length() == 0) {
+      uint8_t mac[6];
+      WiFi.macAddress(mac);
+      char defName[22];
+      snprintf(defName, sizeof(defName), "IC705-%02X%02X%02X", mac[3], mac[4], mac[5]);
+      BT_NAME = String(defName);
+    }
+    if (!CAT.begin(BT_NAME)) {
       Serial.println(" BT | An error occurred initializing Bluetooth");
     } else {
       CAT.register_callback(callback);
       Serial.println(" BT | Initialized");
       Serial.println("    | -----------------------------------------------------------------------------");
-      Serial.println(" BT | The device started, now you MUST PAIR it with Bluetooth name " + String(BTname));
+      Serial.println(" BT | The device started, now you MUST PAIR it with Bluetooth name " + BT_NAME);
       Serial.println("    | -----------------------------------------------------------------------------");
       btInitDone = true;
     }
@@ -3118,6 +3274,7 @@ void MqttRx(char *topic, byte *payload, unsigned int length) {
             g_mqttFreq[idx] = freq;
             g_mqttHasData[idx] = true;
             Serial.printf("OI3 | TRX%d freq=%ld\n", idx+2, freq);
+            if (bdEnabled && bdSource == idx + 2) bdUpdate((uint32_t)freq);
           }
           return true;
         }
@@ -3702,7 +3859,7 @@ void ListCommands(){
     Serial.println("  WIFI-AP mode ON" );
     APcliAlert();
   }else{
-    Serial.println("  Bluetooth: "+String(BTname) );
+    Serial.println("  Bluetooth: "+BT_NAME);
     Serial.println("  WIFI-AP mode OFF" );
     Serial.println("  WIFI-SSID1 "+SSID );
     if (SSID2.length() > 0) {
