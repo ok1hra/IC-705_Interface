@@ -4251,6 +4251,17 @@ void handleSet() {
       }
     }
 
+    // 267-287 BT_NAME (21B)
+    {
+      String str = requestArg("btname");
+      if (str.length() > 20) {
+        ERRdetect=1;
+      } else if (str.length() >= 1 && BT_NAME != str) {
+        BT_NAME = str;
+        eepromWriteStr(BT_NAME, 267, 21);
+      }
+    }
+
     // 74-75 BaudRate *
     static int BaudRateTmp=115200;
     switch (requestArg("baud").toInt()) {
