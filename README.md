@@ -16,7 +16,9 @@
 
 <img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/docs/LOG.png" height="400"><img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/docs/DXC.png" height="400">
 
-<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/docs/SETUP.png" height="400"><img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/docs/LOGSYNC.png" height="400">
+<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/docs/SETUP.png" height="300"><img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/docs/LOGSYNC.png" height="300">
+
+<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/docs/BD.png" height="700">
 
 ## Hardware required
 - ICOM IC-705
