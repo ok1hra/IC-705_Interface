@@ -1215,28 +1215,31 @@ void renderSetupPage(){
   if (!file) { webServer.send(500, "text/plain", "File open failed"); return; }
   webServer.setContentLength(CONTENT_LENGTH_UNKNOWN);
   webServer.send(200, "text/html", "");
-  String out;
-  out.reserve(256);
+  String buf;
+  buf.reserve(1536);
   while (file.available()) {
     #if defined(WDT)
       esp_task_wdt_reset();
     #endif
+    #if defined(MQTT)
+      if (mqttEnable && mqttClient.connected()) mqttClient.loop();
+    #endif
     String line = file.readStringUntil('\n');
-    out = "";
     int start = 0;
     while (true) {
       int p1 = line.indexOf('%', start);
-      if (p1 < 0) { out += line.substring(start); break; }
+      if (p1 < 0) { buf += line.substring(start); break; }
       int p2 = line.indexOf('%', p1 + 1);
-      if (p2 < 0) { out += line.substring(start); break; }
-      out += line.substring(start, p1);
-      out += setupTemplateProcessor(line.substring(p1 + 1, p2));
+      if (p2 < 0) { buf += line.substring(start); break; }
+      buf += line.substring(start, p1);
+      buf += setupTemplateProcessor(line.substring(p1 + 1, p2));
       start = p2 + 1;
     }
-    out += '\n';
-    webServer.sendContent(out);
+    buf += '\n';
+    if (buf.length() >= 1024) { webServer.sendContent(buf); buf = ""; }
   }
   file.close();
+  if (buf.length() > 0) webServer.sendContent(buf);
   webServer.sendContent("");
 }
 
@@ -1249,28 +1252,31 @@ void renderIndexPage(){
   if (!file) { webServer.send(500, "text/plain", "File open failed"); return; }
   webServer.setContentLength(CONTENT_LENGTH_UNKNOWN);
   webServer.send(200, "text/html", "");
-  String out;
-  out.reserve(256);
+  String buf;
+  buf.reserve(1536);
   while (file.available()) {
     #if defined(WDT)
       esp_task_wdt_reset();
     #endif
+    #if defined(MQTT)
+      if (mqttEnable && mqttClient.connected()) mqttClient.loop();
+    #endif
     String line = file.readStringUntil('\n');
-    out = "";
     int start = 0;
     while (true) {
       int p1 = line.indexOf('%', start);
-      if (p1 < 0) { out += line.substring(start); break; }
+      if (p1 < 0) { buf += line.substring(start); break; }
       int p2 = line.indexOf('%', p1 + 1);
-      if (p2 < 0) { out += line.substring(start); break; }
-      out += line.substring(start, p1);
-      out += setupTemplateProcessor(line.substring(p1 + 1, p2));
+      if (p2 < 0) { buf += line.substring(start); break; }
+      buf += line.substring(start, p1);
+      buf += setupTemplateProcessor(line.substring(p1 + 1, p2));
       start = p2 + 1;
     }
-    out += '\n';
-    webServer.sendContent(out);
+    buf += '\n';
+    if (buf.length() >= 1024) { webServer.sendContent(buf); buf = ""; }
   }
   file.close();
+  if (buf.length() > 0) webServer.sendContent(buf);
   webServer.sendContent("");
 }
 
@@ -1376,8 +1382,12 @@ bool handleFileFromSPIFFS(const String &path){
   else if (path.endsWith(".js"))   { contentType = "application/javascript";    isStatic = true; }
   else if (path.endsWith(".ico"))  { contentType = "image/x-icon";              isStatic = true; }
   else if (path.endsWith(".png"))  { contentType = "image/png";                 isStatic = true; }
-  if (!SPIFFS.exists(path)) return false;
-  File f = SPIFFS.open(path, "r");
+  // Prefer pre-compressed .gz variant if available
+  String gzPath = path + ".gz";
+  bool useGz = SPIFFS.exists(gzPath);
+  String servePath = useGz ? gzPath : path;
+  if (!useGz && !SPIFFS.exists(path)) return false;
+  File f = SPIFFS.open(servePath, "r");
   if (!f) return false;
   if (isStatic) {
     webServer.sendHeader("Cache-Control", "public, max-age=3600");
@@ -1385,12 +1395,16 @@ bool handleFileFromSPIFFS(const String &path){
     webServer.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
     webServer.sendHeader("Pragma", "no-cache");
   }
+  if (useGz) webServer.sendHeader("Content-Encoding", "gzip");
   webServer.setContentLength(f.size());
   webServer.send(200, contentType, "");
-  static uint8_t buf[512];
+  static uint8_t buf[1024];
   while (f.available()) {
     #if defined(WDT)
       esp_task_wdt_reset();
+    #endif
+    #if defined(MQTT)
+      if (mqttEnable && mqttClient.connected()) mqttClient.loop();
     #endif
     size_t n = f.read(buf, sizeof(buf));
     if (n > 0) webServer.sendContent((const char*)buf, n);
@@ -2255,6 +2269,10 @@ void setup(){
         digitalWrite(FSK_OUT, LOW);
     #endif
 
+    #if defined(BLUETOOTH)
+      configRadioBaud(0);
+    #endif
+
     #if defined(MQTT)
       if(mqttEnable==true){
         if (MQTT_LOGIN == true){
@@ -2282,10 +2300,6 @@ void setup(){
       }
     #endif
 
-    #if defined(BLUETOOTH)
-      configRadioBaud(0);
-    #endif
-
     #if defined(WDT)
       // WDT
       esp_task_wdt_init(WDT_TIMEOUT, true); //enable panic so ESP32 restarts
@@ -2306,18 +2320,20 @@ void loop(){
     while (Serial.available()) Serial.read();
     serialFlushed = true;
   }
-  Watchdog();
-  Mqtt();
-  httpCAT();
-  UdpToCwFsk();
-  UdpToCat();
-  CLI();
+  #define LOOP_WARN_MS 200
+  #define _TIMED(name, call) { unsigned long _t = millis(); call; unsigned long _d = millis()-_t; if(_d > LOOP_WARN_MS) { Serial.print("LOOP| slow: " name " "); Serial.print(_d); Serial.println("ms"); } }
+  _TIMED("Watchdog",        Watchdog())
+  _TIMED("Mqtt",            Mqtt())
+  _TIMED("httpCAT",         httpCAT())
+  _TIMED("UdpToCwFsk",      UdpToCwFsk())
+  _TIMED("UdpToCat",        UdpToCat())
+  _TIMED("CLI",             CLI())
   #if defined(RTLE)
-    rtleserver.handleClient();
+    _TIMED("rtleserver",    rtleserver.handleClient())
   #endif
-  webServer.handleClient();
-  DxcLoop();
-  dxcHandleRawClient();
+  _TIMED("webServer",       webServer.handleClient())
+  _TIMED("DxcLoop",         DxcLoop())
+  _TIMED("dxcRaw",          dxcHandleRawClient())
 
   // AP mode: status LED fade in/out
   if(APmode==true){
@@ -3229,17 +3245,13 @@ void Mqtt(){
               Serial.println(mqttPath);
             }
           }
-          // Subscribe to TRX2/TRX3 OI3 MQTT topics (freq and mode)
+          // Subscribe to TRX2/TRX3 OI3 MQTT topics (wildcard)
           auto mqttSubscribeOi3Root = [&](const String &root) {
             if (root.length() == 0) return;
             String r = root;
             if (r[r.length()-1] != '/') r += '/';
-            String tHz   = r + "hz";
-            String tMode = r + "mode";
-            tHz.toCharArray(mqttPath, sizeof(mqttPath));
-            mqttClient.subscribe(mqttPath);
-            Serial.print("MQTT| subscribe "); Serial.println(mqttPath);
-            tMode.toCharArray(mqttPath, sizeof(mqttPath));
+            String tWild = r + "#";
+            tWild.toCharArray(mqttPath, sizeof(mqttPath));
             mqttClient.subscribe(mqttPath);
             Serial.print("MQTT| subscribe "); Serial.println(mqttPath);
           };
@@ -3328,7 +3340,6 @@ void MqttPubString(String TOPICEND, String DATA, bool RETAIN){
         digitalWrite(StatusPin, LOW);
       }
       if(mqttClient.connected()==true){
-        mqttClient.loop();
         Serial.print("MQTT| ");
         String topic = String(TOPICEND);
         topic.toCharArray( mqttPath, 50 );
