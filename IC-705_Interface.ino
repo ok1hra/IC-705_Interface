@@ -69,12 +69,10 @@ String SSID         = "";
 String PSWD         = "";
 String SSID2        = "";
 String PSWD2        = "";
-byte mqttBroker[4]  = {0,0,0,0};
-int MQTT_PORT       = 0;
-String MQTT_TOPIC        = "";
-String MQTT_TOPIC_RX     = "";
-String TRX2_MQTT_ROOT    = "";
-String TRX3_MQTT_ROOT    = "";
+// TrxNet config — NET_ID 0x00 = disabled sentinel (TrxNet not activated)
+byte TRXNET_ID      = 0x01; // own device NET_ID → device name "705.01"
+byte TRX2_NET_ID    = 0xff; // peer NET_ID for TRX2 Band Decoder slot (0x00 = disabled)
+byte TRX3_NET_ID    = 0x00; // peer NET_ID for TRX3 Band Decoder slot (0x00 = disabled)
 int HTTP_CAT_PORT   = 0;
 int udpPort         = 0; // UDP port | echo -n "cq de ok1hra ok1hra test k;" | nc -u -w1 192.168.1.19 89
 int udpCatPort      = 0;
@@ -88,7 +86,6 @@ volatile bool cwIpSendPending = false;
 
 #define REV 20260517
 #define WIFI
-#define MQTT
 #define UDP_TO_CW
 #define UDP_TO_FSK
 #define HTTP        // http propagation freq|mode|
@@ -120,23 +117,26 @@ volatile bool cwIpSendPending = false;
   0 APmode
   1-20 SSID1
   22-39 PSWD1
-  41-44 mqttBroker[4]
-  45-46 MQTT_PORT
-  47-67 MQTT_TOPIC
-  115-135 MQTT_TOPIC_RX
+  41 TRXNET_ID       (own NET_ID, 0x00=disabled → device name "705.XX")
+  42 TRX2_NET_ID     (peer NET_ID for TRX2 BD slot, 0x00=disabled)
+  43 TRX3_NET_ID     (peer NET_ID for TRX3 BD slot, 0x00=disabled)
+  44    FREE         (was mqttBroker[3])
+  45-46 FREE         (was MQTT_PORT)
+  47-67 FREE         (was MQTT_TOPIC 21B)
   68-69 HTTP_CAT_PORT
   70-71 udpPort
   72-73 udpCatPort
   74-75 BaudRate
   76-95 SSID2
   97-114 PSWD2
+  115-135 FREE       (was MQTT_TOPIC_RX 21B)
   136 cwIpOnConnect
   137-200 DXC host (64B)
   201-202 DXC port (UShort)
   203-218 DXC callsign (16B)
   219-224 DXC locator (6B)
-  225-245 TRX2 MQTT root topic (21B)
-  246-266 TRX3 MQTT root topic (21B)
+  225-245 FREE       (was TRX2 MQTT root topic 21B)
+  246-266 FREE       (was TRX3 MQTT root topic 21B)
   267-287 BT_NAME (21B)
 
   !! Increment EEPROM_SIZE #define !!
@@ -215,8 +215,6 @@ bool TrxSetupDone       = false;
 volatile bool btStateBroadcastPending = false;
 volatile bool btDisconnectPending = false;
 volatile bool btConnectPending = false;
-long mqttPostponeTimer  = 0;
-bool mqttPostponeStatus = 1;
 
 #if defined(WDT)
   // 73 seconds WDT (WatchDogTimer)
@@ -301,24 +299,20 @@ uint8_t CwCat[36] = "";
   byte CatMsg[10];
 #endif
 
-#if defined(MQTT)
-  bool mqttEnable = true;
-  #include <PubSubClient.h>
-  IPAddress mqtt_server_ip(mqttBroker[0], mqttBroker[1], mqttBroker[2], mqttBroker[3]);       // MQTT broker IP address
-  // #include "PubSubClient.h" // lokalni verze s upravou #define MQTT_MAX_PACKET_SIZE 128
-  WiFiClient espClient;
-  PubSubClient mqttClient(espClient);
-  // PubSubClient mqttClient(server, 1883, callback, ethClient);
-  long lastMqttReconnectAttempt = 0;
-  boolean MQTT_LOGIN      = 0;          // enable MQTT broker login
-  // char MQTT_USER= 'login';    // MQTT broker user login
-  // char MQTT_PASS= 'passwd';   // MQTT broker password
-  const int MqttBuferSize = 1000; // 1000
-  char mqttTX[MqttBuferSize];
-  char mqttPath[MqttBuferSize];
-  char mqttClientId[32];
-  long MqttStatusTimer[2]{1500,1000};
-#endif
+// TrxNet — P2P telemetry, replaces PubSubClient/MQTT
+// TRXNET_ID == 0x00 acts as "disabled" sentinel — net.begin() is not called.
+#include <WiFiUdp.h>
+#include <TrxNet.h>
+WiFiUDP trxUdp;
+TrxNet  net(trxUdp);
+char    trxDeviceName[TRXNET_MAX_DEVICE_NAME];
+bool    trxNetEnabled = false; // set true after net.begin() succeeds
+
+// TrxNet pending state — set in callbacks, processed in loop()
+volatile uint32_t trxPendingHz   = 0;
+volatile uint8_t  trxPendingMode = 0; // CI-V byte
+volatile bool     trxFreqPending = false;
+volatile bool     trxModePending = false;
 
 int incomingByte = 0;   // for incoming serial data
 
@@ -348,10 +342,10 @@ int incomingByte = 0;   // for incoming serial data
   bool   g_lcManualModeForPhone = true;
   String g_lcBlockedDxcc = "";
 
-  // OI3 MQTT cache for TRX2 (index 0) and TRX3 (index 1) — written by MqttRx, read by handleOi3State
-  static volatile long g_mqttFreq[2]    = {0, 0};
-  static char          g_mqttMode[2][8] = {"USB", "USB"};
-  static volatile bool g_mqttHasData[2] = {false, false};
+  // TrxNet peer cache for TRX2 (index 0) and TRX3 (index 1) — written by onHz/onMode callbacks
+  static volatile long g_trxFreq[2]    = {0, 0};
+  static char          g_trxMode[2][8] = {"USB", "USB"};
+  static volatile bool g_trxHasData[2] = {false, false};
 
 // Band Decoder
 #define BD_CLOCK_PIN  15
@@ -406,14 +400,6 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   String setupPswdErr = "";
   String setupSsid2Err = "";
   String setupPswd2Err = "";
-  String setupMqttErr = "";
-  String setupMqttErr1 = "";
-  String setupMqttErr2 = "";
-  String setupMqttErr3 = "";
-  String setupMqttErr4 = "";
-  String setupMqttPortErr = "";
-  String setupMqttTopicErr = "";
-  String setupMqttTopicRxErr = "";
   String setupHttpCatPortErr = "";
   String setupUdpPortErr = "";
   String setupUdpCatPortErr = "";
@@ -480,6 +466,10 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   void handlePostLogConfig(void);
   void handleOi3State(void);
   void handleOi3Send(void);
+  void TrxNetLoop(void);
+  void onTrxHz(const char* from, const uint8_t* data, size_t len);
+  void onTrxMode(const char* from, const uint8_t* data, size_t len);
+  void onTrxSetHz(const char* from, const uint8_t* data, size_t len);
   void DxcLoop(void);
   void dxcHandleRawClient(void);
   bool DxcConfigReady(void);
@@ -1098,14 +1088,6 @@ void resetSetupMessages(void){
   setupPswdErr = "";
   setupSsid2Err = "";
   setupPswd2Err = "";
-  setupMqttErr = mqttEnable ? "" : "MQTT disabled";
-  setupMqttErr1 = "";
-  setupMqttErr2 = "";
-  setupMqttErr3 = "";
-  setupMqttErr4 = "";
-  setupMqttPortErr = "";
-  setupMqttTopicErr = "";
-  setupMqttTopicRxErr = "";
   setupHttpCatPortErr = "";
   setupUdpPortErr = "";
   setupUdpCatPortErr = "";
@@ -1125,15 +1107,13 @@ String setupTemplateProcessor(const String &key){
   if (key == "HTTP_CAT_PORT") return String(HTTP_CAT_PORT);
   if (key == "UDP_PORT") return String(udpPort);
   if (key == "UDP_CAT_PORT") return String(udpCatPort);
-  if (key == "MQTT_IP0") return String(mqttBroker[0]);
-  if (key == "MQTT_IP1") return String(mqttBroker[1]);
-  if (key == "MQTT_IP2") return String(mqttBroker[2]);
-  if (key == "MQTT_IP3") return String(mqttBroker[3]);
-  if (key == "MQTT_PORT") return String(MQTT_PORT);
-  if (key == "MQTT_TOPIC") return MQTT_TOPIC;
-  if (key == "MQTT_TOPIC_RX") return MQTT_TOPIC_RX;
-  if (key == "TRX2_MQTT_ROOT") return TRX2_MQTT_ROOT;
-  if (key == "TRX3_MQTT_ROOT") return TRX3_MQTT_ROOT;
+  if (key == "TRXNET_ID") { char h[3]; snprintf(h, sizeof(h), "%02x", TRXNET_ID); return String(h); }
+  if (key == "TRX2_NET_ID") { char h[3]; snprintf(h, sizeof(h), "%02x", TRX2_NET_ID); return String(h); }
+  if (key == "TRX3_NET_ID") { char h[3]; snprintf(h, sizeof(h), "%02x", TRX3_NET_ID); return String(h); }
+  if (key == "TRXNET_DEVICE_NAME") return TRXNET_ID != 0x00 ? String(trxDeviceName) : String("disabled");
+  if (key == "TRXNET_AP_NOTE") return APmode
+    ? "<span class=\"ap-note\">TrxNet is not active in AP mode — requires WiFi station mode.</span>"
+    : "";
   if (key == "TRX1_LABEL") return g_lcTrx1Label;
   if (key == "TRX2_LABEL") return g_lcTrx2Label;
   if (key == "TRX3_LABEL") return g_lcTrx3Label;
@@ -1153,17 +1133,6 @@ String setupTemplateProcessor(const String &key){
   if (key == "PSWD_ERR") return setupPswdErr;
   if (key == "SSID2_ERR") return setupSsid2Err;
   if (key == "PSWD2_ERR") return setupPswd2Err;
-  if (key == "MQTT_AP_NOTE") return APmode
-    ? "<span class=\"ap-note\">MQTT is not active in AP mode — a WiFi network connection to the broker is required. Settings are saved and will apply after switching to station mode.</span>"
-    : "";
-  if (key == "MQTT_ERR") return setupMqttErr;
-  if (key == "MQTT_ERR1") return setupMqttErr1;
-  if (key == "MQTT_ERR2") return setupMqttErr2;
-  if (key == "MQTT_ERR3") return setupMqttErr3;
-  if (key == "MQTT_ERR4") return setupMqttErr4;
-  if (key == "MQTT_PORT_ERR") return setupMqttPortErr;
-  if (key == "MQTT_TOPIC_ERR") return setupMqttTopicErr;
-  if (key == "MQTT_TOPIC_RX_ERR") return setupMqttTopicRxErr;
   if (key == "HTTP_CAT_PORT_ERR") return setupHttpCatPortErr;
   if (key == "UDP_PORT_ERR") return setupUdpPortErr;
   if (key == "UDP_CAT_PORT_ERR") return setupUdpCatPortErr;
@@ -1221,9 +1190,6 @@ void renderSetupPage(){
     #if defined(WDT)
       esp_task_wdt_reset();
     #endif
-    #if defined(MQTT)
-      if (mqttEnable && mqttClient.connected()) mqttClient.loop();
-    #endif
     String line = file.readStringUntil('\n');
     int start = 0;
     while (true) {
@@ -1257,9 +1223,6 @@ void renderIndexPage(){
   while (file.available()) {
     #if defined(WDT)
       esp_task_wdt_reset();
-    #endif
-    #if defined(MQTT)
-      if (mqttEnable && mqttClient.connected()) mqttClient.loop();
     #endif
     String line = file.readStringUntil('\n');
     int start = 0;
@@ -1403,9 +1366,6 @@ bool handleFileFromSPIFFS(const String &path){
     #if defined(WDT)
       esp_task_wdt_reset();
     #endif
-    #if defined(MQTT)
-      if (mqttEnable && mqttClient.connected()) mqttClient.loop();
-    #endif
     size_t n = f.read(buf, sizeof(buf));
     if (n > 0) webServer.sendContent((const char*)buf, n);
   }
@@ -1498,15 +1458,9 @@ void handleConfigDownload() {
   j += ",\"pswd\":\"";          j += configJsonEscape(PSWD);          j += "\"";
   j += ",\"ssid2\":\"";         j += configJsonEscape(SSID2);         j += "\"";
   j += ",\"pswd2\":\"";         j += configJsonEscape(PSWD2);         j += "\"";
-  j += ",\"mqttip0\":";         j += mqttBroker[0];
-  j += ",\"mqttip1\":";         j += mqttBroker[1];
-  j += ",\"mqttip2\":";         j += mqttBroker[2];
-  j += ",\"mqttip3\":";         j += mqttBroker[3];
-  j += ",\"mqttport\":";        j += MQTT_PORT;
-  j += ",\"mqtttopic\":\"";      j += configJsonEscape(MQTT_TOPIC);        j += "\"";
-  j += ",\"mqtttopicrx\":\"";   j += configJsonEscape(MQTT_TOPIC_RX);     j += "\"";
-  j += ",\"trx2mqttroot\":\"";  j += configJsonEscape(TRX2_MQTT_ROOT);    j += "\"";
-  j += ",\"trx3mqttroot\":\"";  j += configJsonEscape(TRX3_MQTT_ROOT);    j += "\"";
+  j += ",\"trxnetid\":";        j += (unsigned)TRXNET_ID;
+  j += ",\"trx2netid\":";       j += (unsigned)TRX2_NET_ID;
+  j += ",\"trx3netid\":";       j += (unsigned)TRX3_NET_ID;
   j += ",\"httpcatport\":";     j += HTTP_CAT_PORT;
   j += ",\"udpport\":";         j += udpPort;
   j += ",\"udpcatport\":";      j += udpCatPort;
@@ -1570,23 +1524,6 @@ void handleConfigUpload() {
     if (pswd2.length() <= 18) { PSWD2 = pswd2; eepromWriteStr(PSWD2, 97, 18); }
   }
 
-  String mqtttopic = extractJsonString(body, "mqtttopic");
-  if (mqtttopic.length() >= 1 && mqtttopic.length() <= 20) { MQTT_TOPIC = mqtttopic; eepromWriteStr(MQTT_TOPIC, 47, 20); }
-
-  if (body.indexOf("\"mqtttopicrx\"") >= 0) {
-    String mqtttopicrx = extractJsonString(body, "mqtttopicrx");
-    if (mqtttopicrx.length() <= 20) { MQTT_TOPIC_RX = mqtttopicrx; eepromWriteStr(MQTT_TOPIC_RX, 115, 21); }
-  }
-
-  if (body.indexOf("\"trx2mqttroot\"") >= 0) {
-    String trx2mqttroot = extractJsonString(body, "trx2mqttroot");
-    if (trx2mqttroot.length() <= 20) { TRX2_MQTT_ROOT = trx2mqttroot; eepromWriteStr(TRX2_MQTT_ROOT, 225, 21); }
-  }
-
-  if (body.indexOf("\"trx3mqttroot\"") >= 0) {
-    String trx3mqttroot = extractJsonString(body, "trx3mqttroot");
-    if (trx3mqttroot.length() <= 20) { TRX3_MQTT_ROOT = trx3mqttroot; eepromWriteStr(TRX3_MQTT_ROOT, 246, 21); }
-  }
 
   String trx = extractJsonString(body, "trxprofile");
   if (trx == "IC-7610-CI-V") transceiverType = trx;
@@ -1624,11 +1561,11 @@ void handleConfigUpload() {
   };
 
   int v;
-  v = parseField("mqttip0", 0, 255); if (v >= 0) { mqttBroker[0] = v; EEPROM.writeByte(41, v); mqttEnable = (v != 0); }
-  v = parseField("mqttip1", 0, 255); if (v >= 0) { mqttBroker[1] = v; EEPROM.writeByte(42, v); }
-  v = parseField("mqttip2", 0, 255); if (v >= 0) { mqttBroker[2] = v; EEPROM.writeByte(43, v); }
-  v = parseField("mqttip3", 0, 255); if (v >= 0) { mqttBroker[3] = v; EEPROM.writeByte(44, v); }
-  v = parseField("mqttport", 1, 65534); if (v >= 0) { MQTT_PORT = v; EEPROM.writeUShort(45, v); }
+  v = parseField("trxnetid",  0, 255); if (v >= 0) { TRXNET_ID   = (byte)v; EEPROM.writeByte(41, v); }
+  v = parseField("trx2netid", 0, 255); if (v >= 0) { TRX2_NET_ID = (byte)v; EEPROM.writeByte(42, v); }
+  v = parseField("trx3netid", 0, 255); if (v >= 0) { TRX3_NET_ID = (byte)v; EEPROM.writeByte(43, v); }
+  // EEPROM 44    FREE (was mqttBroker[3])
+  // EEPROM 45-46 FREE (was MQTT_PORT)
   v = parseField("httpcatport", 1, 65534); if (v >= 0) { HTTP_CAT_PORT = v; EEPROM.writeUShort(68, v); }
   v = parseField("udpport", 1, 65534); if (v >= 0) { udpPort = v; EEPROM.writeUShort(70, v); }
   v = parseField("udpcatport", 1, 65534); if (v >= 0) { udpCatPort = v; EEPROM.writeUShort(72, v); }
@@ -1732,21 +1669,6 @@ void handlePostLogConfig() {
   webServer.send(200, "application/json", "{\"ok\":true}");
 }
 
-// Translate OI3 mode number (from k3ng MQTT) to mode string.
-// Returns nullptr when the value should be ignored (0=No mode, 8=Tune).
-static const char* oi3ModeToString(int modeNum) {
-  switch (modeNum) {
-    case 1: return "CW";
-    case 2: return "SSB";
-    case 3: return "CW";
-    case 4: return "RTTY";
-    case 5: return "AM";
-    case 6: return "RTTY";
-    case 7: return "CW";   // CW-R
-    case 9: return "RTTY"; // RTTY-R
-    default: return nullptr; // 0=No mode, 8=Tune — keep last value
-  }
-}
 
 void handleOi3State() {
   String trxArg = webServer.arg("trx");
@@ -1757,7 +1679,7 @@ void handleOi3State() {
   }
   char jbuf[64];
   snprintf(jbuf, sizeof(jbuf), "{\"connected\":%s,\"frequency\":%ld,\"mode\":\"%s\"}",
-    g_mqttHasData[idx] ? "true" : "false", g_mqttFreq[idx], g_mqttMode[idx]);
+    g_trxHasData[idx] ? "true" : "false", g_trxFreq[idx], g_trxMode[idx]);
   webServer.send(200, "application/json", jbuf);
 }
 
@@ -1865,8 +1787,8 @@ void setupWebServer(void){
     }
     bdSaveConfig();
     uint32_t f = (bdSource == 1) ? frequency :
-                 (bdSource == 2) ? (uint32_t)g_mqttFreq[0] :
-                                   (uint32_t)g_mqttFreq[1];
+                 (bdSource == 2) ? (uint32_t)g_trxFreq[0] :
+                                   (uint32_t)g_trxFreq[1];
     bdUpdate(f);
     webServer.send(200, "application/json", "{\"ok\":true}");
   });
@@ -1876,8 +1798,8 @@ void setupWebServer(void){
     j += ",\"trx1Label\":\""; j += g_lcTrx1Label; j += "\"";
     j += ",\"trx2Label\":\""; j += g_lcTrx2Label; j += "\"";
     j += ",\"trx3Label\":\""; j += g_lcTrx3Label; j += "\"";
-    j += ",\"trx2freq\":"; j += g_mqttFreq[0];
-    j += ",\"trx3freq\":"; j += g_mqttFreq[1];
+    j += ",\"trx2freq\":"; j += g_trxFreq[0];
+    j += ",\"trx3freq\":"; j += g_trxFreq[1];
     j += "}";
     webServer.sendHeader("Cache-Control", "no-cache");
     webServer.send(200, "application/json", j);
@@ -1989,69 +1911,21 @@ void setup(){
       }
     }
 
-    // 41-44 mqttBroker[4]
-    #if defined(MQTT)
-      mqttBroker[0]=EEPROM.readByte(41);
-      mqttBroker[1]=EEPROM.readByte(42);
-      mqttBroker[2]=EEPROM.readByte(43);
-      mqttBroker[3]=EEPROM.readByte(44);
-      if(EEPROM.read(41)==0xff && EEPROM.read(42)==0xff && EEPROM.read(43)==0xff && EEPROM.read(44)==0xff){
-        mqttBroker[0]=0; // default disable //54;
-        mqttBroker[1]=38;
-        mqttBroker[2]=157;
-        mqttBroker[3]=134;
-      }
-      if(mqttBroker[0]==0x00){
-        mqttEnable = false;
-      }
-    #endif
+    // 41 TRXNET_ID  (own NET_ID; 0x00=disabled; 0xff=unprogrammed → default 0x01)
+    TRXNET_ID = (EEPROM.read(41) == 0xff) ? 0x01 : EEPROM.readByte(41);
 
-    // 45-46 MQTT_PORT
-    if(EEPROM.read(45)==0xff){
-      MQTT_PORT=1883;
-    }else{
-      MQTT_PORT = EEPROM.readUShort(45);
-    }
+    // 42 TRX2_NET_ID (peer for TRX2 BD slot; 0x00=disabled; 0xff=unprogrammed → default 0xff)
+    TRX2_NET_ID = (EEPROM.read(42) == 0xff) ? 0xff : EEPROM.readByte(42);
 
-    // 47-67 MQTT_TOPIC
-    if(EEPROM.read(47)==0xff){
-      MQTT_TOPIC="CALL/IC705/1/hz";
-    }else{
-      for (int i=47; i<68; i++){
-        if(EEPROM.read(i)!=0xff){
-          MQTT_TOPIC=MQTT_TOPIC+char(EEPROM.read(i));
-        }
-      }
-    }
+    // 43 TRX3_NET_ID (peer for TRX3 BD slot; 0x00=disabled; 0xff=unprogrammed → default 0x00)
+    TRX3_NET_ID = (EEPROM.read(43) == 0xff) ? 0x00 : EEPROM.readByte(43);
 
-    // 115-135 MQTT_TOPIC_RX
-    if(EEPROM.read(115)==0xff){
-      MQTT_TOPIC_RX="";
-    }else{
-      for (int i=115; i<136; i++){
-        if(EEPROM.read(i)!=0xff){
-          MQTT_TOPIC_RX=MQTT_TOPIC_RX+char(EEPROM.read(i));
-        }
-      }
-    }
-
-    // 225-245 TRX2_MQTT_ROOT
-    if(EEPROM.read(225)!=0xff){
-      for (int i=225; i<246; i++){
-        if(EEPROM.read(i)!=0xff){
-          TRX2_MQTT_ROOT=TRX2_MQTT_ROOT+char(EEPROM.read(i));
-        }
-      }
-    }
-
-    // 246-266 TRX3_MQTT_ROOT
-    if(EEPROM.read(246)!=0xff){
-      for (int i=246; i<267; i++){
-        if(EEPROM.read(i)!=0xff){
-          TRX3_MQTT_ROOT=TRX3_MQTT_ROOT+char(EEPROM.read(i));
-        }
-      }
-    }
+    // 44      FREE (was mqttBroker[3])
+    // 45-46   FREE (was MQTT_PORT)
+    // 47-67   FREE (was MQTT_TOPIC)
+    // 115-135 FREE (was MQTT_TOPIC_RX)
+    // 225-245 FREE (was TRX2_MQTT_ROOT)
+    // 246-266 FREE (was TRX3_MQTT_ROOT)
 
     // 267-287 BT_NAME (21B)
     if(EEPROM.read(267)!=0xff){
@@ -2273,32 +2147,19 @@ void setup(){
       configRadioBaud(0);
     #endif
 
-    #if defined(MQTT)
-      if(mqttEnable==true){
-        if (MQTT_LOGIN == true){
-        // if (mqttClient.connect("esp32gwClient", MQTT_USER, MQTT_PASS)){
-          //   AfterMQTTconnect();
-          // }
-        }else{
-            IPAddress mqtt_server_ip(mqttBroker[0], mqttBroker[1], mqttBroker[2], mqttBroker[3]);       // MQTT broker IP address
-            mqttClient.setServer(mqtt_server_ip, MQTT_PORT);
-            Serial.print("MQTT| Connect to ");
-            Serial.print(mqtt_server_ip);
-            Serial.print(":");
-            Serial.println(MQTT_PORT);
-            mqttClient.setCallback(MqttRx);
-            mqttClient.setKeepAlive(60);
-            mqttClient.setSocketTimeout(5);
-            Serial.println("MQTT| Callback");
-            lastMqttReconnectAttempt = 0;
-
-            MqttBuildClientId();
-              Serial.print("MQTT| maccharbuf ");
-              Serial.println(mqttClientId);
-              mqttReconnect();
-        }
-      }
-    #endif
+    // TrxNet init — after WiFi is up; NET_ID 0x00 = disabled
+    if (TRXNET_ID != 0x00) {
+      snprintf(trxDeviceName, sizeof(trxDeviceName), "705.%02x", TRXNET_ID);
+      net.begin(trxDeviceName);
+      net.subscribe("/hz",   onTrxHz);
+      net.subscribe("/mode", onTrxMode);
+      net.subscribe("/s-hz", onTrxSetHz);
+      trxNetEnabled = true;
+      Serial.print("TRXNET| begin ");
+      Serial.println(trxDeviceName);
+    } else {
+      Serial.println("TRXNET| disabled (NET_ID=0x00)");
+    }
 
     #if defined(WDT)
       // WDT
@@ -2323,7 +2184,7 @@ void loop(){
   #define LOOP_WARN_MS 200
   #define _TIMED(name, call) { unsigned long _t = millis(); call; unsigned long _d = millis()-_t; if(_d > LOOP_WARN_MS) { Serial.print("LOOP| slow: " name " "); Serial.print(_d); Serial.println("ms"); } }
   _TIMED("Watchdog",        Watchdog())
-  _TIMED("Mqtt",            Mqtt())
+  _TIMED("TrxNet",          TrxNetLoop())
   _TIMED("httpCAT",         httpCAT())
   _TIMED("UdpToCwFsk",      UdpToCwFsk())
   _TIMED("UdpToCat",        UdpToCat())
@@ -2334,6 +2195,19 @@ void loop(){
   _TIMED("webServer",       webServer.handleClient())
   _TIMED("DxcLoop",         DxcLoop())
   _TIMED("dxcRaw",          dxcHandleRawClient())
+
+  // TrxNet: process pending /s-hz command (set TRX1 VFO via CI-V)
+  if (trxFreqPending) {
+    trxFreqPending = false;
+    uint32_t f = trxPendingHz;
+    if (f > 0) {
+      if (radioSetFrequency(f)) {
+        Serial.printf("CAT | set VFO %lu\n", (unsigned long)f);
+      } else {
+        Serial.println("CAT | set VFO skipped, TRX not connected");
+      }
+    }
+  }
 
   // AP mode: status LED fade in/out
   if(APmode==true){
@@ -2383,10 +2257,10 @@ void handleBtEvents(){
     frequency = 0;
     frequencyTmp = 0;
     setModesText("OFF");
-    mqttPostponeStatus = 1;
     Serial.println("    | Client Disconnected");
-    if (statusPower == 1 && mqttEnable == true) {
-      MqttPubString(MQTT_TOPIC, "0", 0);
+    if (statusPower == 1 && trxNetEnabled) {
+      uint32_t zero = 0;
+      net.publish("/hz", (uint8_t*)&zero, sizeof(zero));
     }
   }
 }
@@ -2474,22 +2348,14 @@ void Watchdog(){
       digitalWrite(PowerOnPin, HIGH);
       Serial.println(" PWR| ON");
       statusPower = 1;
-      mqttPostponeTimer = millis();
-      mqttPostponeStatus = 0;
     }
   }
 
-  // postponed MQTT
-  if(statusPower==1 && btClientConnected==true && radio_address!=0x00 && millis()-mqttPostponeTimer > 11000 && mqttPostponeStatus==0){
-    mqttPostponeStatus = 1;
-    MqttPubString(MQTT_TOPIC, String(frequency), 0);
-  }
-
   if(statusPower==1 && btClientConnected==true && radio_address!=0x00 && millis()-mqttFreqTimer > 2000 && frequencyTmp!=frequency){
-  // MQTT
-    if(mqttEnable==true){
-      // Serial.println("MQTT>"+String(frequency)+"Hz "+String(modes) );
-      MqttPubString(MQTT_TOPIC, String(frequency), 0);
+    // TrxNet publish /hz on frequency change (2s throttle)
+    if(trxNetEnabled){
+      uint32_t f = (uint32_t)frequency;
+      net.publish("/hz", (uint8_t*)&f, sizeof(f));
     }
     frequencyTmp=frequency;
     mqttFreqTimer=millis();
@@ -2580,11 +2446,7 @@ void Watchdog(){
 void ServiceBackgroundTasks(unsigned long waitMs) {
   unsigned long start = millis();
   while (millis() - start < waitMs) {
-    #if defined(MQTT)
-      if (mqttEnable == true && mqttClient.connected() == true) {
-        mqttClient.loop();
-      }
-    #endif
+    if (trxNetEnabled) net.loop();
     webServer.handleClient();
     #if defined(WDT)
       esp_task_wdt_reset();
@@ -3191,180 +3053,96 @@ void printMode(void){
   #endif
 }
 //-------------------------------------------------------------------------------------------------------
-void MqttBuildClientId(){
-  #if defined(MQTT)
-    uint8_t mac[6];
-    WiFi.macAddress(mac);
-    snprintf(mqttClientId, sizeof(mqttClientId), "IC705-%02X%02X%02X%02X%02X%02X",
-      mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-  #endif
-}
 //-------------------------------------------------------------------------------------------------------
-void Mqtt(){
-  #if defined(MQTT)
-    if(APmode) return;
-    if(mqttEnable==true){
-      if (millis()-MqttStatusTimer[0]>MqttStatusTimer[1]){
-        if(!mqttClient.connected()){
-          long now = millis();
-          if (now - lastMqttReconnectAttempt > 10000) {
-            lastMqttReconnectAttempt = now;
-            Serial.print("MQTT| Attempt to MQTT reconnect | ");
-            Serial.println(millis()/1000);
-            if (mqttReconnect()) {
-              lastMqttReconnectAttempt = 0;
-            }
-          }
-        }else{
-          mqttClient.loop();
-        }
-        MqttStatusTimer[0]=millis();
-      }
-    }
-  #endif
+// TrxNet loop — replaces Mqtt(). Handles net.loop() and WiFi reconnect detection.
+// net.begin() is re-called on WiFi reconnect to re-broadcast discovery probe.
+void TrxNetLoop(){
+  if (APmode || TRXNET_ID == 0x00) return;
+  static bool prevWifiConnected = false;
+  bool wifiConnected = (WiFi.status() == WL_CONNECTED);
+  if (wifiConnected && !prevWifiConnected) {
+    // WiFi reconnected — re-announce to network
+    net.begin(trxDeviceName);
+    trxNetEnabled = true;
+    Serial.print("TRXNET| reconnect begin ");
+    Serial.println(trxDeviceName);
+  }
+  prevWifiConnected = wifiConnected;
+  if (trxNetEnabled && wifiConnected) net.loop();
 }
 
 //-------------------------------------------------------------------------------------------------------
+// TrxNet callbacks — called from net.loop(), must be short and non-blocking.
 
-#if defined(MQTT)
-  // if(mqttEnable==true){
-    bool mqttReconnect() {
-        MqttBuildClientId();
-        #if defined(WDT)
-          esp_task_wdt_reset();
-        #endif
-        if (mqttClient.connect(mqttClientId)) {
-          Serial.println("MQTT| mqttReconnect-connected");
-          if(MQTT_TOPIC_RX.length() > 0){
-            MQTT_TOPIC_RX.toCharArray(mqttPath, 50);
-            if(mqttClient.subscribe(mqttPath)==true){
-              Serial.print("MQTT| subscribe ");
-              Serial.println(mqttPath);
-            }else{
-              Serial.print("MQTT| subscribe failed ");
-              Serial.println(mqttPath);
-            }
-          }
-          // Subscribe to TRX2/TRX3 OI3 MQTT topics (wildcard)
-          auto mqttSubscribeOi3Root = [&](const String &root) {
-            if (root.length() == 0) return;
-            String r = root;
-            if (r[r.length()-1] != '/') r += '/';
-            String tWild = r + "#";
-            tWild.toCharArray(mqttPath, sizeof(mqttPath));
-            mqttClient.subscribe(mqttPath);
-            Serial.print("MQTT| subscribe "); Serial.println(mqttPath);
-          };
-          mqttSubscribeOi3Root(TRX2_MQTT_ROOT);
-          mqttSubscribeOi3Root(TRX3_MQTT_ROOT);
-        }else{
-          Serial.println("MQTT| mqttReconnect-not-connected");
-        }
-        return mqttClient.connected();
-    }
-  // }
-#endif
-//------------------------------------------------------------------------------------
-void MqttRx(char *topic, byte *payload, unsigned int length) {
-  #if defined(MQTT)
-    if(mqttEnable==true){
-      char payloadBuf[32];
-      unsigned int copyLen = length < sizeof(payloadBuf)-1 ? length : sizeof(payloadBuf)-1;
-      memcpy(payloadBuf, payload, copyLen);
-      payloadBuf[copyLen] = '\0';
-
-      String rxTopic = String(topic);
-
-      // Check TRX2 / TRX3 OI3 MQTT topics first
-      auto checkOi3Root = [&](const String &root, int idx) -> bool {
-        if (root.length() == 0) return false;
-        String r = root;
-        if (r[r.length()-1] != '/') r += '/';
-        if (rxTopic == r + "hz") {
-          long freq = atol(payloadBuf);
-          if (freq > 0) {
-            g_mqttFreq[idx] = freq;
-            g_mqttHasData[idx] = true;
-            Serial.printf("OI3 | TRX%d freq=%ld\n", idx+2, freq);
-            if (bdEnabled && bdSource == idx + 2) bdUpdate((uint32_t)freq);
-          }
-          return true;
-        }
-        if (rxTopic == r + "mode") {
-          int modeNum = atoi(payloadBuf);
-          const char *modeStr = oi3ModeToString(modeNum);
-          if (modeStr != nullptr) {
-            strlcpy(g_mqttMode[idx], modeStr, sizeof(g_mqttMode[idx]));
-            g_mqttHasData[idx] = true;
-            Serial.printf("OI3 | TRX%d mode=%s\n", idx+2, modeStr);
-          }
-          return true;
-        }
-        return false;
-      };
-
-      if (checkOi3Root(TRX2_MQTT_ROOT, 0)) return;
-      if (checkOi3Root(TRX3_MQTT_ROOT, 1)) return;
-
-      // MQTT_TOPIC_RX: set TRX1 VFO frequency
-      if (MQTT_TOPIC_RX.length() == 0) return;
-      if (rxTopic != MQTT_TOPIC_RX) return;
-
-      uint32_t newFreq = strtoul(payloadBuf, NULL, 10);
-      Serial.print("RXmqtt < ");
-      Serial.print(rxTopic);
-      Serial.print(" ");
-      Serial.println(payloadBuf);
-
-      if (newFreq == 0) {
-        Serial.println("MQTT| RX freq ignored, invalid payload");
-        return;
-      }
-
-      if (radioSetFrequency(newFreq)) {
-        Serial.print("CAT | set VFO ");
-        Serial.println(newFreq);
-      } else {
-        Serial.println("CAT | set VFO skipped, TRX not connected");
-      }
-    }
-  #endif
-} // MqttRx END
-//-----------------------------------------------------------------------------------
-void MqttPubString(String TOPICEND, String DATA, bool RETAIN){
-  #if defined(MQTT)
-    if(mqttEnable==true){
-      if(APmode==true){
-        ledcWrite(pwmChannel, 0);
-      }else{
-        digitalWrite(StatusPin, LOW);
-      }
-      if(mqttClient.connected()==true){
-        Serial.print("MQTT| ");
-        String topic = String(TOPICEND);
-        topic.toCharArray( mqttPath, 50 );
-        DATA.toCharArray( mqttTX, 50 );
-        if (mqttClient.publish(mqttPath, mqttTX, RETAIN)) {
-          Serial.print(mqttPath);
-          Serial.print(" ");
-          Serial.println(mqttTX);
-        } else {
-          Serial.print("publish failed, state=");
-          Serial.println(mqttClient.state());
-        }
-      }else{
-        Serial.print("MQTT| skip publish, disconnected state=");
-        Serial.println(mqttClient.state());
-      }
-      delay(100);
-      if(APmode==true){
-        ledcWrite(pwmChannel, 255);
-      }else{
-        digitalWrite(StatusPin, HIGH);
-      }
-    }
-  #endif
+// Helper: match sender device name against a configured peer NET_ID.
+// Returns peer slot index (0=TRX2, 1=TRX3) or -1 if no match.
+static int trxnetPeerSlot(const char* from) {
+  char expected[TRXNET_MAX_DEVICE_NAME];
+  if (TRX2_NET_ID != 0x00) {
+    snprintf(expected, sizeof(expected), "OI3.%02x", TRX2_NET_ID);
+    if (strcmp(from, expected) == 0) return 0;
+  }
+  if (TRX3_NET_ID != 0x00) {
+    snprintf(expected, sizeof(expected), "OI3.%02x", TRX3_NET_ID);
+    if (strcmp(from, expected) == 0) return 1;
+  }
+  return -1;
 }
+
+// Convert CI-V mode byte to display string for Band Decoder / web UI.
+// Returns nullptr for unknown/ignored values.
+static const char* trxnetModeToString(uint8_t civMode) {
+  switch (civMode) {
+    case 0x00: return "LSB";
+    case 0x01: return "USB";
+    case 0x02: return "AM";
+    case 0x03: return "CW";
+    case 0x04: return "RTTY";
+    case 0x05: return "FM";
+    case 0x06: return "WFM";
+    case 0x07: return "CW-R";
+    case 0x08: return "RTTY-R";
+    case 0x17: return "DV";
+    default:   return nullptr;
+  }
+}
+
+// Receive /hz from any peer — update TRX2/TRX3 Band Decoder slot.
+void onTrxHz(const char* from, const uint8_t* data, size_t len) {
+  if (len < sizeof(uint32_t)) return;
+  uint32_t freq;
+  memcpy(&freq, data, sizeof(freq));
+  int idx = trxnetPeerSlot(from);
+  if (idx < 0) return;
+  g_trxFreq[idx] = (long)freq;
+  g_trxHasData[idx] = true;
+  Serial.printf("TRXN| TRX%d freq=%lu\n", idx+2, (unsigned long)freq);
+  if (bdEnabled && bdSource == idx + 2) bdUpdate(freq);
+}
+
+// Receive /mode from any peer — update TRX2/TRX3 mode string for Band Decoder / web UI.
+void onTrxMode(const char* from, const uint8_t* data, size_t len) {
+  if (len < sizeof(uint8_t)) return;
+  int idx = trxnetPeerSlot(from);
+  if (idx < 0) return;
+  const char* modeStr = trxnetModeToString(data[0]);
+  if (modeStr != nullptr) {
+    strlcpy(g_trxMode[idx], modeStr, sizeof(g_trxMode[idx]));
+    g_trxHasData[idx] = true;
+    Serial.printf("TRXN| TRX%d mode=%s\n", idx+2, modeStr);
+  }
+}
+
+// Receive /s-hz — remote command to set IC-705 VFO frequency via CI-V.
+void onTrxSetHz(const char* from, const uint8_t* data, size_t len) {
+  if (len < sizeof(uint32_t)) return;
+  uint32_t newFreq;
+  memcpy(&newFreq, data, sizeof(newFreq));
+  if (newFreq == 0) return;
+  trxPendingHz   = newFreq;
+  trxFreqPending = true;
+}
+
 //-----------------------------------------------------------------------------------
 
 void httpCAT(){
@@ -3887,16 +3665,12 @@ void ListCommands(){
     Serial.println("  IP http-cat  http://"+String(WiFi.localIP()[0])+"."+String(WiFi.localIP()[1])+"."+String(WiFi.localIP()[2])+"."+String(WiFi.localIP()[3])+":"+String(HTTP_CAT_PORT) );
     Serial.println("  IP udp cw/rtty port: "+String(udpPort) );
     Serial.println("  IP udp cat port: "+String(udpCatPort) );
-    if(mqttEnable==true){
-      Serial.println("  IP MqttSubscribe: "+String(mqttBroker[0])+"."+String(mqttBroker[1])+"."+String(mqttBroker[2])+"."+String(mqttBroker[3])+":"+String(MQTT_PORT)+"/");
-      Serial.println("  IP MqttTopic TX: "+String(MQTT_TOPIC));
-      if (MQTT_TOPIC_RX.length() > 0) {
-        Serial.println("  IP MqttTopic RX: "+String(MQTT_TOPIC_RX));
-      } else {
-        Serial.println("  IP MqttTopic RX: DISABLE");
-      }
+    if(TRXNET_ID != 0x00){
+      Serial.println("  TrxNet device: "+String(trxDeviceName));
+      if(TRX2_NET_ID != 0x00) Serial.println("  TrxNet TRX2 peer: OI3."+String(TRX2_NET_ID, HEX));
+      if(TRX3_NET_ID != 0x00) Serial.println("  TrxNet TRX3 peer: OI3."+String(TRX3_NET_ID, HEX));
     }else{
-      Serial.println("  IP mqtt DISABLE" );
+      Serial.println("  TrxNet DISABLE (NET_ID=0x00)" );
     }
     #if defined(RESET_AFTER_DISCONNECT)
       Serial.println("     RESET after TRX disconnect - ENABLE" );
@@ -4111,156 +3885,27 @@ void handleSet() {
       }
     }
 
-    // 41-44 mqttBroker[4]
-    if ( requestArg("mqttip0").length()<1 || requestArg("mqttip0").toInt()>255){
-      setupMqttErr1 = "IP1: Out of range 0-255";
-      ERRdetect=1;
-    }else{
-      if(mqttBroker[0] == byte(requestArg("mqttip0").toInt()) ){
-        setupMqttErr1 = "";
-      }else{
-        setupMqttErr1 = "";
-        mqttBroker[0] = byte(requestArg("mqttip0").toInt()) ;
-        EEPROM.writeByte(41, mqttBroker[0]);
-      }
-      if(mqttBroker[0]==0x00){
-        mqttEnable = false;
-      }else{
-        mqttEnable = true;
-      }
-    }
+    // 41 TRXNET_ID (hex string "01".."ff"; 0x00 = disabled)
+    { long id = strtol(requestArg("trxnetid").c_str(), nullptr, 16);
+      if (id < 0 || id > 255) id = 0x01;
+      if (TRXNET_ID != (byte)id) { TRXNET_ID = (byte)id; EEPROM.writeByte(41, (byte)id); } }
 
-    if ( requestArg("mqttip1").length()<1 || requestArg("mqttip1").toInt()>255){
-      setupMqttErr2 = "IP2: Out of range 0-255";
-      ERRdetect=1;
-    }else{
-      if(mqttBroker[1] == byte(requestArg("mqttip1").toInt()) ){
-        setupMqttErr2 = "";
-      }else{
-        setupMqttErr2 = "";
-        mqttBroker[1] = byte(requestArg("mqttip1").toInt()) ;
-        EEPROM.writeByte(42, mqttBroker[1]);
-      }
-    }
+    // 42 TRX2_NET_ID (hex string; 0x00 = disabled)
+    { long id = strtol(requestArg("trx2netid").c_str(), nullptr, 16);
+      if (id < 0 || id > 255) id = 0x00;
+      if (TRX2_NET_ID != (byte)id) { TRX2_NET_ID = (byte)id; EEPROM.writeByte(42, (byte)id); } }
 
-    if ( requestArg("mqttip2").length()<1 || requestArg("mqttip2").toInt()>255){
-      setupMqttErr3 = "IP3: Out of range 0-255";
-      ERRdetect=1;
-    }else{
-      if(mqttBroker[2] == byte(requestArg("mqttip2").toInt()) ){
-        setupMqttErr3 = "";
-      }else{
-        setupMqttErr3 = "";
-        mqttBroker[2] = byte(requestArg("mqttip2").toInt()) ;
-        EEPROM.writeByte(43, mqttBroker[2]);
-      }
-    }
+    // 43 TRX3_NET_ID (hex string; 0x00 = disabled)
+    { long id = strtol(requestArg("trx3netid").c_str(), nullptr, 16);
+      if (id < 0 || id > 255) id = 0x00;
+      if (TRX3_NET_ID != (byte)id) { TRX3_NET_ID = (byte)id; EEPROM.writeByte(43, (byte)id); } }
 
-    if ( requestArg("mqttip3").length()<1 || requestArg("mqttip3").toInt()>255){
-      setupMqttErr4 = "IP4: Out of range 0-255";
-      ERRdetect=1;
-    }else{
-      if(mqttBroker[3] == byte(requestArg("mqttip3").toInt()) ){
-        setupMqttErr4 = "";
-      }else{
-        setupMqttErr4 = "";
-        mqttBroker[3] = byte(requestArg("mqttip3").toInt()) ;
-        EEPROM.writeByte(44, mqttBroker[3]);
-      }
-    }
-
-    // 45-46 MQTT_PORT
-    if ( requestArg("mqttport").length()<1 || requestArg("mqttport").toInt()<1 || requestArg("mqttport").toInt()>65534){
-      setupMqttPortErr = "Out of range number 1-65534";
-      ERRdetect=1;
-    }else{
-      if(MQTT_PORT == requestArg("mqttport").toInt()){
-        setupMqttPortErr = "";
-      }else{
-        setupMqttPortErr = "";
-        MQTT_PORT = requestArg("mqttport").toInt();
-        EEPROM.writeUShort(45, MQTT_PORT);
-      }
-    }
-
-    // 47-67 MQTT_TOPIC
-    if ( requestArg("mqtttopic").length()<1 || requestArg("mqtttopic").length()>20){
-      setupMqttTopicErr = "Out of range 1-20 characters";
-      ERRdetect=1;
-    }else{
-      String str = requestArg("mqtttopic");
-      if(MQTT_TOPIC == str){
-        setupMqttTopicErr = "";
-      }else{
-        setupMqttTopicErr = "";
-        MQTT_TOPIC = requestArg("mqtttopic");
-
-        int str_len = str.length();
-        if(str_len > 20){
-          str_len = 20;
-        }
-        char char_array[str_len + 1];
-        str.toCharArray(char_array, str_len+1);
-        for (int i=0; i<20; i++){
-          if(i < str_len){
-            EEPROM.write(47+i, char_array[i]);
-          }else{
-            EEPROM.write(47+i, 0xff);
-          }
-        }
-        // EEPROM.commit();
-      }
-    }
-
-    // 115-135 MQTT_TOPIC_RX
-    if ( requestArg("mqtttopicrx").length()>20){
-      setupMqttTopicRxErr = "Out of range 0-20 characters";
-      ERRdetect=1;
-    }else{
-      String str = requestArg("mqtttopicrx");
-      if(MQTT_TOPIC_RX == str){
-        setupMqttTopicRxErr = "";
-      }else{
-        setupMqttTopicRxErr = "";
-        MQTT_TOPIC_RX = str;
-
-        int str_len = str.length();
-        if(str_len > 20){
-          str_len = 20;
-        }
-        char char_array[str_len + 1];
-        str.toCharArray(char_array, str_len+1);
-        for (int i=0; i<21; i++){
-          if(i < str_len){
-            EEPROM.write(115+i, char_array[i]);
-          }else{
-            EEPROM.write(115+i, 0xff);
-          }
-        }
-      }
-    }
-
-    // 225-245 TRX2_MQTT_ROOT
-    if (requestArg("trx2mqttroot").length() > 20) {
-      ERRdetect=1;
-    } else {
-      String str = requestArg("trx2mqttroot");
-      if (TRX2_MQTT_ROOT != str) {
-        TRX2_MQTT_ROOT = str;
-        eepromWriteStr(TRX2_MQTT_ROOT, 225, 21);
-      }
-    }
-
-    // 246-266 TRX3_MQTT_ROOT
-    if (requestArg("trx3mqttroot").length() > 20) {
-      ERRdetect=1;
-    } else {
-      String str = requestArg("trx3mqttroot");
-      if (TRX3_MQTT_ROOT != str) {
-        TRX3_MQTT_ROOT = str;
-        eepromWriteStr(TRX3_MQTT_ROOT, 246, 21);
-      }
-    }
+    // 44    FREE (was mqttBroker[3])
+    // 45-46 FREE (was MQTT_PORT)
+    // 47-67 FREE (was MQTT_TOPIC)
+    // 115-135 FREE (was MQTT_TOPIC_RX)
+    // 225-245 FREE (was TRX2_MQTT_ROOT)
+    // 246-266 FREE (was TRX3_MQTT_ROOT)
 
     // 267-287 BT_NAME (21B)
     {
