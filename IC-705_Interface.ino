@@ -70,9 +70,10 @@ String PSWD         = "";
 String SSID2        = "";
 String PSWD2        = "";
 // TrxNet config — NET_ID 0x00 = disabled sentinel (TrxNet not activated)
-byte TRXNET_ID      = 0x01; // own device NET_ID → device name "705.01"
-byte TRX2_NET_ID    = 0xff; // peer NET_ID for TRX2 Band Decoder slot (0x00 = disabled)
-byte TRX3_NET_ID    = 0x00; // peer NET_ID for TRX3 Band Decoder slot (0x00 = disabled)
+byte     TRXNET_ID      = 0x01;   // own device NET_ID → device name "705.01"
+byte     TRX2_NET_ID    = 0xff;   // peer NET_ID for TRX2 Band Decoder slot (0x00 = disabled)
+byte     TRX3_NET_ID    = 0x00;   // peer NET_ID for TRX3 Band Decoder slot (0x00 = disabled)
+uint16_t TRXNET_PORT    = 5683;   // CoAP/discovery UDP port (CoAP default)
 int HTTP_CAT_PORT   = 0;
 int udpPort         = 0; // UDP port | echo -n "cq de ok1hra ok1hra test k;" | nc -u -w1 192.168.1.19 89
 int udpCatPort      = 0;
@@ -121,7 +122,7 @@ volatile bool cwIpSendPending = false;
   42 TRX2_NET_ID     (peer NET_ID for TRX2 BD slot, 0x00=disabled)
   43 TRX3_NET_ID     (peer NET_ID for TRX3 BD slot, 0x00=disabled)
   44    FREE         (was mqttBroker[3])
-  45-46 FREE         (was MQTT_PORT)
+  45-46 TRXNET_PORT  (was MQTT_PORT)
   47-67 FREE         (was MQTT_TOPIC 21B)
   68-69 HTTP_CAT_PORT
   70-71 udpPort
@@ -1107,6 +1108,7 @@ String setupTemplateProcessor(const String &key){
   if (key == "HTTP_CAT_PORT") return String(HTTP_CAT_PORT);
   if (key == "UDP_PORT") return String(udpPort);
   if (key == "UDP_CAT_PORT") return String(udpCatPort);
+  if (key == "TRXNET_PORT") return String(TRXNET_PORT);
   if (key == "TRXNET_ID") { char h[3]; snprintf(h, sizeof(h), "%02x", TRXNET_ID); return String(h); }
   if (key == "TRX2_NET_ID") { char h[3]; snprintf(h, sizeof(h), "%02x", TRX2_NET_ID); return String(h); }
   if (key == "TRX3_NET_ID") { char h[3]; snprintf(h, sizeof(h), "%02x", TRX3_NET_ID); return String(h); }
@@ -1459,6 +1461,7 @@ void handleConfigDownload() {
   j += ",\"ssid2\":\"";         j += configJsonEscape(SSID2);         j += "\"";
   j += ",\"pswd2\":\"";         j += configJsonEscape(PSWD2);         j += "\"";
   j += ",\"trxnetid\":";        j += (unsigned)TRXNET_ID;
+  j += ",\"trxnetport\":";      j += TRXNET_PORT;
   j += ",\"trx2netid\":";       j += (unsigned)TRX2_NET_ID;
   j += ",\"trx3netid\":";       j += (unsigned)TRX3_NET_ID;
   j += ",\"httpcatport\":";     j += HTTP_CAT_PORT;
@@ -1565,7 +1568,7 @@ void handleConfigUpload() {
   v = parseField("trx2netid", 0, 255); if (v >= 0) { TRX2_NET_ID = (byte)v; EEPROM.writeByte(42, v); }
   v = parseField("trx3netid", 0, 255); if (v >= 0) { TRX3_NET_ID = (byte)v; EEPROM.writeByte(43, v); }
   // EEPROM 44    FREE (was mqttBroker[3])
-  // EEPROM 45-46 FREE (was MQTT_PORT)
+  v = parseField("trxnetport", 1, 65534); if (v >= 0) { TRXNET_PORT = (uint16_t)v; EEPROM.writeUShort(45, v); }
   v = parseField("httpcatport", 1, 65534); if (v >= 0) { HTTP_CAT_PORT = v; EEPROM.writeUShort(68, v); }
   v = parseField("udpport", 1, 65534); if (v >= 0) { udpPort = v; EEPROM.writeUShort(70, v); }
   v = parseField("udpcatport", 1, 65534); if (v >= 0) { udpCatPort = v; EEPROM.writeUShort(72, v); }
@@ -1921,7 +1924,8 @@ void setup(){
     TRX3_NET_ID = (EEPROM.read(43) == 0xff) ? 0x00 : EEPROM.readByte(43);
 
     // 44      FREE (was mqttBroker[3])
-    // 45-46   FREE (was MQTT_PORT)
+    // 45-46   TRXNET_PORT
+    TRXNET_PORT = (EEPROM.read(45) == 0xff) ? 5683 : EEPROM.readUShort(45);
     // 47-67   FREE (was MQTT_TOPIC)
     // 115-135 FREE (was MQTT_TOPIC_RX)
     // 225-245 FREE (was TRX2_MQTT_ROOT)
@@ -2150,6 +2154,7 @@ void setup(){
     // TrxNet init — after WiFi is up; NET_ID 0x00 = disabled
     if (TRXNET_ID != 0x00) {
       snprintf(trxDeviceName, sizeof(trxDeviceName), "705.%02x", TRXNET_ID);
+      net.setPort(TRXNET_PORT);
       net.begin(trxDeviceName);
       net.subscribe("/hz",   onTrxHz);
       net.subscribe("/mode", onTrxMode);
@@ -3666,7 +3671,7 @@ void ListCommands(){
     Serial.println("  IP udp cw/rtty port: "+String(udpPort) );
     Serial.println("  IP udp cat port: "+String(udpCatPort) );
     if(TRXNET_ID != 0x00){
-      Serial.println("  TrxNet device: "+String(trxDeviceName));
+      Serial.println("  TrxNet device: "+String(trxDeviceName)+" port:"+String(TRXNET_PORT));
       if(TRX2_NET_ID != 0x00) Serial.println("  TrxNet TRX2 peer: OI3."+String(TRX2_NET_ID, HEX));
       if(TRX3_NET_ID != 0x00) Serial.println("  TrxNet TRX3 peer: OI3."+String(TRX3_NET_ID, HEX));
     }else{
