@@ -6,8 +6,7 @@ const app = {
   runMode:    'RUN',   // 'RUN' | 'SP'
   activeTrx:  1,       // 1 | 2 | 3
   trxLabels:  ['IC-705', 'TRX2', 'TRX3'],
-  trxOi3:     [false, false, false],  // OI3 mode per TRX
-  trxIps:     ['', '', ''],           // backend IP per TRX
+  trxOi3:     [false, false, false],  // OI3 mode per TRX (true when NET_ID != 0)
 
   // TRX state from /state polling
   connected:  false,
@@ -117,7 +116,7 @@ function pollState() {
     })
     .then(data => {
       applyState(data);
-      app._pollTimer = setTimeout(pollState, isOi3 ? 500 : 250);
+      app._pollTimer = setTimeout(pollState, 500);
     })
     .catch(() => {
       applyDisconnected();
@@ -455,6 +454,12 @@ document.addEventListener('keydown', e => {
     clearForm();
     renderDxccStatus(null);
     inpCall.focus();
+    return;
+  }
+  // Alt+Enter — log current QSO without sending any memory
+  if (e.altKey && !e.ctrlKey && !e.shiftKey && e.key === 'Enter') {
+    e.preventDefault();
+    logCurrentQsoOnly();
   }
 });
 
@@ -605,7 +610,7 @@ function macroCtx(overrides) {
     myLocator:    log.myLocator        || '',
     cwAbbrev:     log.cwAbbrev !== false,
     _oi3:         app.trxOi3[trxIdx] && trxIdx > 0,
-    _trxIp:       app.trxIps[trxIdx]  || '',
+    _trx:         app.activeTrx,
   }, overrides);
 }
 
@@ -619,7 +624,7 @@ function sendMacroText(macroType) {
     return;
   }
   const trxIdx = app.activeTrx - 1;
-  const isOi3  = app.trxOi3[trxIdx] && trxIdx > 0 && app.trxIps[trxIdx];
+  const isOi3  = app.trxOi3[trxIdx] && trxIdx > 0;
   if (!app.connected && !isOi3) {
     showHint('TRX not connected');
     return;
@@ -633,10 +638,10 @@ function sendRawText(text) {
   if (!text || !window.LogMacros) return;
   if (LogMacros.modeGroup(app.mode) === 'PHONE') { showHint('Phone mode — send manually'); return; }
   const trxIdx = app.activeTrx - 1;
-  const isOi3  = app.trxOi3[trxIdx] && trxIdx > 0 && app.trxIps[trxIdx];
+  const isOi3  = app.trxOi3[trxIdx] && trxIdx > 0;
   if (!app.connected && !isOi3) { showHint('TRX not connected'); return; }
   const url  = isOi3 ? '/oi3/send' : '/cmd';
-  const body = isOi3 ? { ip: app.trxIps[trxIdx], text } : { type: 'sendCw', text };
+  const body = isOi3 ? { trx: app.activeTrx, text } : { type: 'sendCw', text };
   fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
     .catch(() => {});
 }
@@ -653,7 +658,7 @@ function handleCallEnter(e) {
     checkDupe(inpCall.value.trim());
     return;
   }
-  if (e.key !== 'Enter') return;
+  if (e.key !== 'Enter' || e.altKey) return;
   e.preventDefault();
 
   const call  = inpCall.value.trim();
@@ -824,7 +829,7 @@ function checkDupe(call) {
 }
 
 function handleExchEnter(e) {
-  if (e.key !== 'Enter') return;
+  if (e.key !== 'Enter' || e.altKey) return;
   e.preventDefault();
 
   const call = inpCall.value.trim();
@@ -862,7 +867,21 @@ function handleExchEnter(e) {
 
 // ── QSO logging ───────────────────────────────────────────────────────────────
 
-function logQso(call, exch) {
+function logCurrentQsoOnly() {
+  const call = inpCall.value.trim();
+  const exch = inpExch.value.trim();
+
+  if (!call) {
+    showHint('Enter callsign');
+    inpCall.focus();
+    return;
+  }
+
+  logQso(call, exch, { sendPostActions: false, hint: 'QSO logged without TX' });
+}
+
+function logQso(call, exch, options) {
+  const opts = options || {};
   const log = LogManager.getActiveLog();
   if (!log) {
     showHint('No log open — press LOG to create one');
@@ -942,8 +961,9 @@ function logQso(call, exch) {
       appendJournalRow(saved);
       _onQsoBackupHook();
       // Phase 5: send TU macro + reset RIT
-      sendTuAndResetRit();
+      if (opts.sendPostActions !== false) sendTuAndResetRit();
       clearForm();
+      if (opts.hint) showHint(opts.hint);
       // Show "prev exch" button in S&P mode after logging
       if (app.runMode === 'SP') setPrevExchVisible(true);
       inpCall.focus();
@@ -1375,18 +1395,16 @@ function init() {
     if (cfg.trx1Label) app.trxLabels[0] = cfg.trx1Label;
     if (cfg.trx2Label) app.trxLabels[1] = cfg.trx2Label;
     if (cfg.trx3Label) app.trxLabels[2] = cfg.trx3Label;
-    if (cfg.trx2Ip)   app.trxIps[1]   = cfg.trx2Ip;
-    if (cfg.trx3Ip)   app.trxIps[2]   = cfg.trx3Ip;
+    app.trxOi3[1] = (cfg.trx2netid || 0) !== 0;
+    app.trxOi3[2] = (cfg.trx3netid || 0) !== 0;
     app.blockedDxccList = (cfg.blockedDxcc || '').split('\n')
       .map(s => s.trim().toLowerCase()).filter(Boolean);
-    app.trxOi3[1] = !!cfg.trx2Oi3;
-    app.trxOi3[2] = !!cfg.trx3Oi3;
     trxButtons.forEach((b, i) => { b.textContent = app.trxLabels[i]; });
-    // Hide TRX2/TRX3 buttons when no IP is configured
-    trxButtons[1].style.display = app.trxIps[1] ? '' : 'none';
-    trxButtons[2].style.display = app.trxIps[2] ? '' : 'none';
+    // Hide TRX2/TRX3 buttons when OI3 not configured
+    trxButtons[1].style.display = app.trxOi3[1] ? '' : 'none';
+    trxButtons[2].style.display = app.trxOi3[2] ? '' : 'none';
     // If active TRX is now hidden, fall back to TRX1
-    if ((app.activeTrx === 2 && !app.trxIps[1]) || (app.activeTrx === 3 && !app.trxIps[2])) {
+    if ((app.activeTrx === 2 && !app.trxOi3[1]) || (app.activeTrx === 3 && !app.trxOi3[2])) {
       app.activeTrx = 1;
       trxButtons.forEach((b, i) => b.classList.toggle('btn-trx-active', i === 0));
     }

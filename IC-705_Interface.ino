@@ -74,9 +74,6 @@ byte     TRXNET_ID      = 0x01;   // own device NET_ID → device name "705.01"
 byte     TRX2_NET_ID    = 0xff;   // peer NET_ID for TRX2 Band Decoder slot (0x00 = disabled)
 byte     TRX3_NET_ID    = 0x00;   // peer NET_ID for TRX3 Band Decoder slot (0x00 = disabled)
 uint16_t TRXNET_PORT    = 5683;   // CoAP/discovery UDP port (CoAP default)
-int HTTP_CAT_PORT   = 0;
-int udpPort         = 0; // UDP port | echo -n "cq de ok1hra ok1hra test k;" | nc -u -w1 192.168.1.19 89
-int udpCatPort      = 0;
 int BaudRate        = 9600;
 // char* BTname        = "";
 // const char* BTname  = "IC705-interface";
@@ -85,14 +82,12 @@ bool Debug          = false;
 bool cwIpOnConnect  = true;       // announce WiFi IP via CW on first BT connect
 volatile bool cwIpSendPending = false;
 
-#define REV 20260517
+#define LOOP_WARN_MS 200
+#define REV 20260519
 #define WIFI
-#define UDP_TO_CW
 #define UDP_TO_FSK
-#define HTTP        // http propagation freq|mode|
 #define WDT         // watchdog timer
 #define CIV_OUT     // send freq to CIV out with BaudRate
-#define UDP_TO_CAT  // data command from udpCatPort send to TRX | FE FE A4 E0 <command> FD
 #define BLUETOOTH   // BT
 // #define RTLE     // not work now | credit OK2CQR https://github.com/ok2cqr/rtle/tree/master
 // #define RESET_AFTER_DISCONNECT  // enable reset after each disconnect + short CW msg
@@ -124,9 +119,9 @@ volatile bool cwIpSendPending = false;
   44    FREE         (was mqttBroker[3])
   45-46 TRXNET_PORT  (was MQTT_PORT)
   47-67 FREE         (was MQTT_TOPIC 21B)
-  68-69 HTTP_CAT_PORT
-  70-71 udpPort
-  72-73 udpCatPort
+  68-69 FREE         (was HTTP_CAT_PORT)
+  70-71 FREE         (was udpPort)
+  72-73 FREE         (was udpCatPort)
   74-75 BaudRate
   76-95 SSID2
   97-114 PSWD2
@@ -235,7 +230,8 @@ volatile bool btConnectPending = false;
   // int SelectSsidPass = -1;
   #define wifi_max_try 40             // Number of try
   unsigned long WifiTimer = 0;
-  unsigned long WifiReconnect = 30000;
+  unsigned long WifiReconnect = 5000;
+  unsigned long webQuietUntil = 0;
   byte ActiveWifiProfile = 0;
   String MACString;
 
@@ -252,27 +248,9 @@ volatile bool btConnectPending = false;
     WebServer rtleserver(88);
   #endif
 
-#if defined(HTTP)
-  WiFiServer server; //(HTTP_CAT_PORT);
-  char linebuf[80];
-  int charcount=0;
-
-  WiFiServer serverForm(80);
-  String header;
-#endif
-
-#if defined(UDP_TO_CW)
-  #include <WiFiUdp.h>
-  WiFiUDP udp;
-#endif
-
-#if defined(UDP_TO_CAT)
-  WiFiUDP udpCat;
-#endif
 
 // uint8_t CwMsg[36] = "";
 char CwMsg[37] = "";
-uint8_t CwCat[36] = "";
 
 #if defined(UDP_TO_FSK)
   #define FSK_OUT  33                      // TTL LEVEL pin OUTPUT
@@ -295,13 +273,10 @@ uint8_t CwCat[36] = "";
   char    ch;
 #endif
 
-#if defined(UDP_TO_CAT)
-  // uint8_t CatMsg[11] = "";
-  byte CatMsg[10];
-#endif
 
 // TrxNet — P2P telemetry, replaces PubSubClient/MQTT
 // TRXNET_ID == 0x00 acts as "disabled" sentinel — net.begin() is not called.
+#define TRXNET_MAX_PENDING 6
 #include <WiFiUdp.h>
 #include <TrxNet.h>
 WiFiUDP trxUdp;
@@ -332,12 +307,6 @@ int incomingByte = 0;   // for incoming serial data
   String g_lcTrx1Label = "IC-705";
   String g_lcTrx2Label = "TRX2";
   String g_lcTrx3Label = "TRX3";
-  String g_lcTrx2Civ   = "";
-  String g_lcTrx3Civ   = "";
-  String g_lcTrx2Ip    = "";
-  String g_lcTrx3Ip    = "";
-  bool   g_lcTrx2Oi3   = false;
-  bool   g_lcTrx3Oi3   = false;
   String g_lcRstSsb    = "59";
   String g_lcRstCwRtty = "599";
   bool   g_lcManualModeForPhone = true;
@@ -401,9 +370,6 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   String setupPswdErr = "";
   String setupSsid2Err = "";
   String setupPswd2Err = "";
-  String setupHttpCatPortErr = "";
-  String setupUdpPortErr = "";
-  String setupUdpCatPortErr = "";
   String setupCivAddrErr = "";
   bool setupSaveOk = false;
   String transceiverType = "IC-705-BT";
@@ -434,6 +400,7 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   void loadMemoryConfig(void);
   void saveMemoryConfig(void);
   String jsonEscape(const String &value);
+  String configJsonEscape(const String &s);
   String civFrameToHex(const uint8_t *frame, size_t frameLen);
   uint32_t decodeCivFrequencyBytes(const uint8_t *bytes, size_t byteCount);
   uint32_t decodeCivBcdBytes(const uint8_t *bytes, size_t byteCount);
@@ -453,6 +420,9 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   size_t buildReadQuickSplitFrame(uint8_t *frame, size_t frameMaxLen);
   void buildStateJson(char *buf, size_t bufSize);
   void handleGetState(void);
+  bool sendTemplatedHtml(const char *path);
+  void handleSetupData(void);
+  void handleWebServerLoop(void);
   bool handleFileFromSPIFFS(const String &path);
   void handlePostCmd(void);
   void handleSet(void);
@@ -467,6 +437,7 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   void handlePostLogConfig(void);
   void handleOi3State(void);
   void handleOi3Send(void);
+  void handleOi3SetHz(void);
   void TrxNetLoop(void);
   void onTrxHz(const char* from, const uint8_t* data, size_t len);
   void onTrxMode(const char* from, const uint8_t* data, size_t len);
@@ -480,6 +451,8 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   void DxcUpdateTelnetStatus(bool connected, bool forceSend = false);
   void DxcSendTelnetStatus(void);
   bool DxcConnectTelnet(void);
+  bool WiFiStationReady(void);
+  void WiFiRetryActiveProfile(const char *reason);
   bool DxcSendWebSocketFrame(uint8_t opcode, const uint8_t* payload, size_t length);
   bool DxcSendWebSocketText(const char* text);
   bool DxcSendWebSocketText(const String& text);
@@ -612,19 +585,10 @@ void loadLogConfigVars(void){
   v = extractJsonString(j, "trx1Label"); if (v.length() > 0) g_lcTrx1Label = v;
   v = extractJsonString(j, "trx2Label"); if (v.length() > 0) g_lcTrx2Label = v;
   v = extractJsonString(j, "trx3Label"); if (v.length() > 0) g_lcTrx3Label = v;
-  v = extractJsonString(j, "trx2Civ");   g_lcTrx2Civ = v;
-  v = extractJsonString(j, "trx3Civ");   g_lcTrx3Civ = v;
-  v = extractJsonString(j, "trx2Ip");    g_lcTrx2Ip  = v;
-  v = extractJsonString(j, "trx3Ip");    g_lcTrx3Ip  = v;
   v = extractJsonString(j, "rstSsb");    if (v.length() > 0) g_lcRstSsb = v;
   v = extractJsonString(j, "rstCwRtty"); if (v.length() > 0) g_lcRstCwRtty = v;
   v = extractJsonString(j, "blockedDxcc"); g_lcBlockedDxcc = v;
   g_lcManualModeForPhone = extractJsonBool(j, "manualModeForPhone", true);
-  // booleans
-  int idx2 = j.indexOf("\"trx2Oi3\"");
-  if (idx2 >= 0) { int c = j.indexOf(':', idx2)+1; while(c<(int)j.length()&&j[c]==' ')c++; g_lcTrx2Oi3 = j.substring(c,c+4)=="true"; }
-  int idx3 = j.indexOf("\"trx3Oi3\"");
-  if (idx3 >= 0) { int c = j.indexOf(':', idx3)+1; while(c<(int)j.length()&&j[c]==' ')c++; g_lcTrx3Oi3 = j.substring(c,c+4)=="true"; }
 }
 
 String jsonEscape(const String &value){
@@ -795,29 +759,17 @@ static String buildLogConfigJson(
   const String &trx1Label,
   const String &trx2Label,
   const String &trx3Label,
-  const String &trx2Civ,
-  const String &trx3Civ,
-  const String &trx2Ip,
-  const String &trx3Ip,
-  bool trx2Oi3,
-  bool trx3Oi3,
   const String &rstSsb,
   const String &rstCwRtty,
   bool manualModeForPhone,
   const String &blockedDxcc
 ) {
   String json;
-  json.reserve(512);
+  json.reserve(256);
   json += "{";
   json += "\"trx1Label\":\""; json += jsonEscape(trx1Label); json += "\"";
   json += ",\"trx2Label\":\""; json += jsonEscape(trx2Label); json += "\"";
   json += ",\"trx3Label\":\""; json += jsonEscape(trx3Label); json += "\"";
-  json += ",\"trx2Civ\":\"";   json += jsonEscape(trx2Civ);   json += "\"";
-  json += ",\"trx3Civ\":\"";   json += jsonEscape(trx3Civ);   json += "\"";
-  json += ",\"trx2Ip\":\"";    json += jsonEscape(trx2Ip);    json += "\"";
-  json += ",\"trx3Ip\":\"";    json += jsonEscape(trx3Ip);    json += "\"";
-  json += ",\"trx2Oi3\":";     json += trx2Oi3 ? "true" : "false";
-  json += ",\"trx3Oi3\":";     json += trx3Oi3 ? "true" : "false";
   json += ",\"rstSsb\":\"";    json += jsonEscape(rstSsb);    json += "\"";
   json += ",\"rstCwRtty\":\""; json += jsonEscape(rstCwRtty); json += "\"";
   json += ",\"manualModeForPhone\":"; json += manualModeForPhone ? "true" : "false";
@@ -1089,9 +1041,6 @@ void resetSetupMessages(void){
   setupPswdErr = "";
   setupSsid2Err = "";
   setupPswd2Err = "";
-  setupHttpCatPortErr = "";
-  setupUdpPortErr = "";
-  setupUdpCatPortErr = "";
   setupCivAddrErr = "";
   setupSaveOk = false;
 }
@@ -1105,9 +1054,6 @@ String setupTemplateProcessor(const String &key){
   if (key == "PSWD") return PSWD;
   if (key == "SSID2") return SSID2;
   if (key == "PSWD2") return PSWD2;
-  if (key == "HTTP_CAT_PORT") return String(HTTP_CAT_PORT);
-  if (key == "UDP_PORT") return String(udpPort);
-  if (key == "UDP_CAT_PORT") return String(udpCatPort);
   if (key == "TRXNET_PORT") return String(TRXNET_PORT);
   if (key == "TRXNET_ID") { char h[3]; snprintf(h, sizeof(h), "%02x", TRXNET_ID); return String(h); }
   if (key == "TRX2_NET_ID") { char h[3]; snprintf(h, sizeof(h), "%02x", TRX2_NET_ID); return String(h); }
@@ -1119,14 +1065,6 @@ String setupTemplateProcessor(const String &key){
   if (key == "TRX1_LABEL") return g_lcTrx1Label;
   if (key == "TRX2_LABEL") return g_lcTrx2Label;
   if (key == "TRX3_LABEL") return g_lcTrx3Label;
-  if (key == "TRX2_CIV")   return g_lcTrx2Civ;
-  if (key == "TRX3_CIV")   return g_lcTrx3Civ;
-  if (key == "TRX2_IP")    return g_lcTrx2Ip;
-  if (key == "TRX3_IP")    return g_lcTrx3Ip;
-  if (key == "TRX2_OI3_CHK") return g_lcTrx2Oi3 ? "checked" : "";
-  if (key == "TRX3_OI3_CHK") return g_lcTrx3Oi3 ? "checked" : "";
-  if (key == "TRX2_OI3_STYLE") return g_lcTrx2Oi3 ? "display:block" : "display:none";
-  if (key == "TRX3_OI3_STYLE") return g_lcTrx3Oi3 ? "display:block" : "display:none";
   if (key == "RST_SSB") return g_lcRstSsb;
   if (key == "RST_CW_RTTY") return g_lcRstCwRtty;
   if (key == "MANUAL_MODE_FOR_PHONE_CHK") return g_lcManualModeForPhone ? "checked" : "";
@@ -1135,9 +1073,6 @@ String setupTemplateProcessor(const String &key){
   if (key == "PSWD_ERR") return setupPswdErr;
   if (key == "SSID2_ERR") return setupSsid2Err;
   if (key == "PSWD2_ERR") return setupPswd2Err;
-  if (key == "HTTP_CAT_PORT_ERR") return setupHttpCatPortErr;
-  if (key == "UDP_PORT_ERR") return setupUdpPortErr;
-  if (key == "UDP_CAT_PORT_ERR") return setupUdpCatPortErr;
   if (key == "CIV_ADDR") {
     String addr = String(configuredCivAddress, HEX);
     addr.toUpperCase();
@@ -1177,72 +1112,139 @@ String setupTemplateProcessor(const String &key){
   return String();
 }
 
-void renderSetupPage(){
-  if (!SPIFFS.exists("/setup.html")) {
-    webServer.send(500, "text/plain", "Missing /setup.html in SPIFFS");
-    return;
+bool sendTemplatedHtml(const char *path){
+  webQuietUntil = millis() + 1500;
+  if (!SPIFFS.exists(path)) {
+    String msg = "Missing ";
+    msg += path;
+    msg += " in SPIFFS";
+    webServer.send(500, "text/plain", msg);
+    return false;
   }
-  File file = SPIFFS.open("/setup.html", "r");
-  if (!file) { webServer.send(500, "text/plain", "File open failed"); return; }
-  webServer.setContentLength(CONTENT_LENGTH_UNKNOWN);
-  webServer.send(200, "text/html", "");
-  String buf;
-  buf.reserve(1536);
+  File file = SPIFFS.open(path, "r");
+  if (!file) {
+    webServer.send(500, "text/plain", "File open failed");
+    return false;
+  }
+
+  String page;
+  page.reserve(file.size() + 1024);
+  String line;
+  line.reserve(256);
+  file.setTimeout(10);
+
   while (file.available()) {
     #if defined(WDT)
       esp_task_wdt_reset();
     #endif
-    String line = file.readStringUntil('\n');
+    line = file.readStringUntil('\n');
     int start = 0;
     while (true) {
       int p1 = line.indexOf('%', start);
-      if (p1 < 0) { buf += line.substring(start); break; }
+      if (p1 < 0) { page += line.substring(start); break; }
       int p2 = line.indexOf('%', p1 + 1);
-      if (p2 < 0) { buf += line.substring(start); break; }
-      buf += line.substring(start, p1);
-      buf += setupTemplateProcessor(line.substring(p1 + 1, p2));
+      if (p2 < 0) { page += line.substring(start); break; }
+      page += line.substring(start, p1);
+      page += setupTemplateProcessor(line.substring(p1 + 1, p2));
       start = p2 + 1;
     }
-    buf += '\n';
-    if (buf.length() >= 1024) { webServer.sendContent(buf); buf = ""; }
+    if (file.available()) page += '\n';
   }
   file.close();
-  if (buf.length() > 0) webServer.sendContent(buf);
-  webServer.sendContent("");
+
+  webServer.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  webServer.sendHeader("Pragma", "no-cache");
+  webServer.sendHeader("Connection", "close");
+  webServer.client().setNoDelay(true);
+  webServer.setContentLength(page.length());
+  webServer.send(200, "text/html", page);
+  webQuietUntil = millis() + 1500;
+  return true;
+}
+
+void renderSetupPage(){
+  handleFileFromSPIFFS("/setup.html");
 }
 
 void renderIndexPage(){
-  if (!SPIFFS.exists("/index.html")) {
-    webServer.send(500, "text/plain", "Missing /index.html in SPIFFS");
+  if (!sendTemplatedHtml("/index.html")) {
     return;
   }
-  File file = SPIFFS.open("/index.html", "r");
-  if (!file) { webServer.send(500, "text/plain", "File open failed"); return; }
-  webServer.setContentLength(CONTENT_LENGTH_UNKNOWN);
-  webServer.send(200, "text/html", "");
-  String buf;
-  buf.reserve(1536);
-  while (file.available()) {
-    #if defined(WDT)
-      esp_task_wdt_reset();
-    #endif
-    String line = file.readStringUntil('\n');
-    int start = 0;
-    while (true) {
-      int p1 = line.indexOf('%', start);
-      if (p1 < 0) { buf += line.substring(start); break; }
-      int p2 = line.indexOf('%', p1 + 1);
-      if (p2 < 0) { buf += line.substring(start); break; }
-      buf += line.substring(start, p1);
-      buf += setupTemplateProcessor(line.substring(p1 + 1, p2));
-      start = p2 + 1;
-    }
-    buf += '\n';
-    if (buf.length() >= 1024) { webServer.sendContent(buf); buf = ""; }
+}
+
+void handleSetupData(){
+  char civHex[3];
+  snprintf(civHex, sizeof(civHex), "%02X", configuredCivAddress);
+  char trxnetHex[3], trx2Hex[3], trx3Hex[3];
+  snprintf(trxnetHex, sizeof(trxnetHex), "%02x", TRXNET_ID);
+  snprintf(trx2Hex, sizeof(trx2Hex), "%02x", TRX2_NET_ID);
+  snprintf(trx3Hex, sizeof(trx3Hex), "%02x", TRX3_NET_ID);
+
+  int baudSelect = 3;
+  if (BaudRate == 1200) baudSelect = 0;
+  else if (BaudRate == 2400) baudSelect = 1;
+  else if (BaudRate == 4800) baudSelect = 2;
+  else if (BaudRate == 9600) baudSelect = 3;
+  else if (BaudRate == 115200) baudSelect = 4;
+
+  String j;
+  j.reserve(2300);
+  j += "{\"fwRev\":"; j += (unsigned)REV;
+  j += ",\"apMode\":"; j += APmode ? "true" : "false";
+  j += ",\"apModeText\":\""; j += APmode ? "AP mode ON" : "AP mode OFF"; j += "\"";
+  j += ",\"mac\":\""; j += configJsonEscape(MACString); j += "\"";
+  j += ",\"hwRev\":"; j += HardwareRev;
+  j += ",\"trxnetDeviceName\":\""; j += configJsonEscape(TRXNET_ID != 0x00 ? String(trxDeviceName) : String("disabled")); j += "\"";
+  j += ",\"trxnetApNote\":\""; j += APmode ? "TrxNet is not active in AP mode - requires WiFi station mode." : ""; j += "\"";
+  j += ",\"ssid\":\""; j += configJsonEscape(SSID); j += "\"";
+  j += ",\"pswd\":\""; j += configJsonEscape(PSWD); j += "\"";
+  j += ",\"ssid2\":\""; j += configJsonEscape(SSID2); j += "\"";
+  j += ",\"pswd2\":\""; j += configJsonEscape(PSWD2); j += "\"";
+  j += ",\"trxnetid\":\""; j += trxnetHex; j += "\"";
+  j += ",\"trxnetport\":\""; j += TRXNET_PORT; j += "\"";
+  j += ",\"baud\":\""; j += baudSelect; j += "\"";
+  j += ",\"trx1label\":\""; j += configJsonEscape(g_lcTrx1Label); j += "\"";
+  j += ",\"civaddr\":\""; j += civHex; j += "\"";
+  j += ",\"btname\":\""; j += configJsonEscape(BT_NAME); j += "\"";
+  j += ",\"cwIpOnConnect\":"; j += cwIpOnConnect ? "true" : "false";
+  j += ",\"trx2label\":\""; j += configJsonEscape(g_lcTrx2Label); j += "\"";
+  j += ",\"trx2netid\":\""; j += trx2Hex; j += "\"";
+  j += ",\"trx3label\":\""; j += configJsonEscape(g_lcTrx3Label); j += "\"";
+  j += ",\"trx3netid\":\""; j += trx3Hex; j += "\"";
+  j += ",\"dxchost\":\""; j += configJsonEscape(DxcHost); j += "\"";
+  j += ",\"dxcport\":\""; j += DxcPort > 0 ? String(DxcPort) : ""; j += "\"";
+  j += ",\"dxccall\":\""; j += configJsonEscape(DxcCallsign); j += "\"";
+  j += ",\"dxclocator\":\""; j += configJsonEscape(DxcLocator); j += "\"";
+  j += ",\"rstSsb\":\""; j += configJsonEscape(g_lcRstSsb); j += "\"";
+  j += ",\"rstCwRtty\":\""; j += configJsonEscape(g_lcRstCwRtty); j += "\"";
+  j += ",\"manualModeForPhone\":"; j += g_lcManualModeForPhone ? "true" : "false";
+  j += ",\"blockedDxcc\":\""; j += configJsonEscape(g_lcBlockedDxcc); j += "\"";
+  for (uint8_t i = 0; i < CW_MEMORY_COUNT; i++) {
+    j += ",\"cwmem"; j += (i + 1); j += "\":\""; j += configJsonEscape(cwMemoryText[i]); j += "\"";
   }
-  file.close();
-  if (buf.length() > 0) webServer.sendContent(buf);
-  webServer.sendContent("");
+  for (uint8_t i = 0; i < FREQ_MEMORY_COUNT; i++) {
+    j += ",\"freqmem"; j += (i + 1); j += "\":\""; j += configJsonEscape(freqMemoryText[i]); j += "\"";
+  }
+  j += "}";
+  webServer.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  webServer.sendHeader("Pragma", "no-cache");
+  webServer.send(200, "application/json", j);
+}
+
+void handleWebServerLoop(){
+  unsigned long start = millis();
+  webServer.handleClient();
+  unsigned long elapsed = millis() - start;
+  if (elapsed > LOOP_WARN_MS) {
+    Serial.print("LOOP| slow: webServer ");
+    Serial.print(elapsed);
+    Serial.print("ms uri=");
+    Serial.print(webServer.uri());
+    Serial.print(" wifi=");
+    Serial.print((int)WiFi.status());
+    Serial.print(" ip=");
+    Serial.println(WiFi.localIP());
+  }
 }
 
 void buildStateJson(char *buf, size_t bufSize){
@@ -1253,8 +1255,8 @@ void buildStateJson(char *buf, size_t bufSize){
   const char *btStat = !btClientConnected ? "BT idle" :
                        (radio_address == 0x00 ? "BT linked | searching CI-V" : "BT linked");
   const char *wifiStat = APmode ? "WiFi AP" :
-                         (WiFi.status() == WL_CONNECTED ? "WiFi STA" : "WiFi down");
-  int rssi = (APmode || WiFi.status() != WL_CONNECTED) ? -999 : (int)WiFi.RSSI();
+                         (WiFiStationReady() ? "WiFi STA" : "WiFi down");
+  int rssi = (APmode || !WiFiStationReady()) ? -999 : (int)WiFi.RSSI();
   snprintf(buf, bufSize,
     "{\"connected\":%s,\"btStatus\":\"%s\",\"wifiStatus\":\"%s\","
     "\"wifiRssi\":%d,\"fwRev\":\"%u\",\"power\":%s,"
@@ -1340,6 +1342,7 @@ void handlePairingReject() {
 }
 
 bool handleFileFromSPIFFS(const String &path){
+  webQuietUntil = millis() + 1500;
   String contentType = "text/plain";
   bool isStatic = false;
   if (path.endsWith(".html")) contentType = "text/html";
@@ -1354,6 +1357,7 @@ bool handleFileFromSPIFFS(const String &path){
   if (!useGz && !SPIFFS.exists(path)) return false;
   File f = SPIFFS.open(servePath, "r");
   if (!f) return false;
+
   if (isStatic) {
     webServer.sendHeader("Cache-Control", "public, max-age=3600");
   } else {
@@ -1361,8 +1365,10 @@ bool handleFileFromSPIFFS(const String &path){
     webServer.sendHeader("Pragma", "no-cache");
   }
   if (useGz) webServer.sendHeader("Content-Encoding", "gzip");
+  webServer.sendHeader("Connection", "close");
   webServer.setContentLength(f.size());
   webServer.send(200, contentType, "");
+
   static uint8_t buf[1024];
   while (f.available()) {
     #if defined(WDT)
@@ -1372,6 +1378,7 @@ bool handleFileFromSPIFFS(const String &path){
     if (n > 0) webServer.sendContent((const char*)buf, n);
   }
   f.close();
+  webQuietUntil = millis() + 1500;
   return true;
 }
 
@@ -1432,14 +1439,23 @@ void handlePostCmd(){
   webServer.send(400, "application/json", "{\"error\":\"unsupported_type\"}");
 }
 
-static String configJsonEscape(const String &s) {
+String configJsonEscape(const String &s) {
   String out;
   out.reserve(s.length() + 4);
   for (size_t i = 0; i < s.length(); i++) {
     char c = s[i];
     if (c == '"')       out += "\\\"";
     else if (c == '\\') out += "\\\\";
-    else                out += c;
+    else if (c == '\n') out += "\\n";
+    else if (c == '\r') out += "\\r";
+    else if (c == '\t') out += "\\t";
+    else if ((uint8_t)c < 0x20) {
+      char esc[7];
+      snprintf(esc, sizeof(esc), "\\u%04x", (uint8_t)c);
+      out += esc;
+    } else {
+      out += c;
+    }
   }
   return out;
 }
@@ -1464,9 +1480,6 @@ void handleConfigDownload() {
   j += ",\"trxnetport\":";      j += TRXNET_PORT;
   j += ",\"trx2netid\":";       j += (unsigned)TRX2_NET_ID;
   j += ",\"trx3netid\":";       j += (unsigned)TRX3_NET_ID;
-  j += ",\"httpcatport\":";     j += HTTP_CAT_PORT;
-  j += ",\"udpport\":";         j += udpPort;
-  j += ",\"udpcatport\":";      j += udpCatPort;
   j += ",\"baudrate\":";        j += BaudRate;
   j += ",\"trxprofile\":\"";    j += configJsonEscape(transceiverType); j += "\"";
   j += ",\"civaddr\":\"";       j += civHex;                          j += "\"";
@@ -1569,9 +1582,6 @@ void handleConfigUpload() {
   v = parseField("trx3netid", 0, 255); if (v >= 0) { TRX3_NET_ID = (byte)v; EEPROM.writeByte(43, v); }
   // EEPROM 44    FREE (was mqttBroker[3])
   v = parseField("trxnetport", 1, 65534); if (v >= 0) { TRXNET_PORT = (uint16_t)v; EEPROM.writeUShort(45, v); }
-  v = parseField("httpcatport", 1, 65534); if (v >= 0) { HTTP_CAT_PORT = v; EEPROM.writeUShort(68, v); }
-  v = parseField("udpport", 1, 65534); if (v >= 0) { udpPort = v; EEPROM.writeUShort(70, v); }
-  v = parseField("udpcatport", 1, 65534); if (v >= 0) { udpCatPort = v; EEPROM.writeUShort(72, v); }
   v = parseField("baudrate", 1200, 115200); if (v > 0) { BaudRate = v; EEPROM.writeUShort(74, v); }
 
   for (uint8_t i = 0; i < CW_MEMORY_COUNT; i++) {
@@ -1641,16 +1651,27 @@ void handleConfigUpload() {
 }
 
 void handleGetLogConfig() {
-  if (!SPIFFS.exists(LOG_CONFIG_PATH)) {
-    webServer.send(200, "application/json", "{}");
-    return;
+  String spiffsJson = "{}";
+  if (SPIFFS.exists(LOG_CONFIG_PATH)) {
+    File f = SPIFFS.open(LOG_CONFIG_PATH, "r");
+    if (f) { spiffsJson = f.readString(); f.close(); spiffsJson.trim(); }
   }
-  File f = SPIFFS.open(LOG_CONFIG_PATH, "r");
-  if (!f) { webServer.send(500, "application/json", "{\"error\":\"open\"}"); return; }
+  // Inject EEPROM TrxNet peer IDs so frontend can derive OI3 availability
+  String out;
+  out.reserve(spiffsJson.length() + 40);
+  if (spiffsJson.startsWith("{") && spiffsJson.length() > 2) {
+    out = spiffsJson.substring(0, spiffsJson.length() - 1);
+    out += ",\"trx2netid\":"; out += (unsigned)TRX2_NET_ID;
+    out += ",\"trx3netid\":"; out += (unsigned)TRX3_NET_ID;
+    out += "}";
+  } else {
+    out = "{\"trx2netid\":"; out += (unsigned)TRX2_NET_ID;
+    out += ",\"trx3netid\":"; out += (unsigned)TRX3_NET_ID;
+    out += "}";
+  }
   webServer.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
   webServer.sendHeader("Pragma", "no-cache");
-  webServer.streamFile(f, "application/json");
-  f.close();
+  webServer.send(200, "application/json", out);
 }
 
 void handlePostLogConfig() {
@@ -1688,16 +1709,52 @@ void handleOi3State() {
 
 void handleOi3Send() {
   String body = webServer.arg("plain");
-  String ip   = extractJsonString(body, "ip");
-  String text = extractJsonString(body, "text");
-  if (ip.length() == 0 || text.length() == 0) {
+  String trxArg = extractJsonString(body, "trx");
+  String text   = extractJsonString(body, "text");
+  if (text.length() == 0) {
     webServer.send(400, "application/json", "{\"error\":\"missing\"}");
     return;
   }
-  WiFiUDP oi3Udp;
-  oi3Udp.beginPacket(ip.c_str(), 89);
-  oi3Udp.print(text);
-  oi3Udp.endPacket();
+  int trxN = trxArg.toInt();  // 2 or 3
+  byte peerNetId = (trxN == 3) ? TRX3_NET_ID : TRX2_NET_ID;
+  if (peerNetId == 0x00 || !trxNetEnabled) {
+    webServer.send(503, "application/json", "{\"error\":\"unavailable\"}");
+    return;
+  }
+  char peerName[TRXNET_MAX_DEVICE_NAME];
+  snprintf(peerName, sizeof(peerName), "OI3.%02x", peerNetId);
+  if (!net.publishTo(peerName, "/s-cw", (const uint8_t*)text.c_str(), text.length(), TRX_CON)) {
+    webServer.send(503, "application/json", "{\"error\":\"peer_unavailable\"}");
+    return;
+  }
+  webServer.send(200, "application/json", "{\"ok\":true}");
+}
+
+void handleOi3SetHz() {
+  String body = webServer.arg("plain");
+  String trxArg = extractJsonString(body, "trx");
+  int trxN = trxArg.toInt();  // 2 or 3
+  // hz comes as a number in JSON — parse manually
+  int hzIdx = body.indexOf("\"hz\":");
+  if (hzIdx < 0) { webServer.send(400, "application/json", "{\"error\":\"missing\"}"); return; }
+  int start = body.indexOf(':', hzIdx) + 1;
+  while (start < (int)body.length() && body[start] == ' ') start++;
+  int end = start;
+  while (end < (int)body.length() && isDigit(body[end])) end++;
+  uint32_t hz = (uint32_t)body.substring(start, end).toInt();
+  if (hz == 0) { webServer.send(400, "application/json", "{\"error\":\"bad_hz\"}"); return; }
+
+  byte peerNetId = (trxN == 3) ? TRX3_NET_ID : TRX2_NET_ID;
+  if (peerNetId == 0x00 || !trxNetEnabled) {
+    webServer.send(503, "application/json", "{\"error\":\"unavailable\"}");
+    return;
+  }
+  char peerName[TRXNET_MAX_DEVICE_NAME];
+  snprintf(peerName, sizeof(peerName), "OI3.%02x", peerNetId);
+  if (!net.publishTo(peerName, "/s-hz", (const uint8_t*)&hz, sizeof(hz))) {
+    webServer.send(503, "application/json", "{\"error\":\"peer_unavailable\"}");
+    return;
+  }
   webServer.send(200, "application/json", "{\"ok\":true}");
 }
 
@@ -1708,8 +1765,9 @@ void setupWebServer(void){
   webServer.on("/config/upload",   HTTP_POST, handleConfigUpload);
   webServer.on("/log-config", HTTP_GET,  handleGetLogConfig);
   webServer.on("/log-config", HTTP_POST, handlePostLogConfig);
-  webServer.on("/oi3/state", HTTP_GET,  handleOi3State);
-  webServer.on("/oi3/send",  HTTP_POST, handleOi3Send);
+  webServer.on("/oi3/state",  HTTP_GET,  handleOi3State);
+  webServer.on("/oi3/send",   HTTP_POST, handleOi3Send);
+  webServer.on("/oi3/set-hz", HTTP_POST, handleOi3SetHz);
 
   webServer.on("/", HTTP_GET, [](){
     if (!SPIFFS.exists("/index.html")) { renderSetupPage(); return; }
@@ -1726,6 +1784,7 @@ void setupWebServer(void){
   });
   webServer.on("/setup",   HTTP_GET,  [](){ renderSetupPage(); });
   webServer.on("/setup",   HTTP_POST, [](){ handleSet(); renderSetupPage(); });
+  webServer.on("/setup-data.json", HTTP_GET, handleSetupData);
   webServer.on("/restart", HTTP_POST, [](){
     webServer.send(200, "application/json", "{\"ok\":true}");
     delay(500);
@@ -1736,7 +1795,9 @@ void setupWebServer(void){
   webServer.on("/datasync", HTTP_GET,  [](){ handleFileFromSPIFFS("/datasync.html"); });
 
   webServer.on("/dxcinfo", HTTP_GET, [](){
-    String j = "{\"locator\":\"" + DxcLocator + "\",\"callsign\":\"" + DxcCallsign + "\"}";
+    String j = "{\"locator\":\"" + DxcLocator + "\",\"callsign\":\"" + DxcCallsign
+             + "\",\"trx2netid\":" + String((unsigned)TRX2_NET_ID)
+             + ",\"trx3netid\":" + String((unsigned)TRX3_NET_ID) + "}";
     webServer.send(200, "application/json", j);
   });
 
@@ -1940,26 +2001,6 @@ void setup(){
       }
     }
 
-    // 68-69 HTTP_CAT_PORT
-    if(EEPROM.read(68)==0xff){
-      HTTP_CAT_PORT=81;
-    }else{
-      HTTP_CAT_PORT = EEPROM.readUShort(68);
-    }
-
-    // 70-71 udpPort
-    if(EEPROM.read(70)==0xff){
-      udpPort=89;
-    }else{
-      udpPort = EEPROM.readUShort(70);
-    }
-
-    // 72-73 udpCatPort
-    if(EEPROM.read(72)==0xff){
-      udpCatPort=90;
-    }else{
-      udpCatPort = EEPROM.readUShort(72);
-    }
 
     if(EEPROM.read(136) != 0xff){
       cwIpOnConnect = EEPROM.readBool(136);
@@ -2123,22 +2164,7 @@ void setup(){
 
   if(APmode==false){
 
-    #if defined(HTTP)
-      server = WiFiServer(HTTP_CAT_PORT);
-      server.begin();
 
-      // Add service to MDNS-SD
-      MDNS.addService("http", "tcp", 81);
-      MDNS.addService("http", "tcp", 80);
-    #endif
-
-    #if defined(UDP_TO_CW)
-      udp.begin(udpPort);
-    #endif
-
-    #if defined(UDP_TO_CAT)
-      udpCat.begin(udpCatPort);
-    #endif
 
     #if defined(UDP_TO_FSK)
       pinMode(PTT,  OUTPUT);
@@ -2186,18 +2212,14 @@ void loop(){
     while (Serial.available()) Serial.read();
     serialFlushed = true;
   }
-  #define LOOP_WARN_MS 200
   #define _TIMED(name, call) { unsigned long _t = millis(); call; unsigned long _d = millis()-_t; if(_d > LOOP_WARN_MS) { Serial.print("LOOP| slow: " name " "); Serial.print(_d); Serial.println("ms"); } }
   _TIMED("Watchdog",        Watchdog())
-  _TIMED("TrxNet",          TrxNetLoop())
-  _TIMED("httpCAT",         httpCAT())
-  _TIMED("UdpToCwFsk",      UdpToCwFsk())
-  _TIMED("UdpToCat",        UdpToCat())
   _TIMED("CLI",             CLI())
   #if defined(RTLE)
     _TIMED("rtleserver",    rtleserver.handleClient())
   #endif
-  _TIMED("webServer",       webServer.handleClient())
+  handleWebServerLoop();
+  _TIMED("TrxNet",          TrxNetLoop())
   _TIMED("DxcLoop",         DxcLoop())
   _TIMED("dxcRaw",          dxcHandleRawClient())
 
@@ -2418,19 +2440,11 @@ void Watchdog(){
       wl_status_t st = WiFi.status();
 
       if (st == WL_DISCONNECTED || st == WL_CONNECT_FAILED || st == WL_NO_SSID_AVAIL) {
-        Serial.print(currentMillis);
-        Serial.println(" WIFI| reconnecting...");
         ActiveWifiProfile = NextWifiProfile(ActiveWifiProfile);
-        if (WifiProfileConfigured(ActiveWifiProfile) == false) {
-          ActiveWifiProfile = 0;
-        }
-        String wifiSsid = WifiProfileSSID(ActiveWifiProfile);
-        String wifiPswd = WifiProfilePSWD(ActiveWifiProfile);
-        WiFi.disconnect(false, false);
-        delay(100);
-        WiFi.begin(wifiSsid.c_str(), wifiPswd.c_str());
-        Serial.print("WIFI| retry ssid ");
-        Serial.println(wifiSsid);
+        WiFiRetryActiveProfile("status");
+        WifiTimer = currentMillis;
+      } else if (!WiFiStationReady()) {
+        WiFiRetryActiveProfile("no ip");
         WifiTimer = currentMillis;
       }
     }
@@ -2458,6 +2472,34 @@ void ServiceBackgroundTasks(unsigned long waitMs) {
     #endif
     delay(10);
   }
+}
+
+//-------------------------------------------------------------------------------------------------------
+bool WiFiStationReady() {
+  if (APmode) return true;
+  if (WiFi.status() != WL_CONNECTED) return false;
+  return (uint32_t)WiFi.localIP() != 0;
+}
+
+//-------------------------------------------------------------------------------------------------------
+void WiFiRetryActiveProfile(const char *reason) {
+  if (WifiProfileConfigured(ActiveWifiProfile) == false) {
+    ActiveWifiProfile = 0;
+  }
+  String wifiSsid = WifiProfileSSID(ActiveWifiProfile);
+  String wifiPswd = WifiProfilePSWD(ActiveWifiProfile);
+  Serial.print(millis());
+  Serial.print(" WIFI| reconnecting ");
+  Serial.print(reason);
+  Serial.print(" status=");
+  Serial.print((int)WiFi.status());
+  Serial.print(" ip=");
+  Serial.print(WiFi.localIP());
+  Serial.print(" ssid ");
+  Serial.println(wifiSsid);
+  WiFi.disconnect(false, false);
+  delay(100);
+  WiFi.begin(wifiSsid.c_str(), wifiPswd.c_str());
 }
 
 //-------------------------------------------------------------------------------------------------------
@@ -2512,7 +2554,7 @@ bool ConnectWiFiProfile(byte profile, int maxTryCount) {
   Serial.print(" ");
 
   for (int count_try = 0; count_try < maxTryCount; count_try++) {
-    if (WiFi.status() == WL_CONNECTED) {
+    if (WiFiStationReady()) {
       Serial.println();
       ActiveWifiProfile = profile;
       return true;
@@ -2523,7 +2565,7 @@ bool ConnectWiFiProfile(byte profile, int maxTryCount) {
 
   Serial.println();
   print_wifi_error();
-  return WiFi.status() == WL_CONNECTED;
+  return WiFiStationReady();
 }
 
 //-------------------------------------------------------------------------------------------------------
@@ -2571,7 +2613,7 @@ void ConnectWiFiAlternating() {
   WifiTimer = millis();
   int attempts = 0;
   const int maxAttempts = 4;
-  while (WiFi.status() != WL_CONNECTED) {
+  while (!WiFiStationReady()) {
     if (ConnectWiFiProfile(wifiProfile, wifi_max_try)) {
       break;
     }
@@ -3063,8 +3105,9 @@ void printMode(void){
 // net.begin() is re-called on WiFi reconnect to re-broadcast discovery probe.
 void TrxNetLoop(){
   if (APmode || TRXNET_ID == 0x00) return;
-  static bool prevWifiConnected = false;
-  bool wifiConnected = (WiFi.status() == WL_CONNECTED);
+  if ((long)(millis() - webQuietUntil) < 0) return;
+  static bool prevWifiConnected = WiFiStationReady();
+  bool wifiConnected = WiFiStationReady();
   if (wifiConnected && !prevWifiConnected) {
     // WiFi reconnected — re-announce to network
     net.begin(trxDeviceName);
@@ -3150,155 +3193,6 @@ void onTrxSetHz(const char* from, const uint8_t* data, size_t len) {
 
 //-----------------------------------------------------------------------------------
 
-void httpCAT(){
-  #if defined(HTTP)
-  // listen for incoming clients
-  WiFiClient webCatClient = server.available();
-  if (webCatClient) {
-      if(Debug==true){
-        Serial.println("WebCat new client");
-      }
-      memset(linebuf,0,sizeof(linebuf));
-      charcount=0;
-      // an http request ends with a blank line
-      boolean currentLineIsBlank = true;
-      unsigned long idleStart = millis();
-      while (webCatClient.connected()) {
-        if (webCatClient.available()) {
-          idleStart = millis();
-          char c = webCatClient.read();
-          if(Debug==true){
-            Serial.print(c);
-          }
-          //read char by char HTTP request
-          linebuf[charcount]=c;
-          if (charcount<sizeof(linebuf)-1) charcount++;
-          // if you've gotten to the end of the line (received a newline
-          // character) and the line is blank, the http request has ended,
-          // so you can send a reply
-          if (c == '\n' && currentLineIsBlank) {
-            // send a standard http response header
-            webCatClient.println(F("HTTP/1.1 200 OK"));
-	            webCatClient.println(F("Content-Type: text/html"));
-	            webCatClient.println(F("Connection: close"));  // the connection will be closed after completion of the response
-	            webCatClient.println();
-	            if(statusPower==1){
-	              char modesSnapshot[sizeof(modes)];
-	              copyModesText(modesSnapshot, sizeof(modesSnapshot));
-	              webCatClient.print(String(frequency)+"|"+String(modesSnapshot)+"|");
-	            }else{
-	              webCatClient.print("0|OFF|");
-	            }
-            break;
-          }
-          if (c == '\n') {
-            // you're starting a new line
-            currentLineIsBlank = true;
-            // if (strstr(linebuf,"GET /h0 ") > 0){digitalWrite(GPIOS[0], HIGH);}else if (strstr(linebuf,"GET /l0 ") > 0){digitalWrite(GPIOS[0], LOW);}
-            // else if (strstr(linebuf,"GET /h1 ") > 0){digitalWrite(GPIOS[1], HIGH);}else if (strstr(linebuf,"GET /l1 ") > 0){digitalWrite(GPIOS[1], LOW);}
-
-            // you're starting a new line
-            currentLineIsBlank = true;
-            memset(linebuf,0,sizeof(linebuf));
-            charcount=0;
-          } else if (c != '\r') {
-            // you've gotten a character on the current line
-            currentLineIsBlank = false;
-          }
-        } else if (millis() - idleStart > 1000) {
-          if(Debug==true){
-            Serial.println("WebCat client timeout");
-          }
-          break;
-        }
-      }
-      // give the web browser time to receive the data
-      delay(1);
-      // close the connection:
-      webCatClient.stop();
-      if(Debug==true){
-        Serial.println("WebCat client disconnected");
-      }
-  }
-  #endif
-}
-//-----------------------------------------------------------------------------------
-
-void UdpToCat(){
-  #if defined(UDP_TO_CAT)
-    memset(CatMsg, 0xff, 10);
-
-    udpCat.parsePacket();
-    // int packetSize = udp.parsePacket();
-    if(udpCat.read(CatMsg, 10) > 0){
-      // Serial.print("UDPcat rx: ");
-      // Serial.println((char *)CatMsg);
-
-      // clear RIT only - SECURITY FEATURE
-      if(statusPower==1 && CatMsg[0]==0x21){
-        sendCat();
-      }
-    }
-
-  #endif
-}
-//-----------------------------------------------------------------------------------
-
-void UdpToCwFsk(){
-  #if defined(UDP_TO_CW)
-    // //data will be sent to server
-    // uint8_t buffer[30] = "";
-    // //send hello world to server
-    // udp.beginPacket(udpAddress, udpPort);
-    // udp.write(buffer, 11);
-    // udp.endPacket();
-    memset(CwMsg, 0, sizeof(CwMsg));
-
-    //processing incoming packet, must be called before reading the buffer
-    udp.parsePacket();
-    //receive response from server, it will be HELLO WORLD
-    int packetLen = udp.read(CwMsg, sizeof(CwMsg) - 1);
-    if(packetLen > 0){
-      CwMsg[packetLen] = '\0';
-      if(APmode==true){
-        ledcWrite(pwmChannel, 0);
-      }else{
-        digitalWrite(StatusPin, LOW);
-      }
-      Serial.print("UDP FSK rx: ");
-      Serial.println((char *)CwMsg);
-      if(statusPower==1){
-        sendCW();
-      }
-    }
-
-  #endif
-}
-//-------------------------------------------------------------------------------------------------------
-void sendCat(){
-  #if defined(UDP_TO_CAT)
-    uint8_t frame[sizeof(CatMsg) + 5];
-    uint8_t frameLen = 0;
-
-    frame[frameLen++] = START_BYTE;
-    frame[frameLen++] = START_BYTE;
-    frame[frameLen++] = radio_address;
-    frame[frameLen++] = CONTROLLER_ADDRESS;
-
-    for (uint8_t i = 0; i < sizeof(CatMsg); i++) {
-      if(CatMsg[i] == 0xff){
-        continue;
-      }
-      if(frameLen >= sizeof(frame) - 1){
-        break;
-      }
-      frame[frameLen++] = CatMsg[i];
-    }
-
-    frame[frameLen++] = STOP_BYTE;
-    catWriteFrame(frame, frameLen, true);
-  #endif
-}
 //-------------------------------------------------------------------------------------------------------
 void sendCW(){
   int payloadLen = strnlen(CwMsg, sizeof(CwMsg) - 1);
@@ -3661,15 +3555,15 @@ void ListCommands(){
     } else {
       Serial.println("  WIFI-SSID2 DISABLE" );
     }
-    Serial.println("  WIFI-connected with IP "+String(WiFi.localIP()[0])+"."+String(WiFi.localIP()[1])+"."+String(WiFi.localIP()[2])+"."+String(WiFi.localIP()[3]) );
+    Serial.print("  WIFI-status ");
+    Serial.print((int)WiFi.status());
+    Serial.print(" | IP ");
+    Serial.println(WiFi.localIP());
     Serial.println("  WIFI-MAC "+String(MACString) );
     Serial.println("  WIFI-dBm: "+String(WiFi.RSSI()) );
     Serial.println("----------------------------------------------------------------------------" );
     Serial.println("  For setup OPEN url http://ic705.local or http://"+String(WiFi.localIP()[0])+"."+String(WiFi.localIP()[1])+"."+String(WiFi.localIP()[2])+"."+String(WiFi.localIP()[3]) );
     Serial.println("----------------------------------------------------------------------------" );
-    Serial.println("  IP http-cat  http://"+String(WiFi.localIP()[0])+"."+String(WiFi.localIP()[1])+"."+String(WiFi.localIP()[2])+"."+String(WiFi.localIP()[3])+":"+String(HTTP_CAT_PORT) );
-    Serial.println("  IP udp cw/rtty port: "+String(udpPort) );
-    Serial.println("  IP udp cat port: "+String(udpCatPort) );
     if(TRXNET_ID != 0x00){
       Serial.println("  TrxNet device: "+String(trxDeviceName)+" port:"+String(TRXNET_PORT));
       if(TRX2_NET_ID != 0x00) Serial.println("  TrxNet TRX2 peer: OI3."+String(TRX2_NET_ID, HEX));
@@ -3848,47 +3742,6 @@ void handleSet() {
       ERRdetect = 1;
     }
 
-    // 68-69 HTTP_CAT_PORT
-    if ( requestArg("httpcatport").length()<1 || requestArg("httpcatport").toInt()<1 || requestArg("httpcatport").toInt()>65534){
-      setupHttpCatPortErr = "Out of range number 1-65534";
-      ERRdetect=1;
-    }else{
-      if(HTTP_CAT_PORT == requestArg("httpcatport").toInt()){
-        setupHttpCatPortErr = "";
-      }else{
-        setupHttpCatPortErr = "";
-        HTTP_CAT_PORT = requestArg("httpcatport").toInt();
-        EEPROM.writeUShort(68, HTTP_CAT_PORT);
-      }
-    }
-
-    // 70-71 udpPort
-    if ( requestArg("udpport").length()<1 || requestArg("udpport").toInt()<1 || requestArg("udpport").toInt()>65534){
-      setupUdpPortErr = "Out of range number 1-65534";
-      ERRdetect=1;
-    }else{
-      if(udpPort == requestArg("udpport").toInt()){
-        setupUdpPortErr = "";
-      }else{
-        setupUdpPortErr = "";
-        udpPort = requestArg("udpport").toInt();
-        EEPROM.writeUShort(70, udpPort);
-      }
-    }
-
-    // 72-73 udpCatPort
-    if ( requestArg("udpcatport").length()<1 || requestArg("udpcatport").toInt()<1 || requestArg("udpcatport").toInt()>65534){
-      setupUdpCatPortErr = "Out of range number 1-65534";
-      ERRdetect=1;
-    }else{
-      if(udpCatPort == requestArg("udpcatport").toInt()){
-        setupUdpCatPortErr = "";
-      }else{
-        setupUdpCatPortErr = "";
-        udpCatPort = requestArg("udpcatport").toInt();
-        EEPROM.writeUShort(72, udpCatPort);
-      }
-    }
 
     // 41 TRXNET_ID (hex string "01".."ff"; 0x00 = disabled)
     { long id = strtol(requestArg("trxnetid").c_str(), nullptr, 16);
@@ -3906,7 +3759,8 @@ void handleSet() {
       if (TRX3_NET_ID != (byte)id) { TRX3_NET_ID = (byte)id; EEPROM.writeByte(43, (byte)id); } }
 
     // 44    FREE (was mqttBroker[3])
-    // 45-46 FREE (was MQTT_PORT)
+    // 45-46 TRXNET_PORT
+    { int p = requestArg("trxnetport").toInt(); if (p >= 1 && p <= 65534 && TRXNET_PORT != (uint16_t)p) { TRXNET_PORT = (uint16_t)p; EEPROM.writeUShort(45, p); } }
     // 47-67 FREE (was MQTT_TOPIC)
     // 115-135 FREE (was MQTT_TOPIC_RX)
     // 225-245 FREE (was TRX2_MQTT_ROOT)
@@ -3982,14 +3836,6 @@ void handleSet() {
       if (trx2Label.length() == 0) trx2Label = "TRX2";
       String trx3Label = trimMemoryValue(requestArg("trx3label"), 10);
       if (trx3Label.length() == 0) trx3Label = "TRX3";
-      String trx2Civ = trimMemoryValue(requestArg("trx2civ"), 2);
-      trx2Civ.toUpperCase();
-      String trx3Civ = trimMemoryValue(requestArg("trx3civ"), 2);
-      trx3Civ.toUpperCase();
-      String trx2Ip = trimMemoryValue(requestArg("trx2ip"), 32);
-      String trx3Ip = trimMemoryValue(requestArg("trx3ip"), 32);
-      bool trx2Oi3 = requestHasArg("trx2Oi3");
-      bool trx3Oi3 = requestHasArg("trx3Oi3");
       String rstSsb = trimMemoryValue(requestArg("rstSsb"), 3);
       if (rstSsb.length() == 0) rstSsb = "59";
       String rstCwRtty = trimMemoryValue(requestArg("rstCwRtty"), 3);
@@ -4000,12 +3846,6 @@ void handleSet() {
       g_lcTrx1Label = trx1Label;
       g_lcTrx2Label = trx2Label;
       g_lcTrx3Label = trx3Label;
-      g_lcTrx2Civ = trx2Civ;
-      g_lcTrx3Civ = trx3Civ;
-      g_lcTrx2Ip = trx2Ip;
-      g_lcTrx3Ip = trx3Ip;
-      g_lcTrx2Oi3 = trx2Oi3;
-      g_lcTrx3Oi3 = trx3Oi3;
       g_lcRstSsb = rstSsb;
       g_lcRstCwRtty = rstCwRtty;
       g_lcManualModeForPhone = manualModeForPhone;
@@ -4014,9 +3854,6 @@ void handleSet() {
       String nextLogConfig = buildLogConfigJson(
         readLogConfigJson(),
         trx1Label, trx2Label, trx3Label,
-        trx2Civ, trx3Civ,
-        trx2Ip, trx3Ip,
-        trx2Oi3, trx3Oi3,
         rstSsb, rstCwRtty,
         manualModeForPhone, blockedDxcc
       );

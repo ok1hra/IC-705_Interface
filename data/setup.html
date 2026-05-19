@@ -16,7 +16,7 @@
       <a class="tab tab-active" href="/setup">SETUP</a>
       <a class="tab" href="/datasync">LOGSYNC</a>
       <a class="tab" href="/bd">BD</a>
-      <span id="topbarFw" class="topbar-fw" data-rev="%REV%"></span>
+      <span id="topbarFw" class="topbar-fw" data-rev=""></span>
     </nav>
   </header>
   <main class="setup-shell">
@@ -24,7 +24,7 @@
       <header class="setup-head">
         <p class="eyebrow">Configuration</p>
         <h1>IC-705 IP interface</h1>
-        <p class="meta">%APMODE_TEXT% | MAC %MAC% | FW %REV% | HW %HWREV%</p>
+        <p class="meta" id="setupMeta">Loading setup data</p>
       </header>
 
       <form action="/setup" method="post" class="setup-form" id="setup-form">
@@ -34,104 +34,53 @@
           <div class="setup-section-body">
             <label>Connect to WiFi SSID 1
               <div class="input-with-tip">
-                <input type="text" name="ssid" maxlength="20" value="%SSID%">
+                <input type="text" name="ssid" maxlength="20" value="">
                 <span class="help-tip" data-tip="Primary WiFi network name. The device tries this first after restart.">?</span>
               </div>
-              <span class="msg">%SSID_ERR%</span>
+              <span class="msg"></span>
             </label>
             <label>WiFi Password 1
               <div class="input-with-tip">
-                <input type="password" id="pwField1" name="pswd" maxlength="18" value="%PSWD%">
+                <input type="password" id="pwField1" name="pswd" maxlength="18" value="">
                 <button type="button" class="pw-toggle" data-target="pwField1" aria-label="Show password" title="Show / hide password"><svg class="pw-eye" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg></button>
                 <span class="help-tip" data-tip="Password for WiFi network 1.">?</span>
               </div>
-              <span class="msg">%PSWD_ERR%</span>
+              <span class="msg"></span>
             </label>
             <label>Connect to WiFi SSID 2
               <div class="input-with-tip">
-                <input type="text" name="ssid2" maxlength="20" value="%SSID2%">
+                <input type="text" name="ssid2" maxlength="20" value="">
                 <span class="help-tip" data-tip="Fallback WiFi network. When profile 1 fails the device tries profile 2 — and alternates between them until it connects.">?</span>
               </div>
-              <span class="msg">%SSID2_ERR%</span>
+              <span class="msg"></span>
             </label>
             <label>WiFi Password 2
               <div class="input-with-tip">
-                <input type="password" id="pwField2" name="pswd2" maxlength="18" value="%PSWD2%">
+                <input type="password" id="pwField2" name="pswd2" maxlength="18" value="">
                 <button type="button" class="pw-toggle" data-target="pwField2" aria-label="Show password" title="Show / hide password"><svg class="pw-eye" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg></button>
                 <span class="help-tip" data-tip="Password for WiFi network 2.">?</span>
               </div>
-              <span class="msg">%PSWD2_ERR%</span>
+              <span class="msg"></span>
             </label>
           </div>
         </details>
 
-        <details class="setup-section">
-          <summary class="setup-section-title">Network input ports <span class="setup-local-badge">eeprom</span></summary>
-          <div class="setup-section-body">
-            <label>HTTP CAT port
-              <div class="input-with-tip">
-                <input type="text" name="httpcatport" value="%HTTP_CAT_PORT%">
-                <span class="help-tip" data-tip="TCP port for the web UI and HTTP CAT API.">?</span>
-              </div>
-              <span class="msg">%HTTP_CAT_PORT_ERR%</span>
-            </label>
-            <label>CW/FSK UDP port
-              <div class="input-with-tip">
-                <input type="text" name="udpport" value="%UDP_PORT%">
-                <span class="help-tip" data-tip="UDP port for CW/RTTY-FSK keying commands from N1MM+, Win-Test or similar contest loggers.">?</span>
-              </div>
-              <span class="msg">%UDP_PORT_ERR%</span>
-            </label>
-            <label>CAT UDP port
-              <div class="input-with-tip">
-                <input type="text" name="udpcatport" value="%UDP_CAT_PORT%">
-                <span class="help-tip" data-tip="UDP port for CI-V CAT passthrough commands.">?</span>
-              </div>
-              <span class="msg">%UDP_CAT_PORT_ERR%</span>
-            </label>
-          </div>
-        </details>
 
         <details class="setup-section">
-          <summary class="setup-section-title">MQTT <span class="setup-local-badge">eeprom</span></summary>
+          <summary class="setup-section-title">TrxNet <span class="setup-local-badge">eeprom</span><a href="https://github.com/ok1hra/TrxNet" target="_blank" rel="noopener" class="oi3-ref">&#8599;</a></summary>
           <div class="setup-section-body">
-            %MQTT_AP_NOTE%
-            <label>Broker IP
+            <span id="trxnetApNote"></span>
+            <label>Own NET_ID
               <div class="input-with-tip">
-                <div class="ip-row">
-                  <input type="text" name="mqttip0" value="%MQTT_IP0%">
-                  <input type="text" name="mqttip1" value="%MQTT_IP1%">
-                  <input type="text" name="mqttip2" value="%MQTT_IP2%">
-                  <input type="text" name="mqttip3" value="%MQTT_IP3%">
-                </div>
-                <span class="help-tip" data-tip="IP address of the MQTT broker (four octets). Set to 0.0.0.0 to disable MQTT.">?</span>
+                <input type="text" name="trxnetid" maxlength="2" placeholder="01" value="">
+                <span class="help-tip" data-tip="This device's TrxNet identity (2-digit hex). 00 = TrxNet disabled. Must be unique on the network. Device name:">?</span>
               </div>
-              <span class="msg">%MQTT_ERR%</span>
-              <span class="msg">%MQTT_ERR1%</span>
-              <span class="msg">%MQTT_ERR2%</span>
-              <span class="msg">%MQTT_ERR3%</span>
-              <span class="msg">%MQTT_ERR4%</span>
             </label>
-            <label>Broker port
+            <label>UDP port
               <div class="input-with-tip">
-                <input type="text" name="mqttport" value="%MQTT_PORT%">
-                <span class="help-tip" data-tip="MQTT broker TCP port. Default: 1883.">?</span>
+                <input type="text" name="trxnetport" value="">
+                <span class="help-tip" data-tip="UDP port for TrxNet discovery and CoAP messages. All devices on the network must use the same port. Default: 5683.">?</span>
               </div>
-              <span class="msg">%MQTT_PORT_ERR%</span>
-            </label>
-            <label>Topic TX frequency TRX1
-              <div class="input-with-tip">
-                <input type="text" name="mqtttopic" maxlength="20" value="%MQTT_TOPIC%">
-                <span class="help-tip" data-tip="MQTT topic the device publishes TRX data to (frequency, mode, signal reports).">?</span>
-              </div>
-              <span class="msg">%MQTT_TOPIC_ERR%</span>
-            </label>
-            <label>Topic RX frequency TRX1
-              <div class="input-with-tip">
-                <input type="text" name="mqtttopicrx" maxlength="20" value="%MQTT_TOPIC_RX%">
-                <span class="help-tip" data-tip="MQTT topic the device subscribes to for incoming CAT commands.">?</span>
-              </div>
-              <span class="msg">%MQTT_TOPIC_RX_ERR%</span>
             </label>
           </div>
         </details>
@@ -142,11 +91,11 @@
             <label>USB serial baudrate
               <div class="input-with-tip">
                 <select name="baud">
-                  <option value="0" %BAUD1200_SEL%>1200</option>
-                  <option value="1" %BAUD2400_SEL%>2400</option>
-                  <option value="2" %BAUD4800_SEL%>4800</option>
-                  <option value="3" %BAUD9600_SEL%>9600</option>
-                  <option value="4" %BAUD115200_SEL%>115200</option>
+                  <option value="0">1200</option>
+                  <option value="1">2400</option>
+                  <option value="2">4800</option>
+                  <option value="3">9600</option>
+                  <option value="4">115200</option>
                 </select>
                 <span class="help-tip" data-tip="Serial speed for CI-V data over USB-C. Must match the radio's USB Serial Baud Rate setting.">?</span>
               </div>
@@ -156,25 +105,25 @@
             <div class="setup-trx-head">TRX1</div>
             <div class="setup-trx-row">
               <label class="setup-trx-col">Label
-                <input type="text" id="ls_trx1Label" name="trx1label" maxlength="10" placeholder="IC-705" value="%TRX1_LABEL%">
+                <input type="text" id="ls_trx1Label" name="trx1label" maxlength="10" placeholder="IC-705" value="">
               </label>
               <label class="setup-trx-col">CI-V address
                 <div class="input-with-tip">
-                  <input type="text" name="civaddr" maxlength="2" placeholder="A4" value="%CIV_ADDR%">
+                  <input type="text" name="civaddr" maxlength="2" placeholder="A4" value="">
                   <span class="help-tip" data-tip="CI-V bus address in hexadecimal. IC-705 default: A4. Check MENU → SET → Connectors → CI-V → CI-V Address.">?</span>
                 </div>
-                <span class="msg">%CIV_ADDR_ERR%</span>
+                <span class="msg"></span>
               </label>
             </div>
             <div class="setup-trx-note">Connection: <strong>Bluetooth</strong></div>
             <label>Bluetooth device name
               <div class="input-with-tip">
-                <input type="text" name="btname" maxlength="20" pattern="[a-zA-Z0-9 _-]+" title="Only letters, digits, space, hyphen and underscore" value="%BT_NAME%">
+                <input type="text" name="btname" maxlength="20" pattern="[a-zA-Z0-9 _-]+" title="Only letters, digits, space, hyphen and underscore" value="">
                 <span class="help-tip" data-tip="Name shown when pairing via Bluetooth. Max 20 characters (letters, digits, space, - _). Change requires reboot.">?</span>
               </div>
             </label>
             <label class="checkbox-row">
-              <input type="checkbox" name="cwIpOnConnect" %CW_IP_CHK%>
+              <input type="checkbox" name="cwIpOnConnect">
               Announce WiFi IP via CW on first BT connect
               <span class="help-tip" data-tip="Sends the ESP32 IP address in Morse code after the first Bluetooth connection — useful when DHCP assigns an unknown address.">?</span>
             </label>
@@ -183,29 +132,12 @@
             <div class="setup-trx-head">TRX2</div>
             <div class="setup-trx-row">
               <label class="setup-trx-col">Label
-                <input type="text" id="ls_trx2Label" name="trx2label" maxlength="10" placeholder="TRX2" value="%TRX2_LABEL%">
+                <input type="text" id="ls_trx2Label" name="trx2label" maxlength="10" placeholder="TRX2" value="">
               </label>
-              <label class="setup-trx-col">CI-V address
-                <input type="text" id="ls_trx2Civ" name="trx2civ" maxlength="2" value="%TRX2_CIV%" placeholder="A4">
-              </label>
-            </div>
-            <label>Backend IP
-              <div class="input-with-tip">
-                <input type="text" id="ls_trx2Ip" name="trx2ip" value="%TRX2_IP%" placeholder="192.168.x.x">
-                <span class="help-tip" data-tip="IP address of the backend (ESP32 or CI-V bridge) for TRX2. Leave blank if not used.">?</span>
-              </div>
-            </label>
-            <label class="checkbox-row">
-              <input type="checkbox" id="ls_trx2Oi3" name="trx2Oi3" %TRX2_OI3_CHK% onchange="document.getElementById('trx2Oi3Fields').style.display=this.checked?'block':'none'">
-              OI3 — receive freq/mode via MQTT, send CW/RTTY via UDP :89
-              <a href="https://github.com/ok1hra/k3ng_cw_keyer" target="_blank" rel="noopener" class="oi3-ref">&#8599;</a>
-              <span class="help-tip" data-tip="OI3 protocol: frequency and mode are received via MQTT (topics root+hz and root+mode). CW and RTTY messages are sent via UDP to port 89 of the backend IP. The CAT page is not used with this option.">?</span>
-            </label>
-            <div id="trx2Oi3Fields" style="%TRX2_OI3_STYLE%">
-              <label>MQTT root topic
+              <label class="setup-trx-col">OI3 NET_ID
                 <div class="input-with-tip">
-                  <input type="text" name="trx2mqttroot" maxlength="20" placeholder="OK1HRA/OI3/2/" value="%TRX2_MQTT_ROOT%">
-                  <span class="help-tip" data-tip="MQTT root topic for TRX2 freq/mode. Firmware subscribes to root+hz (frequency in Hz) and root+mode (OI3 mode number 1-9). Saved to EEPROM — click Save &amp; Restart.">?</span>
+                  <input type="text" name="trx2netid" maxlength="2" placeholder="ff" value="">
+                  <span class="help-tip" data-tip="TrxNet peer NET_ID of the OI3 keyer for TRX2 (2-digit hex). 00 = disabled. When set, the interface subscribes to OI3.XX/hz and /mode from this peer and sends CW/freq commands to it.">?</span>
                 </div>
               </label>
             </div>
@@ -214,29 +146,12 @@
             <div class="setup-trx-head">TRX3</div>
             <div class="setup-trx-row">
               <label class="setup-trx-col">Label
-                <input type="text" id="ls_trx3Label" name="trx3label" maxlength="10" placeholder="TRX3" value="%TRX3_LABEL%">
+                <input type="text" id="ls_trx3Label" name="trx3label" maxlength="10" placeholder="TRX3" value="">
               </label>
-              <label class="setup-trx-col">CI-V address
-                <input type="text" id="ls_trx3Civ" name="trx3civ" maxlength="2" value="%TRX3_CIV%" placeholder="A4">
-              </label>
-            </div>
-            <label>Backend IP
-              <div class="input-with-tip">
-                <input type="text" id="ls_trx3Ip" name="trx3ip" value="%TRX3_IP%" placeholder="192.168.x.x">
-                <span class="help-tip" data-tip="IP address of the backend (ESP32 or CI-V bridge) for TRX3. Leave blank if not used.">?</span>
-              </div>
-            </label>
-            <label class="checkbox-row">
-              <input type="checkbox" id="ls_trx3Oi3" name="trx3Oi3" %TRX3_OI3_CHK% onchange="document.getElementById('trx3Oi3Fields').style.display=this.checked?'block':'none'">
-              OI3 — receive freq/mode via MQTT, send CW/RTTY via UDP :89
-              <a href="https://github.com/ok1hra/k3ng_cw_keyer" target="_blank" rel="noopener" class="oi3-ref">&#8599;</a>
-              <span class="help-tip" data-tip="OI3 protocol: frequency and mode are received via MQTT (topics root+hz and root+mode). CW and RTTY messages are sent via UDP to port 89 of the backend IP. The CAT page is not used with this option.">?</span>
-            </label>
-            <div id="trx3Oi3Fields" style="%TRX3_OI3_STYLE%">
-              <label>MQTT root topic
+              <label class="setup-trx-col">OI3 NET_ID
                 <div class="input-with-tip">
-                  <input type="text" name="trx3mqttroot" maxlength="20" placeholder="OK1HRA/OI3/3/" value="%TRX3_MQTT_ROOT%">
-                  <span class="help-tip" data-tip="MQTT root topic for TRX3 freq/mode. Firmware subscribes to root+hz (frequency in Hz) and root+mode (OI3 mode number 1-9). Saved to EEPROM — click Save &amp; Restart.">?</span>
+                  <input type="text" name="trx3netid" maxlength="2" placeholder="01" value="">
+                  <span class="help-tip" data-tip="TrxNet peer NET_ID of the OI3 keyer for TRX3 (2-digit hex). 00 = disabled. When set, the interface subscribes to OI3.XX/hz and /mode from this peer and sends CW/freq commands to it.">?</span>
                 </div>
               </label>
             </div>
@@ -248,25 +163,25 @@
           <div class="setup-section-body">
             <label>DXC host
               <div class="input-with-tip">
-                <input type="text" name="dxchost" maxlength="64" placeholder="ve7cc.net" value="%DXC_HOST%">
+                <input type="text" name="dxchost" maxlength="64" placeholder="ve7cc.net" value="">
                 <span class="help-tip" data-tip="Hostname or IP address of the DX cluster telnet server.">?</span>
               </div>
             </label>
             <label>DXC port
               <div class="input-with-tip">
-                <input type="number" name="dxcport" min="1" max="65534" placeholder="7300" value="%DXC_PORT%">
+                <input type="number" name="dxcport" min="1" max="65534" placeholder="7300" value="">
                 <span class="help-tip" data-tip="Telnet port of the DX cluster server. Common: 7300 or 23.">?</span>
               </div>
             </label>
             <label>Callsign
               <div class="input-with-tip">
-                <input type="text" name="dxccall" maxlength="16" placeholder="OK1HRA" value="%DXC_CALL%" oninput="this.value=this.value.toUpperCase()">
+                <input type="text" name="dxccall" maxlength="16" placeholder="OK1HRA" value="" oninput="this.value=this.value.toUpperCase()">
                 <span class="help-tip" data-tip="Your callsign sent to the cluster for login.">?</span>
               </div>
             </label>
             <label>My locator
               <div class="input-with-tip">
-                <input type="text" name="dxclocator" maxlength="6" placeholder="JO70" value="%DXC_LOCATOR%" oninput="this.value=this.value.toUpperCase()">
+                <input type="text" name="dxclocator" maxlength="6" placeholder="JO70" value="" oninput="this.value=this.value.toUpperCase()">
                 <span class="help-tip" data-tip="Your Maidenhead locator (4 or 6 characters) used for distance and bearing calculations to DX spots.">?</span>
               </div>
             </label>
@@ -282,24 +197,24 @@
           <div class="setup-section-body">
             <label>RST default SSB/FM
               <div class="input-with-tip">
-                <input type="text" id="ls_rstSsb" name="rstSsb" form="setup-form" maxlength="3" value="%RST_SSB%" placeholder="59">
+                <input type="text" id="ls_rstSsb" name="rstSsb" form="setup-form" maxlength="3" value="" placeholder="59">
                 <span class="help-tip" data-tip="Default RST/RS pre-filled for SSB and FM QSOs.">?</span>
               </div>
             </label>
             <label>RST default CW/RTTY
               <div class="input-with-tip">
-                <input type="text" id="ls_rstCwRtty" name="rstCwRtty" form="setup-form" maxlength="3" value="%RST_CW_RTTY%" placeholder="599">
+                <input type="text" id="ls_rstCwRtty" name="rstCwRtty" form="setup-form" maxlength="3" value="" placeholder="599">
                 <span class="help-tip" data-tip="Default RST pre-filled for CW and digital mode QSOs.">?</span>
               </div>
             </label>
             <label class="checkbox-row">
-              <input type="checkbox" id="ls_manualModeForPhone" name="manualModeForPhone" form="setup-form" %MANUAL_MODE_FOR_PHONE_CHK%>
+              <input type="checkbox" id="ls_manualModeForPhone" name="manualModeForPhone" form="setup-form">
               Manual mode for Phone (SSB/FM) — no automatic macros
               <span class="help-tip" data-tip="When checked, pressing Enter on an SSB/FM QSO logs it immediately without sending any CW/RTTY macro.">?</span>
             </label>
             <label>Blocked DXCC list (one per line)
               <div class="input-with-tip input-with-tip-top">
-                <textarea id="ls_blockedDxcc" name="blockedDxcc" form="setup-form" rows="3" placeholder="Russia&#10;Kaliningrad">%BLOCKED_DXCC%</textarea>
+                <textarea id="ls_blockedDxcc" name="blockedDxcc" form="setup-form" rows="3" placeholder="Russia&#10;Kaliningrad"></textarea>
                 <span class="help-tip" data-tip="DXCC entity names to flag as blocked (one per line, e.g. Russia). Matching callsigns are highlighted in red in the log journal.">?</span>
               </div>
             </label>
@@ -311,25 +226,25 @@
           <div class="setup-section-body">
             <label>CW memory 1
               <div class="input-with-tip">
-                <input type="text" id="cwmem1" name="cwmem1" form="setup-form" maxlength="30" value="%CW_MEM1%">
+                <input type="text" id="cwmem1" name="cwmem1" form="setup-form" maxlength="30" value="">
                 <span class="help-tip" data-tip="Plain CW/RTTY text keyed when memory key 1 is activated. Mode determines keying method (CW via CI-V, RTTY via FSK GPIO). Max 30 characters.">?</span>
               </div>
             </label>
             <label>CW memory 2
               <div class="input-with-tip">
-                <input type="text" id="cwmem2" name="cwmem2" form="setup-form" maxlength="30" value="%CW_MEM2%">
+                <input type="text" id="cwmem2" name="cwmem2" form="setup-form" maxlength="30" value="">
                 <span class="help-tip" data-tip="Plain CW/RTTY text keyed when memory key 2 is activated. Max 30 characters.">?</span>
               </div>
             </label>
             <label>CW memory 3
               <div class="input-with-tip">
-                <input type="text" id="cwmem3" name="cwmem3" form="setup-form" maxlength="30" value="%CW_MEM3%">
+                <input type="text" id="cwmem3" name="cwmem3" form="setup-form" maxlength="30" value="">
                 <span class="help-tip" data-tip="Plain CW/RTTY text keyed when memory key 3 is activated. Max 30 characters.">?</span>
               </div>
             </label>
             <label>CW memory 4
               <div class="input-with-tip">
-                <input type="text" id="cwmem4" name="cwmem4" form="setup-form" maxlength="30" value="%CW_MEM4%">
+                <input type="text" id="cwmem4" name="cwmem4" form="setup-form" maxlength="30" value="">
                 <span class="help-tip" data-tip="Plain CW/RTTY text keyed when memory key 4 is activated. Max 30 characters.">?</span>
               </div>
             </label>
@@ -342,61 +257,61 @@
             <p class="footnote">Use compact format like <code>14074000 USB</code> or <code>144174000 FM</code>.</p>
             <label>Memory 1
               <div class="input-with-tip">
-                <input type="text" id="freqmem1" name="freqmem1" form="setup-form" maxlength="20" value="%FREQ_MEM1%">
+                <input type="text" id="freqmem1" name="freqmem1" form="setup-form" maxlength="20" value="">
                 <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM). Selectable from the CAT page.">?</span>
               </div>
             </label>
             <label>Memory 2
               <div class="input-with-tip">
-                <input type="text" id="freqmem2" name="freqmem2" form="setup-form" maxlength="20" value="%FREQ_MEM2%">
+                <input type="text" id="freqmem2" name="freqmem2" form="setup-form" maxlength="20" value="">
                 <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
               </div>
             </label>
             <label>Memory 3
               <div class="input-with-tip">
-                <input type="text" id="freqmem3" name="freqmem3" form="setup-form" maxlength="20" value="%FREQ_MEM3%">
+                <input type="text" id="freqmem3" name="freqmem3" form="setup-form" maxlength="20" value="">
                 <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
               </div>
             </label>
             <label>Memory 4
               <div class="input-with-tip">
-                <input type="text" id="freqmem4" name="freqmem4" form="setup-form" maxlength="20" value="%FREQ_MEM4%">
+                <input type="text" id="freqmem4" name="freqmem4" form="setup-form" maxlength="20" value="">
                 <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
               </div>
             </label>
             <label>Memory 5
               <div class="input-with-tip">
-                <input type="text" id="freqmem5" name="freqmem5" form="setup-form" maxlength="20" value="%FREQ_MEM5%">
+                <input type="text" id="freqmem5" name="freqmem5" form="setup-form" maxlength="20" value="">
                 <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
               </div>
             </label>
             <label>Memory 6
               <div class="input-with-tip">
-                <input type="text" id="freqmem6" name="freqmem6" form="setup-form" maxlength="20" value="%FREQ_MEM6%">
+                <input type="text" id="freqmem6" name="freqmem6" form="setup-form" maxlength="20" value="">
                 <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
               </div>
             </label>
             <label>Memory 7
               <div class="input-with-tip">
-                <input type="text" id="freqmem7" name="freqmem7" form="setup-form" maxlength="20" value="%FREQ_MEM7%">
+                <input type="text" id="freqmem7" name="freqmem7" form="setup-form" maxlength="20" value="">
                 <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
               </div>
             </label>
             <label>Memory 8
               <div class="input-with-tip">
-                <input type="text" id="freqmem8" name="freqmem8" form="setup-form" maxlength="20" value="%FREQ_MEM8%">
+                <input type="text" id="freqmem8" name="freqmem8" form="setup-form" maxlength="20" value="">
                 <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
               </div>
             </label>
             <label>Memory 9
               <div class="input-with-tip">
-                <input type="text" id="freqmem9" name="freqmem9" form="setup-form" maxlength="20" value="%FREQ_MEM9%">
+                <input type="text" id="freqmem9" name="freqmem9" form="setup-form" maxlength="20" value="">
                 <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
               </div>
             </label>
             <label>Memory 10
               <div class="input-with-tip">
-                <input type="text" id="freqmem10" name="freqmem10" form="setup-form" maxlength="20" value="%FREQ_MEM10%">
+                <input type="text" id="freqmem10" name="freqmem10" form="setup-form" maxlength="20" value="">
                 <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
               </div>
             </label>
@@ -443,19 +358,57 @@
   </style>
 
   <script>
-    // ── SPIFFS settings (LOG config + CW/Freq memories) ─────────────────────
     (function () {
-      function updateOi3Fields(n) {
-        var cb  = document.getElementById('ls_trx' + n + 'Oi3');
-        var div = document.getElementById('trx' + n + 'Oi3Fields');
-        if (cb && div) div.style.display = cb.checked ? 'block' : 'none';
+      function setValue(name, value) {
+        var el = document.querySelector('[name="' + name + '"]');
+        if (!el || value === undefined || value === null) return;
+        if (el.type === 'checkbox') {
+          el.checked = !!value;
+        } else {
+          el.value = String(value);
+        }
       }
 
-      [2, 3].forEach(function(n) {
-        var cb = document.getElementById('ls_trx' + n + 'Oi3');
-        if (cb) cb.addEventListener('change', function() { updateOi3Fields(n); });
-        updateOi3Fields(n); // sync div visibility with server-rendered checkbox state
-      });
+      function applySetupData(data) {
+        var fw = document.getElementById('topbarFw');
+        if (fw) fw.dataset.rev = data.fwRev || '';
+        var meta = document.getElementById('setupMeta');
+        if (meta) {
+          meta.textContent = (data.apModeText || '') + ' | MAC ' + (data.mac || '') +
+            ' | FW ' + (data.fwRev || '') + ' | HW ' + (data.hwRev || '');
+        }
+        var note = document.getElementById('trxnetApNote');
+        if (note && data.trxnetApNote) {
+          note.className = 'ap-note';
+          note.textContent = data.trxnetApNote;
+        }
+        var ownTip = document.querySelector('[name="trxnetid"] + .help-tip');
+        if (ownTip) {
+          ownTip.dataset.tip = "This device's TrxNet identity (2-digit hex). 00 = TrxNet disabled. Must be unique on the network. Device name: " + (data.trxnetDeviceName || '');
+        }
+
+        [
+          'ssid', 'pswd', 'ssid2', 'pswd2', 'trxnetid', 'trxnetport',
+          'baud', 'trx1label', 'civaddr', 'btname', 'trx2label',
+          'trx2netid', 'trx3label', 'trx3netid', 'dxchost', 'dxcport',
+          'dxccall', 'dxclocator', 'rstSsb', 'rstCwRtty', 'blockedDxcc'
+        ].forEach(function (name) { setValue(name, data[name]); });
+        setValue('cwIpOnConnect', data.cwIpOnConnect);
+        setValue('manualModeForPhone', data.manualModeForPhone);
+        for (var i = 1; i <= 4; i++) setValue('cwmem' + i, data['cwmem' + i]);
+        for (var j = 1; j <= 10; j++) setValue('freqmem' + j, data['freqmem' + j]);
+      }
+
+      fetch('/setup-data.json', { cache: 'no-store' })
+        .then(function (r) {
+          if (!r.ok) throw new Error('setup-data ' + r.status);
+          return r.json();
+        })
+        .then(applySetupData)
+        .catch(function () {
+          var meta = document.getElementById('setupMeta');
+          if (meta) meta.textContent = 'Setup data unavailable';
+        });
     }());
   </script>
 

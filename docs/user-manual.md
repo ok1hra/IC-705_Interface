@@ -280,6 +280,7 @@ Click **BACKUP** to download the entire QSO database as a JSON file. This is the
 | `Alt+3` | Select TRX3 |
 | `Alt+U` | Toggle RUN / S&P |
 | `Alt+W` | Clear the entry form |
+| `Alt+Enter` | Log the current QSO without sending any memory |
 | `Esc` | Close dialog |
 
 Press the **?** button in the bottom bar to show this table at any time.

@@ -155,11 +155,11 @@
   function sendMacro(type, ctx) {
     const text = buildMacro(type, ctx);
     if (!text) return Promise.resolve(false);  // PHONE mode — nothing to send
-    if (ctx._oi3 && ctx._trxIp) {
+    if (ctx._oi3) {
       return fetch('/oi3/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ip: ctx._trxIp, text })
+        body: JSON.stringify({ trx: ctx._trx, text })
       }).then(r => r.ok).catch(() => false);
     }
     return fetch('/cmd', {

@@ -134,7 +134,7 @@ After restart the IC-705 Interface will broadcast a discovery probe. The k3ng ke
 | `/s-mode` | `uint8_t` | Set mode command |
 | `/s-cw` | `char[]` | CW text to key (reliable delivery, CON) |
 
-The IC-705 Interface does **not** publish `/s-mode` or `/s-cw` — those are sent by external software or other devices.
+The IC-705 Interface sends `/s-cw` and `/s-hz` to the configured OI3 peer when LOG/DXC controls target TRX2 or TRX3. It does not publish `/s-mode`.
 
 ---
 
