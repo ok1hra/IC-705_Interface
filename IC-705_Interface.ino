@@ -24,11 +24,15 @@
   Using library PubSubClient at version 2.8 in folder: /home/dan/Arduino/libraries/PubSubClient 
   Using library FS at version 2.0.0 in folder: /home/dan/Arduino/hardware/espressif/esp32/libraries/FS 
 
-1. Increase REV value in this .ino
-2. Arduino IDE 1.8.19 menu: Sketch/Export compiled Binary (for "ESP32 Dev Module" + Tools/Partition Scheme:"No OTA (2MB APP/2MB SPIFFS)")
-3. generate all .bin and publish to GitHub web page: $ ./tools/gh-pages.sh --publish
-4. git commit with comment Release number and push
+  1. Increase REV value in this .ino
+  2. Arduino IDE 1.8.19 menu: Sketch/Export compiled Binary (for "ESP32 Dev Module" + Tools/Partition Scheme:"No OTA (2MB APP/2MB SPIFFS)")
+  3. generate all .bin and publish to GitHub web page: $ ./tools/gh-pages.sh --publish
+  4. git commit with comment Release number and push
 
+  Manual workflow
+  - afer standart edit data/*.html/css/js,
+  - before manual SPIFFS upload run tools/gzip-assets.sh
+  - continue with Arduino IDE
 
   Features
   + Connecting the IC-705 via Bluetooth and sending the frequency to MQTT

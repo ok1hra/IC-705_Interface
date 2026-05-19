@@ -8,6 +8,7 @@ OUTPUT_DIR="${ROOT_DIR}/build/gh-pages"
 FIRMWARE_BIN="${ROOT_DIR}/IC-705_Interface.ino.esp32.bin"
 DATA_DIR="${ROOT_DIR}/data"
 SKETCH_FILE="${ROOT_DIR}/IC-705_Interface.ino"
+GZIP_ASSETS_SCRIPT="${ROOT_DIR}/tools/gzip-assets.sh"
 
 # no_ota partition scheme (No OTA — 2MB APP / 2MB SPIFFS)
 PARTITIONS_CSV_NAME="no_ota"
@@ -189,6 +190,11 @@ python3 "$GEN_PART_BIN" "$PARTITIONS_CSV" "$PARTITIONS_BIN"
 SPIFFS_BIN="${OUTPUT_DIR}/spiffs.bin"
 
 if [[ -d "$DATA_DIR" && -x "$MKSPIFFS_BIN" ]]; then
+  if [[ -x "$GZIP_ASSETS_SCRIPT" ]]; then
+    "$GZIP_ASSETS_SCRIPT" "$DATA_DIR"
+  else
+    echo "WARN: gzip asset helper not found or not executable: $GZIP_ASSETS_SCRIPT" >&2
+  fi
   echo "==> Building SPIFFS image from data/"
   "$MKSPIFFS_BIN" -c "$DATA_DIR" -b 4096 -p 256 -s "$SPIFFS_SIZE_DEC" "$SPIFFS_BIN"
 else
