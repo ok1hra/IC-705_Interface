@@ -17,50 +17,44 @@
       box-shadow: 0 12px 35px rgba(0,0,0,0.5);
       padding: 20px 24px;
     }
+    .bd-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 14px;
+    }
     .bd-title {
       font-size: 18px;
       font-weight: 700;
       color: var(--accent);
-      margin-bottom: 16px;
       letter-spacing: 0.04em;
+    }
+    .bd-btn-sec {
+      padding: 5px 14px;
+      border-radius: 8px;
+      border: 1px solid #1f2731;
+      background: #0d1116;
+      color: var(--muted);
+      font-weight: 700;
+      cursor: pointer;
+      font-size: 13px;
     }
     .bd-toolbar {
       display: flex;
       align-items: center;
-      gap: 12px;
-      margin-bottom: 18px;
+      gap: 10px;
+      margin-bottom: 16px;
       flex-wrap: wrap;
     }
-    .bd-toolbar label { font-weight: 600; color: var(--muted); font-size: 13px; }
+    .bd-toolbar label { font-weight: 600; color: var(--muted); font-size: 13px; white-space: nowrap; }
     .bd-toolbar select {
-      padding: 5px 10px;
+      width: 160px;
+      padding: 4px 8px;
       border-radius: 8px;
       border: 1px solid #1f2731;
       background: #07090b;
       color: var(--text);
-      font-size: 14px;
-    }
-    .bd-buttons {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      margin-top: 14px;
-      flex-wrap: wrap;
-    }
-    .bd-buttons button {
-      padding: 6px 16px;
-      border-radius: 8px;
-      border: none;
-      font-weight: 700;
-      cursor: pointer;
-      background: var(--blue);
-      color: #000;
       font-size: 13px;
-    }
-    .bd-buttons button.bd-btn-sec {
-      background: #0d1116;
-      color: var(--muted);
-      border: 1px solid #1f2731;
     }
     .bd-status { font-size: 13px; color: var(--muted); }
     .bd-wrap { overflow-x: auto; }
@@ -122,10 +116,14 @@
 
   <main class="bd-shell">
     <div class="bd-card">
-      <div class="bd-title">Band Decoder</div>
+      <div class="bd-header">
+        <div class="bd-title">Band Decoder</div>
+        <button id="bd-defaults" class="bd-btn-sec">Defaults</button>
+      </div>
       <div class="bd-toolbar">
-        <label for="bd-source">Frequency source:</label>
+        <label for="bd-source">Freq source:</label>
         <select id="bd-source"></select>
+        <span class="bd-status" id="bd-status"></span>
       </div>
       <div class="bd-wrap">
         <table class="bd-table">
@@ -156,11 +154,6 @@
           </thead>
           <tbody id="bd-tbody"></tbody>
         </table>
-      </div>
-      <div class="bd-buttons">
-        <button id="bd-save">Save</button>
-        <button id="bd-defaults" class="bd-btn-sec">Defaults</button>
-        <span class="bd-status" id="bd-status"></span>
       </div>
     </div>
   </main>

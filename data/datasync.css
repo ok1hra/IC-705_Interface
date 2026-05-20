@@ -1,14 +1,18 @@
 .ds-hidden { display: none !important; }
 
-/* ── Sync status groups ── */
-.sg-group-label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;font-weight:700;margin:14px 0 6px}
+/* ── Sync status table ── */
+.sg-table{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:4px}
+.sg-group-row th{padding:6px 8px 4px;text-align:left}
+.sg-group-label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;font-weight:700}
 .sg-label-local{color:#1a5f8a}
 .sg-label-db{color:#7a5200}
 .sg-label-session{color:#0e6d53}
-.sg-grid-local div{background:#eef4fb!important;border-color:#b8d4ec!important}
-.sg-grid-db div{background:#fdf7e8!important;border-color:#e0cc88!important}
-.sg-grid-session div{background:#f0f7f4!important;border-color:#bfd7ca!important}
-.sg-group-label:first-child{margin-top:0}
+.sg-key{padding:4px 8px;color:var(--muted,#66756d);white-space:nowrap;width:28%}
+.sg-val{padding:4px 8px;font-weight:600;width:22%}
+.sg-row-local td,.sg-row-local th{background:#eef4fb}
+.sg-row-db td,.sg-row-db th{background:#fdf7e8}
+.sg-row-session td,.sg-row-session th{background:#f0f7f4}
+.sg-table tr:not(.sg-group-row):last-of-type td{padding-bottom:8px}
 
 /* ── Storage info popup ── */
 .si-btn{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;

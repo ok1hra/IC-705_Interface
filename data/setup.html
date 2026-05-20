@@ -67,12 +67,13 @@
 
 
         <details class="setup-section">
-          <summary class="setup-section-title">TrxNet <span class="setup-local-badge">eeprom</span><a href="https://github.com/ok1hra/TrxNet" target="_blank" rel="noopener" class="oi3-ref">&#8599;</a></summary>
+          <summary class="setup-section-title">TrxNet <span class="setup-local-badge">eeprom</span></summary>
           <div class="setup-section-body">
             <span id="trxnetApNote"></span>
             <label>Own NET_ID
               <div class="input-with-tip">
-                <input type="text" name="trxnetid" maxlength="2" placeholder="01" value="">
+                <input type="text" name="trxnetid" id="trxnetidInput" maxlength="2" placeholder="01" value="">
+                <button type="button" id="btnUseIpOctet" class="use-ip-btn" title="Fill from last IP address octet">Use IP last octet</button>
                 <span class="help-tip" data-tip="This device's TrxNet identity (2-digit hex). 00 = TrxNet disabled. Must be unique on the network. Device name:">?</span>
               </div>
             </label>
@@ -82,15 +83,16 @@
                 <span class="help-tip" data-tip="UDP port for TrxNet discovery and CoAP messages. All devices on the network must use the same port. Default: 5683.">?</span>
               </div>
             </label>
+            <p class="footnote">TrxNet protocol: <a href="https://github.com/ok1hra/TrxNet" target="_blank" rel="noopener">https://github.com/ok1hra/TrxNet &#8599;</a></p>
           </div>
         </details>
 
         <details class="setup-section">
           <summary class="setup-section-title">Radio <span class="setup-local-badge">eeprom</span></summary>
           <div class="setup-section-body">
-            <label>USB serial baudrate
+            <label>USB and CI-V serial baudrate
               <div class="input-with-tip">
-                <select name="baud">
+                <select name="baud" class="setup-baud-select">
                   <option value="0">1200</option>
                   <option value="1">2400</option>
                   <option value="2">4800</option>
@@ -102,20 +104,17 @@
             </label>
 
             <div class="setup-trx-divider"></div>
-            <div class="setup-trx-head">TRX1</div>
-            <div class="setup-trx-row">
-              <label class="setup-trx-col">Label
-                <input type="text" id="ls_trx1Label" name="trx1label" maxlength="10" placeholder="IC-705" value="">
-              </label>
-              <label class="setup-trx-col">CI-V address
-                <div class="input-with-tip">
-                  <input type="text" name="civaddr" maxlength="2" placeholder="A4" value="">
-                  <span class="help-tip" data-tip="CI-V bus address in hexadecimal. IC-705 default: A4. Check MENU → SET → Connectors → CI-V → CI-V Address.">?</span>
-                </div>
-                <span class="msg"></span>
-              </label>
-            </div>
-            <div class="setup-trx-note">Connection: <strong>Bluetooth</strong></div>
+            <div class="setup-trx-box">TRX1 &#8212; Connection: Bluetooth</div>
+            <label>Label
+              <input type="text" id="ls_trx1Label" name="trx1label" maxlength="10" placeholder="IC-705" value="" class="setup-input-partial">
+            </label>
+            <label>CI-V address
+              <div class="input-with-tip">
+                <input type="text" name="civaddr" maxlength="2" placeholder="A4" value="" class="setup-trx-short-input">
+                <span class="help-tip" data-tip="CI-V bus address in hexadecimal. IC-705 default: A4. Check MENU → SET → Connectors → CI-V → CI-V Address.">?</span>
+              </div>
+              <span class="msg"></span>
+            </label>
             <label>Bluetooth device name
               <div class="input-with-tip">
                 <input type="text" name="btname" maxlength="20" pattern="[a-zA-Z0-9 _-]+" title="Only letters, digits, space, hyphen and underscore" value="">
@@ -129,32 +128,50 @@
             </label>
 
             <div class="setup-trx-divider"></div>
-            <div class="setup-trx-head">TRX2</div>
-            <div class="setup-trx-row">
-              <label class="setup-trx-col">Label
-                <input type="text" id="ls_trx2Label" name="trx2label" maxlength="10" placeholder="TRX2" value="">
-              </label>
-              <label class="setup-trx-col">OI3 NET_ID
-                <div class="input-with-tip">
-                  <input type="text" name="trx2netid" maxlength="2" placeholder="ff" value="">
-                  <span class="help-tip" data-tip="TrxNet peer NET_ID of the OI3 keyer for TRX2 (2-digit hex). 00 = disabled. When set, the interface subscribes to OI3.XX/hz and /mode from this peer and sends CW/freq commands to it.">?</span>
-                </div>
-              </label>
-            </div>
+            <div class="setup-trx-box">TRX2</div>
+            <label>Label
+              <input type="text" id="ls_trx2Label" name="trx2label" maxlength="10" placeholder="TRX2" value="" class="setup-input-partial">
+            </label>
+            <label class="setup-trx-conn-row">
+              <input type="radio" name="trx2conntype" value="0" checked>
+              <span>TrxNet</span>
+              <div class="setup-trx-netid-wrap">
+                <input type="text" name="trx2netid" maxlength="2" placeholder="02" value="" class="setup-trx-short-input">
+                <span class="setup-trx-peer-name" id="trx2PeerName"></span>
+                <span class="help-tip" data-tip="TrxNet peer NET_ID of the OI3 keyer for TRX2 (2-digit hex). 00 = disabled. Device name: OI3.XX.">?</span>
+              </div>
+            </label>
+            <label class="setup-trx-conn-row setup-trx-disabled">
+              <input type="radio" name="trx2conntype" value="1" disabled>
+              <span>CI-V</span>
+              <div class="setup-trx-netid-wrap">
+                <input type="text" name="trx2civaddr" maxlength="2" placeholder="A4" class="setup-trx-short-input" disabled>
+                <span class="setup-conn-soon">(not yet implemented)</span>
+              </div>
+            </label>
 
             <div class="setup-trx-divider"></div>
-            <div class="setup-trx-head">TRX3</div>
-            <div class="setup-trx-row">
-              <label class="setup-trx-col">Label
-                <input type="text" id="ls_trx3Label" name="trx3label" maxlength="10" placeholder="TRX3" value="">
-              </label>
-              <label class="setup-trx-col">OI3 NET_ID
-                <div class="input-with-tip">
-                  <input type="text" name="trx3netid" maxlength="2" placeholder="01" value="">
-                  <span class="help-tip" data-tip="TrxNet peer NET_ID of the OI3 keyer for TRX3 (2-digit hex). 00 = disabled. When set, the interface subscribes to OI3.XX/hz and /mode from this peer and sends CW/freq commands to it.">?</span>
-                </div>
-              </label>
-            </div>
+            <div class="setup-trx-box">TRX3</div>
+            <label>Label
+              <input type="text" id="ls_trx3Label" name="trx3label" maxlength="10" placeholder="TRX3" value="" class="setup-input-partial">
+            </label>
+            <label class="setup-trx-conn-row">
+              <input type="radio" name="trx3conntype" value="0" checked>
+              <span>TrxNet</span>
+              <div class="setup-trx-netid-wrap">
+                <input type="text" name="trx3netid" maxlength="2" placeholder="03" value="" class="setup-trx-short-input">
+                <span class="setup-trx-peer-name" id="trx3PeerName"></span>
+                <span class="help-tip" data-tip="TrxNet peer NET_ID of the OI3 keyer for TRX3 (2-digit hex). 00 = disabled. Device name: OI3.XX.">?</span>
+              </div>
+            </label>
+            <label class="setup-trx-conn-row setup-trx-disabled">
+              <input type="radio" name="trx3conntype" value="1" disabled>
+              <span>CI-V</span>
+              <div class="setup-trx-netid-wrap">
+                <input type="text" name="trx3civaddr" maxlength="2" placeholder="A4" class="setup-trx-short-input" disabled>
+                <span class="setup-conn-soon">(not yet implemented)</span>
+              </div>
+            </label>
           </div>
         </details>
 
@@ -214,7 +231,7 @@
             </label>
             <label>Blocked DXCC list (one per line)
               <div class="input-with-tip input-with-tip-top">
-                <textarea id="ls_blockedDxcc" name="blockedDxcc" form="setup-form" rows="3" placeholder="Russia&#10;Kaliningrad"></textarea>
+                <textarea id="ls_blockedDxcc" name="blockedDxcc" form="setup-form" rows="3" placeholder="Russia&#10;Belarus&#10;Kaliningrad"></textarea>
                 <span class="help-tip" data-tip="DXCC entity names to flag as blocked (one per line, e.g. Russia). Matching callsigns are highlighted in red in the log journal.">?</span>
               </div>
             </label>
@@ -325,9 +342,9 @@
       </div>
 
       <div class="backup-row">
-        <a href="/config/download" class="backup-btn" id="btnDownloadConfig">Download config</a>
+        <a href="/config/download" class="backup-btn" id="btnDownloadConfig">&#x2193;&#xFE0E; Download config</a>
         <label class="backup-btn">
-          Upload config
+          &#x2191;&#xFE0E; Upload config
           <input type="file" id="configFile" accept=".json" style="display:none">
         </label>
         <span id="uploadMsg" class="backup-msg"></span>
@@ -337,14 +354,6 @@
   </main>
 
   <style>
-    .oi3-ref {
-      color: #777;
-      font-size: 13px;
-      text-decoration: none;
-      margin-left: 4px;
-      vertical-align: middle;
-    }
-    .oi3-ref:hover { color: #aaa; }
     .setup-local-badge {
       font-size: 10px;
       background: rgba(0, 136, 0, 0.12);
@@ -388,7 +397,7 @@
         }
 
         [
-          'ssid', 'pswd', 'ssid2', 'pswd2', 'trxnetid', 'trxnetport',
+          'ssid', 'pswd', 'ssid2', 'pswd2', 'trxnetport',
           'baud', 'trx1label', 'civaddr', 'btname', 'trx2label',
           'trx2netid', 'trx3label', 'trx3netid', 'dxchost', 'dxcport',
           'dxccall', 'dxclocator', 'rstSsb', 'rstCwRtty', 'blockedDxcc'
@@ -397,6 +406,35 @@
         setValue('manualModeForPhone', data.manualModeForPhone);
         for (var i = 1; i <= 4; i++) setValue('cwmem' + i, data['cwmem' + i]);
         for (var j = 1; j <= 10; j++) setValue('freqmem' + j, data['freqmem' + j]);
+
+        // TrxNet ID: auto-fill from IP last octet if factory default, else use saved value
+        var trxnetInput = document.getElementById('trxnetidInput');
+        if (trxnetInput) {
+          if (data.trxnetidIsDefault && data.ipLastOctet) {
+            trxnetInput.value = ('0' + (data.ipLastOctet).toString(16)).slice(-2);
+          } else {
+            setValue('trxnetid', data.trxnetid);
+          }
+        }
+        // Store IP last octet for the button
+        if (data.ipLastOctet) {
+          var btn = document.getElementById('btnUseIpOctet');
+          if (btn) btn.dataset.octet = data.ipLastOctet;
+        }
+
+        // Connection type radio buttons for TRX2/3
+        var ct2 = data.trx2conntype || 0;
+        document.querySelectorAll('[name="trx2conntype"]').forEach(function(r) {
+          r.checked = (parseInt(r.value) === ct2);
+        });
+        var ct3 = data.trx3conntype || 0;
+        document.querySelectorAll('[name="trx3conntype"]').forEach(function(r) {
+          r.checked = (parseInt(r.value) === ct3);
+        });
+
+        // Show resolved peer device names
+        updatePeerName('trx2netid', 'trx2PeerName');
+        updatePeerName('trx3netid', 'trx3PeerName');
       }
 
       fetch('/setup-data.json', { cache: 'no-store' })
@@ -410,6 +448,27 @@
           if (meta) meta.textContent = 'Setup data unavailable';
         });
     }());
+  </script>
+
+  <script>
+    function updatePeerName(inputName, spanId) {
+      var inp = document.querySelector('[name="' + inputName + '"]');
+      var span = document.getElementById(spanId);
+      if (!inp || !span) return;
+      function refresh() {
+        var v = inp.value.trim();
+        span.textContent = v && v !== '00' ? '→ OI3.' + ('0' + v).slice(-2) : '';
+      }
+      inp.addEventListener('input', refresh);
+      refresh();
+    }
+
+    document.getElementById('btnUseIpOctet').addEventListener('click', function() {
+      var octet = parseInt(this.dataset.octet || '0', 10);
+      if (octet > 0) {
+        document.getElementById('trxnetidInput').value = ('0' + octet.toString(16)).slice(-2);
+      }
+    });
   </script>
 
   <script>

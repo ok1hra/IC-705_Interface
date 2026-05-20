@@ -53,9 +53,9 @@
     .ds-imp-summary { background: #111a14; border-color: var(--line); color: var(--muted); }
     .ds-imp-close { color: var(--muted); }
     .ds-imp-row input { background: #0f1312; border-color: #51605a; color: var(--ink); }
-    .sg-grid-local div { background: #0f1d2a !important; border-color: #1a3a5c !important; }
-    .sg-grid-db div   { background: #1e1a0a !important; border-color: #4a3800 !important; }
-    .sg-grid-session div { background: #0f1a14 !important; border-color: #1a3a20 !important; }
+    .sg-row-local td, .sg-row-local th { background: #0f1d2a !important; }
+    .sg-row-db td, .sg-row-db th       { background: #1e1a0a !important; }
+    .sg-row-session td, .sg-row-session th { background: #0f1a14 !important; }
     .btn-cancel { background: transparent; border-color: var(--line); color: var(--muted); }
     .btn-cancel:hover { background: rgba(255,255,255,0.05); }
     .ds-storage-warn {
@@ -139,37 +139,22 @@
       </div>
     </div>
 
-    <!-- ── 1: Device name ────────────────────────────────────────────────────── -->
+    <!-- ── Pairing ─────────────────────────────────────────────────────────── -->
     <div class="card">
-      <div class="card-head">
-        <h2><span class="ds-stepnum">1</span> Create local device name</h2>
-      </div>
-      <div class="ds-label-box">
-        <div class="ds-label-row">
-          <span class="ds-label-caption">Device label</span>
-          <span id="infoDeviceLabel" class="ds-label-value">—</span>
-          <button id="btnEditLabel" type="button" class="ds-label-btn"
-            title="Set a human-readable name for this device. The label is sent to the remote device during sync.">
-            Edit
-          </button>
-        </div>
-        <div id="labelEditRow" class="ds-label-edit ds-hidden">
-          <input id="labelInput" type="text" class="ds-label-input" maxlength="30" autocomplete="off" placeholder="e.g. Shack tablet">
-          <button id="btnLabelSave" type="button" title="Save the new device label">Save</button>
-          <button id="btnLabelCancel" type="button" class="btn-cancel" title="Discard changes">Cancel</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- ── 2: Pairing ────────────────────────────────────────────────────────── -->
-    <div class="card">
-      <div class="card-head"><h2><span class="ds-stepnum">2</span> Pairing</h2></div>
+      <div class="card-head"><h2 style="font-family:'Trebuchet MS','Segoe UI',sans-serif">Pairing</h2></div>
 
       <!-- Idle -->
       <div id="phaseIdle" class="ds-phase">
         <p class="lede">Press <strong>Sync</strong> on both devices. The first device waits, the second connects automatically.</p>
-        <div class="actions">
+        <div class="ds-label-box ds-auto-label">
+          <div class="ds-label-row">
+            <span class="ds-label-caption">This browser</span>
+            <span id="pairDeviceLabel" class="ds-label-value">—</span>
+          </div>
+        </div>
+        <div class="actions" style="justify-content:center;margin:44px 0">
           <button id="btnSync" type="button"
+            style="background:#c89820;color:#1a1200;font-size:1.1rem;padding:12px 36px;font-weight:700"
             title="Check for a pending session from another device. If none is found, create one and wait.">
             Sync
           </button>
@@ -218,29 +203,62 @@
       <summary class="ds-section-title">Sync status</summary>
       <div class="ds-section-body">
 
-        <p class="sg-group-label sg-label-local">This device</p>
-        <dl class="status-grid sg-grid-local">
-          <div><dt>Device ID <button class="si-btn" data-si="deviceId" type="button">ⓘ</button></dt><dd id="infoDeviceId">—</dd></div>
-          <div><dt>Local QSOs <button class="si-btn" data-si="localQsos" type="button">ⓘ</button></dt><dd id="infoQsoCount">—</dd></div>
-          <div><dt>Last seq <button class="si-btn" data-si="lastSeq" type="button">ⓘ</button></dt><dd id="infoLastSeq">—</dd></div>
-        </dl>
+        <table class="sg-table">
+          <tbody>
+            <tr class="sg-group-row sg-row-local">
+              <th colspan="4" class="sg-group-label sg-label-local">This device</th>
+            </tr>
+            <tr class="sg-row-local">
+              <td class="sg-key">Device ID <button class="si-btn" data-si="deviceId" type="button">ⓘ</button></td>
+              <td class="sg-val" id="infoDeviceId">—</td>
+              <td class="sg-key">Local QSOs <button class="si-btn" data-si="localQsos" type="button">ⓘ</button></td>
+              <td class="sg-val" id="infoQsoCount">—</td>
+            </tr>
+            <tr class="sg-row-local">
+              <td class="sg-key">Last seq <button class="si-btn" data-si="lastSeq" type="button">ⓘ</button></td>
+              <td class="sg-val" id="infoLastSeq">—</td>
+              <td class="sg-key">Device label</td>
+              <td class="sg-val" id="infoDeviceLabel">—</td>
+            </tr>
 
-        <p class="sg-group-label sg-label-db">Database</p>
-        <dl class="status-grid sg-grid-db">
-          <div><dt>Remote QSOs <button class="si-btn" data-si="remoteQsos" type="button">ⓘ</button></dt><dd id="infoRemoteCount">—</dd></div>
-          <div><dt>Known devices <button class="si-btn" data-si="knownDevices" type="button">ⓘ</button></dt><dd id="infoDeviceCount">—</dd></div>
-          <div><dt>Est. DB size <button class="si-btn" data-si="estSize" type="button">ⓘ</button></dt><dd id="infoEstSize">—</dd></div>
-        </dl>
+            <tr class="sg-group-row sg-row-db">
+              <th colspan="4" class="sg-group-label sg-label-db">Database</th>
+            </tr>
+            <tr class="sg-row-db">
+              <td class="sg-key">Remote QSOs <button class="si-btn" data-si="remoteQsos" type="button">ⓘ</button></td>
+              <td class="sg-val" id="infoRemoteCount">—</td>
+              <td class="sg-key">Known devices <button class="si-btn" data-si="knownDevices" type="button">ⓘ</button></td>
+              <td class="sg-val" id="infoDeviceCount">—</td>
+            </tr>
+            <tr class="sg-row-db">
+              <td class="sg-key">Est. DB size <button class="si-btn" data-si="estSize" type="button">ⓘ</button></td>
+              <td class="sg-val" id="infoEstSize">—</td>
+              <td></td><td></td>
+            </tr>
 
-        <p class="sg-group-label sg-label-session">Active sync session</p>
-        <dl class="status-grid sg-grid-session">
-          <div><dt>Phase <button class="si-btn" data-si="phase" type="button">ⓘ</button></dt><dd id="stPhase">Idle</dd></div>
-          <div><dt>Remote device <button class="si-btn" data-si="remoteDevice" type="button">ⓘ</button></dt><dd id="stRemoteDevice">—</dd></div>
-          <div><dt>Sent <button class="si-btn" data-si="sent" type="button">ⓘ</button></dt><dd id="stSent">—</dd></div>
-          <div><dt>Received <button class="si-btn" data-si="received" type="button">ⓘ</button></dt><dd id="stReceived">—</dd></div>
-          <div><dt>Batches <button class="si-btn" data-si="batches" type="button">ⓘ</button></dt><dd id="stBatches">—</dd></div>
-          <div><dt>Errors <button class="si-btn" data-si="errors" type="button">ⓘ</button></dt><dd id="stErrors">0</dd></div>
-        </dl>
+            <tr class="sg-group-row sg-row-session">
+              <th colspan="4" class="sg-group-label sg-label-session">Active sync session</th>
+            </tr>
+            <tr class="sg-row-session">
+              <td class="sg-key">Phase <button class="si-btn" data-si="phase" type="button">ⓘ</button></td>
+              <td class="sg-val" id="stPhase">Idle</td>
+              <td class="sg-key">Remote device <button class="si-btn" data-si="remoteDevice" type="button">ⓘ</button></td>
+              <td class="sg-val" id="stRemoteDevice">—</td>
+            </tr>
+            <tr class="sg-row-session">
+              <td class="sg-key">Sent <button class="si-btn" data-si="sent" type="button">ⓘ</button></td>
+              <td class="sg-val" id="stSent">—</td>
+              <td class="sg-key">Received <button class="si-btn" data-si="received" type="button">ⓘ</button></td>
+              <td class="sg-val" id="stReceived">—</td>
+            </tr>
+            <tr class="sg-row-session">
+              <td class="sg-key">Batches <button class="si-btn" data-si="batches" type="button">ⓘ</button></td>
+              <td class="sg-val" id="stBatches">—</td>
+              <td class="sg-key">Errors <button class="si-btn" data-si="errors" type="button">ⓘ</button></td>
+              <td class="sg-val" id="stErrors">0</td>
+            </tr>
+          </tbody>
+        </table>
 
         <pre id="syncLog" class="log ds-log"></pre>
       </div>
@@ -254,11 +272,11 @@
         <div class="actions">
           <button id="btnExport" type="button"
             title="Download all QSOs, logs and settings as a dated JSON file: yyyymmdd-hhmm-QSO-database.json.">
-            Export backup
+            &#x2193;&#xFE0E; Export backup
           </button>
           <label class="ds-import-label"
             title="Restore from a previously exported backup file. Records with the same key are overwritten; no data is deleted.">
-            Import backup
+            &#x2191;&#xFE0E; Import backup
             <input type="file" id="importFile" accept=".json" style="display:none">
           </label>
           <span id="importMsg" class="ds-import-msg"></span>

@@ -19,6 +19,14 @@ const BD_DEFAULTS = [
 ];
 
 let bdCurrentFreqKhz = 0;
+let bdSaveTimer = null;
+
+function bdScheduleSave() {
+  const statusEl = document.getElementById('bd-status');
+  statusEl.textContent = 'Saving…';
+  clearTimeout(bdSaveTimer);
+  bdSaveTimer = setTimeout(bdSave, 2000);
+}
 
 async function bdInit() {
   // Fetch config and status independently — one failure must not block the other
@@ -192,12 +200,20 @@ async function bdSave() {
   setTimeout(() => { statusEl.textContent = ''; }, 3000);
 }
 
-document.getElementById('bd-save').addEventListener('click', bdSave);
 document.getElementById('bd-defaults').addEventListener('click', () => {
   bdRenderTable(BD_DEFAULTS);
+  bdScheduleSave();
 });
 document.getElementById('bd-source').addEventListener('change', () => {
   bdCurrentFreqKhz = 0;
+  bdScheduleSave();
+});
+
+document.getElementById('bd-tbody').addEventListener('change', bdScheduleSave);
+document.getElementById('bd-tbody').addEventListener('input', (e) => {
+  if (e.target.classList.contains('bd-fmin') || e.target.classList.contains('bd-fmax')) {
+    bdScheduleSave();
+  }
 });
 
 bdInit();

@@ -51,7 +51,20 @@
   }
 
   function deviceLabel() {
-    return localStorage.getItem('ds_device_label') || ('Device ' + deviceId().slice(0, 8));
+    let label = localStorage.getItem('ds_device_label');
+    if (!label) {
+      const ua = navigator.userAgent;
+      const browser = /Firefox\//i.test(ua)  ? 'Firefox'
+                    : /Edg\//i.test(ua)       ? 'Edge'
+                    : /Chrome\//i.test(ua)    ? 'Chrome'
+                    : /Safari\//i.test(ua)    ? 'Safari'
+                    : 'Browser';
+      const host   = window.location.hostname || 'local';
+      const suffix = Math.random().toString(16).slice(2, 6).toUpperCase();
+      label = browser + '-' + host + '-' + suffix;
+      localStorage.setItem('ds_device_label', label);
+    }
+    return label;
   }
 
   // ── Filename helper ──────────────────────────────────────────────────────────
@@ -371,6 +384,27 @@
 
   function stopPoll() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
 
+  function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+  async function fetchPendingOffer() {
+    const r = await fetch(peerUrl() + '/pairing/offer', { cache: 'no-store' });
+    const payload = await r.json();
+    return payload && payload.type === 'datasync-offer' ? payload : null;
+  }
+
+  function sameOffer(payload) {
+    return payload &&
+           payload.device_id === deviceId() &&
+           payload.session_id === sessionId;
+  }
+
+  async function joinOffer(payload) {
+    el('offerFromLabel').textContent = payload.device_label || payload.device_id.slice(0,8);
+    el('offerFound').dataset.payload = JSON.stringify(payload);
+    showPhase('phaseOffer');
+    await acceptOffer();
+  }
+
   async function createOffer() {
     try {
       setPhase('creating-offer');
@@ -407,6 +441,15 @@
           stopPoll();
           await processAnswer(JSON.stringify(d));
         } catch (_) {}
+        try {
+          const pendingOffer = await fetchPendingOffer();
+          if (pendingOffer && !sameOffer(pendingOffer)) {
+            log('Another pending session detected — joining it instead.');
+            stopPoll();
+            if (pc) { try { pc.close(); } catch (_) {} pc = null; dc = null; }
+            await joinOffer(pendingOffer);
+          }
+        } catch (_) {}
       }, 2000);
     } catch(e) {
       log('createOffer ERROR: ' + e.name + ': ' + e.message);
@@ -418,13 +461,13 @@
     const raw = ipInput ? ipInput.value.trim() : '';
     peerBase = raw ? (window.location.protocol + '//' + raw) : '';
     try {
-      const r = await fetch(peerUrl() + '/pairing/offer');
-      const payload = await r.json();
-      if (payload.type === 'datasync-offer') {
-        // Someone is waiting — show accept/reject
-        el('offerFromLabel').textContent = payload.device_label || payload.device_id.slice(0,8);
-        el('offerFound').dataset.payload = JSON.stringify(payload);
-        showPhase('phaseJoin');
+      let payload = await fetchPendingOffer();
+      if (!payload) {
+        await sleep(250 + Math.floor(Math.random() * 900));
+        payload = await fetchPendingOffer();
+      }
+      if (payload) {
+        await joinOffer(payload);
         return;
       }
     } catch(_) {}
@@ -785,16 +828,20 @@
     stopPoll();
     stopScan();
     showPhase('phaseIdle');
-    document.getElementById('qrAnswerSection').classList.add('ds-hidden');
-    document.getElementById('scanAnswerWrap').classList.add('ds-hidden');
-    document.getElementById('scanOfferWrap').classList.add('ds-hidden');
+    ['qrAnswerSection', 'scanAnswerWrap', 'scanOfferWrap'].forEach(id => {
+      const node = document.getElementById(id);
+      if (node) node.classList.add('ds-hidden');
+    });
     setPhase('idle');
     resetStats();
   }
 
   async function refreshInfo() {
+    const label = deviceLabel();
     document.getElementById('infoDeviceId').textContent    = deviceId().slice(0, 16) + '…';
-    document.getElementById('infoDeviceLabel').textContent = deviceLabel();
+    document.getElementById('infoDeviceLabel').textContent = label;
+    const pairLabel = document.getElementById('pairDeviceLabel');
+    if (pairLabel) pairLabel.textContent = label;
     try {
       const cdb       = await openContestDb();
       const numRange  = IDBKeyRange.bound(1, Number.MAX_SAFE_INTEGER);
@@ -846,36 +893,6 @@
     on('btnCancelJoin',  'click', resetPairing);
     on('btnAcceptOffer', 'click', async () => { showPhase('phaseOffer'); await acceptOffer(); });
     on('btnRejectOffer', 'click', rejectOffer);
-
-    const labelEditRow   = el('labelEditRow');
-    const labelInput     = el('labelInput');
-    const btnLabelSave   = el('btnLabelSave');
-    const btnLabelCancel = el('btnLabelCancel');
-
-    function openLabelEdit() {
-      if (labelInput)   labelInput.value = deviceLabel();
-      if (labelEditRow) labelEditRow.classList.remove('ds-hidden');
-      if (labelInput)   { labelInput.focus(); labelInput.select(); }
-    }
-    function closeLabelEdit() {
-      if (labelEditRow) labelEditRow.classList.add('ds-hidden');
-    }
-
-    on('btnEditLabel', 'click', openLabelEdit);
-    if (btnLabelSave) btnLabelSave.addEventListener('click', () => {
-      const v = labelInput ? labelInput.value.trim() : '';
-      if (v) {
-        localStorage.setItem('ds_device_label', v);
-        const dd = el('infoDeviceLabel');
-        if (dd) dd.textContent = v;
-      }
-      closeLabelEdit();
-    });
-    if (btnLabelCancel) btnLabelCancel.addEventListener('click', closeLabelEdit);
-    if (labelInput) labelInput.addEventListener('keydown', e => {
-      if (e.key === 'Enter')  btnLabelSave && btnLabelSave.click();
-      if (e.key === 'Escape') closeLabelEdit();
-    });
 
     on('btnExport', 'click', exportDb);
 

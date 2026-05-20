@@ -77,6 +77,8 @@ String PSWD2        = "";
 byte     TRXNET_ID      = 0x01;   // own device NET_ID → device name "705.01"
 byte     TRX2_NET_ID    = 0xff;   // peer NET_ID for TRX2 Band Decoder slot (0x00 = disabled)
 byte     TRX3_NET_ID    = 0x00;   // peer NET_ID for TRX3 Band Decoder slot (0x00 = disabled)
+byte     TRX2_CONN_TYPE = 0x00;   // 0=TrxNet, 1=CI-V (EEPROM byte 44)
+byte     TRX3_CONN_TYPE = 0x00;   // 0=TrxNet, 1=CI-V (EEPROM byte 47)
 uint16_t TRXNET_PORT    = 5683;   // CoAP/discovery UDP port (CoAP default)
 int BaudRate        = 9600;
 // char* BTname        = "";
@@ -87,7 +89,7 @@ bool cwIpOnConnect  = true;       // announce WiFi IP via CW on first BT connect
 volatile bool cwIpSendPending = false;
 
 #define LOOP_WARN_MS 200
-#define REV 20260519
+#define REV 20260520
 #define WIFI
 #define UDP_TO_FSK
 #define WDT         // watchdog timer
@@ -120,9 +122,10 @@ volatile bool cwIpSendPending = false;
   41 TRXNET_ID       (own NET_ID, 0x00=disabled → device name "705.XX")
   42 TRX2_NET_ID     (peer NET_ID for TRX2 BD slot, 0x00=disabled)
   43 TRX3_NET_ID     (peer NET_ID for TRX3 BD slot, 0x00=disabled)
-  44    FREE         (was mqttBroker[3])
+  44 TRX2_CONN_TYPE (0=TrxNet, 1=CI-V; 0xff=unprogrammed → default 0x00)
   45-46 TRXNET_PORT  (was MQTT_PORT)
-  47-67 FREE         (was MQTT_TOPIC 21B)
+  47 TRX3_CONN_TYPE (0=TrxNet, 1=CI-V; 0xff=unprogrammed → default 0x00)
+  48-67 FREE         (was MQTT_TOPIC 21B)
   68-69 FREE         (was HTTP_CAT_PORT)
   70-71 FREE         (was udpPort)
   72-73 FREE         (was udpCatPort)
@@ -225,6 +228,7 @@ volatile bool btConnectPending = false;
 
 #if defined(WIFI)
   #include <WiFi.h>
+  #include <esp_wifi.h>
   #include <FS.h>
   #include <SPIFFS.h>
   #include <WebServer.h>
@@ -275,6 +279,7 @@ char CwMsg[37] = "";
   boolean fig1;
   int     fig2;
   char    ch;
+  volatile bool abortFskTransmission = false;
 #endif
 
 
@@ -314,7 +319,7 @@ int incomingByte = 0;   // for incoming serial data
   String g_lcRstSsb    = "59";
   String g_lcRstCwRtty = "599";
   bool   g_lcManualModeForPhone = true;
-  String g_lcBlockedDxcc = "";
+  String g_lcBlockedDxcc = "Russia\nBelarus\nKaliningrad";
 
   // TrxNet peer cache for TRX2 (index 0) and TRX3 (index 1) — written by onHz/onMode callbacks
   static volatile long g_trxFreq[2]    = {0, 0};
@@ -591,7 +596,7 @@ void loadLogConfigVars(void){
   v = extractJsonString(j, "trx3Label"); if (v.length() > 0) g_lcTrx3Label = v;
   v = extractJsonString(j, "rstSsb");    if (v.length() > 0) g_lcRstSsb = v;
   v = extractJsonString(j, "rstCwRtty"); if (v.length() > 0) g_lcRstCwRtty = v;
-  v = extractJsonString(j, "blockedDxcc"); g_lcBlockedDxcc = v;
+  if (j.indexOf("\"blockedDxcc\"") >= 0) g_lcBlockedDxcc = extractJsonString(j, "blockedDxcc");
   g_lcManualModeForPhone = extractJsonBool(j, "manualModeForPhone", true);
 }
 
@@ -1191,13 +1196,18 @@ void handleSetupData(){
   else if (BaudRate == 9600) baudSelect = 3;
   else if (BaudRate == 115200) baudSelect = 4;
 
+  uint8_t ipLastOctet = APmode ? 0 : (uint8_t)WiFi.localIP()[3];
+  bool trxnetidIsDefault = (EEPROM.read(41) == 0xff);
+
   String j;
-  j.reserve(2300);
+  j.reserve(2400);
   j += "{\"fwRev\":"; j += (unsigned)REV;
   j += ",\"apMode\":"; j += APmode ? "true" : "false";
   j += ",\"apModeText\":\""; j += APmode ? "AP mode ON" : "AP mode OFF"; j += "\"";
   j += ",\"mac\":\""; j += configJsonEscape(MACString); j += "\"";
   j += ",\"hwRev\":"; j += HardwareRev;
+  j += ",\"ipLastOctet\":"; j += ipLastOctet;
+  j += ",\"trxnetidIsDefault\":"; j += trxnetidIsDefault ? "true" : "false";
   j += ",\"trxnetDeviceName\":\""; j += configJsonEscape(TRXNET_ID != 0x00 ? String(trxDeviceName) : String("disabled")); j += "\"";
   j += ",\"trxnetApNote\":\""; j += APmode ? "TrxNet is not active in AP mode - requires WiFi station mode." : ""; j += "\"";
   j += ",\"ssid\":\""; j += configJsonEscape(SSID); j += "\"";
@@ -1213,8 +1223,10 @@ void handleSetupData(){
   j += ",\"cwIpOnConnect\":"; j += cwIpOnConnect ? "true" : "false";
   j += ",\"trx2label\":\""; j += configJsonEscape(g_lcTrx2Label); j += "\"";
   j += ",\"trx2netid\":\""; j += trx2Hex; j += "\"";
+  j += ",\"trx2conntype\":"; j += TRX2_CONN_TYPE;
   j += ",\"trx3label\":\""; j += configJsonEscape(g_lcTrx3Label); j += "\"";
   j += ",\"trx3netid\":\""; j += trx3Hex; j += "\"";
+  j += ",\"trx3conntype\":"; j += TRX3_CONN_TYPE;
   j += ",\"dxchost\":\""; j += configJsonEscape(DxcHost); j += "\"";
   j += ",\"dxcport\":\""; j += DxcPort > 0 ? String(DxcPort) : ""; j += "\"";
   j += ",\"dxccall\":\""; j += configJsonEscape(DxcCallsign); j += "\"";
@@ -1391,6 +1403,32 @@ void handlePostCmd(){
   if (body.length() == 0) { webServer.send(400, "application/json", "{\"error\":\"empty body\"}"); return; }
   String type = extractJsonString(body, "type");
 
+  if (type == "abortCw") {
+    #if defined(UDP_TO_FSK)
+    char modesSnapshot[sizeof(modes)];
+    copyModesText(modesSnapshot, sizeof(modesSnapshot));
+    if (strcmp(modesSnapshot, "CW") == 0 && btClientConnected && radio_address != 0x00) {
+      uint8_t frame[] = {START_BYTE, START_BYTE, radio_address, CONTROLLER_ADDRESS,
+                         CMD_SEND_CW_MSG, 0xFF, STOP_BYTE};
+      catWriteFrame(frame, sizeof(frame), true);
+    } else if (strcmp(modesSnapshot, "RTTY") == 0) {
+      abortFskTransmission = true;
+    }
+    #else
+    if (btClientConnected && radio_address != 0x00) {
+      char modesSnapshot[sizeof(modes)];
+      copyModesText(modesSnapshot, sizeof(modesSnapshot));
+      if (strcmp(modesSnapshot, "CW") == 0) {
+        uint8_t frame[] = {START_BYTE, START_BYTE, radio_address, CONTROLLER_ADDRESS,
+                           CMD_SEND_CW_MSG, 0xFF, STOP_BYTE};
+        catWriteFrame(frame, sizeof(frame), true);
+      }
+    }
+    #endif
+    webServer.send(200, "application/json", "{\"ok\":true}");
+    return;
+  }
+
   if (!btClientConnected || radio_address == 0x00) {
     webServer.send(503, "application/json", "{\"error\":\"radio_disconnected\"}");
     return;
@@ -1483,7 +1521,9 @@ void handleConfigDownload() {
   j += ",\"trxnetid\":";        j += (unsigned)TRXNET_ID;
   j += ",\"trxnetport\":";      j += TRXNET_PORT;
   j += ",\"trx2netid\":";       j += (unsigned)TRX2_NET_ID;
+  j += ",\"trx2conntype\":";    j += TRX2_CONN_TYPE;
   j += ",\"trx3netid\":";       j += (unsigned)TRX3_NET_ID;
+  j += ",\"trx3conntype\":";    j += TRX3_CONN_TYPE;
   j += ",\"baudrate\":";        j += BaudRate;
   j += ",\"trxprofile\":\"";    j += configJsonEscape(transceiverType); j += "\"";
   j += ",\"civaddr\":\"";       j += civHex;                          j += "\"";
@@ -1584,8 +1624,11 @@ void handleConfigUpload() {
   v = parseField("trxnetid",  0, 255); if (v >= 0) { TRXNET_ID   = (byte)v; EEPROM.writeByte(41, v); }
   v = parseField("trx2netid", 0, 255); if (v >= 0) { TRX2_NET_ID = (byte)v; EEPROM.writeByte(42, v); }
   v = parseField("trx3netid", 0, 255); if (v >= 0) { TRX3_NET_ID = (byte)v; EEPROM.writeByte(43, v); }
-  // EEPROM 44    FREE (was mqttBroker[3])
+  // EEPROM 44 TRX2_CONN_TYPE
+  v = parseField("trx2conntype", 0, 1); if (v >= 0) { TRX2_CONN_TYPE = (byte)v; EEPROM.writeByte(44, v); }
   v = parseField("trxnetport", 1, 65534); if (v >= 0) { TRXNET_PORT = (uint16_t)v; EEPROM.writeUShort(45, v); }
+  // EEPROM 47 TRX3_CONN_TYPE
+  v = parseField("trx3conntype", 0, 1); if (v >= 0) { TRX3_CONN_TYPE = (byte)v; EEPROM.writeByte(47, v); }
   v = parseField("baudrate", 1200, 115200); if (v > 0) { BaudRate = v; EEPROM.writeUShort(74, v); }
 
   for (uint8_t i = 0; i < CW_MEMORY_COUNT; i++) {
@@ -1988,10 +2031,13 @@ void setup(){
     // 43 TRX3_NET_ID (peer for TRX3 BD slot; 0x00=disabled; 0xff=unprogrammed → default 0x00)
     TRX3_NET_ID = (EEPROM.read(43) == 0xff) ? 0x00 : EEPROM.readByte(43);
 
-    // 44      FREE (was mqttBroker[3])
+    // 44 TRX2_CONN_TYPE (0=TrxNet, 1=CI-V; 0xff=unprogrammed → default 0x00)
+    TRX2_CONN_TYPE = (EEPROM.read(44) == 0xff) ? 0x00 : EEPROM.readByte(44);
     // 45-46   TRXNET_PORT
     TRXNET_PORT = (EEPROM.read(45) == 0xff) ? 5683 : EEPROM.readUShort(45);
-    // 47-67   FREE (was MQTT_TOPIC)
+    // 47 TRX3_CONN_TYPE (0=TrxNet, 1=CI-V; 0xff=unprogrammed → default 0x00)
+    TRX3_CONN_TYPE = (EEPROM.read(47) == 0xff) ? 0x00 : EEPROM.readByte(47);
+    // 48-67   FREE (was MQTT_TOPIC)
     // 115-135 FREE (was MQTT_TOPIC_RX)
     // 225-245 FREE (was TRX2_MQTT_ROOT)
     // 246-266 FREE (was TRX3_MQTT_ROOT)
@@ -2092,7 +2138,13 @@ void setup(){
 
     if(APmode==true){
       WiFi.mode(WIFI_AP);
-      WiFi.softAP(ssidAP, passwordAP, 1, 0, 4); // ch1, visible, max 4 clients, WPA2
+      WiFi.softAP(ssidAP, passwordAP, 1, 0, 4); // ch1, visible, max 4 clients
+      { // WPA/WPA2 mixed mode — fixes auth failure on modern clients (Win11/Android12+/iOS16+)
+        wifi_config_t conf;
+        esp_wifi_get_config(WIFI_IF_AP, &conf);
+        conf.ap.authmode = WIFI_AUTH_WPA_WPA2_PSK;
+        esp_wifi_set_config(WIFI_IF_AP, &conf);
+      }
       IPAddress IP = WiFi.softAPIP();
       MACString = WiFi.softAPmacAddress();
       Serial.print(" AP | IP address: ");
@@ -3243,12 +3295,15 @@ void sendCW(){
     if(TheEnd < 0){
       return;
     }
+    abortFskTransmission = false;
     digitalWrite(PTT, HIGH);          // PTT ON
     delay(PTTlead);                   // PTT lead delay
     // ch = ' '; Serial.print(ch); chTable(); sendFsk();   // Space before sending
     // while (Serial.available()) {
     Serial.print("FSK ");
+    bool fskAborted = false;
     for (int i = 0; i < TheEnd+1; i++) {
+        if (abortFskTransmission) { fskAborted = true; break; }
         ch = toUpperCase(static_cast<char>(CwMsg[i]));
         Serial.print(String(ch));
         Serial.print("|");
@@ -3272,8 +3327,9 @@ void sendCW(){
         delay(5);
     }
     Serial.println();
+    abortFskTransmission = false;
     // ch = ' '; Serial.print(ch); chTable(); sendFsk();   // Space after sending
-    delay(PTTtail);
+    if (!fskAborted) delay(PTTtail);
     digitalWrite(PTT, LOW);Serial.println();
     digitalWrite(FSK_OUT, LOW);
     if(APmode==true){
@@ -3762,10 +3818,15 @@ void handleSet() {
       if (id < 0 || id > 255) id = 0x00;
       if (TRX3_NET_ID != (byte)id) { TRX3_NET_ID = (byte)id; EEPROM.writeByte(43, (byte)id); } }
 
-    // 44    FREE (was mqttBroker[3])
+    // 44 TRX2_CONN_TYPE (0=TrxNet, 1=CI-V)
+    { int ct = requestArg("trx2conntype").toInt(); if (ct < 0 || ct > 1) ct = 0;
+      if (TRX2_CONN_TYPE != (byte)ct) { TRX2_CONN_TYPE = (byte)ct; EEPROM.writeByte(44, (byte)ct); } }
     // 45-46 TRXNET_PORT
     { int p = requestArg("trxnetport").toInt(); if (p >= 1 && p <= 65534 && TRXNET_PORT != (uint16_t)p) { TRXNET_PORT = (uint16_t)p; EEPROM.writeUShort(45, p); } }
-    // 47-67 FREE (was MQTT_TOPIC)
+    // 47 TRX3_CONN_TYPE (0=TrxNet, 1=CI-V)
+    { int ct = requestArg("trx3conntype").toInt(); if (ct < 0 || ct > 1) ct = 0;
+      if (TRX3_CONN_TYPE != (byte)ct) { TRX3_CONN_TYPE = (byte)ct; EEPROM.writeByte(47, (byte)ct); } }
+    // 48-67 FREE (was MQTT_TOPIC)
     // 115-135 FREE (was MQTT_TOPIC_RX)
     // 225-245 FREE (was TRX2_MQTT_ROOT)
     // 246-266 FREE (was TRX3_MQTT_ROOT)

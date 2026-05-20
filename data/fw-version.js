@@ -6,6 +6,7 @@
 
   var localRev  = null;
   var remoteRev = null;
+  var wifiRssi  = null;
   var el        = null;
 
   function injectStyles() {
@@ -14,13 +15,34 @@
       'a.fw-version-link{color:inherit;text-decoration:none;}' +
       'a.fw-version-link:hover{text-decoration:underline;}' +
       'a.fw-update-link{color:#d97706;font-weight:700;text-decoration:none;margin-left:4px;}' +
-      'a.fw-update-link:hover{color:#b45309;text-decoration:underline;}';
+      'a.fw-update-link:hover{color:#b45309;text-decoration:underline;}' +
+      '.topbar-wifi-rssi{color:inherit;}' +
+      '.topbar-wifi-rssi-bad{color:#dc2626;font-weight:700;}' +
+      '.topbar-fw-sep{color:inherit;margin:0 7px;}';
     document.head.appendChild(s);
   }
 
   function render() {
     if (!el || localRev === null) return;
     el.innerHTML = '';
+
+    var rssi = document.createElement('span');
+    rssi.className = 'topbar-wifi-rssi';
+    if (wifiRssi !== null && wifiRssi > -999) {
+      rssi.textContent = wifiRssi + ' dBm';
+      if (wifiRssi <= -70) {
+        rssi.className += ' topbar-wifi-rssi-bad';
+      }
+    } else {
+      rssi.textContent = '-- dBm';
+    }
+    el.appendChild(rssi);
+
+    var sep = document.createElement('span');
+    sep.className = 'topbar-fw-sep';
+    sep.textContent = '|';
+    el.appendChild(sep);
+
     var a = document.createElement('a');
     a.href      = FLASHER_URL;
     a.target    = '_blank';
@@ -49,14 +71,24 @@
     render();
   };
 
+  window.setWifiRssi = function (rssi) {
+    var n = Number(rssi);
+    wifiRssi = Number.isFinite(n) ? n : null;
+    render();
+  };
+
   function fetchLocal() {
     fetch('/state')
       .then(function (r) { return r.json(); })
       .then(function (d) {
         if (d && d.fwRev) {
           localRev = String(d.fwRev);
-          render();
         }
+        if (d && d.wifiRssi !== undefined) {
+          var n = Number(d.wifiRssi);
+          wifiRssi = Number.isFinite(n) ? n : null;
+        }
+        render();
       })
       .catch(function () {});
   }
@@ -85,6 +117,7 @@
     } else {
       fetchLocal();
     }
+    window.setInterval(fetchLocal, 5000);
     fetchRemote();
   }
 

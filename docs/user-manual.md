@@ -52,13 +52,24 @@ If neither network is reachable the device falls back to AP mode.
 
 Published payload example: `{"freq":14074000,"mode":"USB"}`
 
+### TrxNet `eeprom`
+
+TrxNet is a peer-to-peer telemetry protocol that links IC-705 Interface devices and OI3 keyers over the local network using CoAP/UDP.
+
+| Field | Description |
+|-------|-------------|
+| Own NET_ID | This device's identity (2-digit hex, e.g. `01`). `00` disables TrxNet. Must be unique on the network. The device name is derived as `705.XX`. On first use the field is auto-filled with the last octet of the device IP address. Use the **Use IP last octet** button at any time to refill it. |
+| UDP port | Port for TrxNet discovery and CoAP messages. All devices on the network must use the same port. Default: `5683`. |
+
+Protocol reference: [https://github.com/ok1hra/TrxNet](https://github.com/ok1hra/TrxNet)
+
 ### Radio `eeprom`
 
-**USB serial baudrate** — serial speed for CI-V data over USB-C. Must match the radio's *USB Serial Baud Rate* setting (IC-705 menu: SET → Connectors → USB Serial).
+**USB and CI-V serial baudrate** — serial speed for CI-V data over USB-C. Must match the radio's *USB Serial Baud Rate* setting (IC-705 menu: SET → Connectors → USB Serial).
 
 Up to three transceivers can be configured:
 
-#### TRX1 — IC-705 via Bluetooth
+#### TRX1 — Connection: Bluetooth
 
 | Field | Description |
 |-------|-------------|
@@ -68,17 +79,17 @@ Up to three transceivers can be configured:
 
 **Bluetooth device name** — custom name advertised over Bluetooth (1–20 characters; letters, digits, spaces, hyphens and underscores are allowed). Defaults to `IC705-XXXXXX` where `XXXXXX` is derived from the device MAC address. The new name takes effect after **Save & Restart**.
 
-#### TRX2 and TRX3 — network backends
+#### TRX2 and TRX3 — connection type selector
 
-TRX2 and TRX3 connect to additional CI-V adapters over the network.
+Each of TRX2 and TRX3 has a **Label** (shown in the log UI) and a connection type selector:
+
+**TrxNet** (active) — connects to an OI3 keyer on the local network via TrxNet.
 
 | Field | Description |
 |-------|-------------|
-| Label | Name shown in the log UI. |
-| CI-V address | Hex address of the remote radio. |
-| Backend IP | IP address of the remote ESP32 or CI-V bridge. |
+| TrxNet ID | Peer NET_ID of the OI3 keyer (2-digit hex). `00` = disabled. The resolved device name is shown below the field (e.g. `→ OI3.02`). When set, the interface subscribes to the peer's `/hz` and `/mode` topics and forwards CW/frequency commands to it. |
 
-**OI3 mode** (optional) — when enabled, the device receives frequency and mode via MQTT (topics `<root>hz` and `<root>mode`) and sends CW/RTTY messages via UDP to port 89 of the backend IP. Designed for use with the [k3ng_cw_keyer](https://github.com/ok1hra/k3ng_cw_keyer) project. Enter the MQTT root topic (e.g. `OK1HRA/OI3/2/`) in the field that appears after checking the box.
+**CI-V** (planned) — direct CI-V connection to a remote radio. This option is shown in the interface but is not yet implemented; it will be enabled in a future firmware release.
 
 ### DX Cluster `eeprom`
 
@@ -96,7 +107,7 @@ TRX2 and TRX3 connect to additional CI-V adapters over the network.
 | RST default SSB/FM | Default RS(T) pre-filled for SSB and FM QSOs (e.g. `59`). |
 | RST default CW/RTTY | Default RST pre-filled for CW and digital mode QSOs (e.g. `599`). |
 | Manual mode for Phone (SSB/FM) | When checked, pressing Enter on an SSB/FM QSO logs it immediately without sending any macro. |
-| Blocked DXCC list | One DXCC entity name per line (e.g. `Russia`). Matching callsigns are highlighted red in the log journal. When Enter is pressed on a blocked call the call field is cleared and a ⛔ warning is shown for 5 seconds; in RUN mode the CQ macro is re-sent automatically. |
+| Blocked DXCC list | One DXCC entity name per line (e.g. `Russia`, `Belarus`, `Kaliningrad`). Matching callsigns are highlighted red in the log journal. When Enter is pressed on a blocked call the call field is cleared and a ⛔ warning is shown for 5 seconds; in RUN mode the CQ macro is re-sent automatically. |
 
 ### CW memories `spiffs`
 
@@ -281,7 +292,8 @@ Click **BACKUP** to download the entire QSO database as a JSON file. This is the
 | `Alt+U` | Toggle RUN / S&P |
 | `Alt+W` | Clear the entry form |
 | `Alt+Enter` | Log the current QSO without sending any memory |
-| `Esc` | Close dialog |
+| `Esc` *(dialog open)* | Close dialog |
+| `Esc` *(no dialog)* | **Abort CW / RTTY TX immediately** — TRX1: CI-V stop command; TRX2/3: clears k3ng keyer buffer |
 
 Press the **?** button in the bottom bar to show this table at any time.
 

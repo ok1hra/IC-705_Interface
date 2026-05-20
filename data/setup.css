@@ -234,6 +234,10 @@ label textarea {
   width: auto;
 }
 
+.input-with-tip > input.setup-trx-short-input {
+  flex: 0 0 auto;
+}
+
 .input-with-tip > textarea {
   flex: 1;
   min-width: 0;
@@ -373,6 +377,11 @@ a {
   color: var(--accent);
 }
 
+/* ── baudrate select — compact, not full width ── */
+.setup-baud-select {
+  width: auto;
+}
+
 /* ── TRX blocks inside Radio section ── */
 .setup-trx-divider {
   border: none;
@@ -380,44 +389,83 @@ a {
   margin: 2px 0 0;
 }
 
-.setup-trx-head {
+.setup-trx-box {
+  display: inline-block;
   font-weight: 700;
-  font-size: 0.92em;
-  letter-spacing: 0.12em;
-  color: var(--accent);
-}
-
-.setup-trx-row {
-  display: flex;
-  gap: 16px;
-  align-items: flex-start;
-}
-
-label.setup-trx-col {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  grid-template-columns: unset;
-  min-width: 0;
-}
-
-label.setup-trx-col .input-with-tip {
-  grid-column: unset;
-}
-
-label.setup-trx-col .msg {
-  grid-column: unset;
-  margin-top: -2px;
-}
-
-.setup-trx-note {
   font-size: 0.88em;
+  letter-spacing: 0.08em;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 6px;
+  padding: 3px 10px;
+  margin-top: 4px;
+}
+
+/* Label input — shorter than full right column */
+input.setup-input-partial {
+  max-width: 60%;
+}
+
+/* Short hex input for NET_ID / CI-V address (2 chars) */
+input.setup-trx-short-input {
+  width: 4.5em;
+  flex: 0 0 auto;
+  text-align: center;
+  padding: 6px 8px;
+}
+
+/* Right-column wrapper for short input + peer name + help tip */
+.setup-trx-netid-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.setup-trx-peer-name {
+  font-size: 0.82em;
+  color: var(--accent);
+  min-width: 4.5em;
+}
+
+/* Connection-type rows (TRX2/3): single flex line, radio dot at far left */
+label.setup-trx-conn-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.92em;
+}
+
+label.setup-trx-conn-row > input[type="radio"] {
+  width: auto;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+}
+
+/* Disabled CI-V row */
+label.setup-trx-disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.setup-conn-soon {
+  font-size: 0.82em;
   color: var(--muted);
 }
 
-.setup-trx-note strong {
-  color: var(--text);
+.use-ip-btn {
+  font: inherit;
+  font-size: 0.82em;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--panel);
+  color: var(--accent);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.use-ip-btn:hover {
+  border-color: var(--accent);
 }
 
 .spiffs-form {
