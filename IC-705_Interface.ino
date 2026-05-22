@@ -89,7 +89,7 @@ bool cwIpOnConnect  = true;       // announce WiFi IP via CW on first BT connect
 volatile bool cwIpSendPending = false;
 
 #define LOOP_WARN_MS 200
-#define REV 20260522
+#define REV 20260523
 #define WIFI
 #define UDP_TO_FSK
 #define WDT         // watchdog timer
@@ -2268,6 +2268,7 @@ void setup(){
     #endif
 
     #if defined(BLUETOOTH)
+      esp_bt_mem_release(ESP_BT_MODE_BLE);
       configRadioBaud(0);
     #endif
 
@@ -2982,7 +2983,6 @@ void configRadioBaud(uint16_t baudrate){
     static bool btInitDone = false;
     if (btInitDone) return;
 
-    esp_bt_mem_release(ESP_BT_MODE_BLE);
     if (BT_NAME.length() == 0) {
       uint8_t mac[6];
       WiFi.macAddress(mac);

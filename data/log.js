@@ -1089,7 +1089,7 @@ function updateExchLocatorPreview() {
     return;
   }
   const loc   = m[1].toUpperCase();
-  const myLoc = (window._logSettings && window._logSettings.myLocator) || '';
+  const myLoc = (window._logSettings && window._logSettings.myLocator) || window._deviceLocator || '';
   sbExchLoc.textContent = loc;
   if (myLoc && window.DXCC) {
     const dxPos = DXCC.locatorToLatLon(loc);
@@ -1390,7 +1390,7 @@ function updateDxccFromCall() {
   }
 
   // Attach QRB/azimuth if we have our locator from settings
-  const myLoc = (window._logSettings && window._logSettings.myLocator) || '';
+  const myLoc = (window._logSettings && window._logSettings.myLocator) || window._deviceLocator || '';
   if (myLoc) {
     const myPos = DXCC.locatorToLatLon(myLoc);
     if (myPos) {
@@ -2265,6 +2265,11 @@ function init() {
   pollState();
   checkStoragePersistence();
 
+  // Device locator fallback for azimuth display (when log has no myLocator set)
+  fetch('/dxcinfo').then(r => r.json()).then(d => {
+    if (d.locator) window._deviceLocator = d.locator;
+  }).catch(() => {});
+
   // Load global LOG settings from ESP32 /log-config (shared across browsers)
   fetch('/log-config').then(r => r.json()).then(cfg => {
     if (cfg.trx1Label) app.trxLabels[0] = cfg.trx1Label;
@@ -2330,11 +2335,13 @@ try {
   dxcActionCh.addEventListener('message', e => {
     const msg = e.data;
     if (!msg || msg.type !== 'dxc-tune') return;
+    selectTrx(msg.trx);
     setRunMode('SP');
     if (msg.callsign) {
       inpCall.value = msg.callsign;
       inpCall.dispatchEvent(new Event('input'));
     }
+    checkDupe(inpCall.value.trim());
     inpCall.focus();
   });
 } catch (_) {}
