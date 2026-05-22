@@ -133,8 +133,7 @@
               <input type="text" id="ls_trx2Label" name="trx2label" maxlength="10" placeholder="TRX2" value="" class="setup-input-partial">
             </label>
             <label class="setup-trx-conn-row">
-              <input type="radio" name="trx2conntype" value="0" checked>
-              <span>TrxNet</span>
+              <span class="setup-trx-conn-label"><input type="radio" name="trx2conntype" value="0" checked> TrxNet</span>
               <div class="setup-trx-netid-wrap">
                 <input type="text" name="trx2netid" maxlength="2" placeholder="02" value="" class="setup-trx-short-input">
                 <span class="setup-trx-peer-name" id="trx2PeerName"></span>
@@ -142,8 +141,7 @@
               </div>
             </label>
             <label class="setup-trx-conn-row setup-trx-disabled">
-              <input type="radio" name="trx2conntype" value="1" disabled>
-              <span>CI-V</span>
+              <span class="setup-trx-conn-label"><input type="radio" name="trx2conntype" value="1" disabled> CI-V</span>
               <div class="setup-trx-netid-wrap">
                 <input type="text" name="trx2civaddr" maxlength="2" placeholder="A4" class="setup-trx-short-input" disabled>
                 <span class="setup-conn-soon">(not yet implemented)</span>
@@ -156,8 +154,7 @@
               <input type="text" id="ls_trx3Label" name="trx3label" maxlength="10" placeholder="TRX3" value="" class="setup-input-partial">
             </label>
             <label class="setup-trx-conn-row">
-              <input type="radio" name="trx3conntype" value="0" checked>
-              <span>TrxNet</span>
+              <span class="setup-trx-conn-label"><input type="radio" name="trx3conntype" value="0" checked> TrxNet</span>
               <div class="setup-trx-netid-wrap">
                 <input type="text" name="trx3netid" maxlength="2" placeholder="03" value="" class="setup-trx-short-input">
                 <span class="setup-trx-peer-name" id="trx3PeerName"></span>
@@ -165,8 +162,7 @@
               </div>
             </label>
             <label class="setup-trx-conn-row setup-trx-disabled">
-              <input type="radio" name="trx3conntype" value="1" disabled>
-              <span>CI-V</span>
+              <span class="setup-trx-conn-label"><input type="radio" name="trx3conntype" value="1" disabled> CI-V</span>
               <div class="setup-trx-netid-wrap">
                 <input type="text" name="trx3civaddr" maxlength="2" placeholder="A4" class="setup-trx-short-input" disabled>
                 <span class="setup-conn-soon">(not yet implemented)</span>
@@ -239,7 +235,7 @@
         </details>
 
         <details class="setup-section">
-          <summary class="setup-section-title">CW memories <span class="setup-local-badge">spiffs</span></summary>
+          <summary class="setup-section-title">CAT page CW memories <span class="setup-local-badge">spiffs</span></summary>
           <div class="setup-section-body">
             <label>CW memory 1
               <div class="input-with-tip">
@@ -269,7 +265,7 @@
         </details>
 
         <details class="setup-section">
-          <summary class="setup-section-title">Frequency memories <span class="setup-local-badge">spiffs</span></summary>
+          <summary class="setup-section-title">CAT page frequency memories <span class="setup-local-badge">spiffs</span></summary>
           <div class="setup-section-body">
             <p class="footnote">Use compact format like <code>14074000 USB</code> or <code>144174000 FM</code>.</p>
             <label>Memory 1

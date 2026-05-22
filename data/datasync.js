@@ -393,14 +393,15 @@
   }
 
   function sameOffer(payload) {
-    return payload &&
-           payload.device_id === deviceId() &&
-           payload.session_id === sessionId;
+    return payload && payload.device_id === deviceId();
   }
 
   async function joinOffer(payload) {
-    el('offerFromLabel').textContent = payload.device_label || payload.device_id.slice(0,8);
+    const label = payload.device_label || payload.device_id.slice(0, 8);
+    el('offerFromLabel').textContent = label;
     el('offerFound').dataset.payload = JSON.stringify(payload);
+    const eyebrow = document.querySelector('#phaseOffer .eyebrow');
+    if (eyebrow) eyebrow.textContent = 'Connecting to ' + label + '…';
     showPhase('phaseOffer');
     await acceptOffer();
   }
@@ -434,13 +435,17 @@
       if (ipEl) ipEl.textContent = myIp;
       // poll for answer
       pollTimer = setInterval(async () => {
+        let answered = false;
         try {
           const r = await fetch(myBase() + '/pairing/answer');
           const d = await r.json();
-          if (!d.pending) return;
-          stopPoll();
-          await processAnswer(JSON.stringify(d));
+          if (d.pending) {
+            stopPoll();
+            await processAnswer(JSON.stringify(d));
+            answered = true;
+          }
         } catch (_) {}
+        if (answered) return;
         try {
           const pendingOffer = await fetchPendingOffer();
           if (pendingOffer && !sameOffer(pendingOffer)) {
@@ -460,18 +465,27 @@
     const ipInput = el('peerIpInput');
     const raw = ipInput ? ipInput.value.trim() : '';
     peerBase = raw ? (window.location.protocol + '//' + raw) : '';
+
+    // Try to find a pending offer from another device (twice, with a random back-off)
+    let payload = null;
     try {
-      let payload = await fetchPendingOffer();
+      payload = await fetchPendingOffer();
       if (!payload) {
         await sleep(250 + Math.floor(Math.random() * 900));
         payload = await fetchPendingOffer();
       }
-      if (payload) {
+    } catch (_) {}
+
+    if (payload && !sameOffer(payload)) {
+      try {
         await joinOffer(payload);
-        return;
+      } catch (_) {
+        resetPairing();
       }
-    } catch(_) {}
-    // No offer found — create one and wait
+      return;
+    }
+
+    // No foreign offer found (or own stale offer) — create one and wait
     showPhase('phaseOffer');
     await createOffer();
   }
@@ -832,6 +846,8 @@
       const node = document.getElementById(id);
       if (node) node.classList.add('ds-hidden');
     });
+    const eyebrow = document.querySelector('#phaseOffer .eyebrow');
+    if (eyebrow) eyebrow.textContent = 'Waiting for the other device…';
     setPhase('idle');
     resetStats();
   }

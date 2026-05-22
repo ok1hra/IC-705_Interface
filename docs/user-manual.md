@@ -109,11 +109,11 @@ Each of TRX2 and TRX3 has a **Label** (shown in the log UI) and a connection typ
 | Manual mode for Phone (SSB/FM) | When checked, pressing Enter on an SSB/FM QSO logs it immediately without sending any macro. |
 | Blocked DXCC list | One DXCC entity name per line (e.g. `Russia`, `Belarus`, `Kaliningrad`). Matching callsigns are highlighted red in the log journal. When Enter is pressed on a blocked call the call field is cleared and a ⛔ warning is shown for 5 seconds; in RUN mode the CQ macro is re-sent automatically. |
 
-### CW memories `spiffs`
+### CAT page CW memories `spiffs`
 
 Four free-text slots (CW memory 1–4). The text is keyed when the corresponding memory button is pressed on the CAT page. Maximum 30 characters per slot. In CW mode the text is sent via the IC-705 CW keyer; in RTTY mode it is sent via FSK GPIO.
 
-### Frequency memories `spiffs`
+### CAT page frequency memories `spiffs`
 
 Ten frequency memory slots selectable from the CAT page. Format: frequency in Hz followed by mode, e.g. `14074000 USB` or `144174000 FM`.
 
@@ -370,6 +370,25 @@ Type a DX cluster command (e.g. `sh/dx 20` or `set/filter`) in the command field
 
 Manages QSO database synchronisation between multiple browsers on the same network, and provides import/export of log files.
 
+### Where your data is stored
+
+QSO records are stored locally in the web browser on the device where you opened the page, using the browser's IndexedDB storage. The ESP32 itself does not permanently store QSO records and there is no cloud backup.
+
+The storage location is tied to the exact URL used to open the interface. Each of the following is treated as a separate storage origin — if you switch between them, the log may appear empty even though the records still exist under the other address:
+
+- `http://192.168.1.50`
+- `http://192.168.1.50:80`
+- `http://ic705.local`
+
+### How sync works
+
+Synchronisation happens in two steps:
+
+1. The two browsers exchange connection information through the ESP32. The ESP32 is only used to help establish the connection.
+2. After the connection is established, QSO records are transferred directly between the browsers using WebRTC. The ESP32 does not relay or store the transferred records.
+
+A local network connection is required (same Wi-Fi or LAN). Internet-based connections are not supported because no STUN/TURN servers are used.
+
 ### Storage warning (Firefox)
 
 Firefox may clear IndexedDB storage when it closes. If a warning banner appears at the top of the page:
@@ -468,4 +487,4 @@ Shows a raw WebSocket stream of all CI-V frames passing between the ESP32 and th
 
 ---
 
-*Document updated 2026-05-17*
+*Document updated 2026-05-22*

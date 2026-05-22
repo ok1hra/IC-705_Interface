@@ -2070,10 +2070,10 @@ function abortTransmission() {
   const trxIdx = app.activeTrx - 1;
   const isOi3  = app.trxOi3[trxIdx] && trxIdx > 0;
   if (isOi3) {
-    fetch('/oi3/send', {
+    fetch('/oi3/abort-cw', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ trx: app.activeTrx, text: '\x03' }),
+      body: JSON.stringify({ trx: app.activeTrx }),
     }).catch(() => {});
   } else {
     fetch('/cmd', {

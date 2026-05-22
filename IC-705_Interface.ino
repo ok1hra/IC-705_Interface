@@ -89,7 +89,7 @@ bool cwIpOnConnect  = true;       // announce WiFi IP via CW on first BT connect
 volatile bool cwIpSendPending = false;
 
 #define LOOP_WARN_MS 200
-#define REV 20260520
+#define REV 20260522
 #define WIFI
 #define UDP_TO_FSK
 #define WDT         // watchdog timer
@@ -711,6 +711,16 @@ String extractJsonString(const String &json, const char *key){
           case 't':  out += '\t'; break;
           case '\\': out += '\\'; break;
           case '"':  out += '"';  break;
+          case 'u':  {
+            // \uXXXX — decode 4 hex digits to char (BMP only, basic ASCII range)
+            if (i + 4 < (int)json.length()) {
+              char h[5] = { json.charAt(i+1), json.charAt(i+2), json.charAt(i+3), json.charAt(i+4), '\0' };
+              unsigned int cp = (unsigned int)strtoul(h, nullptr, 16);
+              if (cp < 0x80) out += (char)cp;
+              i += 4;
+            }
+            break;
+          }
           default:   out += c;    break;
         }
         escaped = false;
@@ -1770,7 +1780,34 @@ void handleOi3Send() {
   }
   char peerName[TRXNET_MAX_DEVICE_NAME];
   snprintf(peerName, sizeof(peerName), "OI3.%02x", peerNetId);
+  // Legacy abort: old clients sent text='\x03' (ETX); after extractJsonString fix it
+  // arrives as a single 0x03 byte — treat it as abort, not CW text.
+  if (text.length() == 1 && (uint8_t)text[0] == 0x03) {
+    uint8_t stopByte = 0xFF;
+    net.publishTo(peerName, "/s-cw", &stopByte, 1, TRX_CON);
+    webServer.send(200, "application/json", "{\"ok\":true}");
+    return;
+  }
   if (!net.publishTo(peerName, "/s-cw", (const uint8_t*)text.c_str(), text.length(), TRX_CON)) {
+    webServer.send(503, "application/json", "{\"error\":\"peer_unavailable\"}");
+    return;
+  }
+  webServer.send(200, "application/json", "{\"ok\":true}");
+}
+
+void handleOi3AbortCw() {
+  String body = webServer.arg("plain");
+  String trxArg = extractJsonString(body, "trx");
+  int trxN = trxArg.toInt();  // 2 or 3
+  byte peerNetId = (trxN == 3) ? TRX3_NET_ID : TRX2_NET_ID;
+  if (peerNetId == 0x00 || !trxNetEnabled) {
+    webServer.send(503, "application/json", "{\"error\":\"unavailable\"}");
+    return;
+  }
+  char peerName[TRXNET_MAX_DEVICE_NAME];
+  snprintf(peerName, sizeof(peerName), "OI3.%02x", peerNetId);
+  uint8_t stopByte = 0xFF;
+  if (!net.publishTo(peerName, "/s-cw", &stopByte, 1, TRX_CON)) {
     webServer.send(503, "application/json", "{\"error\":\"peer_unavailable\"}");
     return;
   }
@@ -1812,9 +1849,10 @@ void setupWebServer(void){
   webServer.on("/config/upload",   HTTP_POST, handleConfigUpload);
   webServer.on("/log-config", HTTP_GET,  handleGetLogConfig);
   webServer.on("/log-config", HTTP_POST, handlePostLogConfig);
-  webServer.on("/oi3/state",  HTTP_GET,  handleOi3State);
-  webServer.on("/oi3/send",   HTTP_POST, handleOi3Send);
-  webServer.on("/oi3/set-hz", HTTP_POST, handleOi3SetHz);
+  webServer.on("/oi3/state",    HTTP_GET,  handleOi3State);
+  webServer.on("/oi3/send",     HTTP_POST, handleOi3Send);
+  webServer.on("/oi3/abort-cw", HTTP_POST, handleOi3AbortCw);
+  webServer.on("/oi3/set-hz",   HTTP_POST, handleOi3SetHz);
 
   webServer.on("/", HTTP_GET, [](){
     if (!SPIFFS.exists("/index.html")) { renderSetupPage(); return; }

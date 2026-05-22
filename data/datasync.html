@@ -58,6 +58,37 @@
     .sg-row-session td, .sg-row-session th { background: #0f1a14 !important; }
     .btn-cancel { background: transparent; border-color: var(--line); color: var(--muted); }
     .btn-cancel:hover { background: rgba(255,255,255,0.05); }
+    .ds-info-box {
+      margin: 0 0 16px;
+      padding: 14px 16px;
+      background: #111a14;
+      border: 1px solid #3b4541;
+      border-radius: 6px;
+      font-size: 13px;
+      line-height: 1.55;
+      color: var(--muted);
+    }
+    .ds-info-head {
+      margin: 12px 0 5px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: var(--accent);
+    }
+    .ds-info-head:first-child { margin-top: 0; }
+    .ds-info-box p  { margin: 0 0 5px; }
+    .ds-info-box ol,
+    .ds-info-box ul { margin: 4px 0 8px 18px; padding: 0; }
+    .ds-info-box li { margin: 3px 0; }
+    .ds-info-box code {
+      background: #0f1312;
+      border-radius: 3px;
+      padding: 1px 5px;
+      font-size: 11px;
+      font-family: monospace;
+      color: var(--ink);
+    }
     .ds-storage-warn {
       display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px;
       background: #3a2000; border: 1px solid #7a4800; color: #ffc870;
@@ -142,6 +173,45 @@
     <!-- ── Pairing ─────────────────────────────────────────────────────────── -->
     <div class="card">
       <div class="card-head"><h2 style="font-family:'Trebuchet MS','Segoe UI',sans-serif">Pairing</h2></div>
+
+      <!-- ── Info box ──────────────────────────────────────────────────────── -->
+      <div class="ds-info-box">
+
+        <p class="ds-info-head">Where your data is stored</p>
+        <p>QSO records are stored locally in this web browser on this device using the browser's IndexedDB storage.</p>
+        <p>The records are tied to the exact address used to open the ESP32 web interface (URL&nbsp;+&nbsp;port).
+           If you open the same ESP32 using a different IP address, hostname, or port, the log may appear empty
+           even though the records still exist under the original address.</p>
+        <p>Examples — each treated as a separate storage location:</p>
+        <ul>
+          <li><code>http://192.168.1.50</code></li>
+          <li><code>http://192.168.1.50:80</code></li>
+          <li><code>http://ic705.local</code></li>
+        </ul>
+        <p>The ESP32 itself does not permanently store the QSO records, and there is no cloud backup.
+           If browser storage is cleared or the device/browser is changed, the records may no longer be available.</p>
+
+        <p class="ds-info-head">How sync works</p>
+        <p>Synchronization happens in two steps:</p>
+        <ol>
+          <li>The two browsers exchange connection information through the ESP32.
+              The ESP32 is only used to help establish the connection.</li>
+          <li>After the connection is established, QSO records are transferred directly between the two browsers
+              using WebRTC. The ESP32 does not relay or store the transferred records during synchronization.</li>
+        </ol>
+        <p>A local network connection is required (for example the same Wi-Fi or LAN).
+           Internet-based connections are not supported because no STUN/TURN servers are used.</p>
+
+        <p class="ds-info-head">Typical use cases</p>
+        <p><strong>Two browsers connected to the same ESP32</strong><br>
+           Press Sync in both browsers. The ESP32 helps establish the connection,
+           then the records transfer directly between the browsers.</p>
+        <p><strong>Two browsers connected to different ESP32 devices</strong><br>
+           Enter the IP address of the other ESP32 in the field below so this browser
+           knows which ESP32 to use for connection setup.</p>
+
+      </div>
+      <!-- ── /Info box ─────────────────────────────────────────────────────── -->
 
       <!-- Idle -->
       <div id="phaseIdle" class="ds-phase">
