@@ -231,6 +231,7 @@ volatile bool btConnectPending = false;
   #include <esp_wifi.h>
   #include <FS.h>
   #include <SPIFFS.h>
+  #define HTTP_MAX_DATA_WAIT 1000
   #include <WebServer.h>
   #include <mbedtls/sha1.h>
   // #include <ETH.h>
@@ -251,6 +252,9 @@ volatile bool btConnectPending = false;
   WebServer webServer(80);
 #endif
   #if defined(RTLE)
+    #ifndef HTTP_MAX_DATA_WAIT
+      #define HTTP_MAX_DATA_WAIT 1000
+    #endif
     #include <WebServer.h>
     #include "rtle.h"  //Web page header file
     WebServer rtleserver(88);
@@ -1133,6 +1137,8 @@ String setupTemplateProcessor(const String &key){
 
 bool sendTemplatedHtml(const char *path){
   webQuietUntil = millis() + 1500;
+  webServer.sendHeader("Connection", "close");
+  webServer.client().setNoDelay(true);
   if (!SPIFFS.exists(path)) {
     String msg = "Missing ";
     msg += path;
@@ -1254,6 +1260,8 @@ void handleSetupData(){
   j += "}";
   webServer.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
   webServer.sendHeader("Pragma", "no-cache");
+  webServer.sendHeader("Connection", "close");
+  webServer.client().setNoDelay(true);
   webServer.send(200, "application/json", j);
 }
 
@@ -1308,6 +1316,8 @@ void handleGetState(){
   static char stateBuf[640];
   buildStateJson(stateBuf, sizeof(stateBuf));
   webServer.sendHeader("Cache-Control", "no-cache");
+  webServer.sendHeader("Connection", "close");
+  webServer.client().setNoDelay(true);
   webServer.send(200, "application/json", stateBuf);
 }
 
@@ -1322,6 +1332,8 @@ static void pairCors() {
   webServer.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   webServer.sendHeader("Access-Control-Allow-Headers", "Content-Type");
   webServer.sendHeader("Cache-Control", "no-store");
+  webServer.sendHeader("Connection", "close");
+  webServer.client().setNoDelay(true);
 }
 
 void handlePairingOptions() { pairCors(); webServer.send(204); }
@@ -1409,6 +1421,8 @@ bool handleFileFromSPIFFS(const String &path){
 }
 
 void handlePostCmd(){
+  webServer.sendHeader("Connection", "close");
+  webServer.client().setNoDelay(true);
   String body = webServer.arg("plain");
   if (body.length() == 0) { webServer.send(400, "application/json", "{\"error\":\"empty body\"}"); return; }
   String type = extractJsonString(body, "type");
@@ -1570,10 +1584,14 @@ void handleConfigDownload() {
   webServer.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
   webServer.sendHeader("Pragma", "no-cache");
   webServer.sendHeader("Content-Disposition", "attachment; filename=\"ic705-config.json\"");
+  webServer.sendHeader("Connection", "close");
+  webServer.client().setNoDelay(true);
   webServer.send(200, "application/json", j);
 }
 
 void handleConfigUpload() {
+  webServer.sendHeader("Connection", "close");
+  webServer.client().setNoDelay(true);
   String body = webServer.arg("plain");
   if (body.length() == 0) { webServer.send(400, "application/json", "{\"error\":\"empty\"}"); return; }
 
@@ -1728,10 +1746,14 @@ void handleGetLogConfig() {
   }
   webServer.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
   webServer.sendHeader("Pragma", "no-cache");
+  webServer.sendHeader("Connection", "close");
+  webServer.client().setNoDelay(true);
   webServer.send(200, "application/json", out);
 }
 
 void handlePostLogConfig() {
+  webServer.sendHeader("Connection", "close");
+  webServer.client().setNoDelay(true);
   String body = webServer.arg("plain");
   body.trim();
   if (body.length() == 0 || body.length() > 2048) {
@@ -1752,6 +1774,8 @@ void handlePostLogConfig() {
 
 
 void handleOi3State() {
+  webServer.sendHeader("Connection", "close");
+  webServer.client().setNoDelay(true);
   String trxArg = webServer.arg("trx");
   int idx = trxArg.toInt() - 2; // trx=2 → 0, trx=3 → 1
   if (idx < 0 || idx > 1) {
@@ -1765,6 +1789,8 @@ void handleOi3State() {
 }
 
 void handleOi3Send() {
+  webServer.sendHeader("Connection", "close");
+  webServer.client().setNoDelay(true);
   String body = webServer.arg("plain");
   String trxArg = extractJsonString(body, "trx");
   String text   = extractJsonString(body, "text");
@@ -1796,6 +1822,8 @@ void handleOi3Send() {
 }
 
 void handleOi3AbortCw() {
+  webServer.sendHeader("Connection", "close");
+  webServer.client().setNoDelay(true);
   String body = webServer.arg("plain");
   String trxArg = extractJsonString(body, "trx");
   int trxN = trxArg.toInt();  // 2 or 3
@@ -1815,6 +1843,8 @@ void handleOi3AbortCw() {
 }
 
 void handleOi3SetHz() {
+  webServer.sendHeader("Connection", "close");
+  webServer.client().setNoDelay(true);
   String body = webServer.arg("plain");
   String trxArg = extractJsonString(body, "trx");
   int trxN = trxArg.toInt();  // 2 or 3
@@ -1860,6 +1890,8 @@ void setupWebServer(void){
   });
 
   webServer.on("/setup/save", HTTP_POST, [](){
+    webServer.sendHeader("Connection", "close");
+    webServer.client().setNoDelay(true);
     handleSet();
     if (setupSaveOk) {
       webServer.send(200, "application/json", "{\"ok\":true}");
@@ -1871,6 +1903,8 @@ void setupWebServer(void){
   webServer.on("/setup",   HTTP_POST, [](){ handleSet(); renderSetupPage(); });
   webServer.on("/setup-data.json", HTTP_GET, handleSetupData);
   webServer.on("/restart", HTTP_POST, [](){
+    webServer.sendHeader("Connection", "close");
+    webServer.client().setNoDelay(true);
     webServer.send(200, "application/json", "{\"ok\":true}");
     delay(500);
     ESP.restart();
@@ -1880,6 +1914,9 @@ void setupWebServer(void){
   webServer.on("/datasync", HTTP_GET,  [](){ handleFileFromSPIFFS("/datasync.html"); });
 
   webServer.on("/dxcinfo", HTTP_GET, [](){
+    webServer.sendHeader("Cache-Control", "no-cache");
+    webServer.sendHeader("Connection", "close");
+    webServer.client().setNoDelay(true);
     String j = "{\"locator\":\"" + DxcLocator + "\",\"callsign\":\"" + DxcCallsign
              + "\",\"trx2netid\":" + String((unsigned)TRX2_NET_ID)
              + ",\"trx3netid\":" + String((unsigned)TRX3_NET_ID) + "}";
@@ -1897,6 +1934,8 @@ void setupWebServer(void){
 
   // Band Decoder
   webServer.on("/bd", HTTP_GET, [](){
+    webServer.sendHeader("Connection", "close");
+    webServer.client().setNoDelay(true);
     if (!bdEnabled) {
       webServer.send(200, "text/html",
         "<!DOCTYPE html><html><head><meta charset='utf-8'>"
@@ -1909,6 +1948,8 @@ void setupWebServer(void){
     handleFileFromSPIFFS("/bd.html");
   });
   webServer.on("/api/bd-config", HTTP_GET, [](){
+    webServer.sendHeader("Connection", "close");
+    webServer.client().setNoDelay(true);
     if (!bdEnabled) { webServer.send(403, "application/json", "{\"error\":\"hw\"}"); return; }
     File f = SPIFFS.open(BD_CONFIG_PATH, FILE_READ);
     if (!f) { webServer.send(404, "application/json", "{}"); return; }
@@ -1916,6 +1957,8 @@ void setupWebServer(void){
     f.close();
   });
   webServer.on("/api/bd-config", HTTP_POST, [](){
+    webServer.sendHeader("Connection", "close");
+    webServer.client().setNoDelay(true);
     if (!bdEnabled) { webServer.send(403, "application/json", "{\"error\":\"hw\"}"); return; }
     String body = webServer.arg("plain");
     int si = body.indexOf("\"source\":");
@@ -1942,6 +1985,8 @@ void setupWebServer(void){
     webServer.send(200, "application/json", "{\"ok\":true}");
   });
   webServer.on("/api/status", HTTP_GET, [](){
+    webServer.sendHeader("Connection", "close");
+    webServer.client().setNoDelay(true);
     String j = "{";
     j += "\"hwrev\":"; j += HardwareRev;
     j += ",\"trx1Label\":\""; j += g_lcTrx1Label; j += "\"";
@@ -1956,7 +2001,11 @@ void setupWebServer(void){
 
   webServer.onNotFound([](){
     String path = webServer.uri();
-    if (!handleFileFromSPIFFS(path)) webServer.send(404, "text/plain", "Not found");
+    if (!handleFileFromSPIFFS(path)) {
+      webServer.sendHeader("Connection", "close");
+      webServer.client().setNoDelay(true);
+      webServer.send(404, "text/plain", "Not found");
+    }
   });
 
   webServer.begin();
