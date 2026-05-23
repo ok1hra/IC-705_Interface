@@ -2539,11 +2539,30 @@ function _renderDxcSpots() {
     outer.appendChild(grp);
 
     outer.addEventListener('click', () => {
-      fetch('/cmd', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ type: 'setFrequency', reqId: 'dxc-band', frequency: Math.round(f * 1000) })
-      }).catch(() => {});
+      // Send frequency to the currently selected TRX
+      const trxNum = app.activeTrx;
+      const freqHz = Math.round(f * 1000);
+
+      // Check if the selected TRX is configured
+      if (trxNum === 2 && !app.trxOi3[1]) return;  // TRX2 not configured
+      if (trxNum === 3 && !app.trxOi3[2]) return;  // TRX3 not configured
+
+      if (trxNum === 1) {
+        // TRX1: send via /cmd
+        fetch('/cmd', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ type: 'setFrequency', reqId: 'dxc-band', frequency: freqHz })
+        }).catch(() => {});
+      } else {
+        // TRX2/3: send via /oi3/set-hz
+        fetch('/oi3/set-hz', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ trx: trxNum, hz: freqHz })
+        }).catch(() => {});
+      }
+
       setRunMode('SP');
       if (call) {
         inpCall.value = call;
