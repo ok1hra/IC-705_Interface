@@ -2374,9 +2374,9 @@ void loop(){
     uint32_t f = trxPendingHz;
     if (f > 0) {
       if (radioSetFrequency(f)) {
-        Serial.printf("CAT | set VFO %lu\n", (unsigned long)f);
+        if (Debug) Serial.printf("CAT | set VFO %lu\n", (unsigned long)f);
       } else {
-        Serial.println("CAT | set VFO skipped, TRX not connected");
+        if (Debug) Serial.println("CAT | set VFO skipped, TRX not connected");
       }
     }
   }
@@ -2557,6 +2557,7 @@ void Watchdog(){
       }
       buffer[10]=0xFD;
 
+      Serial.flush();                 // drain pending debug bytes before opening CIV gate
       digitalWrite(CIVmutePin, LOW);
       delay(2);
       for (int i = 0; i < 11; i++) {
@@ -2910,16 +2911,6 @@ void processCatMessages(){
       uint8_t len = readLine();
       if (len == 0) return;
 
-      if (Debug == true) {
-        Serial.print("CAT RX < ");
-        for (uint8_t i = 0; i < len; i++) {
-          if (read_buffer[i] < 16) Serial.print("0");
-          Serial.print(read_buffer[i], HEX);
-          Serial.print(" ");
-        }
-        Serial.println();
-      }
-
       if (len < 6) continue;
       if (read_buffer[0] != START_BYTE || read_buffer[1] != START_BYTE) continue;
       if (read_buffer[len - 1] != STOP_BYTE) continue;
@@ -3085,20 +3076,7 @@ uint8_t readLine(void){
 void radioSetMode(uint8_t modeid, uint8_t modewidth){
   #if defined(BLUETOOTH)
     uint8_t req[] = {START_BYTE, START_BYTE, radio_address, CONTROLLER_ADDRESS, CMD_WRITE_MODE, modeid, modewidth, STOP_BYTE};
-    if(Debug==true){
-      Serial.print("CAT TX >");
-    }
-    for (uint8_t i = 0; i < sizeof(req); i++) {
-      if(Debug==true){
-        if (req[i] < 16)Serial.print("0");
-        Serial.print(req[i], HEX);
-        Serial.print(" ");
-      }
-    }
     catWriteFrame(req, sizeof(req), true);
-    if(Debug==true){
-      Serial.println();
-    }
   #endif
 }
 //-------------------------------------------------------------------------------------------------------
@@ -3122,20 +3100,7 @@ bool radioSetFrequency(uint32_t freqHz){
       STOP_BYTE
     };
 
-    if(Debug==true){
-      Serial.print("CAT TX >");
-    }
-    for (uint8_t i = 0; i < sizeof(req); i++) {
-      if(Debug==true){
-        if (req[i] < 16)Serial.print("0");
-        Serial.print(req[i], HEX);
-        Serial.print(" ");
-      }
-    }
     catWriteFrame(req, sizeof(req), true);
-    if(Debug==true){
-      Serial.println();
-    }
     return true;
   #endif
   return false;
@@ -3144,20 +3109,7 @@ bool radioSetFrequency(uint32_t freqHz){
 void sendCatRequest(uint8_t requestCode){
   #if defined(BLUETOOTH)
     uint8_t req[] = {START_BYTE, START_BYTE, radio_address, CONTROLLER_ADDRESS, requestCode, STOP_BYTE};
-    if(Debug==true){
-      Serial.print("CAT TX >");
-    }
-    for (uint8_t i = 0; i < sizeof(req); i++) {
-      if(Debug==true){
-        if (req[i] < 16)Serial.print("0");
-        Serial.print(req[i], HEX);
-        Serial.print(" ");
-      }
-    }
     catWriteFrame(req, sizeof(req), true);
-    if(Debug==true){
-      Serial.println();
-    }
   #endif
 }
 //-------------------------------------------------------------------------------------------------------
@@ -3188,16 +3140,8 @@ void printFrequency(void){
       //FE FE 00 40 00 <00 60 06 14> FD ic-732
       for (uint8_t i = 0; i < 5; i++) {
         if (read_buffer[9 - i] == 0xFD)continue; //spike
-        if(Debug==true){
-
-          if (read_buffer[9 - i] < 16)Serial.print("0");
-          Serial.print(read_buffer[9 - i], HEX);
-        }
         frequency += (read_buffer[9 - i] >> 4) * decMulti[i * 2];
         frequency += (read_buffer[9 - i] & 0x0F) * decMulti[i * 2 + 1];
-      }
-      if(Debug==true){
-        Serial.println();
       }
   #endif
 }
@@ -3308,7 +3252,7 @@ void onTrxHz(const char* from, const uint8_t* data, size_t len) {
   if (idx < 0) return;
   g_trxFreq[idx] = (long)freq;
   g_trxHasData[idx] = true;
-  Serial.printf("TRXN| TRX%d freq=%lu\n", idx+2, (unsigned long)freq);
+  if (Debug) Serial.printf("TRXN| TRX%d freq=%lu\n", idx+2, (unsigned long)freq);
   if (bdEnabled && bdSource == idx + 2) bdUpdate(freq);
 }
 
@@ -3321,7 +3265,7 @@ void onTrxMode(const char* from, const uint8_t* data, size_t len) {
   if (modeStr != nullptr) {
     strlcpy(g_trxMode[idx], modeStr, sizeof(g_trxMode[idx]));
     g_trxHasData[idx] = true;
-    Serial.printf("TRXN| TRX%d mode=%s\n", idx+2, modeStr);
+    if (Debug) Serial.printf("TRXN| TRX%d mode=%s\n", idx+2, modeStr);
   }
 }
 
@@ -3357,13 +3301,15 @@ void sendCW(){
     }
     frame[frameLen++] = STOP_BYTE;
 
-    Serial.print("CW ");
-    for (uint8_t i = 0; i < frameLen; i++) {
-      Serial.print(frame[i], HEX);
-      Serial.print(" ");
+    if (Debug) {
+      Serial.print("CW ");
+      for (uint8_t i = 0; i < frameLen; i++) {
+        Serial.print(frame[i], HEX);
+        Serial.print(" ");
+      }
     }
     catWriteFrame(frame, frameLen, true);
-    Serial.println();
+    if (Debug) Serial.println();
     delay(100);
     if(APmode==true){
       ledcWrite(pwmChannel, 255);
@@ -3388,13 +3334,12 @@ void sendCW(){
     delay(PTTlead);                   // PTT lead delay
     // ch = ' '; Serial.print(ch); chTable(); sendFsk();   // Space before sending
     // while (Serial.available()) {
-    Serial.print("FSK ");
+    if (Debug) Serial.print("FSK ");
     bool fskAborted = false;
     for (int i = 0; i < TheEnd+1; i++) {
         if (abortFskTransmission) { fskAborted = true; break; }
         ch = toUpperCase(static_cast<char>(CwMsg[i]));
-        Serial.print(String(ch));
-        Serial.print("|");
+        if (Debug) { Serial.print(String(ch)); Serial.print("|"); }
         chTable();
         if(fig1 == 0 && fig2 == 1){
                 d1 = 1; d2 = 1; d3 = 0; d4 = 1; d5 = 1; //FIGURES
@@ -3414,11 +3359,12 @@ void sendCW(){
         sendFsk();
         delay(5);
     }
-    Serial.println();
+    if (Debug) Serial.println();
     abortFskTransmission = false;
     // ch = ' '; Serial.print(ch); chTable(); sendFsk();   // Space after sending
     if (!fskAborted) delay(PTTtail);
-    digitalWrite(PTT, LOW);Serial.println();
+    digitalWrite(PTT, LOW);
+    if (Debug) Serial.println();
     digitalWrite(FSK_OUT, LOW);
     if(APmode==true){
       ledcWrite(pwmChannel, 255);
