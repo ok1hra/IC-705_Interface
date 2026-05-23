@@ -1782,9 +1782,10 @@ void handleOi3State() {
     webServer.send(400, "application/json", "{\"error\":\"invalid_trx\"}");
     return;
   }
-  char jbuf[64];
-  snprintf(jbuf, sizeof(jbuf), "{\"connected\":%s,\"frequency\":%ld,\"mode\":\"%s\"}",
-    g_trxHasData[idx] ? "true" : "false", g_trxFreq[idx], g_trxMode[idx]);
+  char jbuf[96];
+  snprintf(jbuf, sizeof(jbuf), "{\"connected\":%s,\"frequency\":%ld,\"mode\":\"%s\",\"dxcConnected\":%s}",
+    g_trxHasData[idx] ? "true" : "false", g_trxFreq[idx], g_trxMode[idx],
+    DxcTelnetStatus ? "true" : "false");
   webServer.send(200, "application/json", jbuf);
 }
 

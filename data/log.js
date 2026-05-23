@@ -2600,6 +2600,16 @@ function _updateDxcBand(freqHz, dxcConnected) {
 }
 
 try {
+  // Initial load from localStorage — covers the case where dxc.html has spots
+  // cached but hasn't broadcast yet (no new spots since log.js opened).
+  const cached = localStorage.getItem('ic705-dxc-spots');
+  if (cached) {
+    const msg = JSON.parse(cached);
+    if (msg && Array.isArray(msg.spots)) _dxcSpots = msg.spots;
+  }
+} catch (_) {}
+
+try {
   const dxcSpotsChannel = new BroadcastChannel('ic705-dxc-spots');
   dxcSpotsChannel.addEventListener('message', e => {
     const msg = e.data;
