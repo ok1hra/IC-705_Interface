@@ -79,6 +79,8 @@ byte     TRX2_NET_ID    = 0xff;   // peer NET_ID for TRX2 Band Decoder slot (0x0
 byte     TRX3_NET_ID    = 0x00;   // peer NET_ID for TRX3 Band Decoder slot (0x00 = disabled)
 byte     TRX2_CONN_TYPE = 0x00;   // 0=TrxNet, 1=CI-V (EEPROM byte 44)
 byte     TRX3_CONN_TYPE = 0x00;   // 0=TrxNet, 1=CI-V (EEPROM byte 47)
+byte     TRX2_CIV_ADDR  = 0x00;   // CI-V address of TRX2 when CONN_TYPE=CI-V (EEPROM byte 48; 0x00=unset)
+byte     TRX3_CIV_ADDR  = 0x00;   // CI-V address of TRX3 when CONN_TYPE=CI-V (EEPROM byte 49; 0x00=unset)
 uint16_t TRXNET_PORT    = 5683;   // CoAP/discovery UDP port (CoAP default)
 int BaudRate        = 9600;
 // char* BTname        = "";
@@ -125,7 +127,9 @@ volatile bool cwIpSendPending = false;
   44 TRX2_CONN_TYPE (0=TrxNet, 1=CI-V; 0xff=unprogrammed → default 0x00)
   45-46 TRXNET_PORT  (was MQTT_PORT)
   47 TRX3_CONN_TYPE (0=TrxNet, 1=CI-V; 0xff=unprogrammed → default 0x00)
-  48-67 FREE         (was MQTT_TOPIC 21B)
+  48 TRX2_CIV_ADDR  (CI-V address of TRX2; 0x00/0xff = unset)
+  49 TRX3_CIV_ADDR  (CI-V address of TRX3; 0x00/0xff = unset)
+  50-67 FREE         (was MQTT_TOPIC 21B)
   68-69 FREE         (was HTTP_CAT_PORT)
   70-71 FREE         (was udpPort)
   72-73 FREE         (was udpCatPort)
@@ -1240,9 +1244,11 @@ void handleSetupData(){
   j += ",\"trx2label\":\""; j += configJsonEscape(g_lcTrx2Label); j += "\"";
   j += ",\"trx2netid\":\""; j += trx2Hex; j += "\"";
   j += ",\"trx2conntype\":"; j += TRX2_CONN_TYPE;
+  { char h[3]; snprintf(h, sizeof(h), "%02x", TRX2_CIV_ADDR); j += ",\"trx2civaddr\":\""; j += h; j += "\""; }
   j += ",\"trx3label\":\""; j += configJsonEscape(g_lcTrx3Label); j += "\"";
   j += ",\"trx3netid\":\""; j += trx3Hex; j += "\"";
   j += ",\"trx3conntype\":"; j += TRX3_CONN_TYPE;
+  { char h[3]; snprintf(h, sizeof(h), "%02x", TRX3_CIV_ADDR); j += ",\"trx3civaddr\":\""; j += h; j += "\""; }
   j += ",\"dxchost\":\""; j += configJsonEscape(DxcHost); j += "\"";
   j += ",\"dxcport\":\""; j += DxcPort > 0 ? String(DxcPort) : ""; j += "\"";
   j += ",\"dxccall\":\""; j += configJsonEscape(DxcCallsign); j += "\"";
@@ -1546,8 +1552,10 @@ void handleConfigDownload() {
   j += ",\"trxnetport\":";      j += TRXNET_PORT;
   j += ",\"trx2netid\":";       j += (unsigned)TRX2_NET_ID;
   j += ",\"trx2conntype\":";    j += TRX2_CONN_TYPE;
+  { char h[3]; snprintf(h, sizeof(h), "%02x", TRX2_CIV_ADDR); j += ",\"trx2civaddr\":\""; j += h; j += "\""; }
   j += ",\"trx3netid\":";       j += (unsigned)TRX3_NET_ID;
   j += ",\"trx3conntype\":";    j += TRX3_CONN_TYPE;
+  { char h[3]; snprintf(h, sizeof(h), "%02x", TRX3_CIV_ADDR); j += ",\"trx3civaddr\":\""; j += h; j += "\""; }
   j += ",\"baudrate\":";        j += BaudRate;
   j += ",\"trxprofile\":\"";    j += configJsonEscape(transceiverType); j += "\"";
   j += ",\"civaddr\":\"";       j += civHex;                          j += "\"";
@@ -1657,6 +1665,14 @@ void handleConfigUpload() {
   v = parseField("trxnetport", 1, 65534); if (v >= 0) { TRXNET_PORT = (uint16_t)v; EEPROM.writeUShort(45, v); }
   // EEPROM 47 TRX3_CONN_TYPE
   v = parseField("trx3conntype", 0, 1); if (v >= 0) { TRX3_CONN_TYPE = (byte)v; EEPROM.writeByte(47, v); }
+  // EEPROM 48/49 TRX2/3 CI-V address (hex string)
+  {
+    uint8_t a;
+    String s2 = extractJsonString(body, "trx2civaddr");
+    if (s2.length() > 0 && parseHexByteString(s2, a)) { TRX2_CIV_ADDR = a; EEPROM.writeByte(48, a); }
+    String s3 = extractJsonString(body, "trx3civaddr");
+    if (s3.length() > 0 && parseHexByteString(s3, a)) { TRX3_CIV_ADDR = a; EEPROM.writeByte(49, a); }
+  }
   v = parseField("baudrate", 1200, 115200); if (v > 0) { BaudRate = v; EEPROM.writeUShort(74, v); }
 
   for (uint8_t i = 0; i < CW_MEMORY_COUNT; i++) {
@@ -1731,18 +1747,21 @@ void handleGetLogConfig() {
     File f = SPIFFS.open(LOG_CONFIG_PATH, "r");
     if (f) { spiffsJson = f.readString(); f.close(); spiffsJson.trim(); }
   }
-  // Inject EEPROM TrxNet peer IDs so frontend can derive OI3 availability
+  // Inject EEPROM TrxNet peer IDs + CI-V conn type so frontend can derive whether
+  // TRX2/3 is a remote (non-local) TRX, regardless of transport.
+  String inject;
+  inject += ",\"trx2netid\":"; inject += (unsigned)TRX2_NET_ID;
+  inject += ",\"trx3netid\":"; inject += (unsigned)TRX3_NET_ID;
+  inject += ",\"trx2conntype\":"; inject += (unsigned)TRX2_CONN_TYPE;
+  inject += ",\"trx3conntype\":"; inject += (unsigned)TRX3_CONN_TYPE;
   String out;
-  out.reserve(spiffsJson.length() + 40);
+  out.reserve(spiffsJson.length() + inject.length() + 4);
   if (spiffsJson.startsWith("{") && spiffsJson.length() > 2) {
     out = spiffsJson.substring(0, spiffsJson.length() - 1);
-    out += ",\"trx2netid\":"; out += (unsigned)TRX2_NET_ID;
-    out += ",\"trx3netid\":"; out += (unsigned)TRX3_NET_ID;
+    out += inject;
     out += "}";
   } else {
-    out = "{\"trx2netid\":"; out += (unsigned)TRX2_NET_ID;
-    out += ",\"trx3netid\":"; out += (unsigned)TRX3_NET_ID;
-    out += "}";
+    out = "{"; out += inject.substring(1); out += "}";
   }
   webServer.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
   webServer.sendHeader("Pragma", "no-cache");
@@ -1858,6 +1877,19 @@ void handleOi3SetHz() {
   while (end < (int)body.length() && isDigit(body[end])) end++;
   uint32_t hz = (uint32_t)body.substring(start, end).toInt();
   if (hz == 0) { webServer.send(400, "application/json", "{\"error\":\"bad_hz\"}"); return; }
+
+  byte connType = (trxN == 3) ? TRX3_CONN_TYPE : TRX2_CONN_TYPE;
+  if (connType == 1) {
+    // CI-V transport: write frequency directly on the serial bus
+    uint8_t civAddr = (trxN == 3) ? TRX3_CIV_ADDR : TRX2_CIV_ADDR;
+    if (civAddr == 0x00) {
+      webServer.send(503, "application/json", "{\"error\":\"unavailable\"}");
+      return;
+    }
+    civWriteFreq(civAddr, hz);
+    webServer.send(200, "application/json", "{\"ok\":true}");
+    return;
+  }
 
   byte peerNetId = (trxN == 3) ? TRX3_NET_ID : TRX2_NET_ID;
   if (peerNetId == 0x00 || !trxNetEnabled) {
@@ -2125,7 +2157,11 @@ void setup(){
     TRXNET_PORT = (EEPROM.read(45) == 0xff) ? 5683 : EEPROM.readUShort(45);
     // 47 TRX3_CONN_TYPE (0=TrxNet, 1=CI-V; 0xff=unprogrammed → default 0x00)
     TRX3_CONN_TYPE = (EEPROM.read(47) == 0xff) ? 0x00 : EEPROM.readByte(47);
-    // 48-67   FREE (was MQTT_TOPIC)
+    // 48 TRX2_CIV_ADDR (CI-V address of TRX2; 0xff=unprogrammed → 0x00 unset)
+    TRX2_CIV_ADDR = (EEPROM.read(48) == 0xff) ? 0x00 : EEPROM.readByte(48);
+    // 49 TRX3_CIV_ADDR (CI-V address of TRX3; 0xff=unprogrammed → 0x00 unset)
+    TRX3_CIV_ADDR = (EEPROM.read(49) == 0xff) ? 0x00 : EEPROM.readByte(49);
+    // 50-67   FREE (was MQTT_TOPIC)
     // 115-135 FREE (was MQTT_TOPIC_RX)
     // 225-245 FREE (was TRX2_MQTT_ROOT)
     // 246-266 FREE (was TRX3_MQTT_ROOT)
@@ -2359,7 +2395,8 @@ void loop(){
   }
   #define _TIMED(name, call) { unsigned long _t = millis(); call; unsigned long _d = millis()-_t; if(_d > LOOP_WARN_MS) { Serial.print("LOOP| slow: " name " "); Serial.print(_d); Serial.println("ms"); } }
   _TIMED("Watchdog",        Watchdog())
-  _TIMED("CLI",             CLI())
+  _TIMED("CLI",             serialPump())
+  _TIMED("CIV",             civPollTick())
   #if defined(RTLE)
     _TIMED("rtleserver",    rtleserver.handleClient())
   #endif
@@ -2534,41 +2571,6 @@ void Watchdog(){
 
     // Band Decoder update on TRX1 frequency change
     if (bdEnabled && bdSource == 1) bdUpdate(frequency);
-
-    // CAT out
-    #if defined(CIV_OUT)
-      // fefe560e03fd fefe0e56038079022800fd fefe560e04fd fefe0e56040301fd    request
-      // fefe005600 90 79 02 28 00 fd fefe0056000080022800fd    CIV-TX-ON
-      // FEFEE04203 00 00 58 45 01 FD  -145.580.000
-      byte buffer[12];
-      String StrFreq;
-        StrFreq=IntToTenString(frequency);
-        // Serial.println(StrFreq);
-      String SplitStrFreq[5];
-        SplitString(StrFreq, SplitStrFreq);
-
-      buffer[0]=0xFE;
-      buffer[1]=0xFE;
-      buffer[2]=0x00;
-      buffer[3]=0x42;
-      buffer[4]=0x00;    
-      for (int i = 5; i < 11; i++) {
-        // buffer[i] = stringToByte(SplitStrFreq[4-(i-5)]);   // PANIC
-      }
-      buffer[10]=0xFD;
-
-      Serial.flush();                 // drain pending debug bytes before opening CIV gate
-      digitalWrite(CIVmutePin, LOW);
-      delay(2);
-      for (int i = 0; i < 11; i++) {
-        Serial.write(buffer[i]);
-      }
-      Serial.flush();
-      delay(2);
-      digitalWrite(CIVmutePin, HIGH);
-      delay(2);
-      Serial.println();
-     #endif
   }
 
   // WIFI status
@@ -3280,6 +3282,197 @@ void onTrxSetHz(const char* from, const uint8_t* data, size_t len) {
 }
 
 //-----------------------------------------------------------------------------------
+// Serial CI-V driver for TRX2/TRX3 (shares UART0 with CLI/debug, gated by CIVmutePin)
+//
+// TRX2/3 can be reached either via TrxNet (CONN_TYPE=0) or via CI-V on the serial
+// bus (CONN_TYPE=1). When CI-V is selected we poll freq (03) and mode (04) and also
+// passively accept Transceive broadcasts; results land in the same g_trxFreq /
+// g_trxMode / g_trxHasData slots used by the TrxNet path, so band decoder, web UI
+// and the PHP log (port 81) are transport-agnostic.
+
+static const uint32_t CIV_POLL_INTERVAL_MS = 750;  // per full round (TRX2+TRX3, freq+mode)
+static const uint32_t CIV_REPLY_TIMEOUT_MS = 250;  // wait for a single reply
+static const uint32_t CIV_GAP_MS           = 40;   // bus turnaround between messages
+static const uint8_t  CIV_MAX_MISS         = 3;    // consecutive timeouts -> slot stale
+
+enum CivPollState { CIV_IDLE, CIV_WAIT };
+static CivPollState civState   = CIV_IDLE;
+static uint8_t  civSeq         = 0;        // schedule index 0..3 (see civSeqSlot/Cmd)
+static uint32_t civStateT0     = 0;
+static uint32_t civNextRun     = 0;
+static uint8_t  civMiss[2]     = {0, 0};
+static uint8_t  civAwaitSlot   = 0xFF;     // slot we sent the current query to
+static uint8_t  civAwaitCmd    = 0;
+static bool     civGotReply    = false;
+
+// frame parser
+static uint8_t  civRxBuf[20];
+static uint8_t  civRxLen       = 0;
+static bool     civInFrame     = false;
+static uint8_t  civPreCount    = 0;        // consecutive START_BYTE seen
+
+static inline uint8_t civSlotAddr(uint8_t idx) {
+  return (idx == 0) ? TRX2_CIV_ADDR : TRX3_CIV_ADDR;
+}
+static inline bool civSlotEnabled(uint8_t idx) {
+  if (idx == 0) return TRX2_CONN_TYPE == 1 && TRX2_CIV_ADDR != 0x00;
+  return TRX3_CONN_TYPE == 1 && TRX3_CIV_ADDR != 0x00;
+}
+static inline bool civAnyEnabled() { return civSlotEnabled(0) || civSlotEnabled(1); }
+
+// schedule mapping: seq 0..3 -> (slot, cmd)
+static inline uint8_t civSeqSlot(uint8_t seq) { return seq >> 1; }          // 0,0,1,1
+static inline uint8_t civSeqCmd(uint8_t seq)  { return (seq & 1) ? CMD_READ_MODE : CMD_READ_FREQ; }
+
+// Send a CI-V frame: FE FE <toAddr> E0 <body...> FD, gated by MUTE so debug never
+// leaks onto the bus. Synchronous and short (a few bytes).
+static void civSend(uint8_t toAddr, const uint8_t* body, size_t bodyLen) {
+  Serial.flush();                 // drain pending debug bytes before opening the gate
+  digitalWrite(CIVmutePin, LOW);
+  delay(2);
+  Serial.write(START_BYTE);
+  Serial.write(START_BYTE);
+  Serial.write(toAddr);
+  Serial.write(CONTROLLER_ADDRESS);
+  for (size_t i = 0; i < bodyLen; i++) Serial.write(body[i]);
+  Serial.write(STOP_BYTE);
+  Serial.flush();
+  delay(2);
+  digitalWrite(CIVmutePin, HIGH);
+}
+
+static void civQuery(uint8_t slot, uint8_t cmd) {
+  uint8_t body = cmd;
+  civAwaitSlot = slot;
+  civAwaitCmd  = cmd;
+  civGotReply  = false;
+  civSend(civSlotAddr(slot), &body, 1);
+}
+
+// Write frequency (cmd 05) to a CI-V TRX. Frequency is 5 BCD bytes, LSB-first.
+void civWriteFreq(uint8_t addr, uint32_t hz) {
+  if (addr == 0x00 || hz == 0) return;
+  String s = IntToTenString((int)hz);     // 10 digits, MSB-first
+  String pairs[5];
+  SplitString(s, pairs);                   // pairs[0]=MS .. pairs[4]=LS
+  uint8_t body[6];
+  body[0] = CMD_WRITE_FREQ;
+  for (int i = 0; i < 5; i++) body[1 + i] = stringToByte(pairs[4 - i]);  // LSB-first
+  civSend(addr, body, 6);
+}
+
+// Decode a completed CI-V frame held in civRxBuf (length civRxLen, last byte = FD).
+// Layout after the FE FE preamble: [0]=toAddr [1]=fromAddr [2]=cmd [payload...] [FD].
+static void civHandleFrame() {
+  if (civRxLen < 4) return;                          // need toAddr,fromAddr,cmd,FD
+  uint8_t toAddr   = civRxBuf[0];
+  uint8_t fromAddr = civRxBuf[1];
+  uint8_t cmd      = civRxBuf[2];
+  // Accept only frames addressed to the controller or broadcast; drop our own echo.
+  if (toAddr != CONTROLLER_ADDRESS && toAddr != BROADCAST_ADDRESS) return;
+
+  int idx = -1;
+  if (civSlotEnabled(0) && fromAddr == TRX2_CIV_ADDR) idx = 0;
+  else if (civSlotEnabled(1) && fromAddr == TRX3_CIV_ADDR) idx = 1;
+  if (idx < 0) return;
+
+  const uint8_t* pl = civRxBuf + 3;
+  size_t plLen = (size_t)civRxLen - 4;              // minus toAddr,fromAddr,cmd,FD
+
+  if ((cmd == CMD_READ_FREQ || cmd == CMD_TRANS_FREQ) && plLen >= 5) {
+    uint32_t freq = decodeCivFrequencyBytes(pl, 5);
+    g_trxFreq[idx]    = (long)freq;
+    g_trxHasData[idx] = true;
+    civMiss[idx]      = 0;
+    if (bdEnabled && bdSource == idx + 2) bdUpdate(freq);
+    if (civAwaitSlot == idx && civAwaitCmd == CMD_READ_FREQ) civGotReply = true;
+    if (Debug) Serial.printf("CIV| TRX%d freq=%lu\n", idx + 2, (unsigned long)freq);
+  } else if ((cmd == CMD_READ_MODE || cmd == CMD_TRANS_MODE) && plLen >= 1) {
+    const char* modeStr = trxnetModeToString(pl[0]);
+    if (modeStr != nullptr) {
+      strlcpy(g_trxMode[idx], modeStr, sizeof(g_trxMode[idx]));
+      g_trxHasData[idx] = true;
+      civMiss[idx]      = 0;
+      if (civAwaitSlot == idx && civAwaitCmd == CMD_READ_MODE) civGotReply = true;
+      if (Debug) Serial.printf("CIV| TRX%d mode=%s\n", idx + 2, modeStr);
+    }
+  }
+}
+
+// Feed one received byte to the CI-V framer. Returns true if the byte was consumed
+// as part of a CI-V frame (FE FE .. FD); false means it belongs to the CLI.
+bool civParserFeed(uint8_t b) {
+  if (!civInFrame) {
+    if (b == START_BYTE) {
+      if (civPreCount < 2) civPreCount++;
+      if (civPreCount == 2) { civInFrame = true; civRxLen = 0; }
+      return true;                                  // 0xFE is never a CLI command
+    }
+    civPreCount = 0;
+    return false;                                   // hand to CLI
+  }
+  // inside a frame
+  if (civRxLen < sizeof(civRxBuf)) {
+    civRxBuf[civRxLen++] = b;
+  } else {
+    civInFrame = false; civPreCount = 0; civRxLen = 0;  // overflow, drop
+    return true;
+  }
+  if (b == STOP_BYTE) {
+    civHandleFrame();
+    civInFrame = false; civPreCount = 0; civRxLen = 0;
+  }
+  return true;
+}
+
+// Non-blocking polling state machine. Sends one query per visit and lets the parser
+// (driven by serialPump) collect the reply across subsequent loop iterations.
+void civPollTick() {
+  if (!civAnyEnabled()) { civState = CIV_IDLE; return; }
+  uint32_t now = millis();
+
+  if (civState == CIV_WAIT) {
+    if (civGotReply) {
+      civState   = CIV_IDLE;
+      civNextRun = now + CIV_GAP_MS;
+    } else if (now - civStateT0 >= CIV_REPLY_TIMEOUT_MS) {
+      uint8_t slot = civAwaitSlot;
+      if (slot < 2) {
+        if (civMiss[slot] < 255) civMiss[slot]++;
+        if (civMiss[slot] >= CIV_MAX_MISS && g_trxHasData[slot]) {
+          g_trxHasData[slot] = false;
+          g_trxFreq[slot]    = 0;
+        }
+      }
+      civState   = CIV_IDLE;
+      civNextRun = now + CIV_GAP_MS;
+    }
+    return;
+  }
+
+  // CIV_IDLE
+  if ((int32_t)(now - civNextRun) < 0) return;
+
+  // advance to the next enabled slot in the schedule
+  for (uint8_t tries = 0; tries < 4; tries++) {
+    uint8_t slot = civSeqSlot(civSeq);
+    if (civSlotEnabled(slot)) break;
+    civSeq = (civSeq + 1) & 0x03;
+  }
+
+  uint8_t slot = civSeqSlot(civSeq);
+  uint8_t cmd  = civSeqCmd(civSeq);
+  bool roundEnd = (civSeq == 3) || (civSeq == 1 && !civSlotEnabled(1));
+
+  civQuery(slot, cmd);
+  civStateT0 = now;
+  civState   = CIV_WAIT;
+
+  civSeq = (civSeq + 1) & 0x03;
+  if (roundEnd) civNextRun = now + CIV_POLL_INTERVAL_MS;  // pace whole round
+}
+
+//-----------------------------------------------------------------------------------
 
 //-------------------------------------------------------------------------------------------------------
 void sendCW(){
@@ -3486,9 +3679,11 @@ void chTable(){
 }
 
 //-------------------------------------------------------------------------------------------------------
-void CLI(){
-  if (Serial.available() > 0) {
-    incomingByte = Serial.read();
+// Handle a single CLI command byte (driven by serialPump). 0xFE/0xFD framing bytes
+// never reach here — they are consumed by the CI-V parser first.
+void cliHandleByte(uint8_t b){
+  {
+    incomingByte = b;
     // ?
     if(incomingByte==63){
       ListCommands();
@@ -3596,6 +3791,17 @@ void CLI(){
       // Serial.println("] unknown command");
     }
     incomingByte=0;
+  }
+}
+
+//-------------------------------------------------------------------------------------------------------
+// Single RX pump for UART0: route each byte to the CI-V framer (FE FE..FD) or, if it
+// is not part of a CI-V frame, to the CLI command handler.
+void serialPump(){
+  while (Serial.available() > 0) {
+    uint8_t b = (uint8_t)Serial.read();
+    if (civParserFeed(b)) continue;
+    cliHandleByte(b);
   }
 }
 
@@ -3860,6 +4066,16 @@ void handleSet() {
     // 47 TRX3_CONN_TYPE (0=TrxNet, 1=CI-V)
     { int ct = requestArg("trx3conntype").toInt(); if (ct < 0 || ct > 1) ct = 0;
       if (TRX3_CONN_TYPE != (byte)ct) { TRX3_CONN_TYPE = (byte)ct; EEPROM.writeByte(47, (byte)ct); } }
+    // 48 TRX2_CIV_ADDR (hex string; 0x00 = unset)
+    { uint8_t a = TRX2_CIV_ADDR;
+      String s = requestArg("trx2civaddr");
+      if (s.length() == 0) { if (TRX2_CIV_ADDR != 0x00) { TRX2_CIV_ADDR = 0x00; EEPROM.writeByte(48, 0x00); } }
+      else if (parseHexByteString(s, a)) { if (TRX2_CIV_ADDR != a) { TRX2_CIV_ADDR = a; EEPROM.writeByte(48, a); } } }
+    // 49 TRX3_CIV_ADDR (hex string; 0x00 = unset)
+    { uint8_t a = TRX3_CIV_ADDR;
+      String s = requestArg("trx3civaddr");
+      if (s.length() == 0) { if (TRX3_CIV_ADDR != 0x00) { TRX3_CIV_ADDR = 0x00; EEPROM.writeByte(49, 0x00); } }
+      else if (parseHexByteString(s, a)) { if (TRX3_CIV_ADDR != a) { TRX3_CIV_ADDR = a; EEPROM.writeByte(49, a); } } }
     // 48-67 FREE (was MQTT_TOPIC)
     // 115-135 FREE (was MQTT_TOPIC_RX)
     // 225-245 FREE (was TRX2_MQTT_ROOT)

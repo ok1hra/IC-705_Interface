@@ -2275,8 +2275,10 @@ function init() {
     if (cfg.trx1Label) app.trxLabels[0] = cfg.trx1Label;
     if (cfg.trx2Label) app.trxLabels[1] = cfg.trx2Label;
     if (cfg.trx3Label) app.trxLabels[2] = cfg.trx3Label;
-    app.trxOi3[1] = (cfg.trx2netid || 0) !== 0;
-    app.trxOi3[2] = (cfg.trx3netid || 0) !== 0;
+    // A TRX is "remote" (controlled via the ESP, not the local CAT link) when it has
+    // a TrxNet peer (netid != 0) OR is configured for CI-V on the serial bus (conntype == 1).
+    app.trxOi3[1] = (cfg.trx2netid || 0) !== 0 || (cfg.trx2conntype || 0) === 1;
+    app.trxOi3[2] = (cfg.trx3netid || 0) !== 0 || (cfg.trx3conntype || 0) === 1;
     app.blockedDxccList = (cfg.blockedDxcc || '').split('\n')
       .map(s => s.trim().toLowerCase()).filter(Boolean);
     trxButtons.forEach((b, i) => { b.textContent = app.trxLabels[i]; });

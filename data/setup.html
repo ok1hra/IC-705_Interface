@@ -140,11 +140,11 @@
                 <span class="help-tip" data-tip="TrxNet peer NET_ID of the OI3 keyer for TRX2 (2-digit hex). 00 = disabled. Device name: OI3.XX.">?</span>
               </div>
             </label>
-            <label class="setup-trx-conn-row setup-trx-disabled">
-              <span class="setup-trx-conn-label"><input type="radio" name="trx2conntype" value="1" disabled> CI-V</span>
+            <label class="setup-trx-conn-row">
+              <span class="setup-trx-conn-label"><input type="radio" name="trx2conntype" value="1"> CI-V</span>
               <div class="setup-trx-netid-wrap">
-                <input type="text" name="trx2civaddr" maxlength="2" placeholder="A4" class="setup-trx-short-input" disabled>
-                <span class="setup-conn-soon">(not yet implemented)</span>
+                <input type="text" name="trx2civaddr" maxlength="2" placeholder="A4" value="" class="setup-trx-short-input">
+                <span class="help-tip" data-tip="CI-V address of TRX2 on the shared serial bus (2-digit hex, e.g. 94 for IC-7300, A4 for IC-705). Baud rate is the common serial baud rate.">?</span>
               </div>
             </label>
 
@@ -161,11 +161,11 @@
                 <span class="help-tip" data-tip="TrxNet peer NET_ID of the OI3 keyer for TRX3 (2-digit hex). 00 = disabled. Device name: OI3.XX.">?</span>
               </div>
             </label>
-            <label class="setup-trx-conn-row setup-trx-disabled">
-              <span class="setup-trx-conn-label"><input type="radio" name="trx3conntype" value="1" disabled> CI-V</span>
+            <label class="setup-trx-conn-row">
+              <span class="setup-trx-conn-label"><input type="radio" name="trx3conntype" value="1"> CI-V</span>
               <div class="setup-trx-netid-wrap">
-                <input type="text" name="trx3civaddr" maxlength="2" placeholder="A4" class="setup-trx-short-input" disabled>
-                <span class="setup-conn-soon">(not yet implemented)</span>
+                <input type="text" name="trx3civaddr" maxlength="2" placeholder="A4" value="" class="setup-trx-short-input">
+                <span class="help-tip" data-tip="CI-V address of TRX3 on the shared serial bus (2-digit hex, e.g. 94 for IC-7300, A4 for IC-705). Baud rate is the common serial baud rate.">?</span>
               </div>
             </label>
           </div>
@@ -395,7 +395,8 @@
         [
           'ssid', 'pswd', 'ssid2', 'pswd2', 'trxnetport',
           'baud', 'trx1label', 'civaddr', 'btname', 'trx2label',
-          'trx2netid', 'trx3label', 'trx3netid', 'dxchost', 'dxcport',
+          'trx2netid', 'trx2civaddr', 'trx3label', 'trx3netid', 'trx3civaddr',
+          'dxchost', 'dxcport',
           'dxccall', 'dxclocator', 'rstSsb', 'rstCwRtty', 'blockedDxcc'
         ].forEach(function (name) { setValue(name, data[name]); });
         setValue('cwIpOnConnect', data.cwIpOnConnect);
@@ -426,6 +427,23 @@
         var ct3 = data.trx3conntype || 0;
         document.querySelectorAll('[name="trx3conntype"]').forEach(function(r) {
           r.checked = (parseInt(r.value) === ct3);
+        });
+
+        // Disable the unused input (netid or civaddr) per selected conn type
+        function refreshConnTypeInputs(prefix) {
+          var rs = document.querySelectorAll('[name="' + prefix + 'conntype"]');
+          var ct = 0;
+          rs.forEach(function (r) { if (r.checked) ct = parseInt(r.value); });
+          var netInp = document.querySelector('[name="' + prefix + 'netid"]');
+          var civInp = document.querySelector('[name="' + prefix + 'civaddr"]');
+          if (netInp) netInp.disabled = (ct === 1);
+          if (civInp) civInp.disabled = (ct !== 1);
+        }
+        ['trx2', 'trx3'].forEach(function (p) {
+          refreshConnTypeInputs(p);
+          document.querySelectorAll('[name="' + p + 'conntype"]').forEach(function (r) {
+            r.addEventListener('change', function () { refreshConnTypeInputs(p); });
+          });
         });
 
         // Show resolved peer device names
