@@ -12,7 +12,12 @@ GZIP_ASSETS_SCRIPT="${ROOT_DIR}/tools/gzip-assets.sh"
 
 # no_ota partition scheme (No OTA — 2MB APP / 2MB SPIFFS)
 PARTITIONS_CSV_NAME="no_ota"
-FLASH_MODE="qio"
+# IMPORTANT: DIO, not QIO. These IC-705 interface boards ship a Zbit (0x5e) clone
+# flash chip whose QIO reads are unreliable — a QIO bootloader makes the ROM loader
+# read garbage after the first segment and the board never boots. DIO 80 MHz is
+# stable. The bootloader's flash mode is baked in at elf2image time below (its
+# SHA256 digest prevents patching the mode afterwards).
+FLASH_MODE="dio"
 FLASH_FREQ="80m"
 FLASH_SIZE="4MB"
 
@@ -26,6 +31,7 @@ SPIFFS_SIZE_DEC=$((0x1F0000))   # 1966080
 
 ESP32_CORE_ROOT="${ESP32_CORE_ROOT:-}"
 BOOTLOADER_BIN="${BOOTLOADER_BIN:-}"
+BOOTLOADER_ELF="${BOOTLOADER_ELF:-}"
 BOOT_APP0_BIN="${BOOT_APP0_BIN:-}"
 GEN_PART_BIN="${GEN_PART_BIN:-}"
 ESPTOOL_BIN="${ESPTOOL_BIN:-}"
@@ -54,7 +60,8 @@ Options:
   --output-dir PATH      Output directory       (default: ./build/gh-pages)
   --firmware PATH        Firmware .bin file      (default: ./IC-705_Interface.ino.esp32.bin)
   --esp32-core PATH      ESP32 Arduino core root (auto-detected if not set)
-  --bootloader PATH      Bootloader binary       (auto-detected)
+  --bootloader PATH      Prebuilt bootloader .bin (skips ELF conversion)
+  --bootloader-elf PATH  Bootloader ELF          (auto-detected; DIO .bin built from it)
   --boot-app0 PATH       boot_app0.bin           (auto-detected)
   --gen-part PATH        gen_esp32part.py        (auto-detected)
   --esptool PATH         esptool.py              (auto-detected)
@@ -77,7 +84,8 @@ while [[ $# -gt 0 ]]; do
     --output-dir)   OUTPUT_DIR="$2";          shift 2 ;;
     --firmware)     FIRMWARE_BIN="$2";        shift 2 ;;
     --esp32-core)   ESP32_CORE_ROOT="$2";     shift 2 ;;
-    --bootloader)   BOOTLOADER_BIN="$2";      shift 2 ;;
+    --bootloader)     BOOTLOADER_BIN="$2";    shift 2 ;;
+    --bootloader-elf) BOOTLOADER_ELF="$2";    shift 2 ;;
     --boot-app0)    BOOT_APP0_BIN="$2";       shift 2 ;;
     --gen-part)     GEN_PART_BIN="$2";        shift 2 ;;
     --esptool)      ESPTOOL_BIN="$2";         shift 2 ;;
@@ -103,14 +111,17 @@ detect_esp32_core_root() {
     "${HOME}/.arduino15/packages/esp32/hardware/esp32"
   )
 
+  # Marker file present inside the core across versions. (esptool.py used to
+  # live here too, but core 2.x moved it to a separate package tool — see below.)
+  local marker="tools/gen_esp32part.py"
   local dir version_dir
   for dir in "${candidates[@]}"; do
-    if [[ -f "${dir}/tools/esptool.py" ]]; then
+    if [[ -f "${dir}/${marker}" ]]; then
       echo "$dir"; return 0
     fi
     if [[ -d "$dir" ]]; then
-      version_dir="$(find "$dir" -mindepth 1 -maxdepth 1 -type d | sort | tail -n 1)"
-      if [[ -n "$version_dir" && -f "${version_dir}/tools/esptool.py" ]]; then
+      version_dir="$(find "$dir" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+      if [[ -n "$version_dir" && -f "${version_dir}/${marker}" ]]; then
         echo "$version_dir"; return 0
       fi
     fi
@@ -118,20 +129,47 @@ detect_esp32_core_root() {
   return 1
 }
 
+# In core 2.x, esptool.py and mkspiffs ship as separate package tools at
+#   packages/esp32/tools/<subdir>/<version>/<file>
+# The core lives at packages/esp32/hardware/esp32/<ver>, so the package tools
+# dir is three levels up from the core root.
+find_pkg_tool() {
+  local subdir="$1" file="$2"
+  local pkg_tools="${ESP32_CORE_ROOT}/../../../tools/${subdir}"
+  [[ -d "$pkg_tools" ]] || return 1
+  local ver_dir
+  ver_dir="$(find "$pkg_tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+  [[ -n "$ver_dir" && -f "${ver_dir}/${file}" ]] && { echo "${ver_dir}/${file}"; return 0; }
+  return 1
+}
+
 if [[ -z "$ESP32_CORE_ROOT" ]]; then
   ESP32_CORE_ROOT="$(detect_esp32_core_root || true)"
 fi
 
-[[ -z "$BOOTLOADER_BIN" && -n "$ESP32_CORE_ROOT" ]] && \
-  BOOTLOADER_BIN="${ESP32_CORE_ROOT}/tools/sdk/esp32/bin/bootloader_${FLASH_MODE}_${FLASH_FREQ}.bin"
+# Core 2.0.14 ships only the bootloader ELF (not a .bin) in tools/sdk/esp32/bin.
+# When no prebuilt --bootloader .bin is given, derive it from the matching ELF via
+# elf2image (below) so the DIO flash mode is set in the header.
+[[ -z "$BOOTLOADER_BIN" && -z "$BOOTLOADER_ELF" && -n "$ESP32_CORE_ROOT" ]] && \
+  BOOTLOADER_ELF="${ESP32_CORE_ROOT}/tools/sdk/esp32/bin/bootloader_${FLASH_MODE}_${FLASH_FREQ}.elf"
 [[ -z "$BOOT_APP0_BIN" && -n "$ESP32_CORE_ROOT" ]] && \
   BOOT_APP0_BIN="${ESP32_CORE_ROOT}/tools/partitions/boot_app0.bin"
 [[ -z "$GEN_PART_BIN" && -n "$ESP32_CORE_ROOT" ]] && \
   GEN_PART_BIN="${ESP32_CORE_ROOT}/tools/gen_esp32part.py"
-[[ -z "$ESPTOOL_BIN" && -n "$ESP32_CORE_ROOT" ]] && \
-  ESPTOOL_BIN="${ESP32_CORE_ROOT}/tools/esptool.py"
-[[ -z "$MKSPIFFS_BIN" && -n "$ESP32_CORE_ROOT" ]] && \
-  MKSPIFFS_BIN="${ESP32_CORE_ROOT}/tools/mkspiffs/mkspiffs"
+if [[ -z "$ESPTOOL_BIN" && -n "$ESP32_CORE_ROOT" ]]; then
+  if [[ -f "${ESP32_CORE_ROOT}/tools/esptool.py" ]]; then
+    ESPTOOL_BIN="${ESP32_CORE_ROOT}/tools/esptool.py"
+  else
+    ESPTOOL_BIN="$(find_pkg_tool esptool_py esptool.py || true)"
+  fi
+fi
+if [[ -z "$MKSPIFFS_BIN" && -n "$ESP32_CORE_ROOT" ]]; then
+  if [[ -f "${ESP32_CORE_ROOT}/tools/mkspiffs/mkspiffs" ]]; then
+    MKSPIFFS_BIN="${ESP32_CORE_ROOT}/tools/mkspiffs/mkspiffs"
+  else
+    MKSPIFFS_BIN="$(find_pkg_tool mkspiffs mkspiffs || true)"
+  fi
+fi
 
 require_file() {
   local path="$1" label="$2"
@@ -143,10 +181,15 @@ require_file() {
 
 require_file "$FIRMWARE_BIN"   "Firmware binary"
 require_file "$SKETCH_FILE"    "Sketch file"
-require_file "$BOOTLOADER_BIN" "Bootloader binary"
 require_file "$BOOT_APP0_BIN"  "boot_app0.bin"
 require_file "$GEN_PART_BIN"   "gen_esp32part.py"
 require_file "$ESPTOOL_BIN"    "esptool.py"
+# Bootloader: either a prebuilt --bootloader .bin, or the core ELF we convert below.
+if [[ -n "$BOOTLOADER_BIN" ]]; then
+  require_file "$BOOTLOADER_BIN" "Bootloader binary"
+else
+  require_file "$BOOTLOADER_ELF" "Bootloader ELF"
+fi
 
 # ---------------------------------------------------------------------------
 # Read firmware version
@@ -174,6 +217,18 @@ if [[ ! -f "$PARTITIONS_CSV" ]]; then
 fi
 
 mkdir -p "$OUTPUT_DIR"
+
+# ---------------------------------------------------------------------------
+# Bootloader binary (from ELF, with DIO flash mode baked into the header)
+# ---------------------------------------------------------------------------
+
+if [[ -z "$BOOTLOADER_BIN" ]]; then
+  echo "==> Generating ${FLASH_MODE} bootloader from ELF"
+  BOOTLOADER_BIN="${OUTPUT_DIR}/bootloader.bin"
+  python3 "$ESPTOOL_BIN" --chip esp32 elf2image \
+    --flash_mode "$FLASH_MODE" --flash_freq "$FLASH_FREQ" --flash_size "$FLASH_SIZE" \
+    -o "$BOOTLOADER_BIN" "$BOOTLOADER_ELF"
+fi
 
 # ---------------------------------------------------------------------------
 # Build partition table binary
@@ -211,7 +266,9 @@ fi
 # ---------------------------------------------------------------------------
 
 echo "==> Copying binaries"
-cp "$BOOTLOADER_BIN" "${OUTPUT_DIR}/bootloader.bin"
+# BOOTLOADER_BIN may already be ${OUTPUT_DIR}/bootloader.bin (generated above).
+[[ "$BOOTLOADER_BIN" -ef "${OUTPUT_DIR}/bootloader.bin" ]] || \
+  cp "$BOOTLOADER_BIN" "${OUTPUT_DIR}/bootloader.bin"
 cp "$BOOT_APP0_BIN"  "${OUTPUT_DIR}/boot_app0.bin"
 cp "$FIRMWARE_BIN"   "${OUTPUT_DIR}/firmware.bin"
 
@@ -435,6 +492,7 @@ echo ""
 echo "==> Build complete: ${OUTPUT_DIR}"
 echo "    Firmware REV : ${FW_REV}"
 echo "    Partitions   : ${PARTITIONS_CSV_NAME} (no OTA — 2MB APP / 2MB SPIFFS)"
+  echo "    Flash mode   : ${FLASH_MODE} ${FLASH_FREQ} (DIO required — Zbit clone flash)"
 if [[ -n "$SPIFFS_BIN" ]]; then
   echo "    SPIFFS       : included"
 else

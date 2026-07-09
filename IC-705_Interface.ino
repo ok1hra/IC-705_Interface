@@ -91,7 +91,7 @@ bool cwIpOnConnect  = true;       // announce WiFi IP via CW on first BT connect
 volatile bool cwIpSendPending = false;
 
 #define LOOP_WARN_MS 200
-#define REV 20260523
+#define REV 20260707
 #define WIFI
 #define UDP_TO_FSK
 #define WDT         // watchdog timer
@@ -101,7 +101,7 @@ volatile bool cwIpSendPending = false;
 // #define RESET_AFTER_DISCONNECT  // enable reset after each disconnect + short CW msg
 
 #include "EEPROM.h"
-#define EEPROM_SIZE 288
+#define EEPROM_SIZE 360
 /*
   0|Byte    1|128
   1|Char    1|A
@@ -145,6 +145,8 @@ volatile bool cwIpSendPending = false;
   225-245 FREE       (was TRX2 MQTT root topic 21B)
   246-266 FREE       (was TRX3 MQTT root topic 21B)
   267-287 BT_NAME (21B)
+  288 TRXNET_PRIO flag (0xff=unprogrammed → default "OI3 ANT"; 0x01=user set → read string)
+  289-359 TRXNET_PRIO priority prefixes string (space-separated, 71B; empty = priority off)
 
   !! Increment EEPROM_SIZE #define !!
 */
@@ -249,11 +251,14 @@ volatile bool btConnectPending = false;
   String MACString;
 
   #include <ESPmDNS.h>
+  #include <DNSServer.h>
 
   const char* ssidAP     = "IC705-if";
   const char* passwordAP = "remoteqth";
   bool APmode = false;
   WebServer webServer(80);
+  const byte DNS_PORT = 53;
+  DNSServer dnsServer;             // captive portal in AP mode
 #endif
   #if defined(RTLE)
     #ifndef HTTP_MAX_DATA_WAIT
@@ -293,13 +298,26 @@ char CwMsg[37] = "";
 
 // TrxNet — P2P telemetry, replaces PubSubClient/MQTT
 // TRXNET_ID == 0x00 acts as "disabled" sentinel — net.begin() is not called.
-#define TRXNET_MAX_PENDING 6
+// NOTE: never #define TRXNET_MAX_PENDING/TRXNET_MAX_PEERS here — TrxNet.cpp is
+// compiled separately without sketch defines, so the class layout would differ
+// between translation units (ODR violation → global memory corruption → boot
+// crash in first nvs_open). Library per-board defaults apply (ESP32: 24).
 #include <WiFiUdp.h>
 #include <TrxNet.h>
 WiFiUDP trxUdp;
 TrxNet  net(trxUdp);
 char    trxDeviceName[TRXNET_MAX_DEVICE_NAME];
 bool    trxNetEnabled = false; // set true after net.begin() succeeds
+
+// TrxNet priority prefixes — protect these peers when the peer table fills.
+// EEPROM 288 flag + 289-359 string. Limits: 8 tokens x 8 chars (see setPriorityPrefixes()).
+#define TRXNET_PRIO_MAX_TOKENS 8
+#define TRXNET_PRIO_MAX_TOKLEN 8
+#define TRXNET_PRIO_STR_MAX    71   // 8*8 + 7 separators
+String      TRXNET_PRIO = "OI3 ANT";                 // canonical (normalized) value for UI/save
+char        trxPrioBuf[TRXNET_PRIO_STR_MAX + 1];     // tokenized: spaces -> '\0' (library holds a pointer)
+const char* trxPrioPtrs[TRXNET_PRIO_MAX_TOKENS];     // pointers into trxPrioBuf, valid for object lifetime
+uint8_t     trxPrioCount = 0;
 
 // TrxNet pending state — set in callbacks, processed in loop()
 volatile uint32_t trxPendingHz   = 0;
@@ -439,6 +457,7 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   void handleGetState(void);
   bool sendTemplatedHtml(const char *path);
   void handleSetupData(void);
+  void handleTrxNetPeers(void);
   void handleWebServerLoop(void);
   bool handleFileFromSPIFFS(const String &path);
   void handlePostCmd(void);
@@ -1236,6 +1255,7 @@ void handleSetupData(){
   j += ",\"pswd2\":\""; j += configJsonEscape(PSWD2); j += "\"";
   j += ",\"trxnetid\":\""; j += trxnetHex; j += "\"";
   j += ",\"trxnetport\":\""; j += TRXNET_PORT; j += "\"";
+  j += ",\"trxnetprio\":\""; j += configJsonEscape(TRXNET_PRIO); j += "\"";
   j += ",\"baud\":\""; j += baudSelect; j += "\"";
   j += ",\"trx1label\":\""; j += configJsonEscape(g_lcTrx1Label); j += "\"";
   j += ",\"civaddr\":\""; j += civHex; j += "\"";
@@ -1271,8 +1291,45 @@ void handleSetupData(){
   webServer.send(200, "application/json", j);
 }
 
+// Live list of visible TrxNet devices (peer table) for the setup page.
+// state: "ap" (AP mode) / "disabled" (NET_ID 0x00) / "ok". prio computed server-side.
+void handleTrxNetPeers(){
+  String j;
+  j.reserve(1024);
+  j += "{";
+  if (APmode) {
+    j += "\"state\":\"ap\",\"self\":\"\",\"peers\":[]";
+  } else if (!trxNetEnabled) {
+    j += "\"state\":\"disabled\",\"self\":\"\",\"peers\":[]";
+  } else {
+    j += "\"state\":\"ok\",\"self\":\""; j += configJsonEscape(String(trxDeviceName)); j += "\",\"peers\":[";
+    uint32_t now = millis();
+    int count = net.peerCount();
+    bool first = true;
+    for (int i = 0; i < count; i++) {
+      const TrxPeer* p = net.peer(i);
+      if (!p || !p->active) continue;
+      if (!first) j += ",";
+      first = false;
+      uint32_t age = (now - p->lastSeen) / 1000;
+      j += "{\"name\":\""; j += configJsonEscape(String(p->name)); j += "\"";
+      j += ",\"ip\":\"";   j += p->ip.toString(); j += "\"";
+      j += ",\"age\":";    j += age;
+      j += ",\"prio\":";   j += trxIsPriorityName(p->name) ? "true" : "false";
+      j += "}";
+    }
+    j += "]";
+  }
+  j += "}";
+  webServer.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  webServer.sendHeader("Connection", "close");
+  webServer.client().setNoDelay(true);
+  webServer.send(200, "application/json", j);
+}
+
 void handleWebServerLoop(){
   unsigned long start = millis();
+  if (APmode) dnsServer.processNextRequest();   // captive portal
   webServer.handleClient();
   unsigned long elapsed = millis() - start;
   if (elapsed > LOOP_WARN_MS) {
@@ -1538,6 +1595,62 @@ static void eepromWriteStr(const String &str, int addr, int maxLen) {
   }
 }
 
+// Normalize raw space-separated priority prefixes: uppercase, whitespace-collapsed,
+// clamped to TRXNET_PRIO_MAX_TOKENS tokens x TRXNET_PRIO_MAX_TOKLEN chars. No globals touched.
+static String trxNormalizePrio(const String &raw) {
+  String out;
+  uint8_t tokens = 0;
+  int i = 0, n = raw.length();
+  while (i < n && tokens < TRXNET_PRIO_MAX_TOKENS) {
+    while (i < n && raw[i] == ' ') i++;
+    if (i >= n) break;
+    String tok;
+    while (i < n && raw[i] != ' ') {
+      if (tok.length() < TRXNET_PRIO_MAX_TOKLEN) tok += (char)toupper((unsigned char)raw[i]);
+      i++;   // overflow chars of this token are dropped
+    }
+    if (tok.length() == 0) continue;
+    if (out.length()) out += ' ';
+    out += tok;
+    tokens++;
+  }
+  return out;
+}
+
+// Fill the live token buffers from a normalized string (boot only — the library keeps
+// a pointer into trxPrioBuf, so this must not run while net is actively using it).
+static void trxLoadPrioBuffers(const String &canonical) {
+  strncpy(trxPrioBuf, canonical.c_str(), TRXNET_PRIO_STR_MAX);
+  trxPrioBuf[TRXNET_PRIO_STR_MAX] = '\0';
+  trxPrioCount = 0;
+  bool inTok = false;
+  for (int k = 0; trxPrioBuf[k] != '\0'; k++) {
+    if (trxPrioBuf[k] == ' ') { trxPrioBuf[k] = '\0'; inTok = false; }
+    else if (!inTok) {
+      if (trxPrioCount < TRXNET_PRIO_MAX_TOKENS) trxPrioPtrs[trxPrioCount++] = &trxPrioBuf[k];
+      inTok = true;
+    }
+  }
+}
+
+// True if a device name matches any active priority prefix (same strncmp
+// prefix semantics as TrxNet::setPriorityPrefixes()).
+static bool trxIsPriorityName(const char* name) {
+  for (uint8_t i = 0; i < trxPrioCount; i++) {
+    if (trxPrioPtrs[i] && strncmp(name, trxPrioPtrs[i], strlen(trxPrioPtrs[i])) == 0)
+      return true;
+  }
+  return false;
+}
+
+// Persist a normalized prefix string: flag 0x01 + string (empty string = priority off).
+static void eepromWriteTrxPrio(const String &s) {
+  EEPROM.writeByte(288, 0x01);
+  for (int i = 0; i < TRXNET_PRIO_STR_MAX; i++) {
+    EEPROM.write(289 + i, (i < (int)s.length()) ? (uint8_t)s[i] : 0xff);
+  }
+}
+
 void handleConfigDownload() {
   char civHex[3];
   snprintf(civHex, sizeof(civHex), "%02X", configuredCivAddress);
@@ -1550,6 +1663,7 @@ void handleConfigDownload() {
   j += ",\"pswd2\":\"";         j += configJsonEscape(PSWD2);         j += "\"";
   j += ",\"trxnetid\":";        j += (unsigned)TRXNET_ID;
   j += ",\"trxnetport\":";      j += TRXNET_PORT;
+  j += ",\"trxnetprio\":\"";    j += configJsonEscape(TRXNET_PRIO); j += "\"";
   j += ",\"trx2netid\":";       j += (unsigned)TRX2_NET_ID;
   j += ",\"trx2conntype\":";    j += TRX2_CONN_TYPE;
   { char h[3]; snprintf(h, sizeof(h), "%02x", TRX2_CIV_ADDR); j += ",\"trx2civaddr\":\""; j += h; j += "\""; }
@@ -1663,6 +1777,11 @@ void handleConfigUpload() {
   // EEPROM 44 TRX2_CONN_TYPE
   v = parseField("trx2conntype", 0, 1); if (v >= 0) { TRX2_CONN_TYPE = (byte)v; EEPROM.writeByte(44, v); }
   v = parseField("trxnetport", 1, 65534); if (v >= 0) { TRXNET_PORT = (uint16_t)v; EEPROM.writeUShort(45, v); }
+  // EEPROM 288 flag + 289-359 TRXNET_PRIO
+  if (body.indexOf("\"trxnetprio\"") >= 0) {
+    TRXNET_PRIO = trxNormalizePrio(extractJsonString(body, "trxnetprio"));
+    eepromWriteTrxPrio(TRXNET_PRIO);
+  }
   // EEPROM 47 TRX3_CONN_TYPE
   v = parseField("trx3conntype", 0, 1); if (v >= 0) { TRX3_CONN_TYPE = (byte)v; EEPROM.writeByte(47, v); }
   // EEPROM 48/49 TRX2/3 CI-V address (hex string)
@@ -1935,6 +2054,7 @@ void setupWebServer(void){
   webServer.on("/setup",   HTTP_GET,  [](){ renderSetupPage(); });
   webServer.on("/setup",   HTTP_POST, [](){ handleSet(); renderSetupPage(); });
   webServer.on("/setup-data.json", HTTP_GET, handleSetupData);
+  webServer.on("/trxnet-peers.json", HTTP_GET, handleTrxNetPeers);
   webServer.on("/restart", HTTP_POST, [](){
     webServer.sendHeader("Connection", "close");
     webServer.client().setNoDelay(true);
@@ -2035,6 +2155,11 @@ void setupWebServer(void){
   webServer.onNotFound([](){
     String path = webServer.uri();
     if (!handleFileFromSPIFFS(path)) {
+      if (APmode) {   // captive portal: send every unknown request to the setup page
+        webServer.sendHeader("Location", "http://" + WiFi.softAPIP().toString() + "/setup", true);
+        webServer.send(302, "text/plain", "");
+        return;
+      }
       webServer.sendHeader("Connection", "close");
       webServer.client().setNoDelay(true);
       webServer.send(404, "text/plain", "Not found");
@@ -2175,6 +2300,20 @@ void setup(){
       }
     }
 
+    // 288 TRXNET_PRIO flag / 289-359 string (0xff flag = tovární default "OI3 ANT"; else read, "" = off)
+    if (EEPROM.read(288) == 0xff) {
+      TRXNET_PRIO = "OI3 ANT";
+    } else {
+      TRXNET_PRIO = "";
+      for (int i = 289; i < 360; i++) {
+        uint8_t c = EEPROM.read(i);
+        if (c == 0xff || c == 0x00) break;
+        TRXNET_PRIO += char(c);
+      }
+    }
+    TRXNET_PRIO = trxNormalizePrio(TRXNET_PRIO);   // canonical form
+    trxLoadPrioBuffers(TRXNET_PRIO);               // fill trxPrioPtrs/trxPrioCount
+
 
     if(EEPROM.read(136) != 0xff){
       cwIpOnConnect = EEPROM.readBool(136);
@@ -2274,6 +2413,8 @@ void setup(){
       Serial.print(" AP | IP address: ");
       Serial.println(IP);
 
+      dnsServer.start(DNS_PORT, "*", IP);   // captive portal: resolve every host to us
+
       #if defined(RTLE)
         rtleserver.on("/", handleRTLE);      //This is display page
         rtleserver.begin();                  //Start server
@@ -2362,6 +2503,7 @@ void setup(){
     if (TRXNET_ID != 0x00) {
       snprintf(trxDeviceName, sizeof(trxDeviceName), "705.%02x", TRXNET_ID);
       net.setPort(TRXNET_PORT);
+      net.setPriorityPrefixes(trxPrioCount ? trxPrioPtrs : NULL, trxPrioCount);  // before begin()
       net.begin(trxDeviceName);
       net.subscribe("/hz",   onTrxHz);
       net.subscribe("/mode", onTrxMode);
@@ -2537,7 +2679,10 @@ void Watchdog(){
   static unsigned long mqttFreqTimer = 0;
 
   // Power OUT/LED
-  if(millis()-powerTimer > 3000){
+  // powerTimer==0 => no radio data yet (fresh boot / disconnected): force OFF.
+  // Without this, at boot millis() is still < 3000 so millis()-powerTimer would
+  // read as "recent activity" and spuriously pulse PWR ON then OFF after 3s.
+  if(powerTimer==0 || millis()-powerTimer > 3000){
     if(statusPower==1){
       digitalWrite(PowerOnPin, LOW);
       Serial.println(" PWR| OFF");
@@ -2614,6 +2759,7 @@ void ServiceBackgroundTasks(unsigned long waitMs) {
   unsigned long start = millis();
   while (millis() - start < waitMs) {
     if (trxNetEnabled) net.loop();
+    if (APmode) dnsServer.processNextRequest();   // captive portal
     webServer.handleClient();
     #if defined(WDT)
       esp_task_wdt_reset();
@@ -4142,6 +4288,12 @@ void handleSet() {
       if(dxccall.length() <= 16){ DxcCallsign = dxccall; eepromWriteStr(DxcCallsign, 203, 16); }
       String dxclocator = requestArg("dxclocator");
       if(dxclocator.length() <= 6){ DxcLocator = dxclocator; eepromWriteStr(DxcLocator, 219, 6); }
+    }
+
+    // TrxNet priority prefixes — takes effect after the restart that follows this save.
+    if (requestHasArg("trxnetprio")) {
+      TRXNET_PRIO = trxNormalizePrio(requestArg("trxnetprio"));
+      eepromWriteTrxPrio(TRXNET_PRIO);
     }
 
     {

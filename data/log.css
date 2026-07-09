@@ -1186,3 +1186,118 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* ════════════════════════════════════════════════════════════════════════
+   Touch / on-screen keyboard adaptations
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* App height tracks the visual viewport (set from JS as --app-h) so the
+   on-screen keyboard never hides the bottom input row. 100dvh / 100vh are
+   fallbacks when visualViewport is unavailable. */
+html, body {
+  height: 100vh;
+  height: 100dvh;
+  height: var(--app-h, 100dvh);
+}
+
+/* Lock the body to the visible viewport. Without this, iOS Safari scrolls the
+   whole page when a field is focused, jumping the form to the top edge. JS
+   keeps top/left in sync with visualViewport.offsetTop/offsetLeft. */
+body {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  overflow: hidden;
+}
+
+/* ── Journal: horizontal scroll on narrow screens ──────────────────────────
+   The body scrolls both axes; columns keep their width so the wide table can
+   be panned. JS (syncJournalHScroll) keeps the header aligned horizontally. */
+.log-journal-body { overflow: auto; }
+.log-journal-header,
+.qso-row          { min-width: max-content; }
+.jcol             { flex-shrink: 0; }
+.log-journal-spacer,
+.log-empty        { min-width: 100%; }
+
+/* ── Larger touch targets where the primary pointer is coarse ──────────────
+   The journal stays dense (read-only); only interactive controls grow. */
+@media (pointer: coarse) {
+  .log-input,
+  .log-input-rst,
+  .btn-action,
+  .btn-merged-r,
+  .btn-runmode,
+  .btn-trx             { min-height: 46px; }
+  .log-input           { padding: 9px 10px; }
+  .tab                 { padding: 12px 18px; }
+  .lm-btn              { min-height: 44px; }
+  .log-call-search-inp { min-height: 42px; }
+  .sb-manual-freq,
+  .sb-manual-mode,
+  .dxc-band-toggle,
+  .dxc-bw-btn,
+  .dxc-bw-opt          { min-height: 38px; }
+}
+
+/* ── No real hover (touch): neutralise sticky hover states ─────────────────*/
+@media (hover: none) {
+  .tab:hover:not(.tab-active)         { color: var(--tab-muted); border-color: transparent; }
+  .btn-action:hover                   { background: var(--btn-off-bg); color: var(--btn-off-tx); border-color: var(--btn-off-bd); }
+  .btn-runmode:hover                  { background: var(--btn-off-bg); border-color: var(--btn-off-bd); color: var(--btn-off-tx); }
+  .btn-trx:hover:not(.btn-trx-active) { border-color: #555555; color: var(--btn-off-tx); }
+  .qso-row:hover                      { background: transparent; }
+}
+
+/* ── Compact layout while the on-screen keyboard is open ───────────────────
+   Hide chrome not needed mid-QSO, shorten the status bar, and stack the
+   input row hard against the bottom — directly above the keyboard. */
+.kbd-open .topbar       { display: none; }
+.kbd-open .dxc-band-box { display: none; }
+
+/* Reorder shell children: journal · dupes · status · TRX/RUN · macro · inputs */
+.kbd-open .log-journal   { order: 0; }
+.kbd-open #dupePanel     { order: 1; }
+.kbd-open .log-statusbar { order: 2; }
+.kbd-open .log-btn-bar   { order: 3; }
+.kbd-open .macro-preview { order: 4; }
+.kbd-open .log-input-row { order: 5; }
+
+/* Mini button bar: keep TRX + RUN/S&P, drop LOG/BACKUP/help and spacers */
+.kbd-open #btnHelp,
+.kbd-open #btnOpenLog,
+.kbd-open #btnBackup,
+.kbd-open .log-btn-spacer { display: none; }
+.kbd-open .log-btn-bar {
+  border-top: 0;
+  padding: 5px 10px;
+  justify-content: flex-start;
+}
+
+/* Shorten the status bar to country / prefix / QRB / Az (+ time/freq/mode) */
+.kbd-open .sb-extra { display: none; }
+
+/* Keep the whole input row on screen: let it wrap (Exch drops to its own line
+   instead of overflowing off the right edge) and drop the non-essential
+   extras (hint text, global toggle, prev-exch, azimuth arrow). */
+.kbd-open .log-input-row {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+.kbd-open .log-az-indicator,
+.kbd-open .log-hint-area,
+.kbd-open .log-global-search-label,
+.kbd-open #btnPrevEx { display: none; }
+
+/* ── Modals behave with the on-screen keyboard ─────────────────────────────*/
+.lm-box {
+  max-height: 90dvh;
+}
+@media (pointer: coarse) {
+  .lm-modal { align-items: flex-start; }
+  .lm-box   { margin-top: 2vh; }
+  .lm-row input,
+  .lm-row select,
+  .lm-row-select { scroll-margin-bottom: 45vh; }
+}

@@ -549,3 +549,91 @@ label.setup-trx-disabled {
     width: min(260px, calc(100vw - 48px));
   }
 }
+
+/* ---- TrxNet live device list ---- */
+.trxnet-devices {
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0f1312;
+  overflow: hidden;
+}
+.trxnet-devices-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+}
+.trxnet-devices-live {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 6px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
+.trxnet-peers-body {
+  padding: 4px 0;
+}
+.trxnet-peers-empty {
+  display: block;
+  padding: 10px 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.trxnet-peer {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 12px;
+  align-items: center;
+  padding: 6px 12px;
+  font-size: 13px;
+  border-left: 3px solid transparent;
+}
+.trxnet-peer + .trxnet-peer {
+  border-top: 1px solid rgba(59, 69, 65, 0.5);
+}
+.trxnet-peer-name {
+  font-family: monospace;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.trxnet-peer-ip {
+  font-family: monospace;
+  color: var(--muted);
+}
+.trxnet-peer-age {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 40px;
+  text-align: right;
+}
+.trxnet-peer-prio {
+  border-left-color: var(--accent);
+}
+.trxnet-peer-prio .trxnet-peer-name {
+  color: var(--accent);
+}
+.trxnet-prio-badge {
+  font-size: 10px;
+  font-family: inherit;
+  letter-spacing: 0.06em;
+  padding: 1px 6px;
+  border-radius: 6px;
+  color: #eaf6ee;
+  background: rgba(0, 136, 0, 0.35);
+  border: 1px solid #507163;
+}
+.trxnet-peer-self {
+  border-left-color: var(--muted);
+  background: rgba(255, 255, 255, 0.03);
+}
+.trxnet-peer-self .trxnet-peer-ip {
+  font-style: italic;
+}

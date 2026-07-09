@@ -2034,6 +2034,10 @@ function buildQsoEditModal() {
   document.getElementById('qeClose').addEventListener('click', closeQsoEdit);
   document.getElementById('qeCancel').addEventListener('click', closeQsoEdit);
   el.addEventListener('click', e => { if (e.target === el) closeQsoEdit(); });
+  // Enter in any text field saves (not in <select>, where Enter picks an option)
+  el.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && e.target.tagName === 'INPUT') { e.preventDefault(); saveQsoEdit(); }
+  });
   document.getElementById('qeSave').addEventListener('click', saveQsoEdit);
   document.getElementById('qeDelete').addEventListener('click', deleteQsoEdit);
 
@@ -2661,3 +2665,61 @@ dxcBwPalette.addEventListener('click', e => {
 });
 
 document.addEventListener('click', () => dxcBwPalette.classList.remove('dxc-bw-open'));
+
+/* ════════════════════════════════════════════════════════════════════════
+   Touch / on-screen keyboard adaptations
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* Bind the app height to the visual viewport so the on-screen keyboard never
+   hides the input row, and flag a compact layout while the keyboard is up.
+   No UA sniffing — purely capability/viewport driven. */
+(function setupViewportKeyboard() {
+  const vv = window.visualViewport;
+  if (!vv) return;                      // desktop / unsupported → CSS dvh fallback
+  const root = document.documentElement;
+  const body = document.body;
+  const KBD_RATIO = 0.75;               // viewport shrunk past this ⇒ keyboard open
+
+  function apply() {
+    // Size the (position:fixed) body to the visible viewport and glue it to
+    // the visible area. On iOS Safari, focusing a field pans the layout
+    // viewport (offsetTop > 0); following it stops the page jumping to the top.
+    root.style.setProperty('--app-h', vv.height + 'px');
+    body.style.top  = vv.offsetTop  + 'px';
+    body.style.left = vv.offsetLeft + 'px';
+    body.classList.toggle('kbd-open', vv.height < window.innerHeight * KBD_RATIO);
+  }
+
+  vv.addEventListener('resize', apply);
+  vv.addEventListener('scroll', apply);
+  apply();
+})();
+
+/* Keep the journal header aligned with rows when scrolled horizontally on
+   narrow / touch screens (the body is the horizontal scroller). */
+(function syncJournalHScroll() {
+  const body = document.getElementById('logJournalBody');
+  const header = document.getElementById('logJournalHeader');
+  if (!body || !header) return;
+  body.addEventListener('scroll', () => {
+    header.style.transform = 'translateX(' + (-body.scrollLeft) + 'px)';
+  });
+})();
+
+/* Enter = confirm in the remaining input fields (manual freq, call search,
+   QSO edit modal). Call/Exch keep their own workflow; the LOG create modal
+   already submits via its <form>. */
+
+// Manual freq: Enter applies (live input handler already pushed it) + closes keyboard.
+sbManualFreq.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); sbManualFreq.blur(); }
+});
+
+// Call search: Enter jumps to the first match and dismisses the keyboard.
+document.getElementById('logCallSearchInp').addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  const first = document.querySelector('#logJournalBody .qso-row.qso-search-hl');
+  if (first) first.scrollIntoView({ block: 'center' });
+  e.target.blur();
+});

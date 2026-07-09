@@ -66,7 +66,7 @@
         </details>
 
 
-        <details class="setup-section">
+        <details class="setup-section" id="trxnetSection">
           <summary class="setup-section-title">TrxNet <span class="setup-local-badge">eeprom</span></summary>
           <div class="setup-section-body">
             <span id="trxnetApNote"></span>
@@ -83,6 +83,16 @@
                 <span class="help-tip" data-tip="UDP port for TrxNet discovery and CoAP messages. All devices on the network must use the same port. Default: 5683.">?</span>
               </div>
             </label>
+            <label>Priority prefixes
+              <div class="input-with-tip">
+                <input type="text" name="trxnetprio" maxlength="71" placeholder="OI3 ANT" value="" oninput="this.value=this.value.toUpperCase()">
+                <span class="help-tip" data-tip="Space-separated device-name prefixes kept in the peer table when it fills up (prefix match). Default: OI3 ANT. Empty = priority off.">?</span>
+              </div>
+            </label>
+            <div class="trxnet-devices">
+              <div class="trxnet-devices-head">Network devices <span class="trxnet-devices-live">live</span></div>
+              <div id="trxnetPeers" class="trxnet-peers-body"><span class="trxnet-peers-empty">…</span></div>
+            </div>
             <p class="footnote">TrxNet protocol: <a href="https://github.com/ok1hra/TrxNet" target="_blank" rel="noopener">https://github.com/ok1hra/TrxNet &#8599;</a></p>
           </div>
         </details>
@@ -393,7 +403,7 @@
         }
 
         [
-          'ssid', 'pswd', 'ssid2', 'pswd2', 'trxnetport',
+          'ssid', 'pswd', 'ssid2', 'pswd2', 'trxnetport', 'trxnetprio',
           'baud', 'trx1label', 'civaddr', 'btname', 'trx2label',
           'trx2netid', 'trx2civaddr', 'trx3label', 'trx3netid', 'trx3civaddr',
           'dxchost', 'dxcport',
@@ -483,6 +493,77 @@
         document.getElementById('trxnetidInput').value = ('0' + octet.toString(16)).slice(-2);
       }
     });
+  </script>
+
+  <script>
+    // Live TrxNet device list — polls only while the TrxNet section is expanded.
+    (function () {
+      var section = document.getElementById('trxnetSection');
+      var body = document.getElementById('trxnetPeers');
+      if (!section || !body) return;
+      var timer = null;
+
+      function fmtAge(s) {
+        s = Math.max(0, s | 0);
+        if (s < 60) return s + ' s';
+        if (s < 3600) return (s / 60 | 0) + ' m';
+        return (s / 3600 | 0) + ' h';
+      }
+      function esc(t) {
+        return String(t).replace(/[&<>"]/g, function (c) {
+          return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+        });
+      }
+      function note(text) {
+        body.innerHTML = '<span class="trxnet-peers-empty">' + esc(text) + '</span>';
+      }
+      function row(name, ip, age, cls, badge) {
+        return '<div class="trxnet-peer ' + cls + '">' +
+          '<span class="trxnet-peer-name">' + esc(name) + (badge || '') + '</span>' +
+          '<span class="trxnet-peer-ip">' + esc(ip) + '</span>' +
+          '<span class="trxnet-peer-age">' + esc(age) + '</span>' +
+          '</div>';
+      }
+      function render(d) {
+        if (d.state === 'ap') { note('TrxNet not active in AP mode'); return; }
+        if (d.state === 'disabled') { note('TrxNet disabled'); return; }
+        var peers = (d.peers || []).slice();
+        peers.sort(function (a, b) {
+          if (!!b.prio !== !!a.prio) return b.prio - a.prio;   // priority first
+          return String(a.name).localeCompare(String(b.name)); // then alphabetical
+        });
+        var html = '';
+        if (d.self) html += row(d.self, 'this device', '', 'trxnet-peer-self', '');
+        if (!peers.length) {
+          html += '<span class="trxnet-peers-empty">No devices heard yet</span>';
+        } else {
+          peers.forEach(function (p) {
+            html += row(p.name, p.ip, fmtAge(p.age),
+              p.prio ? 'trxnet-peer-prio' : '',
+              p.prio ? ' <span class="trxnet-prio-badge">PRIO</span>' : '');
+          });
+        }
+        body.innerHTML = html;
+      }
+      function poll() {
+        fetch('/trxnet-peers.json', { cache: 'no-store' })
+          .then(function (r) { return r.json(); })
+          .then(render)
+          .catch(function () { note('Device list unavailable'); });
+      }
+      function start() {
+        if (timer) return;
+        poll();
+        timer = setInterval(poll, 3000);
+      }
+      function stop() {
+        if (timer) { clearInterval(timer); timer = null; }
+      }
+      section.addEventListener('toggle', function () {
+        if (section.open) start(); else stop();
+      });
+      if (section.open) start();
+    }());
   </script>
 
   <script>
