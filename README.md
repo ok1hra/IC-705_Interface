@@ -11,6 +11,9 @@
 - integrated DX cluster client and band map
 - web CAT interface
 - option to backup settings or entire logbook database
+- self-healing WiFi — escalating recovery (targeted reconnect → radio reset → automatic restart), designed around ESP32 Bluetooth/WiFi coexistence limits
+- red OFFLINE warning in the web page top bar when the browser loses connection to the interface
+- adaptive Bluetooth polling — fast refresh while the CAT page is open, low BT traffic otherwise (less interference with WiFi)
 
 <img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/docs/CAT.png" height="700">
 

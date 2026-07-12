@@ -91,7 +91,7 @@ bool cwIpOnConnect  = true;       // announce WiFi IP via CW on first BT connect
 volatile bool cwIpSendPending = false;
 
 #define LOOP_WARN_MS 200
-#define REV 20260707
+#define REV 20260712
 #define WIFI
 #define UDP_TO_FSK
 #define WDT         // watchdog timer
@@ -235,6 +235,7 @@ volatile bool btConnectPending = false;
 #if defined(WIFI)
   #include <WiFi.h>
   #include <esp_wifi.h>
+  #include "esp_coexist.h"
   #include <FS.h>
   #include <SPIFFS.h>
   #define HTTP_MAX_DATA_WAIT 1000
@@ -246,6 +247,17 @@ volatile bool btConnectPending = false;
   #define wifi_max_try 40             // Number of try
   unsigned long WifiTimer = 0;
   unsigned long WifiReconnect = 5000;
+  unsigned long WifiDownSince = 0;        // 0 = station link OK
+  bool WifiHardResetDone = false;         // one radio off/on per outage — repeating it wedges the driver
+  bool WifiCoexPreferred = false;         // coex arbiter tilted to WiFi for the duration of an outage
+  #define WIFI_HARD_RESET_AFTER_MS 10000  // radio off/on cycle when down longer than this
+  #define WIFI_RESTART_AFTER_MS    60000  // ESP.restart() when down longer than this
+  // Last known AP — reconnect targets channel+BSSID directly, because a full
+  // scan often finds nothing while the BT Classic (SPP) link is active (coex).
+  int32_t wifiLastChannel = 0;
+  uint8_t wifiLastBssid[6];
+  bool    wifiLastBssidValid = false;
+  String  wifiLastSsid;
   unsigned long webQuietUntil = 0;
   byte ActiveWifiProfile = 0;
   String MACString;
@@ -256,7 +268,24 @@ volatile bool btConnectPending = false;
   const char* ssidAP     = "IC705-if";
   const char* passwordAP = "remoteqth";
   bool APmode = false;
-  WebServer webServer(80);
+  // WebServer discards the client before handleClient() returns, so the slow-loop
+  // diagnostic can't sample it from outside. Response writes (where stalls to a dead
+  // client block the loop) go through this virtual, so capture peer+uri here.
+  class DiagWebServer : public WebServer {
+  public:
+    using WebServer::WebServer;
+    IPAddress lastPeer;
+    String lastUri;
+  protected:
+    size_t _currentClientWrite(const char* b, size_t l) override {
+      if (_currentClient.connected()) {
+        lastPeer = _currentClient.remoteIP();
+        lastUri = _currentUri;
+      }
+      return WebServer::_currentClientWrite(b, l);
+    }
+  };
+  DiagWebServer webServer(80);
   const byte DNS_PORT = 53;
   DNSServer dnsServer;             // captive portal in AP mode
 #endif
@@ -333,6 +362,9 @@ int incomingByte = 0;   // for incoming serial data
   WiFiClient DxcWsClient;
   String DxcHost = "";
   uint16_t DxcPort = 7300;
+  IPAddress DxcHostIp;                // cached resolve — hostByName blocks the loop for seconds
+  String DxcHostResolved = "";        // host the cache belongs to
+  #define DXC_CONNECT_TIMEOUT_MS 1500
   String DxcCallsign = "";
   String DxcLocator = "";
 
@@ -401,6 +433,15 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   const size_t FREQ_MEMORY_MAX_LEN = 20;
   const uint8_t CIV_ADDRESS_DEFAULT = 0xA4;
   const char *MEMORY_CONFIG_PATH = "/memories.cfg";
+  // BT CAT poll cadence (used by pollRadio) — slow when idle, fast while the
+  // CAT page holds it via /state?fast=1
+  #define CAT_POLL_MS       1000  // slow: freq poll interval
+  #define CAT_MODE_EVERY    2     // slow: mode polled every N-th freq tick (2 s)
+  #define AUX_POLL_MS       160   // slow: aux round-robin step (each of 10 items every 1.6 s)
+  #define CAT_POLL_FAST_MS  200   // fast: freq+mode poll interval (original cadence)
+  #define AUX_POLL_FAST_MS  80    // fast: aux round-robin step
+  #define CAT_FAST_HOLD_MS  3000  // fast mode lingers this long after the last ?fast=1 poll
+  unsigned long catFastUntil = 0;
   String setupSsidErr = "";
   String setupPswdErr = "";
   String setupSsid2Err = "";
@@ -1333,10 +1374,14 @@ void handleWebServerLoop(){
   webServer.handleClient();
   unsigned long elapsed = millis() - start;
   if (elapsed > LOOP_WARN_MS) {
+    // lastUri/lastPeer = request whose response was written most recently; for a
+    // write stall (the 10s blocks) that is exactly the connection that stalled
     Serial.print("LOOP| slow: webServer ");
     Serial.print(elapsed);
     Serial.print("ms uri=");
-    Serial.print(webServer.uri());
+    Serial.print(webServer.lastUri);
+    Serial.print(" peer=");
+    Serial.print(webServer.lastPeer);
     Serial.print(" wifi=");
     Serial.print((int)WiFi.status());
     Serial.print(" ip=");
@@ -1376,6 +1421,8 @@ void buildStateJson(char *buf, size_t bufSize){
 }
 
 void handleGetState(){
+  // CAT page polls /state?fast=1 — hold the fast BT poll cadence while it's open
+  if (webServer.arg("fast") == "1") catFastUntil = millis() + CAT_FAST_HOLD_MS;
   static char stateBuf[640];
   buildStateJson(stateBuf, sizeof(stateBuf));
   webServer.sendHeader("Cache-Control", "no-cache");
@@ -2457,6 +2504,24 @@ void setup(){
       Serial.print(" dBm, MAC ");
       Serial.println(MACString);
 
+      // Prewarm the DXC DNS cache while nothing time-critical runs yet — the
+      // first hostByName may block for seconds on a slow resolver, which would
+      // otherwise freeze the loop on the first telnet connect.
+      if (DxcHost.length() > 0) {
+        IPAddress dxcIp;
+        if (WiFi.hostByName(DxcHost.c_str(), dxcIp)) {
+          DxcHostIp = dxcIp;
+          DxcHostResolved = DxcHost;
+          Serial.print(" DXC| resolved ");
+          Serial.print(DxcHost);
+          Serial.print(" to ");
+          Serial.println(dxcIp);
+        } else {
+          Serial.print(" DXC| DNS prewarm failed for ");
+          Serial.println(DxcHost);
+        }
+      }
+
       #if defined(RTLE)
         rtleserver.on("/", handleRTLE);      //This is display page
         rtleserver.begin();                  //Start server
@@ -2616,21 +2681,30 @@ void handleBtEvents(){
   }
 }
 
+// BT CAT poll cadence. Every frame keeps the SPP link out of sniff mode and the
+// coex arbiter then starves WiFi (TCP stalls → AP drops us), so idle cadence is
+// slow. The CAT page requests /state?fast=1, which holds the fast cadence while
+// it stays open; the log page and everything else run on the slow one.
 void pollRadio(){
   static unsigned long catPollTimer = 0;
   static unsigned long auxPollTimer = 0;
   static uint8_t auxPollIndex = 0;
+  static uint8_t modePollDivider = 0;
 
   if (!btClientConnected) return;
+  bool fastCat = (long)(catFastUntil - millis()) > 0;
 
-  if (millis() - catPollTimer > 200) {
+  if (millis() - catPollTimer > (fastCat ? CAT_POLL_FAST_MS : CAT_POLL_MS)) {
     catPollTimer = millis();
     if (radio_address == 0x00) {
       if (Debug == true) Serial.println("CAT | searching radio...");
       searchRadio();
     } else {
       sendCatRequest(CMD_READ_FREQ);
-      sendCatRequest(CMD_READ_MODE);
+      if (fastCat || ++modePollDivider >= CAT_MODE_EVERY) {
+        modePollDivider = 0;
+        sendCatRequest(CMD_READ_MODE);
+      }
       processCatMessages();
     }
   }
@@ -2650,7 +2724,7 @@ void pollRadio(){
     ServiceBackgroundTasks(10000); // wait for radio to finish keying
   }
 
-  if (radio_address != 0x00 && millis() - auxPollTimer > 80) {
+  if (radio_address != 0x00 && millis() - auxPollTimer > (fastCat ? AUX_POLL_FAST_MS : AUX_POLL_MS)) {
     auxPollTimer = millis();
     uint8_t frame[10];
     size_t frameLen = 0;
@@ -2730,14 +2804,60 @@ void Watchdog(){
     //   WifiTimer = currentMillis;
     // }
     if (!APmode && (currentMillis - WifiTimer >= WifiReconnect)) {
-      wl_status_t st = WiFi.status();
-
-      if (st == WL_DISCONNECTED || st == WL_CONNECT_FAILED || st == WL_NO_SSID_AVAIL) {
-        ActiveWifiProfile = NextWifiProfile(ActiveWifiProfile);
-        WiFiRetryActiveProfile("status");
+      if (WiFiStationReady()) {
+        WifiDownSince = 0;
+        WifiHardResetDone = false;
+        if (WifiCoexPreferred) {
+          esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
+          WifiCoexPreferred = false;
+          Serial.print(millis());
+          Serial.println(" WIFI| coex back to balance");
+        }
+        uint8_t *bssid = WiFi.BSSID();
+        if (bssid && (!wifiLastBssidValid || memcmp(wifiLastBssid, bssid, 6) != 0
+                      || wifiLastChannel != WiFi.channel())) {
+          memcpy(wifiLastBssid, bssid, 6);
+          wifiLastChannel = WiFi.channel();
+          wifiLastSsid = WiFi.SSID();
+          wifiLastBssidValid = true;
+        }
         WifiTimer = currentMillis;
-      } else if (!WiFiStationReady()) {
-        WiFiRetryActiveProfile("no ip");
+      } else {
+        if (WifiDownSince == 0) WifiDownSince = currentMillis;
+        unsigned long downFor = currentMillis - WifiDownSince;
+        wl_status_t st = WiFi.status();
+
+        // With the BT link up the coex arbiter starves WiFi so badly that
+        // re-association never succeeds — tilt RF time to WiFi until we are back.
+        if (!WifiCoexPreferred && btClientConnected) {
+          esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
+          WifiCoexPreferred = true;
+          Serial.print(millis());
+          Serial.println(" WIFI| coex prefer WiFi (BT active)");
+        }
+
+        // status 255 = driver no longer initialized; only a reboot brings it back
+        if ((downFor >= WIFI_RESTART_AFTER_MS || st == WL_NO_SHIELD) && !stateTx) {
+          Serial.print(millis());
+          Serial.println(" WIFI| unrecoverable, restarting ESP");
+          delay(100);
+          ESP.restart();
+        }
+        // Radio off/on at most once per outage, and never while the BT SPP link is
+        // up — esp_wifi_stop() then times out ("wifi un-init") and repeating the
+        // cycle kills the driver (rx buffer init errors, status=255).
+        bool hardReset = false;
+        if (downFor >= WIFI_HARD_RESET_AFTER_MS && !WifiHardResetDone) {
+          WifiHardResetDone = true;
+          hardReset = !btClientConnected;
+        }
+
+        if (st == WL_DISCONNECTED || st == WL_CONNECT_FAILED || st == WL_NO_SSID_AVAIL) {
+          ActiveWifiProfile = NextWifiProfile(ActiveWifiProfile);
+          WiFiRetryActiveProfile("status", hardReset);
+        } else {
+          WiFiRetryActiveProfile("no ip", hardReset);
+        }
         WifiTimer = currentMillis;
       }
     }
@@ -2776,24 +2896,40 @@ bool WiFiStationReady() {
 }
 
 //-------------------------------------------------------------------------------------------------------
-void WiFiRetryActiveProfile(const char *reason) {
+void WiFiRetryActiveProfile(const char *reason, bool hardReset) {
   if (WifiProfileConfigured(ActiveWifiProfile) == false) {
     ActiveWifiProfile = 0;
   }
   String wifiSsid = WifiProfileSSID(ActiveWifiProfile);
   String wifiPswd = WifiProfilePSWD(ActiveWifiProfile);
+  bool targeted = !hardReset && wifiLastBssidValid && wifiSsid == wifiLastSsid;
   Serial.print(millis());
   Serial.print(" WIFI| reconnecting ");
   Serial.print(reason);
+  if (hardReset) Serial.print(" [radio reset]");
+  else if (targeted) { Serial.print(" [bssid ch"); Serial.print(wifiLastChannel); Serial.print("]"); }
   Serial.print(" status=");
   Serial.print((int)WiFi.status());
   Serial.print(" ip=");
   Serial.print(WiFi.localIP());
   Serial.print(" ssid ");
   Serial.println(wifiSsid);
-  WiFi.disconnect(false, false);
-  delay(100);
-  WiFi.begin(wifiSsid.c_str(), wifiPswd.c_str());
+  if (hardReset) {
+    // full radio off/on clears wedged driver state, then full-scan connect
+    WiFi.disconnect(true, false);
+    delay(200);
+    WiFi.mode(WIFI_STA);
+    delay(100);
+    WiFi.begin(wifiSsid.c_str(), wifiPswd.c_str());
+  } else {
+    WiFi.disconnect(false, false);
+    delay(100);
+    if (targeted) {
+      WiFi.begin(wifiSsid.c_str(), wifiPswd.c_str(), wifiLastChannel, wifiLastBssid);
+    } else {
+      WiFi.begin(wifiSsid.c_str(), wifiPswd.c_str());
+    }
+  }
 }
 
 //-------------------------------------------------------------------------------------------------------
@@ -4460,13 +4596,25 @@ bool DxcConnectTelnet(){
     return false;
   }
   if(DxcTelnetClient.connected()) return true;
+  // resolve once and cache — hostByName blocks for seconds when DNS packets get lost
+  if((uint32_t)DxcHostIp == 0 || DxcHostResolved != DxcHost){
+    IPAddress ip;
+    if(!WiFi.hostByName(DxcHost.c_str(), ip)){
+      DxcReconnectTimer = millis() + 5000;
+      DxcUpdateTelnetStatus(false);
+      return false;
+    }
+    DxcHostIp = ip;
+    DxcHostResolved = DxcHost;
+  }
   WiFiClient newClient;
-  newClient.setNoDelay(true);
-  if(!newClient.connect(DxcHost.c_str(), DxcPort)){
+  if(!newClient.connect(DxcHostIp, DxcPort, DXC_CONNECT_TIMEOUT_MS)){
+    DxcHostIp = IPAddress();   // stale address? re-resolve on the next attempt
     DxcReconnectTimer = millis() + 5000;
     DxcUpdateTelnetStatus(false);
     return false;
   }
+  newClient.setNoDelay(true);
   DxcTelnetClient = newClient;
   DxcTelnetLoginPending = true;
   DxcUpdateTelnetStatus(true, true);

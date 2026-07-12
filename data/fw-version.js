@@ -8,6 +8,10 @@
   var remoteRev = null;
   var wifiRssi  = null;
   var el        = null;
+  var offline   = false;
+  var failCount = 0;
+  var OFFLINE_AFTER = 2;      // consecutive failed polls before warning
+  var FETCH_TIMEOUT = 4000;   // ms; hung request counts as a failed poll
 
   function injectStyles() {
     var s = document.createElement('style');
@@ -18,25 +22,36 @@
       'a.fw-update-link:hover{color:#b45309;text-decoration:underline;}' +
       '.topbar-wifi-rssi{color:inherit;}' +
       '.topbar-wifi-rssi-bad{color:#dc2626;font-weight:700;}' +
+      '.topbar-esp-offline{color:#fff;background:#dc2626;font-weight:700;' +
+        'padding:1px 7px;border-radius:4px;animation:espOfflineBlink 1s step-end infinite;}' +
+      '@keyframes espOfflineBlink{50%{opacity:0.45;}}' +
       '.topbar-fw-sep{color:inherit;margin:0 7px;}';
     document.head.appendChild(s);
   }
 
   function render() {
-    if (!el || localRev === null) return;
+    if (!el || (localRev === null && !offline)) return;
     el.innerHTML = '';
 
     var rssi = document.createElement('span');
-    rssi.className = 'topbar-wifi-rssi';
-    if (wifiRssi !== null && wifiRssi > -999) {
-      rssi.textContent = wifiRssi + ' dBm';
-      if (wifiRssi <= -70) {
-        rssi.className += ' topbar-wifi-rssi-bad';
-      }
+    if (offline) {
+      rssi.className = 'topbar-esp-offline';
+      rssi.textContent = '⚠ OFFLINE';
+      rssi.title = 'Page lost connection to the interface';
     } else {
-      rssi.textContent = '-- dBm';
+      rssi.className = 'topbar-wifi-rssi';
+      if (wifiRssi !== null && wifiRssi > -999) {
+        rssi.textContent = wifiRssi + ' dBm';
+        if (wifiRssi <= -70) {
+          rssi.className += ' topbar-wifi-rssi-bad';
+        }
+      } else {
+        rssi.textContent = '-- dBm';
+      }
     }
     el.appendChild(rssi);
+
+    if (localRev === null) return;
 
     var sep = document.createElement('span');
     sep.className = 'topbar-fw-sep';
@@ -78,9 +93,16 @@
   };
 
   function fetchLocal() {
-    fetch('/state')
-      .then(function (r) { return r.json(); })
+    var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    var timer = ctrl ? window.setTimeout(function () { ctrl.abort(); }, FETCH_TIMEOUT) : null;
+    fetch('/state', ctrl ? { signal: ctrl.signal, cache: 'no-store' } : { cache: 'no-store' })
+      .then(function (r) {
+        if (!r.ok) throw new Error('http ' + r.status);
+        return r.json();
+      })
       .then(function (d) {
+        failCount = 0;
+        offline = false;
         if (d && d.fwRev) {
           localRev = String(d.fwRev);
         }
@@ -90,7 +112,16 @@
         }
         render();
       })
-      .catch(function () {});
+      .catch(function () {
+        failCount++;
+        if (failCount >= OFFLINE_AFTER && !offline) {
+          offline = true;
+          render();
+        }
+      })
+      .finally(function () {
+        if (timer !== null) window.clearTimeout(timer);
+      });
   }
 
   function fetchRemote() {

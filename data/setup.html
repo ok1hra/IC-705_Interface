@@ -608,6 +608,11 @@
       const file = this.files[0];
       if (!file) return;
       const msg = document.getElementById("uploadMsg");
+      if (!/config\.json$/i.test(file.name)) {
+        msg.textContent = "Error: file name must end with config.json";
+        this.value = "";
+        return;
+      }
       msg.textContent = "Uploading…";
       const reader = new FileReader();
       reader.onload = function (e) {

@@ -454,7 +454,7 @@ function startPolling() {
     // Skip frequency read while user is tuning
     if (Date.now() < pauseFrequencyReadUntil) return;
 
-    fetch("/state")
+    fetch("/state?fast=1")
       .then(r => r.json())
       .then(data => {
         pollConnected = true;
