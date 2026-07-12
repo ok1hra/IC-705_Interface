@@ -1,6 +1,6 @@
 {
   "name": "IC-705 Interface",
-  "version": "20260707",
+  "version": "20260712",
   "new_install_prompt_erase": true,
   "builds": [
     {
