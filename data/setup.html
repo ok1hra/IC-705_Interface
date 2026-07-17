@@ -114,9 +114,18 @@
             </label>
 
             <div class="setup-trx-divider"></div>
-            <div class="setup-trx-box">TRX1 &#8212; Connection: Bluetooth</div>
+            <div class="setup-trx-box">TRX1 &#8212; Primary radio</div>
             <label>Label
               <input type="text" id="ls_trx1Label" name="trx1label" maxlength="10" placeholder="IC-705" value="" class="setup-input-partial">
+            </label>
+            <label>Connection
+              <div class="input-with-tip">
+                <select name="trx1transport" id="trx1transport" class="setup-baud-select">
+                  <option value="lan">LAN &#8212; recommended</option>
+                  <option value="bluetooth">Bluetooth &#8212; not recommended</option>
+                </select>
+                <span class="help-tip" data-tip="How the interface reaches the primary radio. LAN (WiFi / RS-BA1) has no WiFi/Bluetooth coexistence problems — recommended. Bluetooth is kept for compatibility only.">?</span>
+              </div>
             </label>
             <label>CI-V address
               <div class="input-with-tip">
@@ -125,20 +134,43 @@
               </div>
               <span class="msg"></span>
             </label>
-            <label>Bluetooth device name
-              <div class="input-with-tip">
-                <input type="text" name="btname" maxlength="20" pattern="[a-zA-Z0-9 _-]+" title="Only letters, digits, space, hyphen and underscore" value="">
-                <span class="help-tip" data-tip="Name shown when pairing via Bluetooth. Max 20 characters (letters, digits, space, - _). Change requires reboot.">?</span>
-              </div>
-            </label>
-            <label class="checkbox-row">
-              <input type="checkbox" name="cwIpOnConnect">
-              Announce WiFi IP via CW on first BT connect
-              <span class="help-tip" data-tip="Sends the ESP32 IP address in Morse code after the first Bluetooth connection — useful when DHCP assigns an unknown address.">?</span>
-            </label>
+            <div id="trx1LanFields">
+              <label>Radio IP address
+                <div class="input-with-tip">
+                  <input type="text" name="lanip" maxlength="15" placeholder="192.168.1.60" value="" class="setup-input-partial">
+                  <span class="help-tip" data-tip="IP address of the radio on your WiFi/LAN. The radio must be on the same network as this interface.">?</span>
+                </div>
+              </label>
+              <label>Network username
+                <input type="text" name="lanuser" maxlength="16" value="" class="setup-input-partial">
+              </label>
+              <label>Network password
+                <input type="password" name="lanpass" maxlength="16" value="" class="setup-input-partial">
+              </label>
+              <small class="setup-hint">Enable on the radio: IC-705 <code>MENU → SET → WLAN SET → Remote Settings → Network Control ON</code> and set Network User1 ID/password.</small>
+            </div>
+            <div id="trx1BtFields">
+              <label>Bluetooth device name
+                <div class="input-with-tip">
+                  <input type="text" name="btname" maxlength="20" pattern="[a-zA-Z0-9 _-]+" title="Only letters, digits, space, hyphen and underscore" value="">
+                  <span class="help-tip" data-tip="Name shown when pairing via Bluetooth. Max 20 characters (letters, digits, space, - _). Change requires reboot.">?</span>
+                </div>
+              </label>
+              <label class="checkbox-row">
+                <input type="checkbox" name="cwIpOnConnect">
+                Announce WiFi IP via CW on first BT connect
+                <span class="help-tip" data-tip="Sends the ESP32 IP address in Morse code after the first Bluetooth connection — useful when DHCP assigns an unknown address.">?</span>
+              </label>
+            </div>
 
             <div class="setup-trx-divider"></div>
             <div class="setup-trx-box">TRX2</div>
+            <label class="checkbox-row">
+              <input type="checkbox" name="trx2enable" id="trx2enable">
+              Enable TRX2 (secondary — band map / OI3 keyer)
+              <span class="help-tip" data-tip="When off, TRX2 is not polled or shown. Turn on to configure its connection.">?</span>
+            </label>
+            <div id="trx2Config">
             <label>Label
               <input type="text" id="ls_trx2Label" name="trx2label" maxlength="10" placeholder="TRX2" value="" class="setup-input-partial">
             </label>
@@ -157,9 +189,16 @@
                 <span class="help-tip" data-tip="CI-V address of TRX2 on the shared serial bus (2-digit hex, e.g. 94 for IC-7300, A4 for IC-705). Baud rate is the common serial baud rate.">?</span>
               </div>
             </label>
+            </div>
 
             <div class="setup-trx-divider"></div>
             <div class="setup-trx-box">TRX3</div>
+            <label class="checkbox-row">
+              <input type="checkbox" name="trx3enable" id="trx3enable">
+              Enable TRX3 (secondary — band map / OI3 keyer)
+              <span class="help-tip" data-tip="When off, TRX3 is not polled or shown. Turn on to configure its connection.">?</span>
+            </label>
+            <div id="trx3Config">
             <label>Label
               <input type="text" id="ls_trx3Label" name="trx3label" maxlength="10" placeholder="TRX3" value="" class="setup-input-partial">
             </label>
@@ -178,6 +217,7 @@
                 <span class="help-tip" data-tip="CI-V address of TRX3 on the shared serial bus (2-digit hex, e.g. 94 for IC-7300, A4 for IC-705). Baud rate is the common serial baud rate.">?</span>
               </div>
             </label>
+            </div>
           </div>
         </details>
 
@@ -404,11 +444,27 @@
 
         [
           'ssid', 'pswd', 'ssid2', 'pswd2', 'trxnetport', 'trxnetprio',
-          'baud', 'trx1label', 'civaddr', 'btname', 'trx2label',
+          'baud', 'trx1label', 'trx1transport', 'civaddr', 'lanip', 'lanuser', 'lanpass',
+          'btname', 'trx2label',
           'trx2netid', 'trx2civaddr', 'trx3label', 'trx3netid', 'trx3civaddr',
           'dxchost', 'dxcport',
           'dxccall', 'dxclocator', 'rstSsb', 'rstCwRtty', 'blockedDxcc'
         ].forEach(function (name) { setValue(name, data[name]); });
+
+        // TRX1 transport: show LAN or Bluetooth fields per the selected connection
+        function refreshTrx1Transport() {
+          var sel = document.getElementById('trx1transport');
+          var isLan = sel && sel.value === 'lan';
+          var lanBox = document.getElementById('trx1LanFields');
+          var btBox = document.getElementById('trx1BtFields');
+          if (lanBox) lanBox.style.display = isLan ? '' : 'none';
+          if (btBox) btBox.style.display = isLan ? 'none' : '';
+        }
+        var trx1t = document.getElementById('trx1transport');
+        if (trx1t) {
+          refreshTrx1Transport();
+          trx1t.addEventListener('change', refreshTrx1Transport);
+        }
         setValue('cwIpOnConnect', data.cwIpOnConnect);
         setValue('manualModeForPhone', data.manualModeForPhone);
         for (var i = 1; i <= 4; i++) setValue('cwmem' + i, data['cwmem' + i]);
@@ -454,6 +510,24 @@
           document.querySelectorAll('[name="' + p + 'conntype"]').forEach(function (r) {
             r.addEventListener('change', function () { refreshConnTypeInputs(p); });
           });
+        });
+
+        // Enable toggle for TRX2/3: derive initial state from stored config
+        // (active = TrxNet with a real NET_ID, or CI-V with a real address).
+        // 0x00 (unset) and 0xff (unprogrammed sentinel) both count as disabled.
+        function isHexActive(v) { var n = v ? parseInt(v, 16) : 0; return n > 0 && n < 255; }
+        ['trx2', 'trx3'].forEach(function (p) {
+          var ct = (data[p + 'conntype'] || 0);
+          var enabled = (ct === 1) ? isHexActive(data[p + 'civaddr'])
+                                   : isHexActive(data[p + 'netid']);
+          var cb = document.getElementById(p + 'enable');
+          var cfg = document.getElementById(p + 'Config');
+          function refresh() { if (cfg) cfg.style.display = cb.checked ? '' : 'none'; }
+          if (cb) {
+            cb.checked = enabled;
+            refresh();
+            cb.addEventListener('change', refresh);
+          }
         });
 
         // Show resolved peer device names

@@ -91,7 +91,7 @@ bool cwIpOnConnect  = true;       // announce WiFi IP via CW on first BT connect
 volatile bool cwIpSendPending = false;
 
 #define LOOP_WARN_MS 200
-#define REV 20260712
+#define REV 20260717
 #define WIFI
 #define UDP_TO_FSK
 #define WDT         // watchdog timer
@@ -333,6 +333,13 @@ char CwMsg[37] = "";
 // crash in first nvs_open). Library per-board defaults apply (ESP32: 24).
 #include <WiFiUdp.h>
 #include <TrxNet.h>
+#include "icomLanClient.h"      // LAN CI-V transport (alternative to BT)
+IcomLanClient lanClient;
+bool    lanMode = true;         // true when transceiverType == "IC-705-LAN" (LAN is the default)
+String  lanRadioIp = "";        // radio IP for LAN mode
+String  lanUser = "";           // ICOM network username
+String  lanPass = "";           // ICOM network password
+uint32_t lanFreqTmp = 0;        // last freq published to TrxNet (change detect)
 WiFiUDP trxUdp;
 TrxNet  net(trxUdp);
 char    trxDeviceName[TRXNET_MAX_DEVICE_NAME];
@@ -441,6 +448,8 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   #define CAT_POLL_FAST_MS  200   // fast: freq+mode poll interval (original cadence)
   #define AUX_POLL_FAST_MS  80    // fast: aux round-robin step
   #define CAT_FAST_HOLD_MS  3000  // fast mode lingers this long after the last ?fast=1 poll
+  #define CAT_POLL_OUTAGE_MS 3000 // WiFi outage: freq-only poll — BT must go near-silent
+                                  // so the SPP link can sniff and WiFi can re-associate
   unsigned long catFastUntil = 0;
   String setupSsidErr = "";
   String setupPswdErr = "";
@@ -448,7 +457,7 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   String setupPswd2Err = "";
   String setupCivAddrErr = "";
   bool setupSaveOk = false;
-  String transceiverType = "IC-705-BT";
+  String transceiverType = "IC-705-LAN";  // LAN is the recommended default (BT deprecated)
   uint8_t configuredCivAddress = CIV_ADDRESS_DEFAULT;
   String cwMemoryText[CW_MEMORY_COUNT];
   String freqMemoryText[FREQ_MEMORY_COUNT];
@@ -610,7 +619,7 @@ void loadMemoryConfig(void){
 
   if (file.available()) {
     String configuredType = trimMemoryValue(file.readStringUntil('\n'), 16);
-    if (configuredType == "IC-7610-CI-V") {
+    if (configuredType == "IC-7610-CI-V" || configuredType == "IC-705-LAN") {
       transceiverType = configuredType;
     } else {
       transceiverType = "IC-705-BT";
@@ -623,6 +632,13 @@ void loadMemoryConfig(void){
       configuredCivAddress = parsedAddress;
     }
   }
+
+  // LAN transport config (backward compatible: absent lines -> empty)
+  if (file.available()) lanRadioIp = trimMemoryValue(file.readStringUntil('\n'), 15);
+  if (file.available()) lanUser    = trimMemoryValue(file.readStringUntil('\n'), 16);
+  if (file.available()) lanPass    = trimMemoryValue(file.readStringUntil('\n'), 16);
+
+  lanMode = (transceiverType == "IC-705-LAN");
 
   file.close();
 }
@@ -644,6 +660,9 @@ void saveMemoryConfig(void){
     file.print("0");
   }
   file.println(String(configuredCivAddress, HEX));
+  file.println(lanRadioIp);
+  file.println(lanUser);
+  file.println(lanPass);
 
   file.close();
 }
@@ -1299,7 +1318,11 @@ void handleSetupData(){
   j += ",\"trxnetprio\":\""; j += configJsonEscape(TRXNET_PRIO); j += "\"";
   j += ",\"baud\":\""; j += baudSelect; j += "\"";
   j += ",\"trx1label\":\""; j += configJsonEscape(g_lcTrx1Label); j += "\"";
+  j += ",\"trx1transport\":\""; j += (transceiverType == "IC-705-LAN") ? "lan" : "bluetooth"; j += "\"";
   j += ",\"civaddr\":\""; j += civHex; j += "\"";
+  j += ",\"lanip\":\"";   j += configJsonEscape(lanRadioIp); j += "\"";
+  j += ",\"lanuser\":\""; j += configJsonEscape(lanUser); j += "\"";
+  j += ",\"lanpass\":\""; j += configJsonEscape(lanPass); j += "\"";
   j += ",\"btname\":\""; j += configJsonEscape(BT_NAME); j += "\"";
   j += ",\"cwIpOnConnect\":"; j += cwIpOnConnect ? "true" : "false";
   j += ",\"trx2label\":\""; j += configJsonEscape(g_lcTrx2Label); j += "\"";
@@ -1394,8 +1417,10 @@ void buildStateJson(char *buf, size_t bufSize){
   copyModesText(modesSnapshot, sizeof(modesSnapshot));
   char addrStr[5];
   snprintf(addrStr, sizeof(addrStr), "0x%02X", radio_address);
-  const char *btStat = !btClientConnected ? "BT idle" :
-                       (radio_address == 0x00 ? "BT linked | searching CI-V" : "BT linked");
+  bool radioLinked = lanMode ? lanClient.connected() : btClientConnected;
+  const char *btStat = lanMode ? (lanClient.connected() ? "LAN linked" : "LAN connecting") :
+                       (!btClientConnected ? "BT idle" :
+                       (radio_address == 0x00 ? "BT linked | searching CI-V" : "BT linked"));
   const char *wifiStat = APmode ? "WiFi AP" :
                          (WiFiStationReady() ? "WiFi STA" : "WiFi down");
   int rssi = (APmode || !WiFiStationReady()) ? -999 : (int)WiFi.RSSI();
@@ -1408,7 +1433,7 @@ void buildStateJson(char *buf, size_t bufSize){
     "\"afGain\":%u,\"keySpeed\":%u,\"rfPower\":%u,"
     "\"supplyVolts\":%.2f,\"swr\":%.2f,"
     "\"preamp\":%u,\"vox\":%u,\"dxcConnected\":%s}",
-    btClientConnected ? "true" : "false", btStat, wifiStat,
+    radioLinked ? "true" : "false", btStat, wifiStat,
     rssi, (unsigned)REV, statusPower ? "true" : "false",
     (unsigned)frequency, modesSnapshot, (unsigned)stateFilter,
     addrStr, transceiverType.c_str(), stateTx ? "true" : "false", (unsigned)stateRitRaw,
@@ -1541,7 +1566,7 @@ void handlePostCmd(){
     #if defined(UDP_TO_FSK)
     char modesSnapshot[sizeof(modes)];
     copyModesText(modesSnapshot, sizeof(modesSnapshot));
-    if (strcmp(modesSnapshot, "CW") == 0 && btClientConnected && radio_address != 0x00) {
+    if (strcmp(modesSnapshot, "CW") == 0 && radioLinkUp() && radio_address != 0x00) {
       uint8_t frame[] = {START_BYTE, START_BYTE, radio_address, CONTROLLER_ADDRESS,
                          CMD_SEND_CW_MSG, 0xFF, STOP_BYTE};
       catWriteFrame(frame, sizeof(frame), true);
@@ -1549,7 +1574,7 @@ void handlePostCmd(){
       abortFskTransmission = true;
     }
     #else
-    if (btClientConnected && radio_address != 0x00) {
+    if (radioLinkUp() && radio_address != 0x00) {
       char modesSnapshot[sizeof(modes)];
       copyModesText(modesSnapshot, sizeof(modesSnapshot));
       if (strcmp(modesSnapshot, "CW") == 0) {
@@ -1563,7 +1588,7 @@ void handlePostCmd(){
     return;
   }
 
-  if (!btClientConnected || radio_address == 0x00) {
+  if (!radioLinkUp() || radio_address == 0x00) {
     webServer.send(503, "application/json", "{\"error\":\"radio_disconnected\"}");
     return;
   }
@@ -2217,7 +2242,19 @@ void setupWebServer(void){
 }
 
 
+// True when the primary radio link is up, whichever transport it uses.
+bool radioLinkUp(){
+  return lanMode ? lanClient.connected() : btClientConnected;
+}
+
 bool catWriteFrame(const uint8_t *frame, size_t frameLen, bool broadcastTx){
+  (void)broadcastTx;
+  if (lanMode) {
+    // frame = FE FE <radio> <ctrl> <cmd> <payload> FD. Strip the wrapper and
+    // hand the body (cmd+payload) to the LAN client, which re-wraps with 0xE1.
+    if (frameLen < 6) return false;
+    return lanClient.sendCommand(frame + 4, frameLen - 5);
+  }
   #if defined(BLUETOOTH)
     if (!btClientConnected) {
       return false;
@@ -2561,7 +2598,22 @@ void setup(){
 
     #if defined(BLUETOOTH)
       esp_bt_mem_release(ESP_BT_MODE_BLE);
-      configRadioBaud(0);
+      if (lanMode) {
+        // LAN transport: never start the BT controller (no WiFi/BT coex at all)
+        IPAddress rip;
+        Serial.println("LAN | cfg ip=" + lanRadioIp + " user='" + lanUser +
+                       "' passlen=" + String(lanPass.length()));
+        if (!rip.fromString(lanRadioIp)) {
+          Serial.println("LAN | bad radio IP in config — LAN not started");
+        } else if (lanUser.length() == 0 || lanPass.length() == 0) {
+          Serial.println("LAN | empty user/pass in config — use CLI 'L' to set them");
+        } else {
+          lanClient.begin(rip, 50001, lanUser.c_str(), lanPass.c_str(), configuredCivAddress);
+          Serial.println("LAN | transport active (BT not started)");
+        }
+      } else {
+        configRadioBaud(0);
+      }
     #endif
 
     // TrxNet init — after WiFi is up; NET_ID 0x00 = disabled
@@ -2602,6 +2654,7 @@ void loop(){
   }
   #define _TIMED(name, call) { unsigned long _t = millis(); call; unsigned long _d = millis()-_t; if(_d > LOOP_WARN_MS) { Serial.print("LOOP| slow: " name " "); Serial.print(_d); Serial.println("ms"); } }
   _TIMED("Watchdog",        Watchdog())
+  _TIMED("LanClient",       lanClientLoop())
   _TIMED("CLI",             serialPump())
   _TIMED("CIV",             civPollTick())
   #if defined(RTLE)
@@ -2693,15 +2746,24 @@ void pollRadio(){
 
   if (!btClientConnected) return;
   bool fastCat = (long)(catFastUntil - millis()) > 0;
+  // During a WiFi outage every BT frame keeps the SPP link out of sniff mode and
+  // re-association then never succeeds (even with ESP_COEX_PREFER_WIFI). Web and
+  // TrxNet are unreachable anyway — keep only a slow freq poll for the band decoder.
+  bool wifiOutage = false;
+  #if defined(WIFI)
+    wifiOutage = !APmode && (WifiDownSince != 0);
+  #endif
 
-  if (millis() - catPollTimer > (fastCat ? CAT_POLL_FAST_MS : CAT_POLL_MS)) {
+  unsigned long freqInterval = wifiOutage ? CAT_POLL_OUTAGE_MS
+                                          : (fastCat ? CAT_POLL_FAST_MS : CAT_POLL_MS);
+  if (millis() - catPollTimer > freqInterval) {
     catPollTimer = millis();
     if (radio_address == 0x00) {
       if (Debug == true) Serial.println("CAT | searching radio...");
       searchRadio();
     } else {
       sendCatRequest(CMD_READ_FREQ);
-      if (fastCat || ++modePollDivider >= CAT_MODE_EVERY) {
+      if (!wifiOutage && (fastCat || ++modePollDivider >= CAT_MODE_EVERY)) {
         modePollDivider = 0;
         sendCatRequest(CMD_READ_MODE);
       }
@@ -2724,7 +2786,7 @@ void pollRadio(){
     ServiceBackgroundTasks(10000); // wait for radio to finish keying
   }
 
-  if (radio_address != 0x00 && millis() - auxPollTimer > (fastCat ? AUX_POLL_FAST_MS : AUX_POLL_MS)) {
+  if (!wifiOutage && radio_address != 0x00 && millis() - auxPollTimer > (fastCat ? AUX_POLL_FAST_MS : AUX_POLL_MS)) {
     auxPollTimer = millis();
     uint8_t frame[10];
     size_t frameLen = 0;
@@ -2747,11 +2809,13 @@ void pollRadio(){
 }
 
 void Watchdog(){
-  handleBtEvents();
-  pollRadio();
+  if (!lanMode) { handleBtEvents(); pollRadio(); }
 
   static unsigned long mqttFreqTimer = 0;
 
+  // In LAN mode the PWR/freq state is owned by lanClientLoop(); skip the
+  // BT-driven power/publish logic below (powerTimer is never fed over LAN).
+  if (!lanMode) {
   // Power OUT/LED
   // powerTimer==0 => no radio data yet (fresh boot / disconnected): force OFF.
   // Without this, at boot millis() is still < 3000 so millis()-powerTimer would
@@ -2791,6 +2855,7 @@ void Watchdog(){
     // Band Decoder update on TRX1 frequency change
     if (bdEnabled && bdSource == 1) bdUpdate(frequency);
   }
+  } // end if(!lanMode)
 
   // WIFI status
   #if defined(WIFI)
@@ -2871,6 +2936,56 @@ void Watchdog(){
     }
   #endif
 
+}
+
+//-------------------------------------------------------------------------------------------------------
+// LAN transport service loop. Non-blocking; drives lanClient and mirrors the
+// decoded frequency/mode into the same globals the BT path fills, so the web UI,
+// TrxNet publish and band decoder work unchanged. Auto-reconnects on failure.
+void lanClientLoop(){
+  if (!lanMode) return;
+  static uint32_t lanRetryAt = 0;
+  static uint32_t lanBackoff = 3000;
+  lanClient.loop();
+
+  if (lanClient.connected()) {
+    lanBackoff = 3000;   // healthy link resets the reconnect backoff
+    if (statusPower == 0) {
+      statusPower = 1;
+      digitalWrite(PowerOnPin, HIGH);
+      Serial.println(" PWR| ON (LAN)");
+    }
+    // frequency/mode/meters are written directly by lanCivFrameHandler (shared
+    // parser). Here we only propagate a frequency change to TrxNet + band decoder.
+    if (trxNetEnabled && frequency != 0 && (uint32_t)frequency != lanFreqTmp) {
+      uint32_t f = (uint32_t)frequency;
+      net.publish("/hz", (uint8_t*)&f, sizeof(f));
+      lanFreqTmp = (uint32_t)frequency;
+      if (bdEnabled && bdSource == 1) bdUpdate(frequency);
+    }
+  } else {
+    if (statusPower == 1) {
+      statusPower = 0;
+      digitalWrite(PowerOnPin, LOW);
+      Serial.println(" PWR| OFF (LAN)");
+      frequency = 0; frequencyTmp = 0; lanFreqTmp = 0;
+      setModesText("OFF");
+    }
+    // On failure: release the radio session IMMEDIATELY (single-session radio
+    // must free the old one before we retry), then wait an escalating backoff
+    // so we don't hammer a radio that still holds a zombie session.
+    if (lanClient.failed()) {
+      lanClient.stop();                 // sends disconnect/token-release -> state IDLE
+      lanRetryAt = millis() + lanBackoff;
+      if (lanBackoff < 20000) lanBackoff *= 2;
+      Serial.print("LAN | reconnect in "); Serial.print(lanBackoff/1000); Serial.println("s");
+    } else if (lanClient.status() == IcomLanClient::LAN_IDLE && lanRetryAt && millis() >= lanRetryAt) {
+      lanRetryAt = 0;
+      IPAddress rip;
+      if (rip.fromString(lanRadioIp))
+        lanClient.begin(rip, 50001, lanUser.c_str(), lanPass.c_str(), configuredCivAddress);
+    }
+  }
 }
 
 //-------------------------------------------------------------------------------------------------------
@@ -3212,68 +3327,89 @@ void processCatMessages(){
         continue;
       }
 
-      if (read_buffer[2] == BROADCAST_ADDRESS || read_buffer[2] == CONTROLLER_ADDRESS) {
-        switch (read_buffer[4]) {
-          case CMD_TRANS_FREQ:
-          case CMD_READ_FREQ:
-            if (len >= 11) printFrequency();
-            break;
-
-          case CMD_TRANS_MODE:
-          case CMD_READ_MODE:
-            if (len >= 7) {
-              printMode();
-              if (len >= 8) stateFilter = read_buffer[6];
-            }
-            break;
-        }
-      }
-
-      // Update state variables from decoded CIV frames
-      if (len >= 7) {
-        const uint8_t cmd = read_buffer[4];
-        const uint8_t *pl = read_buffer + 5;
-        const size_t plLen = len - 6;
-        if (cmd == 0x15 && plLen >= 2) {
-          uint32_t raw = decodeCivBcdBytes(pl + 1, plLen - 1);
-          if (pl[0] == 0x02) stateSmeterRaw = raw;
-          else if (pl[0] == 0x11) statePowerMeterRaw = raw;
-          else if (pl[0] == 0x12) stateSwr = 1.0f + ((float)raw * 3.0f / 120.0f);
-          else if (pl[0] == 0x15) stateSupplyVolts = ((float)raw * 16.0f) / 241.0f;
-        }
-        if (cmd == 0x14 && plLen >= 2) {
-          uint32_t raw = decodeCivBcdBytes(pl + 1, plLen - 1);
-          if (pl[0] == 0x01) stateAfGain = (uint8_t)raw;
-          else if (pl[0] == 0x0C) stateKeySpeed = (uint8_t)raw;
-          else if (pl[0] == 0x0A) stateRfPower = (uint8_t)raw;
-        }
-        if (cmd == 0x21 && plLen >= 4 && pl[0] == 0x00) {
-          stateRitRaw = decodeCivBcdBytesLsb(pl + 1, 3); // LSB-first, 3 bytes only, sign byte excluded
-        }
-        if (cmd == 0x1C && plLen >= 2 && pl[0] == 0x00) {
-          stateTx = (pl[1] == 0x01);
-        }
-        if (cmd == 0x04 && plLen >= 2) {
-          stateFilter = (uint8_t)pl[1];
-        }
-        if (cmd == 0x11 && plLen >= 1) {
-          stateAttOn = pl[0] ? 1 : 0;
-          if (stateAttOn) statePreampMode = 3;
-          else if (statePreampMode == 3) statePreampMode = 0;
-        }
-        if (cmd == 0x16 && plLen >= 2) {
-          if (pl[0] == 0x02 && !stateAttOn) {
-            statePreampMode = pl[1]; // 0=OFF, 1=AMP1, 2=AMP2 direct from radio
-          }
-          if (pl[0] == 0x47) {
-            stateVoxMode = pl[1];
-          }
-        }
-      }
-
+      processCivBuffer(len);
       powerTimer = millis();
     }
   #endif
+}
+
+//-------------------------------------------------------------------------------------------------------
+// Parse one CI-V frame already in read_buffer (FE FE <to> <from> <cmd> payload FD)
+// into the state globals. Transport-agnostic — used by BT (processCatMessages)
+// and LAN (lanCivFrameHandler). Caller ensures the frame is from the radio.
+void processCivBuffer(uint8_t len) {
+  // to-addr: broadcast (00), BT controller (0xE0) or LAN controller (0xE1).
+  // LAN poll replies are addressed to 0xE1 — without it, freq/mode from a poll
+  // (as opposed to a transceive broadcast) would be dropped.
+  if (read_buffer[2] == BROADCAST_ADDRESS || read_buffer[2] == CONTROLLER_ADDRESS
+      || read_buffer[2] == 0xE1) {
+    switch (read_buffer[4]) {
+      case CMD_TRANS_FREQ:
+      case CMD_READ_FREQ:
+        if (len >= 11) printFrequency();
+        break;
+
+      case CMD_TRANS_MODE:
+      case CMD_READ_MODE:
+        if (len >= 7) {
+          printMode();
+          if (len >= 8) stateFilter = read_buffer[6];
+        }
+        break;
+    }
+  }
+
+  // Update state variables from decoded CIV frames
+  if (len >= 7) {
+    const uint8_t cmd = read_buffer[4];
+    const uint8_t *pl = read_buffer + 5;
+    const size_t plLen = len - 6;
+    if (cmd == 0x15 && plLen >= 2) {
+      uint32_t raw = decodeCivBcdBytes(pl + 1, plLen - 1);
+      if (pl[0] == 0x02) stateSmeterRaw = raw;
+      else if (pl[0] == 0x11) statePowerMeterRaw = raw;
+      else if (pl[0] == 0x12) stateSwr = 1.0f + ((float)raw * 3.0f / 120.0f);
+      else if (pl[0] == 0x15) stateSupplyVolts = ((float)raw * 16.0f) / 241.0f;
+    }
+    if (cmd == 0x14 && plLen >= 2) {
+      uint32_t raw = decodeCivBcdBytes(pl + 1, plLen - 1);
+      if (pl[0] == 0x01) stateAfGain = (uint8_t)raw;
+      else if (pl[0] == 0x0C) stateKeySpeed = (uint8_t)raw;
+      else if (pl[0] == 0x0A) stateRfPower = (uint8_t)raw;
+    }
+    if (cmd == 0x21 && plLen >= 4 && pl[0] == 0x00) {
+      stateRitRaw = decodeCivBcdBytesLsb(pl + 1, 3); // LSB-first, 3 bytes only, sign byte excluded
+    }
+    if (cmd == 0x1C && plLen >= 2 && pl[0] == 0x00) {
+      stateTx = (pl[1] == 0x01);
+    }
+    if (cmd == 0x04 && plLen >= 2) {
+      stateFilter = (uint8_t)pl[1];
+    }
+    if (cmd == 0x11 && plLen >= 1) {
+      stateAttOn = pl[0] ? 1 : 0;
+      if (stateAttOn) statePreampMode = 3;
+      else if (statePreampMode == 3) statePreampMode = 0;
+    }
+    if (cmd == 0x16 && plLen >= 2) {
+      if (pl[0] == 0x02 && !stateAttOn) {
+        statePreampMode = pl[1]; // 0=OFF, 1=AMP1, 2=AMP2 direct from radio
+      }
+      if (pl[0] == 0x47) {
+        stateVoxMode = pl[1];
+      }
+    }
+  }
+}
+
+//-------------------------------------------------------------------------------------------------------
+// LAN transport hook: route a received CI-V frame through the shared parser so
+// LAN gets the same full CAT state as BT (freq, mode, S-meter, TX, power, ...).
+void lanCivFrameHandler(const uint8_t *frame, size_t len) {
+  if (len < 6 || len > sizeof(read_buffer)) return;
+  memcpy(read_buffer, frame, len);
+  if (radio_address == 0x00) radio_address = frame[3];  // from-addr = the radio
+  processCivBuffer((uint8_t)len);
 }
 
 //-------------------------------------------------------------------------------------------------------
@@ -3366,7 +3502,8 @@ void radioSetMode(uint8_t modeid, uint8_t modewidth){
 //-------------------------------------------------------------------------------------------------------
 bool radioSetFrequency(uint32_t freqHz){
   #if defined(BLUETOOTH)
-    if (btClientConnected == false || radio_address == 0x00) {
+    bool linkUp = lanMode ? lanClient.connected() : btClientConnected;
+    if (!linkUp || radio_address == 0x00) {
       return false;
     }
 
@@ -4064,6 +4201,10 @@ void cliHandleByte(uint8_t b){
         Serial.println("   Restart aborted");
       }
 
+    // L — LAN CI-V test (step 3): read "IP user pass", probe the radio over UDP
+    }else if(incomingByte==76 || incomingByte==108){
+      runLanCivTest();
+
     // CR/LF
     }else if(incomingByte==13||incomingByte==10){
       // anykey
@@ -4104,6 +4245,106 @@ void EnterChar(){
   }
   incomingByte = Serial.read();
   Serial.println( String(char(incomingByte)) );
+}
+
+//-------------------------------------------------------------------------------------------------------
+// Blocking line reader for CLI prompts. Returns trimmed line, "" on timeout.
+String EnterLine(const char* prompt){
+  Serial.print(prompt);
+  String s = "";
+  unsigned long t0 = millis();
+  while (millis() - t0 < 30000) {
+    #if defined(WDT)
+      esp_task_wdt_reset();
+    #endif
+    while (Serial.available()) {
+      char c = Serial.read();
+      if (c == '\r' || c == '\n') { s.trim(); if (s.length()) { Serial.println(s); return s; } }
+      else { s += c; t0 = millis(); }
+    }
+    delay(5);
+  }
+  Serial.println("(timeout)");
+  return "";
+}
+
+//-------------------------------------------------------------------------------------------------------
+// LAN transport config menu (CLI 'L'). Enter "IP user pass" (or empty to keep
+// stored values), then choose: (t)est once, (s)ave+reboot into LAN mode, or
+// (b)ack to Bluetooth. Persisted in memories.cfg alongside transceiverType.
+void runLanCivTest(){
+  Serial.println("");
+  Serial.print("-- LAN transport -- current mode: ");
+  Serial.println(lanMode ? "LAN" : "Bluetooth");
+  if (lanRadioIp.length()) {
+    Serial.println("   stored: " + lanRadioIp + " user=" + lanUser +
+                   " pass=" + String(lanPass.length() ? "(set)" : "(none)"));
+  }
+  Serial.println("   enter <radioIP> <user> <pass>  (empty = keep stored)");
+  String line = EnterLine(" LAN> ");
+
+  String ipStr = lanRadioIp, user = lanUser, pass = lanPass;
+  if (line.length() > 0) {
+    int sp1 = line.indexOf(' ');
+    int sp2 = line.indexOf(' ', sp1 + 1);
+    if (sp1 < 0 || sp2 < 0) { Serial.println("LAN | need: IP user pass"); return; }
+    ipStr = line.substring(0, sp1);
+    user  = line.substring(sp1 + 1, sp2);
+    pass  = line.substring(sp2 + 1);
+  }
+  IPAddress rip;
+  if (!rip.fromString(ipStr)) { Serial.println("LAN | bad/empty IP"); return; }
+
+  Serial.println("   action: (t)est now  (s)ave + reboot to LAN  (b)ack to Bluetooth");
+  EnterChar();
+  char act = (char)incomingByte;
+
+  if (act == 't' || act == 'T') {
+    if (lanMode) { Serial.println("LAN | already in LAN mode — client is live, watch the log"); return; }
+    Serial.println("LAN | testing (BT stays as is)...");
+    lanClient.begin(rip, 50001, user.c_str(), pass.c_str(), configuredCivAddress);
+    unsigned long t0 = millis();
+    while (millis() - t0 < 20000) {
+      lanClient.loop();
+      #if defined(WDT)
+        esp_task_wdt_reset();
+      #endif
+      if (lanClient.connected() && millis() - t0 > 2000) break;
+      if (lanClient.failed()) break;
+      delay(5);
+    }
+    if (lanClient.connected()) {
+      char m[sizeof(modes)]; copyModesText(m, sizeof(m));
+      Serial.println("LAN | RESULT: SUCCESS, freq " + String((unsigned long)frequency) +
+                     " Hz mode " + String(m));
+    } else {
+      Serial.println("LAN | RESULT: FAILED (state " + String((int)lanClient.status()) + ")");
+    }
+    lanClient.stop();
+
+  } else if (act == 's' || act == 'S') {
+    if (user.length() == 0 || pass.length() == 0) {
+      Serial.println("LAN | refusing to save: user/pass empty (type: IP user pass)");
+      return;
+    }
+    lanRadioIp = ipStr; lanUser = user; lanPass = pass;
+    transceiverType = "IC-705-LAN";
+    saveMemoryConfig();
+    Serial.println("LAN | saved (user='" + lanUser + "' passlen=" + String(lanPass.length()) +
+                   "). Rebooting into LAN mode (BT off)...");
+    delay(1500);
+    ESP.restart();
+
+  } else if (act == 'b' || act == 'B') {
+    transceiverType = "IC-705-BT";
+    saveMemoryConfig();
+    Serial.println("LAN | reverting to Bluetooth. Rebooting...");
+    delay(1500);
+    ESP.restart();
+
+  } else {
+    Serial.println("LAN | aborted");
+  }
 }
 
 //-------------------------------------------------------------------------------------------------------
@@ -4330,13 +4571,18 @@ void handleSet() {
       if (id < 0 || id > 255) id = 0x01;
       if (TRXNET_ID != (byte)id) { TRXNET_ID = (byte)id; EEPROM.writeByte(41, (byte)id); } }
 
+    // Per-TRX enable: when the box is unchecked the checkbox is absent, so we
+    // zero NET_ID and CI-V address -> the slot is disabled.
+    bool trx2en = requestHasArg("trx2enable");
+    bool trx3en = requestHasArg("trx3enable");
+
     // 42 TRX2_NET_ID (hex string; 0x00 = disabled)
-    { long id = strtol(requestArg("trx2netid").c_str(), nullptr, 16);
+    { long id = trx2en ? strtol(requestArg("trx2netid").c_str(), nullptr, 16) : 0;
       if (id < 0 || id > 255) id = 0x00;
       if (TRX2_NET_ID != (byte)id) { TRX2_NET_ID = (byte)id; EEPROM.writeByte(42, (byte)id); } }
 
     // 43 TRX3_NET_ID (hex string; 0x00 = disabled)
-    { long id = strtol(requestArg("trx3netid").c_str(), nullptr, 16);
+    { long id = trx3en ? strtol(requestArg("trx3netid").c_str(), nullptr, 16) : 0;
       if (id < 0 || id > 255) id = 0x00;
       if (TRX3_NET_ID != (byte)id) { TRX3_NET_ID = (byte)id; EEPROM.writeByte(43, (byte)id); } }
 
@@ -4350,12 +4596,12 @@ void handleSet() {
       if (TRX3_CONN_TYPE != (byte)ct) { TRX3_CONN_TYPE = (byte)ct; EEPROM.writeByte(47, (byte)ct); } }
     // 48 TRX2_CIV_ADDR (hex string; 0x00 = unset)
     { uint8_t a = TRX2_CIV_ADDR;
-      String s = requestArg("trx2civaddr");
+      String s = trx2en ? requestArg("trx2civaddr") : String("");
       if (s.length() == 0) { if (TRX2_CIV_ADDR != 0x00) { TRX2_CIV_ADDR = 0x00; EEPROM.writeByte(48, 0x00); } }
       else if (parseHexByteString(s, a)) { if (TRX2_CIV_ADDR != a) { TRX2_CIV_ADDR = a; EEPROM.writeByte(48, a); } } }
     // 49 TRX3_CIV_ADDR (hex string; 0x00 = unset)
     { uint8_t a = TRX3_CIV_ADDR;
-      String s = requestArg("trx3civaddr");
+      String s = trx3en ? requestArg("trx3civaddr") : String("");
       if (s.length() == 0) { if (TRX3_CIV_ADDR != 0x00) { TRX3_CIV_ADDR = 0x00; EEPROM.writeByte(49, 0x00); } }
       else if (parseHexByteString(s, a)) { if (TRX3_CIV_ADDR != a) { TRX3_CIV_ADDR = a; EEPROM.writeByte(49, a); } } }
     // 48-67 FREE (was MQTT_TOPIC)
@@ -4398,11 +4644,25 @@ void handleSet() {
       Serial.println("New Baudrate "+String(BaudRate));
     }
 
-    String nextTransceiverType = trimMemoryValue(requestArg("trxprofile"), 16);
-    if (nextTransceiverType != "IC-7610-CI-V") {
-      nextTransceiverType = "IC-705-BT";
+    // TRX1 transport: new setup field trx1transport (lan/bluetooth) is the
+    // authority; legacy trxprofile kept as fallback for older clients.
+    String trx1transport = trimMemoryValue(requestArg("trx1transport"), 12);
+    if (trx1transport == "lan") {
+      transceiverType = "IC-705-LAN";
+      String ip = trimMemoryValue(requestArg("lanip"), 15);
+      String u  = trimMemoryValue(requestArg("lanuser"), 16);
+      String pw = trimMemoryValue(requestArg("lanpass"), 16);
+      if (ip.length()) lanRadioIp = ip;
+      if (u.length())  lanUser = u;
+      if (pw.length()) lanPass = pw;   // blank = keep stored password
+    } else if (trx1transport == "bluetooth") {
+      transceiverType = "IC-705-BT";
+    } else {
+      String nextTransceiverType = trimMemoryValue(requestArg("trxprofile"), 16);
+      if (nextTransceiverType != "IC-7610-CI-V") nextTransceiverType = "IC-705-BT";
+      transceiverType = nextTransceiverType;
     }
-    transceiverType = nextTransceiverType;
+    lanMode = (transceiverType == "IC-705-LAN");
 
     uint8_t nextCivAddress = configuredCivAddress;
     if (!parseHexByteString(requestArg("civaddr"), nextCivAddress)) {
@@ -4467,6 +4727,8 @@ void handleSet() {
 
     // Only overwrite memories when they are actually present in the request
     // (CW/freq memory inputs live outside the EEPROM <form> — absent = empty string from requestArg).
+    // The in-RAM memory arrays are loaded at boot, so calling saveMemoryConfig()
+    // unconditionally below preserves them while persisting transceiverType/civaddr/LAN.
     if (requestHasArg("cwmem1")) {
       for (uint8_t i = 0; i < CW_MEMORY_COUNT; i++) {
         char fieldName[10];
@@ -4478,8 +4740,8 @@ void handleSet() {
         snprintf(fieldName, sizeof(fieldName), "freqmem%u", i + 1);
         freqMemoryText[i] = trimMemoryValue(requestArg(fieldName), FREQ_MEMORY_MAX_LEN);
       }
-      saveMemoryConfig();
     }
+    saveMemoryConfig();   // persists transceiverType, civaddr, LAN ip/user/pass, memories
 
 
     if(ERRdetect==0){
