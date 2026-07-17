@@ -2645,6 +2645,29 @@ void setup(){
   }
 }
 //-------------------------------------------------------------------------------------------------------
+// "CW sent" indication. The status LED sits HIGH the whole time WiFi is up, so a
+// short dark pulse marks the send. Scheduled rather than blinked with delay():
+// sendCW() runs inside the /cmd handler, and blocking there starves the LAN idle
+// keepalives (due every 100 ms) and the DXC sockets. AP mode is skipped — the PWM
+// fade below owns the LED there and overwrites any blink within 3 ms anyway.
+static uint32_t statusFlashStart = 0;
+static bool     statusFlashOn    = false;
+
+static void statusFlashKick(){
+  if (APmode) return;
+  digitalWrite(StatusPin, LOW);
+  statusFlashStart = millis();
+  statusFlashOn = true;
+}
+
+static void statusFlashTick(){
+  if (statusFlashOn && millis() - statusFlashStart >= 100) {
+    digitalWrite(StatusPin, HIGH);
+    statusFlashOn = false;
+  }
+}
+
+//-------------------------------------------------------------------------------------------------------
 
 void loop(){
   static bool serialFlushed = false;
@@ -2677,6 +2700,8 @@ void loop(){
       }
     }
   }
+
+  statusFlashTick();
 
   // AP mode: status LED fade in/out
   if(APmode==true){
@@ -3922,20 +3947,7 @@ void sendCW(){
     }
     catWriteFrame(frame, frameLen, true);
     if (Debug) Serial.println();
-    delay(100);
-    if(APmode==true){
-      ledcWrite(pwmChannel, 255);
-      delay(100);
-      ledcWrite(pwmChannel, 0);
-      delay(100);
-      ledcWrite(pwmChannel, 255);
-    }else{
-      digitalWrite(StatusPin, HIGH);
-      delay(100);
-      digitalWrite(StatusPin, LOW);
-      delay(100);
-      digitalWrite(StatusPin, HIGH);
-    }
+    statusFlashKick();
   }else if(strcmp(modesSnapshot, "RTTY") == 0){ // GPIO FSK keying -----------------
     int TheEnd = payloadLen - 1;
     if(TheEnd < 0){
