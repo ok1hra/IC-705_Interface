@@ -342,6 +342,7 @@ cat > "${OUTPUT_DIR}/manifest.json" <<EOF
   "name": "IC-705 Interface",
   "version": "${FW_REV}",
   "new_install_prompt_erase": true,
+  "new_install_improv_wait_time": 0,
   "builds": [
     {
       "chipFamily": "ESP32",
@@ -369,7 +370,7 @@ cat > "${OUTPUT_DIR}/index.html" <<EOF
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>IC-705 Interface — firmware installer</title>
-  <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+  <script type="module" src="https://unpkg.com/esp-web-tools@10.4.0/dist/web/install-button.js?module"></script>
   <style>
     :root {
       --accent: #3b82f6;
@@ -555,7 +556,7 @@ cat > "${OUTPUT_DIR}/index.html" <<EOF
       </ul>
 
       <div class="cta">
-        <esp-web-install-button manifest="manifest.json" baudrate="9600"></esp-web-install-button>
+        <esp-web-install-button manifest="manifest.json?v=${FW_REV}" baudrate="9600"></esp-web-install-button>
       </div>
 
       <hr class="divider">
