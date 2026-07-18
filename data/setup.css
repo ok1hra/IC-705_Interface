@@ -156,6 +156,40 @@ fieldset {
   border-color: transparent;
 }
 
+.setup-required-warning {
+  margin-left: auto;
+  padding: 3px 8px;
+  border: 1px solid #ff5c67;
+  border-radius: 999px;
+  background: rgba(190, 24, 38, 0.28);
+  color: #ff9ca4;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.setup-section-warning:not([open]) > .setup-section-title {
+  border-color: #ff5c67;
+  box-shadow: inset 0 0 0 1px rgba(255, 92, 103, 0.45);
+}
+
+.setup-section-title:hover .setup-required-warning,
+.setup-section[open] > .setup-section-title .setup-required-warning {
+  background: #7f1520;
+  border-color: #ff9ca4;
+  color: #fff;
+}
+
+input.setup-required-missing {
+  border-color: #ff5c67;
+  box-shadow: 0 0 0 2px rgba(255, 92, 103, 0.18);
+}
+
+label.setup-label-missing {
+  color: #ff9ca4;
+}
+
 .setup-section-body {
   display: grid;
   gap: 10px;

@@ -1,0 +1,13 @@
+#pragma once
+
+class QNoDebug {
+  public:
+    QNoDebug &noquote() noexcept { return *this; }
+
+    template <typename T> QNoDebug &operator<<(T const &) noexcept {
+        return *this;
+    }
+};
+
+#define qCDebug(category) QNoDebug{}
+#define qCWarning(category) QNoDebug{}

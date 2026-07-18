@@ -1,92 +1,250 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>IC-705 DATA</title>
-  <link rel="stylesheet" href="/cat.css">
-  <link rel="stylesheet" href="/data.css">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>JS8Call</title>
+  <link rel="stylesheet" href="/cat.css?v=20260718n">
+  <link rel="stylesheet" href="/data.css?v=20260718n">
 </head>
-<body>
-  <header class="topbar">
+<body class="startup-pending lan-config-checking">
+  <header class="site-topbar">
     <nav class="tabs" aria-label="Primary">
-      <a class="tab" href="/log">QRPLog</a>
-      <a class="tab" href="/dxc.html" onclick="window.open(this.href,'DXC','width=600,height=750,left=0,top=0,menubar=no,location=no,status=no'); return false;">DXC</a>
-      <a class="tab" href="/">CAT</a>
-      <a class="tab tab-active" href="/data">DATA</a>
-      <a class="tab" href="/ws-cat">DEBUG</a>
-      <a class="tab" href="/setup">SETUP</a>
-      <a class="tab" href="/datasync">LOGSYNC</a>
-      <a class="tab" href="/bd">BD</a>
+      <a class="tab" href="/log">QRPLog</a><a class="tab" href="/dxc.html">DXC</a>
+      <a class="tab tab-active" href="/data" title="Web Client for JS8Call">JS8LAN</a><a class="tab" href="/setup">SETUP</a>
+      <a class="tab" href="/datasync">LOGSYNC</a><a class="tab bd-nav" href="/bd" hidden>BD</a>
+      <a class="tab tab-cat-muted" href="/">CAT</a>
       <span id="topbarFw" class="topbar-fw"></span>
     </nav>
   </header>
 
-  <main class="data-shell">
-    <section class="data-panel">
+  <header class="radio-bar">
+    <button id="trxHelpButton" class="trx-help-button" type="button" aria-haspopup="dialog" aria-controls="trxHelpDialog" aria-label="IC-705 setup help" title="IC-705 setup help">?</button>
+    <div class="trx-control">
+      <button id="trxFrequency" class="trx-frequency" type="button" aria-expanded="false">
+        <span id="trxDot" class="trx-dot"></span><span><small>TRX</small><b id="trxFrequencyValue">--.---.---</b></span><span class="unit">MHz</span><span>▾</span>
+      </button>
+      <section id="frequencyMenu" class="frequency-menu" hidden aria-label="JS8 dial frequencies"></section>
+    </div>
+    <span id="trxMode" class="trx-mode">---</span>
+    <span id="linkState" class="live">● OFFLINE</span>
+    <span id="operatorState" class="operator"></span>
+    <span class="spacer"></span>
+    <span id="utcClock" class="pill">UTC --:--:--</span>
+    <span id="timingState" class="muted">clock unchecked</span>
+  </header>
 
-      <!-- Top strip: digital-mode selector (more modes added over time) + test toggle -->
-      <div class="mode-strip">
-        <label class="field-row" for="modeSelect">
-          <span>DIGI MODE</span>
-          <select id="modeSelect"></select>
-        </label>
+  <dialog id="trxHelpDialog" class="trx-help-dialog" aria-labelledby="trxHelpTitle">
+    <form method="dialog" class="trx-help-card">
+      <header>
+        <div><small>JS8CALL OVER WLAN</small><h2 id="trxHelpTitle">IC-705 setup</h2></div>
+        <button class="trx-help-close" type="submit" value="close" aria-label="Close setup help" title="Close">×</button>
+      </header>
+      <div class="trx-help-content">
+        <p id="trxHelpModeWarning" class="trx-help-warning" hidden>
+          The radio is not in a suitable data mode. Complete the setup below and load the
+          <strong>JS8CALL WLAN</strong> preset; the JS8Call header must show <strong>USB-D</strong>.
+        </p>
+        <ol class="trx-setup-steps">
+          <li>
+            <strong>Prepare the radio and station.</strong>
+            <p>Use IC-705 firmware 1.20 or newer, which includes the PRESET function. Connect a suitable antenna or dummy load, select a low RF power for initial tests, and synchronize the phone or computer system clock.</p>
+          </li>
+          <li>
+            <strong>Connect the IC-705 to WLAN.</strong>
+            <p>Open <code>MENU → SET → WLAN Set</code>, switch <code>WLAN</code> on, and connect the radio to the same network as this interface. Direct IC-705 access-point mode can also be used.</p>
+          </li>
+          <li>
+            <strong>Enable network control.</strong>
+            <p>In <code>MENU → SET → WLAN Set → Remote Settings</code>, set <code>Network Control</code> to <code>ON</code>, keep the default control/serial/audio ports <code>50001 / 50002 / 50003</code>, and configure a Network User ID and password with administrator access. Enter the same radio address and credentials on this device's SETUP page, then restart the IC-705 if requested.</p>
+          </li>
+          <li>
+            <strong>Route receive audio to WLAN.</strong>
+            <p>Set <code>MENU → SET → Connectors → WLAN AF/IF Output → Output Select</code> to <code>AF</code> and <code>AF SQL</code> to <code>OFF (Open)</code>.</p>
+          </li>
+          <li>
+            <strong>Create a dedicated preset.</strong>
+            <p>Open page 2 of <code>MENU → PRESET</code>. Long-press an unused memory, choose <code>Edit the Preset Memory</code>, and name it <code>JS8CALL WLAN</code>. Select the check boxes for the settings listed in the next step.</p>
+          </li>
+          <li>
+            <strong>Enter the JS8Call preset values.</strong>
+            <dl class="trx-help-settings">
+              <div><dt>Mode</dt><dd>USB-D</dd></div>
+              <div><dt>Filter / bandwidth</dt><dd>FIL1 / 3.0 kHz</dd></div>
+              <div><dt>SSB-D TX bandwidth</dt><dd>100–2900 Hz</dd></div>
+              <div><dt>Speech compressor</dt><dd>COMP OFF</dd></div>
+              <div><dt>DATA MOD</dt><dd>WLAN</dd></div>
+              <div><dt>CI-V address / transceive</dt><dd>A4h / ON</dd></div>
+            </dl>
+            <p>Finish with <code>&lt;&lt;Write&gt;&gt; → YES</code>. Separately set <code>Connectors → MOD Input → WLAN MOD Level</code> to <code>50%</code> as a safe starting point. <code>DATA OFF MOD</code> may remain on the normal microphone input so voice operation still works outside data mode.</p>
+          </li>
+          <li>
+            <strong>Load and verify the preset.</strong>
+            <p>Open <code>MENU → PRESET → JS8CALL WLAN → YES</code>. The preset must show <code>In Use</code>, and this page's header must report <code>USB-D</code>. If it reports CW, RTTY, AM, FM, or another mode, reload the preset.</p>
+          </li>
+          <li>
+            <strong>Complete the JS8Call page setup.</strong>
+            <p>Choose a JS8 dial frequency by tapping the TRX frequency, set <code>My callsign</code> and <code>My grid</code>, wait for the audio clock to lock, and confirm <code>Enable radio TX</code>. Use TUNE briefly and adjust TX audio gain or WLAN MOD Level for a clean signal with little or no ALC indication.</p>
+          </li>
+        </ol>
+        <p class="trx-help-note"><strong>Reminder:</strong> JS8Call is a high-duty-cycle digital mode. Use conservative RF power and verify antenna matching before transmitting.</p>
       </div>
-
-      <!-- Header above the waterfall: freq + mode (left), HF PWR (right) -->
-      <div class="wf-header">
-        <div class="wf-header-left">
-          <span id="hdrFreq" class="hdr-freq">--.---.--</span>
-          <span id="hdrMode" class="hdr-mode">---</span>
-        </div>
-        <div class="wf-header-right">
-          <span class="hdr-label">HF PWR</span>
-          <span id="hdrPwr" class="hdr-pwr">-- %</span>
-        </div>
-      </div>
-
-      <!-- Waterfall: scrolling spectrogram + marker overlay + frequency axis -->
-      <div class="wf-wrap">
-        <canvas id="waterfall" class="wf-canvas" width="1024" height="260"></canvas>
-        <canvas id="wfOverlay" class="wf-overlay" width="1024" height="260"></canvas>
-        <div id="wfBanner" class="wf-banner" hidden>
-          <p>TRX1 není připojen v režimu LAN — datové rozhraní je neaktivní.</p>
-        </div>
-      </div>
-      <canvas id="wfAxis" class="wf-axis" width="1024" height="22"></canvas>
-
-      <!-- Decoder (RX) receive field -->
-      <section class="io-panel">
-        <div class="io-head">
-          <span class="io-title">Dekodér (RX)</span>
-          <span id="decoderStatus" class="io-status">—</span>
-          <button id="clearDecoder" class="mini-button" type="button">Clear</button>
-        </div>
-        <div id="decoderOut" class="io-output" aria-live="polite"></div>
-      </section>
-
-      <!-- Encoder (TX) input field -->
-      <section class="io-panel">
-        <div class="io-head">
-          <span class="io-title">Kodér (TX)</span>
-          <span id="encoderStatus" class="io-status">—</span>
-          <span class="io-tone">Tón <span id="toneReadout">1500</span> Hz</span>
-        </div>
-        <textarea id="encoderIn" class="io-input" rows="2" placeholder="Text k vysílání…" spellcheck="false"></textarea>
-        <div class="io-actions">
-          <button id="txButton" class="io-tx" type="button" disabled>Vysílat</button>
-        </div>
-      </section>
-
-      <footer class="status-row">
-        <span id="statusLink">Link ----</span>
-        <span id="statusSample">-- Hz</span>
-        <span id="statusFw">FW ----</span>
+      <footer>
+        <span>Source: Icom IC-705 manuals and JS8Call user guide</span>
+        <button class="trx-help-done" type="submit" value="close">CLOSE</button>
       </footer>
+    </form>
+  </dialog>
+
+  <main class="data-page">
+    <section id="lanRequired" class="lan-required" hidden role="alert">
+      <div class="lan-required-icon" aria-hidden="true">!</div>
+      <div>
+        <h1>JS8Call requires TRX1 over LAN</h1>
+        <p>This function uses Icom network control and bidirectional WLAN audio. It is not available with a Bluetooth or serial/CAT connection.</p>
+        <ol>
+          <li>On the radio, connect to WLAN and enable <strong>Network Control</strong> in its remote/network settings.</li>
+          <li>Open <strong>SETUP → Radio</strong> and select <strong>TRX1 Connection: LAN</strong>.</li>
+          <li>Enter the radio IP address, network username and network password, then save the setup.</li>
+        </ol>
+        <p class="lan-required-compatibility">IC-705 is tested. Other Icom transceivers using the compatible LAN remote-control and audio protocol may also work.</p>
+        <a class="lan-required-action" href="/setup#radioSection">OPEN TRX1 LAN SETUP</a>
+        <small id="lanRequiredDetail"></small>
+      </div>
     </section>
+
+    <section class="modem-menu" hidden aria-hidden="true">
+      <label>Modem <select id="modeSelect"></select></label>
+      <span id="modemState" class="modem-state">Loading…</span>
+    </section>
+
+    <section id="startupLoader" class="startup-loader" role="status" aria-live="polite">
+      <div class="startup-loader-copy">
+        <strong id="startupLabel">Loading JS8Call modem</strong>
+        <span id="startupPercent">0%</span>
+      </div>
+      <progress id="startupProgress" max="100" value="0">0%</progress>
+      <small id="startupDetail">Preparing modem components…</small>
+      <button id="startupRetry" type="button" hidden>RETRY</button>
+    </section>
+
+    <div id="js8Interface">
+      <details class="compact-section spectrum-section" data-section="spectrum" open>
+        <summary><span>Waterfall</span><span id="spectrumSummary" class="summary-status">RX 500–2700 Hz · TX 1500 Hz</span></summary>
+        <div id="waterfall" class="waterfall" title="JS8 decoder range: 500–2700 Hz. Heartbeat activity normally uses 500–1000 Hz.">
+          <canvas id="waterfallCanvas" width="1024" height="64"></canvas>
+          <canvas id="waterfallOverlay" width="1024" height="64"></canvas>
+          <div class="frequency-scale"><span>500 Hz</span><span>1100</span><span>1700</span><span>2200</span><span>2700 Hz</span></div>
+        </div>
+        <div class="waterfall-rhythm" aria-label="Current JS8 time slot">
+          <div id="slotMeter" class="rhythm-meter slot-meter" title="Current JS8 time slot"><span id="slotLabel" class="rhythm-label">A 15 s</span><span class="slot-track"><i id="slotFill"></i></span></div>
+        </div>
+        <div class="quick-controls">
+          <label>TX speed <select id="txSpeed"><option>AUTO</option><option>A</option><option>B</option><option>C</option><option>E</option><option>I</option></select><small id="txSpeedResolved">A · 15 s</small></label>
+          <label>TX offset <input id="txOffset" type="number" min="500" max="2700" step="1"><span>Hz</span></label>
+          <span class="inline-status">Audio <b id="audioLevel">-- dBFS</b></span>
+          <button id="heartbeatButton" class="heartbeat" type="button" disabled>HB <small id="heartbeatOffset">1500 Hz</small></button>
+          <button id="tuneButton" class="tune" type="button" disabled><span id="tuneLabel">TUNE</span><small id="tuneOffset">1500 Hz</small></button>
+        </div>
+      </details>
+
+      <details class="compact-section" data-section="reply" open>
+        <summary><span>TX SESSION</span><span id="txSummary" class="summary-status">Idle</span></summary>
+        <div class="tx-session-toolbar">
+          <label>Mode <select id="txSessionMode"><option>CHAT</option><option>EMAIL</option><option>BIN</option></select></label>
+          <small id="txSessionModeHint">Keyboard-to-keyboard messages</small>
+        </div>
+        <section id="chatSession">
+          <div class="keyboard-session">
+            <header><div><strong id="sessionCall">No station selected</strong><small id="sessionMeta">Choose a callsign from traffic or stations</small></div><button id="abortButton" class="abort" type="button" hidden>ABORT</button></header>
+            <div id="chatThread" class="chat-thread"><div class="chat-empty">No messages in this session.</div></div>
+          </div>
+          <form id="composer" class="composer">
+            <label for="recipient">Recipient</label><span class="recipient-field"><input id="recipient" type="text" maxlength="12" placeholder="Click a callsign"><button id="recipientClear" type="button" aria-label="Clear recipient" title="Clear recipient">×</button></span>
+            <label for="messageInput">Message</label><span class="message-field"><input id="messageInput" type="text" autocomplete="off" aria-keyshortcuts="Enter" aria-describedby="sendHint" placeholder="Select a recipient, type a message, then press Enter"><button id="messagePresetsButton" type="button" aria-label="Open predefined messages" title="Predefined JS8 messages" aria-haspopup="menu" aria-expanded="false">▾</button><span id="messagePresetsMenu" class="message-preset-menu" role="menu" hidden>
+              <button type="button" role="menuitem" data-message-preset="cq"><strong>CQ CQ CQ</strong><small>General call</small></button>
+              <button type="button" role="menuitem" data-message-preset="snr"><strong>SNR ±nn</strong><small>Reply with received SNR</small></button>
+              <button type="button" role="menuitem" data-message-preset="snr-query"><strong>SNR?</strong><small>Request a signal report</small></button>
+              <button type="button" role="menuitem" data-message-preset="copy-query"><strong>HW CPY?</strong><small>Ask how you are copied</small></button>
+              <button type="button" role="menuitem" data-message-preset="rr"><strong>RR</strong><small>Roger, received</small></button>
+              <button type="button" role="menuitem" data-message-preset="fb"><strong>FB</strong><small>Fine business</small></button>
+              <button type="button" role="menuitem" data-message-preset="qsl"><strong>QSL</strong><small>Confirm reception</small></button>
+              <button type="button" role="menuitem" data-message-preset="again"><strong>AGN?</strong><small>Request repeat</small></button>
+              <button type="button" role="menuitem" data-message-preset="73"><strong>73</strong><small>Best regards</small></button>
+              <button type="button" role="menuitem" data-message-preset="sk"><strong>SK</strong><small>End contact</small></button>
+            </span></span>
+            <small id="sendHint" class="send-hint">Enter sends</small>
+            <button id="sendButton" type="submit" hidden disabled aria-hidden="true" tabindex="-1">Send</button>
+          </form>
+        </section>
+        <section id="emailSession" class="planned-session" hidden>
+          <header><strong>EMAIL</strong><span>Planned — transport will be implemented later.</span></header>
+          <div class="planned-form">
+            <label>Email address <input type="email" placeholder="recipient@example.net" disabled></label>
+            <label>Server callsign <span class="server-field"><select disabled><option>Select a server</option></select><button type="button" disabled aria-label="Add server callsign">+</button></span></label>
+            <label>Short message <textarea placeholder="Short plain-text message" disabled></textarea></label>
+          </div>
+        </section>
+        <section id="binSession" class="planned-session" hidden>
+          <header><strong>BIN</strong><span>Planned — binary transfer will be implemented later.</span></header>
+          <div class="planned-form"><label>Binary file <input type="file" disabled></label><small>Select a recipient callsign in CHAT before a future point-to-point file transfer.</small></div>
+        </section>
+      </details>
+
+      <details class="compact-section" data-section="traffic">
+        <summary><span>Recent traffic</span><span id="trafficSummary" class="summary-status">0 messages</span></summary>
+        <div id="traffic" class="messages"><div class="empty-row">Waiting for JS8 activity…</div></div>
+      </details>
+
+      <details class="compact-section" data-section="stations">
+        <summary><span>Stations</span><span id="stationSummary" class="summary-status">0 active</span></summary>
+        <div class="table-scroll"><table class="traffic-table"><thead><tr>
+          <th><button type="button" data-station-sort="call">Call <span class="sort-arrow"></span></button></th>
+          <th><button type="button" data-station-sort="snr">SNR <span class="sort-arrow"></span></button></th>
+          <th><button type="button" data-station-sort="offsetHz">Hz <span class="sort-arrow"></span></button></th>
+          <th><button type="button" data-station-sort="submode">Speed <span class="sort-arrow"></span></button></th>
+          <th><button type="button" data-station-sort="distance">Direction · 1000 km <span class="sort-arrow"></span></button></th>
+          <th><button type="button" data-station-sort="lastSlotUtcMs">Last heard <span class="sort-arrow"></span></button></th>
+        </tr></thead><tbody id="stationRows"></tbody></table></div>
+      </details>
+
+      <details class="compact-section" data-section="settings">
+        <summary><span>Modem settings</span><span id="settingsSummary" class="summary-status"></span></summary>
+        <div class="settings">
+          <label>My callsign <input id="myCall" maxlength="12" autocomplete="off"></label>
+          <label>My grid <input id="myGrid" maxlength="6" autocomplete="off"></label>
+          <label>Decode speeds <input value="E, A, B, C, I (automatic)" disabled></label>
+          <label>Follow detected speed <input id="followSpeed" type="checkbox"></label>
+          <label>Clock correction <input id="clockCorrection" type="number" min="-1000" max="1000" step="1"><span>ms</span></label>
+          <label>Auto timing <input id="autoTiming" type="checkbox"></label>
+          <label>TX audio gain <input id="txGain" type="number" min="0.1" max="0.8" step="0.05"></label>
+          <label class="safety-setting">Enable radio TX <input id="txSafety" type="checkbox"><small>I will use safe RF power and a suitable load/antenna.</small></label>
+          <div class="settings-storage"><span id="storageState"></span><button id="resetSettings" type="button">Restore defaults</button></div>
+        </div>
+      </details>
+
+      <details class="compact-section" data-section="timing">
+        <summary><span>Timing and diagnostics</span><span id="diagnosticSummary" class="summary-status">Clock unchecked</span></summary>
+        <div id="diagnostics" class="compact-diagnostics"></div>
+      </details>
+    </div>
   </main>
 
-  <script src="/fw-version.js"></script>
-  <script src="/data.js"></script>
+  <footer class="js8-page-footer">
+    <a href="https://github.com/ok1hra/IC-705_Interface" target="_blank" rel="noopener">GitHub</a><span aria-hidden="true">|</span><a href="/THIRD-PARTY-NOTICES.txt" target="_blank" rel="noopener">Licenses</a>
+  </footer>
+
+  <script src="/fw-version.js?v=20260718n"></script>
+  <script src="/js8-settings.js?v=20260718n"></script>
+  <script src="/js8-presets.js?v=20260718n"></script>
+  <script src="/js8-protocol.js?v=20260718n"></script>
+  <script src="/js8-timebase.js?v=20260718n"></script>
+  <script src="/js8-aud1.js?v=20260718n"></script>
+  <script src="/js8-audio.js?v=20260718n"></script>
+  <script src="/js8-tx.js?v=20260718n"></script>
+  <script src="/js8-core.js?v=20260718n"></script>
+  <script src="/js8-adapter.js?v=20260718n"></script>
+  <script src="/dxcc.js?v=20260718n"></script>
+  <script src="/data.js?v=20260718n"></script>
 </body>
 </html>

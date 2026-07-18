@@ -14,24 +14,37 @@
   along with this program.  If not, see <http://www.gnu.org/licenses/>.
   -----------------------------------------------------------
 
-  Compile for "ESP32 Dev Module" board with Partition Scheme: "No OTA (2MB APP/2MB SPIFFS)"
-  With libraries
-  Using library EEPROM at version 2.0.0 in folder: /home/dan/Arduino/hardware/espressif/esp32/libraries/EEPROM 
-  Using library BluetoothSerial at version 2.0.0 in folder: /home/dan/Arduino/hardware/espressif/esp32/libraries/BluetoothSerial 
-  Using library WiFi at version 2.0.0 in folder: /home/dan/Arduino/hardware/espressif/esp32/libraries/WiFi 
-  Using library ESPmDNS at version 2.0.0 in folder: /home/dan/Arduino/hardware/espressif/esp32/libraries/ESPmDNS 
-  Using library WebServer at version 2.0.0 in folder: /home/dan/Arduino/hardware/espressif/esp32/libraries/WebServer 
-  Using library PubSubClient at version 2.8 in folder: /home/dan/Arduino/libraries/PubSubClient 
-  Using library FS at version 2.0.0 in folder: /home/dan/Arduino/hardware/espressif/esp32/libraries/FS 
+  Firmware build dependencies
+  - Arduino IDE 1.8.19 or 2.x
+  - Espressif Arduino-ESP32 core 2.0.14
+  - Board: "ESP32 Dev Module"
+  - Partition Scheme: "No OTA (2MB APP/2MB SPIFFS)"
+  - TrxNet 0.3.0: https://github.com/ok1hra/TrxNet
+  EEPROM, BluetoothSerial, WiFi, ESPmDNS, WebServer, FS and LittleFS are
+  supplied by the pinned ESP32 core; PubSubClient is not required.
+
+  DATA/JS8 asset and release dependencies (Debian 12)
+    sudo apt install build-essential ca-certificates cmake dpkg-dev emscripten \
+      git gzip libboost1.81-dev libfftw3-dev nodejs p7zip-full python3 \
+      terser xz-utils
+  Enable matching Debian deb-src entries for the pinned FFTW source build.
+  Reviewed release versions: Emscripten 3.1.6, CMake 3.25.1, Node 18.20.4
+  (local checks accept Node 18-20). See docs/js8call-build.md.
 
   1. Increase REV value in this .ino
   2. Arduino IDE 1.8.19 menu: Sketch/Export compiled Binary (for "ESP32 Dev Module" + Tools/Partition Scheme:"No OTA (2MB APP/2MB SPIFFS)")
+  3. ./tools/upload-firmware-spiffs.sh --port /dev/ttyUSB0
+     check without write
+     ./tools/upload-firmware-spiffs.sh --dry-run
+    for slow comm
+    ./tools/upload-firmware-spiffs.sh --port /dev/ttyUSB0 --baud 460800
+
   3. generate all .bin and publish to GitHub web page: $ ./tools/gh-pages.sh --publish
   4. git commit with comment Release number and push
 
   Manual workflow
   - afer standart edit data/*.html/css/js,
-  - before manual SPIFFS upload run tools/gzip-assets.sh
+  - before manual filesystem upload run tools/gzip-assets.sh
   - continue with Arduino IDE
 
   Features
@@ -91,7 +104,7 @@ bool cwIpOnConnect  = true;       // announce WiFi IP via CW on first BT connect
 volatile bool cwIpSendPending = false;
 
 #define LOOP_WARN_MS 200
-#define REV 20260717
+#define REV 20260718
 #define WIFI
 #define UDP_TO_FSK
 #define WDT         // watchdog timer
@@ -129,20 +142,25 @@ volatile bool cwIpSendPending = false;
   47 TRX3_CONN_TYPE (0=TrxNet, 1=CI-V; 0xff=unprogrammed → default 0x00)
   48 TRX2_CIV_ADDR  (CI-V address of TRX2; 0x00/0xff = unset)
   49 TRX3_CIV_ADDR  (CI-V address of TRX3; 0x00/0xff = unset)
-  50-67 FREE         (was MQTT_TOPIC 21B)
-  68-69 FREE         (was HTTP_CAT_PORT)
+  50 TRX1_CONFIG_MARKER (0xa5=current; 0xff=legacy memories.cfg fallback)
+  51 TRX1_TRANSPORT  (1=LAN, 2=Bluetooth, 3=IC-7610 CI-V)
+  52 TRX1_CIV_ADDR
+  53-68 TRX1_LAN_IP (16B including 0xff terminator padding)
+  69 FREE            (was HTTP_CAT_PORT)
   70-71 FREE         (was udpPort)
   72-73 FREE         (was udpCatPort)
   74-75 BaudRate
   76-95 SSID2
   97-114 PSWD2
-  115-135 FREE       (was MQTT_TOPIC_RX 21B)
+  115-131 TRX1_LAN_USER (17B including 0xff terminator padding)
+  132-135 FREE       (was MQTT_TOPIC_RX)
   136 cwIpOnConnect
   137-200 DXC host (64B)
   201-202 DXC port (UShort)
   203-218 DXC callsign (16B)
   219-224 DXC locator (6B)
-  225-245 FREE       (was TRX2 MQTT root topic 21B)
+  225-241 TRX1_LAN_PASSWORD (17B including 0xff terminator padding)
+  242-245 FREE       (was TRX2 MQTT root topic)
   246-266 FREE       (was TRX3 MQTT root topic 21B)
   267-287 BT_NAME (21B)
   288 TRXNET_PRIO flag (0xff=unprogrammed → default "OI3 ANT"; 0x01=user set → read string)
@@ -237,7 +255,7 @@ volatile bool btConnectPending = false;
   #include <esp_wifi.h>
   #include "esp_coexist.h"
   #include <FS.h>
-  #include <SPIFFS.h>
+  #include <LittleFS.h>
   #define HTTP_MAX_DATA_WAIT 1000
   #include <WebServer.h>
   #include <mbedtls/sha1.h>
@@ -335,6 +353,7 @@ char CwMsg[37] = "";
 #include <WiFiUdp.h>
 #include <TrxNet.h>
 #include "icomLanClient.h"      // LAN CI-V transport (alternative to BT)
+#include "aud1_tx_state.h"      // shared TX-state predicates used by native regression tests
 IcomLanClient lanClient;
 bool    lanMode = true;         // true when transceiverType == "IC-705-LAN" (LAN is the default)
 String  lanRadioIp = "";        // radio IP for LAN mode
@@ -368,13 +387,30 @@ int incomingByte = 0;   // for incoming serial data
   WiFiServer dxcRawServer(82);
   WiFiClient DxcTelnetClient;
   WiFiClient DxcWsClient;
-  WiFiServer audioWsServer(83);        // binary WebSocket: RX audio (uLaw) -> DATA page
+  WiFiServer audioWsServer(83);        // AUD1 WebSocket: timed RX/TX audio for DATA page
   WiFiClient AudioWsClient;
   uint32_t audioRxPackets = 0;         // counts forwarded audio datagrams per WS session
   uint8_t  audioTxBuf[1400];           // coalesce ~20ms radio packets into fewer WS frames
   size_t   audioTxLen = 0;
   bool     audioTxKeyed = false;       // M3: PTT keyed for browser-sourced TX audio
   uint32_t audioTxLastMs = 0;          // last TX audio/keep-alive — dead-man un-key timer
+  uint32_t audioStreamId = 0;          // changes for every WebSocket media epoch
+  uint32_t audioRxSequence = 0;
+  uint64_t audioRxFirstSample = 0;
+  bool audioRxFirst = true;
+  bool audioRxDiscontinuity = false;
+  bool audioRadioSequenceValid = false;
+  uint16_t audioRadioExpectedSequence = 0;
+
+  Aud1TxState aud1TxState = AUD1_TX_IDLE;
+  static const size_t AUD1_TX_RING_SIZE = 12288; // 1.536 s of radio uLaw at 8 kHz
+  uint8_t aud1TxRing[AUD1_TX_RING_SIZE];
+  size_t aud1TxRead = 0, aud1TxWrite = 0, aud1TxUsed = 0;
+  uint32_t aud1TxId = 0, aud1TxExpectedSequence = 0, aud1TxExpectedPackets = 0;
+  uint32_t aud1TxReceivedPackets = 0, aud1TxTargetMs = 0, aud1TxNextDrainMs = 0;
+  uint32_t aud1TxDeadlineMs = 0, aud1TxPrebufferSamples = 0;
+  uint64_t aud1TxExpectedSample = 0, aud1TxTotalSamples = 0, aud1TxConsumedUlaw = 0;
+  bool aud1TxLastSeen = false;
   String DxcHost = "";
   uint16_t DxcPort = 7300;
   IPAddress DxcHostIp;                // cached resolve — hostByName blocks the loop for seconds
@@ -448,6 +484,13 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   const size_t FREQ_MEMORY_MAX_LEN = 20;
   const uint8_t CIV_ADDRESS_DEFAULT = 0xA4;
   const char *MEMORY_CONFIG_PATH = "/memories.cfg";
+  const uint8_t PRIMARY_RADIO_CONFIG_MARKER = 0xA5;
+  const int PRIMARY_RADIO_MARKER_ADDR = 50;
+  const int PRIMARY_RADIO_TRANSPORT_ADDR = 51;
+  const int PRIMARY_RADIO_CIV_ADDR = 52;
+  const int PRIMARY_RADIO_LAN_IP_ADDR = 53;
+  const int PRIMARY_RADIO_LAN_USER_ADDR = 115;
+  const int PRIMARY_RADIO_LAN_PASS_ADDR = 225;
   // BT CAT poll cadence (used by pollRadio) — slow when idle, fast while the
   // CAT page holds it via /state?fast=1
   #define CAT_POLL_MS       1000  // slow: freq poll interval
@@ -491,7 +534,10 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   String trimMemoryValue(const String &value, size_t maxLen);
   bool parseHexByteString(const String &value, uint8_t &outValue);
   void loadMemoryConfig(void);
-  void saveMemoryConfig(void);
+  bool saveMemoryConfig(void);
+  bool hasPrimaryRadioConfig(void);
+  void loadPrimaryRadioConfig(void);
+  bool savePrimaryRadioConfig(void);
   String jsonEscape(const String &value);
   String configJsonEscape(const String &s);
   String civFrameToHex(const uint8_t *frame, size_t frameLen);
@@ -557,9 +603,12 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   String DxcComputeWebSocketAccept(const String& secKey);
   String Base64Encode(const uint8_t* data, size_t length);
   bool AudioSendBinary(const uint8_t* payload, size_t length);
+  bool AudioSendText(const String& text);
   void audioFlush(void);
   void audioPttOn(void);
   void audioPttOff(void);
+  void aud1TxAbort(const String& reason, bool notify = true);
+  void aud1TxTick(void);
   void AudioDisconnectWs(void);
   bool AudioHandleWsUpgrade(WiFiClient& webClient, const String& request);
   void AudioHandleWsClient(void);
@@ -617,11 +666,11 @@ void loadMemoryConfig(void){
     freqMemoryText[i] = "";
   }
 
-  if (!SPIFFS.exists(MEMORY_CONFIG_PATH)) {
+  if (!LittleFS.exists(MEMORY_CONFIG_PATH)) {
     return;
   }
 
-  File file = SPIFFS.open(MEMORY_CONFIG_PATH, FILE_READ);
+  File file = LittleFS.open(MEMORY_CONFIG_PATH, FILE_READ);
   if (!file) {
     return;
   }
@@ -659,34 +708,57 @@ void loadMemoryConfig(void){
   file.close();
 }
 
-void saveMemoryConfig(void){
-  File file = SPIFFS.open(MEMORY_CONFIG_PATH, "w");
+bool saveMemoryConfig(void){
+  File file = LittleFS.open(MEMORY_CONFIG_PATH, "w");
   if (!file) {
-    return;
+    Serial.println("LFS | cannot open /memories.cfg for writing"
+                   " used=" + String(LittleFS.usedBytes()) +
+                   " total=" + String(LittleFS.totalBytes()));
+    return false;
   }
+
+  size_t expectedBytes = 0;
+  size_t writtenBytes = 0;
+  auto writeLine = [&](const String &line) {
+    expectedBytes += line.length() + 2;  // println uses CRLF
+    writtenBytes += file.println(line);
+  };
 
   for (uint8_t i = 0; i < CW_MEMORY_COUNT; i++) {
-    file.println(trimMemoryValue(cwMemoryText[i], CW_MEMORY_MAX_LEN));
+    writeLine(trimMemoryValue(cwMemoryText[i], CW_MEMORY_MAX_LEN));
   }
   for (uint8_t i = 0; i < FREQ_MEMORY_COUNT; i++) {
-    file.println(trimMemoryValue(freqMemoryText[i], FREQ_MEMORY_MAX_LEN));
+    writeLine(trimMemoryValue(freqMemoryText[i], FREQ_MEMORY_MAX_LEN));
   }
-  file.println(transceiverType);
+  writeLine(transceiverType);
+  String civAddressLine;
   if (configuredCivAddress < 16) {
-    file.print("0");
+    civAddressLine = "0";
   }
-  file.println(String(configuredCivAddress, HEX));
-  file.println(lanRadioIp);
-  file.println(lanUser);
-  file.println(lanPass);
+  civAddressLine += String(configuredCivAddress, HEX);
+  writeLine(civAddressLine);
+  writeLine(lanRadioIp);
+  writeLine(lanUser);
+  writeLine(lanPass);
 
+  file.flush();
+  size_t fileBytes = file.size();
+  bool ok = writtenBytes == expectedBytes && fileBytes == expectedBytes;
   file.close();
+  if (!ok) {
+    Serial.println("LFS | write failed for /memories.cfg expected=" +
+                   String(expectedBytes) + " written=" + String(writtenBytes) +
+                   " size=" + String(fileBytes) +
+                   " used=" + String(LittleFS.usedBytes()) +
+                   " total=" + String(LittleFS.totalBytes()));
+  }
+  return ok;
 }
 
 // Parse log-config.json into g_lc* variables so setupTemplateProcessor can serve them.
 void loadLogConfigVars(void){
-  if (!SPIFFS.exists(LOG_CONFIG_PATH)) return;
-  File f = SPIFFS.open(LOG_CONFIG_PATH, "r");
+  if (!LittleFS.exists(LOG_CONFIG_PATH)) return;
+  File f = LittleFS.open(LOG_CONFIG_PATH, "r");
   if (!f) return;
   String j = f.readString();
   f.close();
@@ -863,10 +935,10 @@ bool extractJsonBool(const String &json, const char *key, bool defaultValue){
 }
 
 static String readLogConfigJson() {
-  if (!SPIFFS.exists(LOG_CONFIG_PATH)) {
+  if (!LittleFS.exists(LOG_CONFIG_PATH)) {
     return String();
   }
-  File f = SPIFFS.open(LOG_CONFIG_PATH, "r");
+  File f = LittleFS.open(LOG_CONFIG_PATH, "r");
   if (!f) {
     return String();
   }
@@ -901,7 +973,7 @@ static String buildLogConfigJson(
 }
 
 static bool saveLogConfigJson(const String &json) {
-  File f = SPIFFS.open(LOG_CONFIG_PATH, "w");
+  File f = LittleFS.open(LOG_CONFIG_PATH, "w");
   if (!f) {
     return false;
   }
@@ -951,8 +1023,8 @@ void bdLoadDefaults() {
 }
 
 void bdLoadConfig() {
-  if (!SPIFFS.exists(BD_CONFIG_PATH)) { bdLoadDefaults(); return; }
-  File f = SPIFFS.open(BD_CONFIG_PATH, FILE_READ);
+  if (!LittleFS.exists(BD_CONFIG_PATH)) { bdLoadDefaults(); return; }
+  File f = LittleFS.open(BD_CONFIG_PATH, FILE_READ);
   if (!f) { bdLoadDefaults(); return; }
   String j = f.readString();
   f.close();
@@ -974,7 +1046,7 @@ void bdLoadConfig() {
 }
 
 void bdSaveConfig() {
-  File f = SPIFFS.open(BD_CONFIG_PATH, "w");
+  File f = LittleFS.open(BD_CONFIG_PATH, "w");
   if (!f) return;
   f.print("{\"source\":"); f.print(bdSource);
   f.print(",\"rows\":[");
@@ -1238,14 +1310,14 @@ bool sendTemplatedHtml(const char *path){
   webQuietUntil = millis() + 1500;
   webServer.sendHeader("Connection", "close");
   webServer.client().setNoDelay(true);
-  if (!SPIFFS.exists(path)) {
+  if (!LittleFS.exists(path)) {
     String msg = "Missing ";
     msg += path;
-    msg += " in SPIFFS";
+    msg += " in LittleFS";
     webServer.send(500, "text/plain", msg);
     return false;
   }
-  File file = SPIFFS.open(path, "r");
+  File file = LittleFS.open(path, "r");
   if (!file) {
     webServer.send(500, "text/plain", "File open failed");
     return false;
@@ -1442,7 +1514,7 @@ void buildStateJson(char *buf, size_t bufSize){
   int rssi = (APmode || !WiFiStationReady()) ? -999 : (int)WiFi.RSSI();
   snprintf(buf, bufSize,
     "{\"connected\":%s,\"btStatus\":\"%s\",\"wifiStatus\":\"%s\","
-    "\"wifiRssi\":%d,\"fwRev\":\"%u\",\"power\":%s,"
+    "\"wifiRssi\":%d,\"fwRev\":\"%u\",\"bdSupported\":%s,\"power\":%s,"
     "\"frequency\":%u,\"mode\":\"%s\",\"filter\":%u,"
     "\"radioAddress\":\"%s\",\"transceiverType\":\"%s\",\"tx\":%s,\"ritRaw\":%u,"
     "\"smeterRaw\":%u,\"powerMeterRaw\":%u,"
@@ -1450,7 +1522,7 @@ void buildStateJson(char *buf, size_t bufSize){
     "\"supplyVolts\":%.2f,\"swr\":%.2f,"
     "\"preamp\":%u,\"vox\":%u,\"dxcConnected\":%s}",
     radioLinked ? "true" : "false", btStat, wifiStat,
-    rssi, (unsigned)REV, statusPower ? "true" : "false",
+    rssi, (unsigned)REV, bdEnabled ? "true" : "false", statusPower ? "true" : "false",
     (unsigned)frequency, modesSnapshot, (unsigned)stateFilter,
     addrStr, transceiverType.c_str(), stateTx ? "true" : "false", (unsigned)stateRitRaw,
     (unsigned)stateSmeterRaw, (unsigned)statePowerMeterRaw,
@@ -1537,14 +1609,21 @@ bool handleFileFromSPIFFS(const String &path){
   if (path.endsWith(".html")) contentType = "text/html";
   else if (path.endsWith(".css"))  { contentType = "text/css";                  isStatic = true; }
   else if (path.endsWith(".js"))   { contentType = "application/javascript";    isStatic = true; }
+  else if (path.endsWith(".wasm")) { contentType = "application/wasm";          isStatic = true; }
+  else if (path.endsWith(".bin"))  { contentType = "application/octet-stream";  isStatic = true; }
+  else if (path.endsWith(".br"))   { contentType = "application/octet-stream";  isStatic = true; }
   else if (path.endsWith(".ico"))  { contentType = "image/x-icon";              isStatic = true; }
   else if (path.endsWith(".png"))  { contentType = "image/png";                 isStatic = true; }
-  // Prefer pre-compressed .gz variant if available
+  // Never send an encoding the client did not advertise. In particular,
+  // browsers normally omit Brotli on plain HTTP device pages.
+  String acceptEncoding = webServer.header("Accept-Encoding");
+  String brPath = path + ".br";
   String gzPath = path + ".gz";
-  bool useGz = SPIFFS.exists(gzPath);
-  String servePath = useGz ? gzPath : path;
-  if (!useGz && !SPIFFS.exists(path)) return false;
-  File f = SPIFFS.open(servePath, "r");
+  bool useBr = acceptEncoding.indexOf("br") >= 0 && LittleFS.exists(brPath);
+  bool useGz = !useBr && acceptEncoding.indexOf("gzip") >= 0 && LittleFS.exists(gzPath);
+  String servePath = useBr ? brPath : (useGz ? gzPath : path);
+  if (!useBr && !useGz && !LittleFS.exists(path)) return false;
+  File f = LittleFS.open(servePath, "r");
   if (!f) return false;
 
   if (isStatic) {
@@ -1553,19 +1632,56 @@ bool handleFileFromSPIFFS(const String &path){
     webServer.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
     webServer.sendHeader("Pragma", "no-cache");
   }
-  if (useGz) webServer.sendHeader("Content-Encoding", "gzip");
+  if (useBr) webServer.sendHeader("Content-Encoding", "br");
+  else if (useGz) webServer.sendHeader("Content-Encoding", "gzip");
+  webServer.sendHeader("Vary", "Accept-Encoding");
   webServer.sendHeader("Connection", "close");
   webServer.setContentLength(f.size());
   webServer.send(200, contentType, "");
 
-  static uint8_t buf[1024];
-  while (f.available()) {
+  // WiFiClient::write() may wait up to ten seconds for one buffer. A large
+  // modem asset therefore used to hold webServer.handleClient() for minutes,
+  // starving the IC-705 UDP keepalives. Use non-blocking socket writes and
+  // explicitly service the real-time connections while TCP applies backpressure.
+  WiFiClient webClient = webServer.client();
+  webClient.setNoDelay(true);
+  const int webFd = webClient.fd();
+  static uint8_t buf[4096];
+  size_t buffered = 0;
+  size_t sent = 0;
+  uint32_t lastProgress = millis();
+  bool transferOk = webFd >= 0;
+  while (transferOk && (sent < buffered || f.available())) {
+    if (sent == buffered) {
+      buffered = f.read(buf, sizeof(buf));
+      sent = 0;
+      if (buffered == 0) break;
+    }
+
+    int n = ::send(webFd, buf + sent, buffered - sent, MSG_DONTWAIT);
+    if (n > 0) {
+      sent += (size_t)n;
+      lastProgress = millis();
+    } else if (n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != ENOMEM)) {
+      transferOk = false;
+    }
+
+    // Do not call webServer.handleClient() recursively here. The radio, TrxNet,
+    // DX cluster and an already-open audio socket still need their normal ticks.
+    lanClientLoop();
+    TrxNetLoop();
+    DxcLoop();
+    AudioHandleWsClient();
+    statusFlashTick();
     #if defined(WDT)
       esp_task_wdt_reset();
     #endif
-    size_t n = f.read(buf, sizeof(buf));
-    if (n > 0) webServer.sendContent((const char*)buf, n);
+    delay(0);
+
+    // Abandon a dead browser instead of monopolising the firmware indefinitely.
+    if (millis() - lastProgress > 15000) transferOk = false;
   }
+  if (!transferOk) webClient.stop();
   f.close();
   webQuietUntil = millis() + 1500;
   return true;
@@ -1683,6 +1799,63 @@ static void eepromWriteStr(const String &str, int addr, int maxLen) {
   }
 }
 
+static String eepromReadStr(int addr, int maxLen) {
+  String out;
+  out.reserve(maxLen);
+  for (int i = 0; i < maxLen; i++) {
+    uint8_t c = EEPROM.read(addr + i);
+    if (c == 0xff || c == 0x00) break;
+    out += char(c);
+  }
+  return out;
+}
+
+bool hasPrimaryRadioConfig(void) {
+  return EEPROM.read(PRIMARY_RADIO_MARKER_ADDR) == PRIMARY_RADIO_CONFIG_MARKER;
+}
+
+void loadPrimaryRadioConfig(void) {
+  if (!hasPrimaryRadioConfig()) return;
+
+  uint8_t transport = EEPROM.read(PRIMARY_RADIO_TRANSPORT_ADDR);
+  if (transport == 1) transceiverType = "IC-705-LAN";
+  else if (transport == 3) transceiverType = "IC-7610-CI-V";
+  else transceiverType = "IC-705-BT";
+
+  uint8_t civAddress = EEPROM.read(PRIMARY_RADIO_CIV_ADDR);
+  configuredCivAddress = civAddress == 0xff ? CIV_ADDRESS_DEFAULT : civAddress;
+  lanRadioIp = trimMemoryValue(eepromReadStr(PRIMARY_RADIO_LAN_IP_ADDR, 16), 15);
+  lanUser = trimMemoryValue(eepromReadStr(PRIMARY_RADIO_LAN_USER_ADDR, 17), 16);
+  lanPass = trimMemoryValue(eepromReadStr(PRIMARY_RADIO_LAN_PASS_ADDR, 17), 16);
+  lanMode = transceiverType == "IC-705-LAN";
+  Serial.println("CFG | TRX1 loaded from EEPROM/NVS: " + transceiverType +
+                 " ip=" + lanRadioIp + " user='" + lanUser +
+                 "' passlen=" + String(lanPass.length()));
+}
+
+bool savePrimaryRadioConfig(void) {
+  uint8_t transport = 2;
+  if (transceiverType == "IC-705-LAN") transport = 1;
+  else if (transceiverType == "IC-7610-CI-V") transport = 3;
+
+  EEPROM.write(PRIMARY_RADIO_TRANSPORT_ADDR, transport);
+  EEPROM.write(PRIMARY_RADIO_CIV_ADDR, configuredCivAddress);
+  eepromWriteStr(trimMemoryValue(lanRadioIp, 15), PRIMARY_RADIO_LAN_IP_ADDR, 16);
+  eepromWriteStr(trimMemoryValue(lanUser, 16), PRIMARY_RADIO_LAN_USER_ADDR, 17);
+  eepromWriteStr(trimMemoryValue(lanPass, 16), PRIMARY_RADIO_LAN_PASS_ADDR, 17);
+  // Write the marker last. EEPROM.commit() stores the complete emulated EEPROM
+  // as one NVS blob, so an older firmware safely keeps using memories.cfg.
+  EEPROM.write(PRIMARY_RADIO_MARKER_ADDR, PRIMARY_RADIO_CONFIG_MARKER);
+  if (!EEPROM.commit()) {
+    Serial.println("CFG | TRX1 EEPROM/NVS commit failed");
+    return false;
+  }
+  Serial.println("CFG | TRX1 saved to EEPROM/NVS: " + transceiverType +
+                 " ip=" + lanRadioIp + " user='" + lanUser +
+                 "' passlen=" + String(lanPass.length()));
+  return true;
+}
+
 // Normalize raw space-separated priority prefixes: uppercase, whitespace-collapsed,
 // clamped to TRXNET_PRIO_MAX_TOKENS tokens x TRXNET_PRIO_MAX_TOKLEN chars. No globals touched.
 static String trxNormalizePrio(const String &raw) {
@@ -1761,6 +1934,9 @@ void handleConfigDownload() {
   j += ",\"baudrate\":";        j += BaudRate;
   j += ",\"trxprofile\":\"";    j += configJsonEscape(transceiverType); j += "\"";
   j += ",\"civaddr\":\"";       j += civHex;                          j += "\"";
+  j += ",\"lanip\":\"";         j += configJsonEscape(lanRadioIp);     j += "\"";
+  j += ",\"lanuser\":\"";       j += configJsonEscape(lanUser);        j += "\"";
+  j += ",\"lanpass\":\"";       j += configJsonEscape(lanPass);        j += "\"";
   j += ",\"cwIpOnConnect\":";  j += cwIpOnConnect ? "true" : "false";
   for (uint8_t i = 0; i < CW_MEMORY_COUNT; i++) {
     j += ",\"cwmem"; j += (i + 1); j += "\":\""; j += configJsonEscape(cwMemoryText[i]); j += "\"";
@@ -1825,7 +2001,19 @@ void handleConfigUpload() {
 
   String trx = extractJsonString(body, "trxprofile");
   if (trx == "IC-7610-CI-V") transceiverType = trx;
+  else if (trx == "IC-705-LAN") transceiverType = trx;
   else if (trx.length() > 0) transceiverType = "IC-705-BT";
+
+  if (body.indexOf("\"lanip\"") >= 0) {
+    lanRadioIp = trimMemoryValue(extractJsonString(body, "lanip"), 15);
+  }
+  if (body.indexOf("\"lanuser\"") >= 0) {
+    lanUser = trimMemoryValue(extractJsonString(body, "lanuser"), 16);
+  }
+  if (body.indexOf("\"lanpass\"") >= 0) {
+    lanPass = trimMemoryValue(extractJsonString(body, "lanpass"), 16);
+  }
+  lanMode = transceiverType == "IC-705-LAN";
 
   String civStr = extractJsonString(body, "civaddr");
   uint8_t civAddr = configuredCivAddress;
@@ -1942,16 +2130,20 @@ void handleConfigUpload() {
   }
 
   EEPROM.writeBool(0, false);
-  EEPROM.commit();
-  saveMemoryConfig();
+  bool memorySaved = saveMemoryConfig();
+  bool primarySaved = savePrimaryRadioConfig();
+  if (!memorySaved || !primarySaved) {
+    webServer.send(500, "application/json", "{\"error\":\"storage\"}");
+    return;
+  }
 
   webServer.send(200, "application/json", "{\"ok\":true}");
 }
 
 void handleGetLogConfig() {
   String spiffsJson = "{}";
-  if (SPIFFS.exists(LOG_CONFIG_PATH)) {
-    File f = SPIFFS.open(LOG_CONFIG_PATH, "r");
+  if (LittleFS.exists(LOG_CONFIG_PATH)) {
+    File f = LittleFS.open(LOG_CONFIG_PATH, "r");
     if (f) { spiffsJson = f.readString(); f.close(); spiffsJson.trim(); }
   }
   // Inject EEPROM TrxNet peer IDs + CI-V conn type so frontend can derive whether
@@ -1990,7 +2182,7 @@ void handlePostLogConfig() {
     webServer.send(400, "application/json", "{\"error\":\"not_json\"}");
     return;
   }
-  File f = SPIFFS.open(LOG_CONFIG_PATH, "w");
+  File f = LittleFS.open(LOG_CONFIG_PATH, "w");
   if (!f) { webServer.send(500, "application/json", "{\"error\":\"write\"}"); return; }
   f.print(body);
   f.close();
@@ -2113,6 +2305,8 @@ void handleOi3SetHz() {
 }
 
 void setupWebServer(void){
+  const char *requestHeaders[] = {"Accept-Encoding"};
+  webServer.collectHeaders(requestHeaders, 1);
   webServer.on("/state", HTTP_GET, handleGetState);
   webServer.on("/cmd", HTTP_POST, handlePostCmd);
   webServer.on("/config/download", HTTP_GET,  handleConfigDownload);
@@ -2125,7 +2319,9 @@ void setupWebServer(void){
   webServer.on("/oi3/set-hz",   HTTP_POST, handleOi3SetHz);
 
   webServer.on("/", HTTP_GET, [](){
-    if (!SPIFFS.exists("/index.html")) { renderSetupPage(); return; }
+    // A fresh device starts in configuration AP mode.  Opening its bare IP
+    // must lead directly to Setup even when the normal UI is present in LittleFS.
+    if (APmode || !LittleFS.exists("/index.html")) { renderSetupPage(); return; }
     renderIndexPage();
   });
 
@@ -2193,7 +2389,7 @@ void setupWebServer(void){
     webServer.sendHeader("Connection", "close");
     webServer.client().setNoDelay(true);
     if (!bdEnabled) { webServer.send(403, "application/json", "{\"error\":\"hw\"}"); return; }
-    File f = SPIFFS.open(BD_CONFIG_PATH, FILE_READ);
+    File f = LittleFS.open(BD_CONFIG_PATH, FILE_READ);
     if (!f) { webServer.send(404, "application/json", "{}"); return; }
     webServer.streamFile(f, "application/json");
     f.close();
@@ -2486,11 +2682,22 @@ void setup(){
     digitalWrite(CIVmutePin, HIGH);
 
   #if defined(WIFI)
-    if (!SPIFFS.begin(true)) {
-      Serial.println("SPIFFS| mount failed");
+    if (!LittleFS.begin(true)) {
+      Serial.println("LFS | mount failed");
     } else {
-      Serial.println("SPIFFS| mounted");
+      Serial.println("LFS | mounted used=" + String(LittleFS.usedBytes()) +
+                     " total=" + String(LittleFS.totalBytes()));
       loadMemoryConfig();
+      if (hasPrimaryRadioConfig()) {
+        // EEPROM/NVS is authoritative because it survives full filesystem uploads.
+        loadPrimaryRadioConfig();
+      } else if (LittleFS.exists(MEMORY_CONFIG_PATH)) {
+        // One-time migration from firmware versions that kept TRX1 only in
+        // memories.cfg. The legacy copy remains readable by older firmware.
+        if (!savePrimaryRadioConfig()) {
+          Serial.println("CFG | legacy TRX1 migration failed");
+        }
+      }
       loadLogConfigVars();
       bdEnabled = (HardwareRev >= 4);
       if (bdEnabled) {
@@ -4367,7 +4574,14 @@ void runLanCivTest(){
     }
     lanRadioIp = ipStr; lanUser = user; lanPass = pass;
     transceiverType = "IC-705-LAN";
-    saveMemoryConfig();
+    lanMode = true;
+    if (!savePrimaryRadioConfig()) {
+      Serial.println("LAN | save failed; reboot cancelled");
+      return;
+    }
+    if (!saveMemoryConfig()) {
+      Serial.println("LAN | warning: legacy memories.cfg copy was not updated");
+    }
     Serial.println("LAN | saved (user='" + lanUser + "' passlen=" + String(lanPass.length()) +
                    "). Rebooting into LAN mode (BT off)...");
     delay(1500);
@@ -4375,7 +4589,14 @@ void runLanCivTest(){
 
   } else if (act == 'b' || act == 'B') {
     transceiverType = "IC-705-BT";
-    saveMemoryConfig();
+    lanMode = false;
+    if (!savePrimaryRadioConfig()) {
+      Serial.println("LAN | save failed; reboot cancelled");
+      return;
+    }
+    if (!saveMemoryConfig()) {
+      Serial.println("LAN | warning: legacy memories.cfg copy was not updated");
+    }
     Serial.println("LAN | reverting to Bluetooth. Rebooting...");
     delay(1500);
     ESP.restart();
@@ -4779,14 +5000,22 @@ void handleSet() {
         freqMemoryText[i] = trimMemoryValue(requestArg(fieldName), FREQ_MEMORY_MAX_LEN);
       }
     }
-    saveMemoryConfig();   // persists transceiverType, civaddr, LAN ip/user/pass, memories
-
-
     if(ERRdetect==0){
-      setupSaveOk = true;
       // // APmode
       EEPROM.writeBool(0, false);
-      EEPROM.commit();
+      // TRX1 has its own EEPROM/NVS copy so a full filesystem upload cannot
+      // erase the LAN credentials. This commit also persists all other fields
+      // written above by this form submission.
+      if (!savePrimaryRadioConfig()) {
+        return;
+      }
+      // memories.cfg is a backward-compatible copy plus CAT-page memories.
+      // TRX1 persistence and restart must not depend on filesystem garbage
+      // collection; the authoritative radio configuration is in EEPROM/NVS.
+      if (!saveMemoryConfig()) {
+        Serial.println("CFG | warning: CAT memories/legacy filesystem copy not saved");
+      }
+      setupSaveOk = true;
       if (requestHasArg("noRestart")) {
         return;
       }
@@ -5085,8 +5314,8 @@ void dxcHandleRawClient(){
 }
 
 // ── DATA-page audio WebSocket (port 83, /audiows) ─────────────────────────────
-// Binary channel that forwards raw RX audio (uLaw) from the IC-705 LAN audio
-// stream to the browser waterfall. Modeled on the DXC port-82 WebSocket above.
+// Versioned AUD1 channel carrying timed RX uLaw and paced TX PCM16 between the
+// IC-705 LAN session and the browser modem Worker.
 
 // Is the audio socket writable right now? Zero-timeout select() poll — WiFiClient::write()
 // otherwise blocks the whole cooperative loop up to 10 s (10 retries x 1 s select) when the
@@ -5122,10 +5351,62 @@ bool AudioSendBinary(const uint8_t* payload, size_t length){
   return true;
 }
 
+bool AudioSendText(const String& text){
+  if(!AudioWsClient.connected() || !audioSocketWritable()) return false;
+  size_t length = text.length();
+  uint8_t header[4]; size_t headerLen = 0;
+  header[headerLen++] = 0x80 | 0x1;
+  if(length < 126){ header[headerLen++] = uint8_t(length); }
+  else if(length <= 0xFFFF){
+    header[headerLen++] = 126;
+    header[headerLen++] = uint8_t(length >> 8);
+    header[headerLen++] = uint8_t(length);
+  }else return false;
+  if(AudioWsClient.write(header, headerLen) != headerLen){ AudioDisconnectWs(); return false; }
+  if(length && AudioWsClient.write((const uint8_t*)text.c_str(), length) != length){ AudioDisconnectWs(); return false; }
+  return true;
+}
+
+static void aud1PutBE16(uint8_t* p, uint16_t value){ p[0] = uint8_t(value >> 8); p[1] = uint8_t(value); }
+static void aud1PutBE32(uint8_t* p, uint32_t value){
+  p[0]=uint8_t(value>>24); p[1]=uint8_t(value>>16); p[2]=uint8_t(value>>8); p[3]=uint8_t(value);
+}
+static void aud1PutBE64(uint8_t* p, uint64_t value){
+  for(int i=7; i>=0; --i){ p[i]=uint8_t(value); value >>= 8; }
+}
+static uint16_t aud1GetBE16(const uint8_t* p){ return (uint16_t(p[0])<<8) | p[1]; }
+static uint32_t aud1GetBE32(const uint8_t* p){ return (uint32_t(p[0])<<24)|(uint32_t(p[1])<<16)|(uint32_t(p[2])<<8)|p[3]; }
+static uint64_t aud1GetBE64(const uint8_t* p){
+  uint64_t value=0; for(int i=0;i<8;i++) value=(value<<8)|p[i]; return value;
+}
+
+static uint8_t aud1Pcm16ToUlaw(int16_t input){
+  int32_t sample = input;
+  uint8_t sign = sample < 0 ? 0x80 : 0;
+  if(sample < 0) sample = -sample;
+  if(sample > 32635) sample = 32635;
+  sample += 0x84;
+  int exponent = 7;
+  for(int mask=0x4000; exponent>0 && (sample & mask)==0; --exponent, mask>>=1){}
+  uint8_t mantissa = uint8_t((sample >> (exponent + 3)) & 0x0F);
+  return uint8_t(~(sign | (exponent << 4) | mantissa));
+}
+
 // Flush the coalesced audio buffer as one WS frame.
 void audioFlush(){
   if(audioTxLen == 0) return;
-  AudioSendBinary(audioTxBuf, audioTxLen);
+  static uint8_t wire[40 + sizeof(audioTxBuf)];
+  memcpy(wire, "AUD1", 4); wire[4] = 1; wire[5] = 1; // RX_ULAW
+  uint16_t flags = (audioRxFirst ? 0x0001 : 0) | (audioRxDiscontinuity ? 0x0004 : 0);
+  aud1PutBE16(wire+6, flags); aud1PutBE16(wire+8, 40); aud1PutBE16(wire+10, 0);
+  aud1PutBE32(wire+12, audioStreamId); aud1PutBE32(wire+16, audioRxSequence);
+  aud1PutBE32(wire+20, 8000); aud1PutBE64(wire+24, audioRxFirstSample);
+  aud1PutBE32(wire+32, 0); aud1PutBE32(wire+36, audioTxLen);
+  memcpy(wire+40, audioTxBuf, audioTxLen);
+  bool sent = AudioSendBinary(wire, 40 + audioTxLen);
+  audioRxFirstSample += audioTxLen;
+  if(sent){ audioRxSequence++; audioRxFirst = false; audioRxDiscontinuity = false; }
+  else audioRxDiscontinuity = true;
   audioTxLen = 0;
 }
 
@@ -5137,7 +5418,7 @@ void audioPttOn(){
   bool ok = lanClient.sendCommand(f, 3);
   uint8_t rd[] = {0x1C, 0x00};               // read back -> "CIV | radio TX state" log
   lanClient.sendCommand(rd, 2);
-  audioTxKeyed = true; audioTxLastMs = millis();
+  audioTxKeyed = ok; audioTxLastMs = millis();
   Serial.print("AUD | PTT ON (TX audio) sendCommand="); Serial.println(ok ? "ok" : "FAIL");
 }
 void audioPttOff(){
@@ -5148,8 +5429,75 @@ void audioPttOff(){
   Serial.println("AUD | PTT OFF");
 }
 
+static void aud1TxResetState(Aud1TxState next = AUD1_TX_IDLE){
+  aud1TxState=next; aud1TxRead=aud1TxWrite=aud1TxUsed=0;
+  aud1TxExpectedSequence=aud1TxExpectedPackets=aud1TxReceivedPackets=0;
+  aud1TxExpectedSample=aud1TxTotalSamples=aud1TxConsumedUlaw=0;
+  aud1TxTargetMs=aud1TxNextDrainMs=aud1TxDeadlineMs=aud1TxPrebufferSamples=0;
+  aud1TxLastSeen=false;
+}
+
+void aud1TxAbort(const String& reason, bool notify){
+  uint32_t txId = aud1TxId;
+  audioPttOff(); aud1TxResetState(reason.length() ? AUD1_TX_FAULT : AUD1_TX_IDLE);
+  if(notify && AudioWsClient.connected()){
+    String json = "{\"type\":\"tx-error\",\"txId\":" + String(txId) +
+                  ",\"reason\":\"" + jsonEscape(reason) + "\",\"ptt\":false}";
+    AudioSendText(json);
+  }
+  if(reason.length()){ Serial.print("AUD1 | TX abort: "); Serial.println(reason); }
+}
+
+static bool aud1RingWrite(uint8_t value){
+  if(aud1TxUsed >= AUD1_TX_RING_SIZE) return false;
+  aud1TxRing[aud1TxWrite] = value; aud1TxWrite = (aud1TxWrite + 1) % AUD1_TX_RING_SIZE; aud1TxUsed++; return true;
+}
+
+static size_t aud1RingRead(uint8_t* output, size_t count){
+  size_t read = 0;
+  while(read < count && aud1TxUsed){ output[read++] = aud1TxRing[aud1TxRead]; aud1TxRead=(aud1TxRead+1)%AUD1_TX_RING_SIZE; aud1TxUsed--; }
+  return read;
+}
+
+void aud1TxTick(){
+  uint32_t now = millis();
+  if(aud1TxState == AUD1_TX_READY || aud1TxState == AUD1_TX_PREBUFFER){
+    if((int32_t)(now - aud1TxTargetMs) < 0) return;
+    size_t required = (aud1TxPrebufferSamples + 5) / 6;
+    if(aud1TxExpectedSample < aud1TxPrebufferSamples || aud1TxUsed < required){ aud1TxAbort("TX prebuffer missed slot"); return; }
+    audioPttOn();
+    if(!audioTxKeyed){ aud1TxAbort("PTT command failed"); return; }
+    aud1TxState = AUD1_TX_STREAM; aud1TxNextDrainMs = now;
+    AudioSendText("{\"type\":\"tx-state\",\"txId\":" + String(aud1TxId) + ",\"ptt\":true}");
+  }
+  if(aud1TxState != AUD1_TX_STREAM) return;
+  if((int32_t)(now - aud1TxDeadlineMs) > 0){ aud1TxAbort("TX watchdog"); return; }
+  uint8_t packet[160]; int bursts = 0;
+  while((int32_t)(now - aud1TxNextDrainMs) >= 0 && bursts++ < 3){
+    uint64_t totalUlaw = (aud1TxTotalSamples + 5) / 6;
+    uint64_t remaining = totalUlaw - aud1TxConsumedUlaw;
+    size_t wanted = size_t(remaining < 160 ? remaining : 160);
+    if(wanted == 0) break;
+    if(aud1TxUsed < wanted){ aud1TxAbort("TX buffer underrun"); return; }
+    if(aud1RingRead(packet, wanted) != wanted){ aud1TxAbort("TX ring failure"); return; }
+    lanClient.sendAudioPacket(packet, wanted);
+    aud1TxConsumedUlaw += wanted; aud1TxNextDrainMs += 20; audioTxLastMs = now;
+  }
+  uint64_t totalUlaw = (aud1TxTotalSamples + 5) / 6;
+  if(aud1TxLastSeen && aud1TxConsumedUlaw >= totalUlaw){
+    audioPttOff(); aud1TxState = AUD1_TX_DRAINED;
+    AudioSendText("{\"type\":\"tx-drained\",\"txId\":" + String(aud1TxId) + ",\"ptt\":false}");
+    Serial.println("AUD1 | TX drained, PTT OFF");
+  }
+}
+
 void AudioDisconnectWs(){
-  audioPttOff();                              // safety: never leave PTT keyed
+  // A normal page leave while receiving is not a TX fault. Abort and log only
+  // when a prepared/streaming TX or keyed PTT actually needs the safety path.
+  if(aud1TxNeedsDisconnectAbort(aud1TxState, audioTxKeyed))
+    aud1TxAbort("WebSocket disconnected", false);
+  else
+    aud1TxResetState();
   if(AudioWsClient.connected()) AudioWsClient.stop();
   lanClient.stopRxAudio();
 }
@@ -5157,15 +5505,111 @@ void AudioDisconnectWs(){
 // Called by the LAN client for every RX audio datagram payload (~160 B / 20 ms).
 // Coalesce a few packets into one WS frame to cut the frame rate (~50/s -> ~10/s)
 // and keep the single-threaded loop responsive to the port-80 /state polls.
-void lanAudioHandler(const uint8_t *data, size_t len){
+void lanAudioHandler(const uint8_t *data, size_t len, uint16_t radioSequence){
   if(len == 0 || !AudioWsClient.connected()) return;
+  if(audioRadioSequenceValid){
+    int16_t delta = int16_t(radioSequence - audioRadioExpectedSequence);
+    if(delta < 0) return; // duplicate or stale radio datagram
+    if(delta > 0){
+      audioFlush();
+      audioRxFirstSample += uint64_t(uint16_t(delta)) * len;
+      audioRxDiscontinuity = true;
+    }
+  }
+  audioRadioExpectedSequence = uint16_t(radioSequence + 1);
+  audioRadioSequenceValid = true;
   if(audioRxPackets == 0){ Serial.print("AUD | rx audio flowing, first packet "); Serial.print(len); Serial.println(" B"); }
   audioRxPackets++;
-  if(len > sizeof(audioTxBuf)){ AudioSendBinary(data, len); return; }   // oversized: send as-is
+  if(len > sizeof(audioTxBuf)){
+    audioFlush(); audioRxFirstSample += len; audioRxDiscontinuity = true;
+    return; // never leak a metadata-free frame into the AUD1 stream
+  }
   if(audioTxLen + len > sizeof(audioTxBuf)) audioFlush();
   memcpy(audioTxBuf + audioTxLen, data, len);
   audioTxLen += len;
   if(audioTxLen >= 512) audioFlush();                                   // keep frames < 1 MSS
+}
+
+static uint64_t aud1JsonU64(const String& json, const char* key){
+  String value = extractJsonString(json, key);
+  return value.length() ? strtoull(value.c_str(), nullptr, 10) : 0;
+}
+
+static void aud1HandleControl(const String& json){
+  String type = extractJsonString(json, "type");
+  uint32_t txId = (uint32_t)aud1JsonU64(json, "txId");
+  if(type == "tx.abort"){
+    if((aud1TxState == AUD1_TX_READY || aud1TxState == AUD1_TX_PREBUFFER ||
+        aud1TxState == AUD1_TX_STREAM) && (!txId || txId == aud1TxId))
+      aud1TxAbort("operator abort");
+    return;
+  }
+  if(type != "tx.prepare") return;
+
+  uint64_t slotUtcMs = aud1JsonU64(json, "slotUtcMs");
+  uint64_t clientUtcMs = aud1JsonU64(json, "clientUtcMs");
+  uint64_t totalSamples = aud1JsonU64(json, "samples");
+  uint32_t packets = (uint32_t)aud1JsonU64(json, "packets");
+  uint32_t prebuffer = (uint32_t)aud1JsonU64(json, "prebufferSamples");
+  uint32_t sampleRate = (uint32_t)aud1JsonU64(json, "sampleRate");
+  uint32_t packetMs = (uint32_t)aud1JsonU64(json, "packetMs");
+  int64_t delayMs = int64_t(slotUtcMs) - int64_t(clientUtcMs);
+  if(txId == 0 || sampleRate != 48000 || packetMs != 20 || totalSamples == 0 ||
+     packets == 0 || prebuffer == 0 || prebuffer > totalSamples ||
+     prebuffer > AUD1_TX_RING_SIZE * 6 || delayMs < 100 || delayMs > 35000 ||
+     !lanMode || !lanClient.connected()){
+    aud1TxId = txId; aud1TxAbort("invalid tx.prepare"); return;
+  }
+  if(aud1TxState != AUD1_TX_IDLE && aud1TxState != AUD1_TX_DRAINED && aud1TxState != AUD1_TX_FAULT)
+    aud1TxAbort("new TX replaced active TX", false);
+  aud1TxResetState(AUD1_TX_READY);
+  aud1TxId = txId; aud1TxTotalSamples = totalSamples; aud1TxExpectedPackets = packets;
+  aud1TxPrebufferSamples = prebuffer; aud1TxTargetMs = millis() + uint32_t(delayMs);
+  aud1TxDeadlineMs = aud1TxTargetMs + uint32_t(totalSamples / 48) + 2500;
+  AudioSendText("{\"type\":\"tx-ready\",\"txId\":" + String(aud1TxId) + ",\"ptt\":false}");
+  Serial.print("AUD1 | TX ready id="); Serial.print(aud1TxId);
+  Serial.print(" slot in ms="); Serial.println((long)delayMs);
+}
+
+static bool aud1AcceptTxPacket(const uint8_t* wire, size_t length){
+  // TCP may still contain frames which were queued before a tx-error reached
+  // the browser. Drop those frames quietly; repeatedly faulting and replying
+  // here used to monopolize the single-threaded audio WebSocket loop.
+  if(length >= 40 && memcmp(wire, "AUD1", 4) == 0 && wire[4] == 1 && wire[5] == 3 &&
+     (aud1TxState == AUD1_TX_IDLE || aud1TxState == AUD1_TX_DRAINED ||
+      aud1TxState == AUD1_TX_FAULT) && aud1GetBE32(wire+32) == aud1TxId)
+    return false;
+  if(length < 40 || memcmp(wire, "AUD1", 4) != 0 || wire[4] != 1 || wire[5] != 3 ||
+     aud1GetBE16(wire+8) != 40 || aud1GetBE16(wire+10) != 0 ||
+     aud1GetBE32(wire+12) != audioStreamId || aud1GetBE32(wire+16) != aud1TxExpectedSequence ||
+     aud1GetBE32(wire+20) != 48000 || aud1GetBE64(wire+24) != aud1TxExpectedSample ||
+     aud1GetBE32(wire+32) != aud1TxId || aud1GetBE32(wire+36) != length-40 ||
+     (length-40) == 0 || ((length-40) % 12) != 0 ||
+     !(aud1TxState == AUD1_TX_READY || aud1TxState == AUD1_TX_PREBUFFER || aud1TxState == AUD1_TX_STREAM)){
+    aud1TxAbort("TX packet identity/continuity failure"); return false;
+  }
+  uint16_t flags = aud1GetBE16(wire+6);
+  bool first = (flags & 0x0001) != 0, last = (flags & 0x0002) != 0;
+  size_t samples = (length-40)/2, ulawSamples = samples/6;
+  if((aud1TxExpectedSequence == 0) != first || (flags & ~0x0003) != 0 ||
+     aud1TxExpectedSample + samples > aud1TxTotalSamples ||
+     aud1TxReceivedPackets + 1 > aud1TxExpectedPackets ||
+     aud1TxUsed + ulawSamples > AUD1_TX_RING_SIZE ||
+     (last && (aud1TxExpectedSample + samples != aud1TxTotalSamples ||
+               aud1TxReceivedPackets + 1 != aud1TxExpectedPackets)) ||
+     (!last && aud1TxReceivedPackets + 1 == aud1TxExpectedPackets)){
+    aud1TxAbort("TX FIRST/LAST/length/buffer failure"); return false;
+  }
+  for(size_t i=0; i<samples; i+=6){
+    size_t at = 40 + i*2;
+    int16_t pcm = int16_t(uint16_t(wire[at]) | (uint16_t(wire[at+1]) << 8));
+    if(!aud1RingWrite(aud1Pcm16ToUlaw(pcm))){ aud1TxAbort("TX ring overflow"); return false; }
+  }
+  aud1TxExpectedSample += samples; aud1TxExpectedSequence++; aud1TxReceivedPackets++;
+  aud1TxLastSeen = last;
+  if(aud1TxState == AUD1_TX_READY) aud1TxState = AUD1_TX_PREBUFFER;
+  audioTxLastMs = millis();
+  return true;
 }
 
 bool AudioHandleWsUpgrade(WiFiClient& webClient, const String& request){
@@ -5188,27 +5632,32 @@ bool AudioHandleWsUpgrade(WiFiClient& webClient, const String& request){
   webClient.println();
   AudioWsClient = webClient;
   AudioWsClient.setNoDelay(true);
-  audioRxPackets = 0;
+  audioRxPackets = 0; audioTxLen = 0;
+  audioStreamId = esp_random(); if(audioStreamId == 0) audioStreamId = 1;
+  audioRxSequence = 0; audioRxFirstSample = 0; audioRxFirst = true; audioRxDiscontinuity = false;
+  audioRadioSequenceValid = false; audioRadioExpectedSequence = 0;
+  aud1TxResetState(); aud1TxId = 0;
+  String hello = "{\"type\":\"hello\",\"protocol\":\"AUD1\",\"version\":1,\"streamId\":" +
+                 String(audioStreamId) + ",\"rx\":[{\"kind\":\"RX_ULAW\",\"sampleRate\":8000}]," +
+                 "\"tx\":[{\"kind\":\"TX_PCM16\",\"sampleRate\":48000}],\"maxPayloadBytes\":1920}";
+  if(!AudioSendText(hello)){ AudioDisconnectWs(); return false; }
   lanClient.startRxAudio();                          // opens the LAN audio channel
-  Serial.println("AUD | WS client connected -> RX audio on");
+  Serial.print("AUD1 | WS client connected, stream="); Serial.println(audioStreamId);
   return true;
 }
 
 void AudioHandleWsClient(){
   if(!AudioWsClient.connected()){
-    if(audioTxKeyed) audioPttOff();
+    if(aud1TxNeedsDisconnectAbort(aud1TxState, audioTxKeyed))
+      aud1TxAbort("WebSocket disconnected", false);
     if(lanClient.rxAudioActive()) lanClient.stopRxAudio();
     audioTxLen = 0;
     return;
   }
-  // bound audio latency: flush the coalesce buffer at least every ~100 ms
-  static uint32_t lastFlush = 0;
-  if(millis() - lastFlush >= 100){ audioFlush(); lastFlush = millis(); }
-  // dead-man safety: un-key PTT if keyed but no TX audio arrived recently
-  if(audioTxKeyed && millis() - audioTxLastMs > 500){ Serial.println("AUD | dead-man: no TX audio -> unkey"); audioPttOff(); }
-
-  // Browser -> ESP32: text frames = TX control ("TX1"/"TX0"), binary frames = TX
-  // audio (uLaw) forwarded to the radio. Read the whole frame so framing stays synced.
+  // Browser -> ESP32: JSON TX intent and AUD1 TX_PCM16 packets.
+  // Drain already-arrived frames before checking the TX slot. Otherwise a
+  // packet waiting in the TCP buffer at the boundary is mistaken for a missed
+  // prebuffer and all following packets become continuity errors.
   while(AudioWsClient.available() >= 2){
     uint8_t hdr[2];
     if(AudioWsClient.read(hdr, 2) != 2){ AudioDisconnectWs(); return; }
@@ -5232,27 +5681,21 @@ void AudioHandleWsClient(){
       while(AudioWsClient.connected() && AudioWsClient.available() < 4) delay(1);
       if(AudioWsClient.read(maskKey, 4) != 4){ AudioDisconnectWs(); return; }
     }
-    if(payloadLen > 512){ AudioDisconnectWs(); return; }   // audio chunks are small
-    static uint8_t payload[512];
+    if(payloadLen > 2048){ AudioDisconnectWs(); return; }
+    static uint8_t payload[2049];
     size_t needed = size_t(payloadLen);
     while(AudioWsClient.connected() && AudioWsClient.available() < int(needed)) delay(1);
     if(needed > 0 && AudioWsClient.read(payload, needed) != int(needed)){ AudioDisconnectWs(); return; }
     if(masked){ for(size_t i = 0; i < needed; i++) payload[i] ^= maskKey[i % 4]; }
 
     if(opcode == 0x8){ AudioDisconnectWs(); return; }                 // close
-    else if(opcode == 0x2){                                           // TX audio
-      lanClient.sendAudioPacket(payload, needed);
-      audioTxLastMs = millis();
-      static uint32_t txAudioPkts = 0;
-      if((txAudioPkts++ % 50) == 0){ Serial.print("AUD | TX audio -> radio, "); Serial.print(needed); Serial.print(" B, pkt#"); Serial.println(txAudioPkts); }
-    }
-    else if(opcode == 0x1){                                            // TX control
-      if(needed >= 3 && payload[0]=='T' && payload[1]=='X'){
-        if(payload[2]=='1') audioPttOn();
-        else if(payload[2]=='0') audioPttOff();
-      }
-    }
+    else if(opcode == 0x2) aud1AcceptTxPacket(payload, needed);
+    else if(opcode == 0x1){ payload[needed] = 0; aud1HandleControl(String((char*)payload)); }
   }
+  aud1TxTick();
+  // bound RX audio latency: flush the coalesce buffer at least every ~100 ms
+  static uint32_t lastFlush = 0;
+  if(millis() - lastFlush >= 100){ audioFlush(); lastFlush = millis(); }
 }
 
 void audioHandleRawClient(){

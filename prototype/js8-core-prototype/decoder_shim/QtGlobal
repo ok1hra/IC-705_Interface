@@ -1,0 +1,28 @@
+#pragma once
+
+#include <cerrno>
+#include <climits>
+#include <cstdlib>
+
+inline bool qEnvironmentVariableIsSet(char const *name) noexcept {
+    return std::getenv(name) != nullptr;
+}
+
+inline int qEnvironmentVariableIntValue(char const *name,
+                                        bool *ok = nullptr) noexcept {
+    auto const value = std::getenv(name);
+    if (!value) {
+        if (ok)
+            *ok = false;
+        return 0;
+    }
+
+    errno = 0;
+    char *end = nullptr;
+    auto const parsed = std::strtol(value, &end, 10);
+    auto const valid = errno == 0 && end != value && *end == '\0' &&
+                       parsed >= INT_MIN && parsed <= INT_MAX;
+    if (ok)
+        *ok = valid;
+    return valid ? static_cast<int>(parsed) : 0;
+}

@@ -1,0 +1,23 @@
+# Build from the repository root. The reviewed multi-platform index digest is
+# duplicated from toolchain.lock because Docker resolves FROM before COPY.
+ARG BASE_IMAGE=debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
+FROM ${BASE_IMAGE}
+
+COPY prototype/js8-core-prototype/toolchain/toolchain.lock /opt/js8/toolchain.lock
+RUN . /opt/js8/toolchain.lock && \
+    echo 'deb-src http://deb.debian.org/debian bookworm main' > /etc/apt/sources.list.d/js8-src.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+      build-essential ca-certificates dpkg-dev gzip python3 xz-utils \
+      "cmake=${CMAKE_PACKAGE_VERSION}" \
+      "emscripten=${EMSCRIPTEN_PACKAGE_VERSION}" \
+      "nodejs=${NODE_PACKAGE_VERSION}" \
+      "${BOOST_PACKAGE}=${BOOST_PACKAGE_VERSION}" \
+      "libfftw3-dev=${FFTW_PACKAGE_VERSION}" && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY prototype/js8-core-prototype/toolchain/check-toolchain.sh /usr/local/bin/js8-check-toolchain
+COPY prototype/js8-core-prototype/toolchain/toolchain.lock /usr/local/bin/toolchain.lock
+RUN chmod +x /usr/local/bin/js8-check-toolchain && js8-check-toolchain --release
+
+WORKDIR /workspace

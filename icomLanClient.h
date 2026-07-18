@@ -5,11 +5,18 @@
 // with tools/icom-lan-login-test.py — see docs/icom-lan-implementace.md §2 for
 // the six IC-705 deviations from the wfview flow that this code follows.
 //
+// The passcode substitution and Icom LAN packet layout were adapted in 2026
+// from wfview. Copyright 2017-2026 Elliott H. Liggett (W6EL) and Phil Taylor
+// (M0VSE). wfview and this modified port are licensed under GNU GPL v3.
+// Source: https://gitlab.com/eliggett/wfview/
+// Notices for all modem/runtime dependencies: data/THIRD-PARTY-NOTICES.txt
+//
 // Non-blocking: call begin() once, then loop() often. Drives itself through a
 // state machine. Designed to grow into the real transport (BT vs LAN) module.
 #pragma once
 #include <WiFi.h>
 #include <WiFiUdp.h>
+#include "icom_lan_tx_history.h"
 
 // Implemented in the .ino — routes a received CI-V frame (FE FE..FD) through the
 // shared parser so LAN gets the same full CAT state (freq, mode, meters, TX...).
@@ -17,7 +24,7 @@ extern void lanCivFrameHandler(const uint8_t *frame, size_t len);
 
 // Implemented in the .ino — receives a chunk of raw RX audio (payload of one audio
 // UDP datagram, codec = AUDIO_RX_CODEC below). Used by the DATA-page waterfall.
-extern void lanAudioHandler(const uint8_t *data, size_t len);
+extern void lanAudioHandler(const uint8_t *data, size_t len, uint16_t sequence);
 
 class IcomLanClient {
 public:
@@ -41,6 +48,7 @@ public:
     ctrlMyId = mkId(50001);
     ctrlRemoteId = 0;
     ctrlSendSeq = 1;
+    ctrlTxHistory.clear();
     authInnerSeq = 0x30;
     tokRequest = (uint16_t)esp_random();
     token = 0;
@@ -245,6 +253,12 @@ private:
 
   uint8_t buf[1500];
 
+  // A blocked web response can keep the cooperative loop away from UDP for
+  // more than a second. Preserve enough control/CI-V tracked packets to answer
+  // the radio's immediate retransmit request after the loop resumes.
+  IcomLanTxHistory<0x90, 8> ctrlTxHistory;
+  IcomLanTxHistory<64, 16> civTxHistory;
+
   // ---- little/big-endian writers ----
   static void putLE16(uint8_t*p,uint16_t v){p[0]=v;p[1]=v>>8;}
   static void putLE32(uint8_t*p,uint32_t v){p[0]=v;p[1]=v>>8;p[2]=v>>16;p[3]=v>>24;}
@@ -304,12 +318,53 @@ private:
     u.beginPacket(radioIP, currentRemote(u)); u.write(buf, 0x10); u.endPacket();
   }
 
-  // tracked packet: stamp seq into bytes 6-7 (we don't buffer for retransmit in
-  // this minimal client — the IC-705 rarely asks and freq is re-polled anyway)
+  // Tracked packet: stamp seq into bytes 6-7 and retain the exact wire image.
+  // A missing tracked sequence blocks later client->radio commands until the
+  // radio receives the requested replay.
   void sendTracked(WiFiUDP& u, size_t len, uint16_t /*hint*/) {
     uint16_t& seq = (&u == &ctrlUdp) ? ctrlSendSeq : (&u == &civUdp ? civSendSeq : audioSendSeq);
-    putLE16(buf+6, seq++);
+    uint16_t packetSeq = seq++;
+    putLE16(buf+6, packetSeq);
+    if (&u == &ctrlUdp) ctrlTxHistory.remember(packetSeq, buf, len);
+    else if (&u == &civUdp) civTxHistory.remember(packetSeq, buf, len);
     u.beginPacket(radioIP, currentRemote(u)); u.write(buf, len); u.endPacket();
+  }
+
+  bool resendTracked(WiFiUDP& u, uint16_t sequence) {
+    size_t len = 0;
+    const uint8_t* packet = nullptr;
+    if (&u == &ctrlUdp) packet = ctrlTxHistory.find(sequence, len);
+    else if (&u == &civUdp) packet = civTxHistory.find(sequence, len);
+    if (!packet || len == 0) {
+      Serial.print("LAN | retransmit miss seq=0x"); Serial.println(sequence, HEX);
+      return false;
+    }
+    u.beginPacket(radioIP, currentRemote(u)); u.write(packet, len); u.endPacket();
+    Serial.print("LAN | retransmit seq=0x"); Serial.println(sequence, HEX);
+    return true;
+  }
+
+  void fillMissingTracked(WiFiUDP& u, uint16_t sequence) {
+    uint32_t myId = (&u == &ctrlUdp) ? ctrlMyId : civMyId;
+    uint32_t remoteId = (&u == &ctrlUdp) ? ctrlRemoteId : civRemoteId;
+    sendCtrl(u, myId, remoteId, 0x00, sequence);
+    Serial.print("LAN | retransmit unavailable, filled seq=0x"); Serial.println(sequence, HEX);
+  }
+
+  bool handleRetransmitRequest(WiFiUDP& u, const uint8_t* packet, int length) {
+    if (length < 0x10 || getLE16(packet+4) != 0x01) return false;
+    if (length == 0x10) {
+      uint16_t sequence = getLE16(packet+6);
+      if (!resendTracked(u, sequence)) fillMissingTracked(u, sequence);
+      return true;
+    }
+    // A variable-length request carries a little-endian sequence list after
+    // the common 16-byte header.
+    for (int at = 0x10; at + 1 < length; at += 2) {
+      uint16_t sequence = getLE16(packet+at);
+      if (!resendTracked(u, sequence)) fillMissingTracked(u, sequence);
+    }
+    return true;
   }
 
   void sendPing(WiFiUDP& u, uint32_t myId, uint32_t rid, uint16_t seq) {
@@ -479,6 +534,7 @@ private:
       sendPingReply(ctrlUdp, ctrlMyId, ctrlRemoteId, getLE16(r+6), getLE32(r+0x11));
       return;
     }
+    if (handleRetransmitRequest(ctrlUdp, r, n)) return;
     if (n == 0x10) {
       if (type == 0x04 && state == LAN_AYT) {          // IAmHere
         ctrlRemoteId = sentid;
@@ -550,6 +606,7 @@ private:
     civRemoteId = 0;
     civGotHere = civOpenSent = civGotData = scopeOff = false;
     civSendSeq = 1;
+    civTxHistory.clear();
     civDataSeq = 0;
     lastCivDataMs = millis();
     lastFreqPoll = lastAuxPoll = 0;
@@ -599,7 +656,7 @@ private:
     // icomudpaudio.cpp: type != 0x01 && len >= 0x20, data = r.mid(0x18)).
     uint32_t plen = getLE32(r+0);
     if (type != 0x01 && plen >= 0x20 && n > 0x18) {
-      lanAudioHandler(r + 0x18, (size_t)(n - 0x18));
+      lanAudioHandler(r + 0x18, (size_t)(n - 0x18), getBE16(r + 0x12));
     }
   }
 
@@ -611,6 +668,7 @@ private:
       sendPingReply(civUdp, civMyId, civRemoteId, getLE16(r+6), getLE32(r+0x11));
       return;
     }
+    if (handleRetransmitRequest(civUdp, r, n)) return;
     if (n == 0x10) {
       if (type == 0x04 && !civGotHere) {
         civGotHere = true; civRemoteId = sentid; civHereTime = millis();

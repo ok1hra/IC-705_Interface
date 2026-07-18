@@ -1,0 +1,14 @@
+/build/
+/build-wasm/
+/build-wasm-deps/
+/build-decoder-wasm/
+/build-protocol/
+/build-golden/
+/build-ui/
+/build-budget/
+/build-phone-benchmark/
+/build-weak-signal/
+/build-channel-matrix/
+/build-drift-replay/
+/build-reconnect-epoch/
+/build-capture-replay/

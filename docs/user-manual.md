@@ -121,7 +121,7 @@ Ten frequency memory slots selectable from the CAT page. Format: frequency in Hz
 
 At the bottom of the SETUP page:
 
-- **Download config** — saves all EEPROM and SPIFFS settings as a dated JSON file (`yyyymmdd-hhmm-ic705-config.json`).
+- **Download config** — saves all EEPROM and LittleFS settings as a dated JSON file (`yyyymmdd-hhmm-ic705-config.json`).
 - **Upload config** — restores settings from a previously downloaded JSON file and restarts the device.
 
 ---

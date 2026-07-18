@@ -1,0 +1,245 @@
+#!/usr/bin/env node
+"use strict";
+
+// Serves the production DATA assets plus a minimal AUD1 fixture, then checks
+// the real page in headless Chrome. No radio or firmware is required.
+
+const crypto=require("crypto"), fs=require("fs"), http=require("http"), path=require("path"), {spawn}=require("child_process");
+const root=path.resolve(__dirname,".."), data=path.join(root,"data");
+let chrome, finished=false, timer, sequence=0, firstSample=0, streamId=707, txPrepares=0, txPackets=0, wsConnections=0, earlyWsConnections=0, jscRequests=0, jscStartedAt=0, jscCompleteAt=0, wsOpenedAt=0, jscComplete=false, js8Gzip=0, js8Brotli=0, commands=[], setupSaveBody="", setupRestartRequests=0;
+const mime={".html":"text/html",".css":"text/css",".js":"application/javascript",".wasm":"application/wasm",".bin":"application/octet-stream"};
+function frame(opcode,payload){const body=Buffer.isBuffer(payload)?payload:Buffer.from(payload);return body.length<126?Buffer.concat([Buffer.from([0x80|opcode,body.length]),body]):Buffer.concat([Buffer.from([0x80|opcode,126,body.length>>8,body.length&255]),body]);}
+function aud1(){const wire=Buffer.alloc(200,0xff);wire.write("AUD1");wire[4]=1;wire[5]=1;wire.writeUInt16BE(sequence===0?1:0,6);wire.writeUInt16BE(40,8);wire.writeUInt16BE(0,10);wire.writeUInt32BE(streamId,12);wire.writeUInt32BE(sequence++,16);wire.writeUInt32BE(8000,20);wire.writeBigUInt64BE(BigInt(firstSample),24);wire.writeUInt32BE(0,32);wire.writeUInt32BE(160,36);firstSample+=160;return wire;}
+function readClientFrames(socket){let input=Buffer.alloc(0);return chunk=>{input=Buffer.concat([input,chunk]);for(;;){if(input.length<2)return;let at=2,length=input[1]&127;if(length===126){if(input.length<4)return;length=input.readUInt16BE(2);at=4;}else if(length===127)return socket.destroy();const masked=Boolean(input[1]&128);if(masked)at+=4;if(input.length<at+length)return;const opcode=input[0]&15,maskAt=at-4,payload=Buffer.from(input.subarray(at,at+length));if(masked)for(let i=0;i<payload.length;i++)payload[i]^=input[maskAt+(i%4)];input=input.subarray(at+length);if(opcode===1){const message=JSON.parse(payload.toString());if(message.type==="tx.prepare"){txPrepares++;socket.write(frame(1,JSON.stringify({type:"tx-ready",txId:message.txId,ptt:false})));}}else if(opcode===2){txPackets++;const txId=payload.readUInt32BE(32),flags=payload.readUInt16BE(6);if(flags&1)socket.write(frame(1,JSON.stringify({type:"tx-state",txId,ptt:true})));if(flags&2)socket.write(frame(1,JSON.stringify({type:"tx-drained",txId,ptt:false})));}}};}
+function finish(ok,text){if(finished)return;finished=true;clearTimeout(timer);if(chrome)chrome.kill("SIGTERM");server.close();const encodingPass=js8Gzip>0&&js8Brotli===0;const frequencyPass=commands.some(command=>command.type==="setFrequency"&&Number(command.frequency)===14078000), setupArgs=new URLSearchParams(setupSaveBody), setupSavePass=setupArgs.get("trx1transport")==="lan"&&setupArgs.get("lanip")==="192.168.1.60"&&setupArgs.get("lanuser")==="operator"&&setupArgs.get("lanpass")==="secret123"&&setupArgs.get("noRestart")==="1"&&setupRestartRequests===1;ok=ok&&encodingPass&&frequencyPass&&earlyWsConnections===0&&jscRequests===1&&setupSavePass;const report=`${text} js8Gzip=${js8Gzip} js8Brotli=${js8Brotli} jscRequests=${jscRequests} jscMs=${jscCompleteAt-jscStartedAt} wsAfterJscMs=${wsOpenedAt-jscCompleteAt} ws=${wsConnections} earlyWs=${earlyWsConnections} setupSave=${setupSavePass} setupRestarts=${setupRestartRequests} commands=${JSON.stringify(commands)} prepares=${txPrepares} packets=${txPackets}`;(ok?console.log:console.error)(report);if(!ok)process.exitCode=1;}
+const server=http.createServer((req,res)=>{
+  const url=new URL(req.url,"http://fixture");
+  if(url.pathname==="/result"&&req.method==="POST"){let body="";req.on("data",c=>body+=c);req.on("end",()=>{res.writeHead(204).end();const result=JSON.parse(body);finish(result.pass,result.text);});return;}
+  if(url.pathname==="/setup/save"&&req.method==="POST"){let body="";req.on("data",c=>body+=c);req.on("end",()=>{setupSaveBody=body;res.setHeader("Content-Type","application/json");res.end('{"ok":true}');});return;}
+  if(url.pathname==="/restart"&&req.method==="POST"){setupRestartRequests++;res.setHeader("Content-Type","application/json");res.end('{"ok":true}');return;}
+  if(url.pathname==="/state"){res.setHeader("Content-Type","application/json");res.end(JSON.stringify({connected:true,transceiverType:"IC-705-LAN",power:true,frequency:7078000,mode:"USB",tx:false,rfPower:128,fwRev:"20260718",wifiRssi:-51,bdSupported:true}));return;}
+  if(url.pathname==="/setup-data.json"){const js8=url.searchParams.get("scope")==="js8call",missing=url.searchParams.get("fixture")==="missing"||!js8;res.setHeader("Content-Type","application/json");res.end(JSON.stringify({fwRev:20260718,hwRev:4,apModeText:"AP mode ON",mac:"00:11:22:33:44:55",ssid:"fixture-wifi",pswd:"fixture-password",ssid2:"",pswd2:"",trx1transport:"lan",lanip:missing?"":"192.168.1.60",lanuser:missing?"":"operator",lanpass:missing?"":"secret123",civaddr:"A4",trx2conntype:0,trx3conntype:0}));return;}
+  if(url.pathname==="/cmd"&&req.method==="POST"){let body="";req.on("data",chunk=>body+=chunk);req.on("end",()=>{try{commands.push(JSON.parse(body));}catch(_error){}res.setHeader("Content-Type","application/json");res.end('{"ok":true}');});return;}
+  if(url.pathname==="/smoke.html"){
+    res.setHeader("Content-Type","text/html");res.end(`<!doctype html>
+<iframe id="app" src="/data?test=1&audioPort=${server.address().port}" style="width:1100px;height:800px"></iframe>
+<iframe id="setup" src="/setup" style="display:none"></iframe>
+<iframe id="lanGate" src="/data?test=1&lanFixture=missing" style="display:none"></iframe>
+<script>
+addEventListener('error',event=>fetch('/result',{method:'POST',body:JSON.stringify({pass:false,text:'DATA BROWSER SCRIPT ERROR: '+event.message+' at '+event.filename+':'+event.lineno+':'+event.colno})}));
+addEventListener('unhandledrejection',event=>fetch('/result',{method:'POST',body:JSON.stringify({pass:false,text:'DATA BROWSER SCRIPT REJECTION: '+String(event.reason?.stack||event.reason)})}));
+const f=document.querySelector('#app');
+const setupFrame=document.querySelector('#setup');
+const lanGateFrame=document.querySelector('#lanGate');
+f.onload=()=>{
+  const d=f.contentDocument;
+  setTimeout(()=>{
+    window.loadingObserved=!!d.querySelector('#startupLoader:not([hidden])')&&d.querySelector('#linkState').textContent.includes('LOADING');
+    window.firstVisitHelpObserved=d.querySelector('#trxHelpDialog')?.open===true;
+    d.querySelector('#trxHelpDialog .trx-help-close')?.click();
+  },250);
+  setTimeout(()=>{
+    try {
+    const now=Date.now();
+    const emptyIdentityDefaults=d.querySelector('#myCall').value===''&&d.querySelector('#myGrid').value==='';
+    d.querySelector('#myCall').value='OK1HRA';d.querySelector('#myCall').dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));
+    d.querySelector('#myGrid').value='JO70';d.querySelector('#myGrid').dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));
+    f.contentWindow.__dataTest.setActivity({frames:[],timing:[],channels:[],messages:[
+      {text:'K0OG: OK1HRA OLDER',callsigns:['K0OG','OK1HRA'],kinds:['directed','data'],submode:0,offsetHz:700,firstSlotUtcMs:now-3000,lastSlotUtcMs:now-3000},
+      {text:'KN4CRD: @HB HEARTBEAT EM73',callsigns:['KN4CRD'],kinds:['heartbeat'],submode:0,offsetHz:750,firstSlotUtcMs:now-2000,lastSlotUtcMs:now-2000},
+      {text:'K0OG: OK1HRA NEWEST',callsigns:['K0OG','OK1HRA'],kinds:['directed','data'],submode:0,offsetHz:700,firstSlotUtcMs:now-1000,lastSlotUtcMs:now-1000}
+    ],calls:[
+      {call:'KN4CRD',snr:-12,offsetHz:750,submode:0,lastSlotUtcMs:now-2000,grid:'EM73'},
+      {call:'K0OG',snr:2,offsetHz:700,submode:0,lastSlotUtcMs:now-1000}
+    ]});
+    const originalBandActivity=f.contentWindow.__dataTest.activityCounts();
+    f.contentWindow.__dataTest.setRadioFrequency(14078000);
+    const otherBandStartsEmpty=f.contentWindow.__dataTest.activityCounts();
+    f.contentWindow.__dataTest.setActivity({frames:[],timing:[],channels:[],messages:[
+      {text:'DL1ABC: 20M ONLY',callsigns:['DL1ABC'],kinds:['directed','data'],submode:0,offsetHz:800,firstSlotUtcMs:now,lastSlotUtcMs:now}
+    ],calls:[
+      {call:'DL1ABC',snr:-5,offsetHz:800,submode:0,lastSlotUtcMs:now}
+    ]});
+    const otherBandActivity=f.contentWindow.__dataTest.activityCounts();
+    f.contentWindow.__dataTest.setRadioFrequency(7078000);
+    const restoredBandActivity=f.contentWindow.__dataTest.activityCounts();
+    f.contentWindow.__dataTest.setRadioFrequency(7079500);
+    const withinToleranceActivity=f.contentWindow.__dataTest.activityCounts();
+    f.contentWindow.__dataTest.setRadioFrequency(7078000);
+    d.querySelector('#trxFrequency').click();
+    const originalPreset=d.querySelector('[data-frequency="14078000"]');
+    setTimeout(()=>{
+      try {
+      const currentPreset=d.querySelector('[data-frequency="14078000"]');
+      const stationObserved={speed:d.querySelector('#stationRows tr[data-call="K0OG"] td:nth-child(4)')?.textContent.trim(),fallbackTitle:d.querySelector('#stationRows tr[data-call="K0OG"] .station-direction span')?.title,gridTitle:d.querySelector('#stationRows tr[data-call="KN4CRD"] .station-direction span')?.title,distance:d.querySelector('#stationRows tr[data-call="K0OG"] .station-distance')?.textContent};
+      const overlay=d.querySelector('#waterfallOverlay'),overlayContext=overlay.getContext('2d'),hzX=hz=>Math.round((hz-500)/(2700-500)*overlay.width);
+      const heartbeatX=hzX(1000),heartbeatPixels=overlayContext.getImageData(heartbeatX-2,0,5,8).data,outside=overlayContext.getImageData(hzX(700),30,1,1).data;
+      const heartbeatEdgePresent=Array.from({length:heartbeatPixels.length/4},(_,i)=>heartbeatPixels[i*4+3]).some(alpha=>alpha>0);
+      const cleanSpectrum=Float32Array.from({length:8192},(_,i)=>.035*Math.sin(2*Math.PI*1450*i/8000)+.008*Math.sin(2*Math.PI*730*i/8000));
+      f.contentWindow.__dataTest.feedSpectrum(cleanSpectrum);
+      const spectrumBeforeTx=f.contentWindow.__dataTest.spectrumState();
+      f.contentWindow.__dataTest.setRadioTx(true);
+      const txContamination=Float32Array.from({length:8192},(_,i)=>(((i*73)%257)/128-1)*.9);
+      f.contentWindow.__dataTest.feedSpectrum(txContamination);
+      const spectrumDuringTx=f.contentWindow.__dataTest.spectrumState();
+      f.contentWindow.__dataTest.setRadioTx(false);
+      f.contentWindow.__dataTest.feedSpectrum(cleanSpectrum);
+      const spectrumAfterTx=f.contentWindow.__dataTest.spectrumState();
+      const checks={
+        frequencyScopedActivity:originalBandActivity.messages===3&&originalBandActivity.calls===2&&otherBandStartsEmpty.messages===0&&otherBandStartsEmpty.calls===0&&otherBandActivity.messages===1&&otherBandActivity.calls===1&&restoredBandActivity.messages===3&&restoredBandActivity.calls===2&&withinToleranceActivity.messages===3&&withinToleranceActivity.calls===2,
+        emptyIdentityDefaults,
+        english:d.body.textContent.includes('TX SESSION'),
+        js8:d.querySelector('#modeSelect').value==='js8call',
+        modemApi:['AudioSource','Modems','registerModem','Decoder','Encoder'].every(name=>name in f.contentWindow),
+        modemOnly:d.querySelectorAll('#modeSelect option').length===1,
+        modemRowHidden:getComputedStyle(d.querySelector('.modem-menu')).display==='none',
+        noFutureSlot:!d.querySelector('#modemUnavailable'),
+        waterfall:!!d.querySelector('#waterfallCanvas'),
+        compactWaterfall:d.querySelector('#waterfall').getBoundingClientRect().height<=90,
+        heartbeatGuide:overlay.width>1000&&heartbeatEdgePresent,
+        heartbeatOutsideClear:outside[3]===0,
+        heartbeatRangeLabel:d.querySelector('#waterfall').title.includes('500')&&d.querySelector('#waterfall').title.includes('1000')&&d.querySelector('#waterfall').title.includes('Heartbeat'),
+        waterfallTxIsolation:spectrumDuringTx.rows===spectrumBeforeTx.rows&&spectrumDuringTx.agcLow===spectrumBeforeTx.agcLow&&spectrumDuringTx.agcHigh===spectrumBeforeTx.agcHigh&&spectrumAfterTx.rows>spectrumDuringTx.rows&&spectrumAfterTx.agcReady===true&&spectrumAfterTx.agcHigh-spectrumAfterTx.agcLow>=22,
+        presets:d.querySelectorAll('[data-frequency]').length===12,
+        presetStable:originalPreset===currentPreset,
+        recipientInSession:!!d.querySelector('#composer #recipient'),
+        heartbeat:!!d.querySelector('#heartbeatButton'),
+        heartbeatUsesTx:d.querySelector('#heartbeatOffset').textContent.trim()===d.querySelector('#txOffset').value+' Hz',
+        tune:!!d.querySelector('#tuneButton')&&d.querySelector('#tuneOffset').textContent.trim()===d.querySelector('#txOffset').value+' Hz',
+        txSession:[...d.querySelectorAll('details[data-section="reply"] > summary span')].some(node=>node.textContent.trim()==='TX SESSION'),
+        defaultDisclosures:d.querySelector('details[data-section="spectrum"]').open&&d.querySelector('details[data-section="reply"]').open&&[...d.querySelectorAll('details[data-section="traffic"],details[data-section="stations"],details[data-section="settings"],details[data-section="timing"]')].every(node=>!node.open),
+        txModes:[...d.querySelectorAll('#txSessionMode option')].map(option=>option.value).join(',')==='CHAT,EMAIL,BIN',
+        autoSpeed:d.querySelector('#txSpeedResolved')?.textContent.includes('A')===true,
+        stationSpeed:(d.querySelector('#stationRows tr[data-call="K0OG"] td:nth-child(4)')?.textContent.trim()||'').startsWith('A')&&(d.querySelector('#stationRows tr[data-call="K0OG"] td:nth-child(4)')?.textContent.trim()||'').endsWith('15 s'),
+        stationDirection:Number.isFinite(parseFloat(d.querySelector('#stationRows tr[data-call="K0OG"] .station-distance')?.textContent))&&d.querySelector('#stationRows tr[data-call="K0OG"] .station-direction span')?.title.includes('DXCC estimate')===true&&d.querySelector('#stationRows tr[data-call="KN4CRD"] .station-direction span')?.title.includes('EM73')===true,
+        slotMeter:!d.querySelector('#decodeMeter')&&parseFloat(d.querySelector('#slotFill').style.width)>0&&d.querySelector('.waterfall-rhythm').getBoundingClientRect().top>=d.querySelector('#waterfall').getBoundingClientRect().bottom&&getComputedStyle(d.querySelector('#slotFill')).boxShadow==='none',
+        recentNewest:d.querySelector('#traffic .message')?.textContent.includes('NEWEST'),
+        recentSingleLine:d.querySelector('#traffic .message')?.getBoundingClientRect().height<=36&&!!d.querySelector('#traffic .message-meta')&&!!d.querySelector('#traffic .message-text'),
+        recentMessageWhite:getComputedStyle(d.querySelector('#traffic .message-text')).color==='rgb(255, 255, 255)',
+        operationalDim:d.querySelectorAll('#traffic .message.operational').length===1,
+        noDebugNav:![...d.querySelectorAll('.tabs .tab')].some(link=>link.textContent.trim()==='DEBUG'),
+        bdHardwareNav:d.querySelector('.bd-nav')?.hidden===false,
+        catLastMuted:[...d.querySelectorAll('.tabs > a.tab')].at(-1)?.getAttribute('href')==='/'&&Number(getComputedStyle(d.querySelector('.tab-cat-muted')).opacity)<.8,
+        messagePresets:d.querySelectorAll('[data-message-preset]').length>=10&&!!d.querySelector('#messagePresetsButton'),
+        sendHidden:d.querySelector('#sendButton').hidden===true&&d.querySelector('#sendHint').textContent.trim()==='Enter sends',
+        js8Nav:d.querySelector('a[href="/data"]')?.textContent.trim()==='JS8LAN'&&d.querySelector('a[href="/data"]')?.title==='Web Client for JS8Call',
+        pageFooter:d.querySelector('.js8-page-footer a[href^="https://github.com/"]')?.textContent.trim()==='GitHub'&&d.querySelector('.js8-page-footer a[href="/THIRD-PARTY-NOTICES.txt"]')?.textContent.trim()==='Licenses',
+        leaveWarning:(()=>{const event=new f.contentWindow.Event('beforeunload',{cancelable:true});return f.contentWindow.dispatchEvent(event)===false&&event.defaultPrevented;})(),
+        helpButton:d.querySelector('#trxHelpButton')?.textContent.trim()==='?',
+        helpSteps:d.querySelectorAll('#trxHelpDialog .trx-setup-steps > li').length===8&&d.querySelector('#trxHelpDialog').textContent.includes('DATA MOD')&&d.querySelector('#trxHelpDialog').textContent.includes('WLAN'),
+        firstVisitHelp:window.firstVisitHelpObserved===true,
+        txSafe:d.querySelector('#sendButton').disabled,
+        worker:d.querySelector('#modemState').textContent.includes('ready'),
+        loading:window.loadingObserved===true
+      };
+      const sd=setupFrame.contentDocument,radioSection=sd.querySelector('#radioSection'),lanWarning=sd.querySelector('#trx1LanWarning');
+      const gd=lanGateFrame.contentDocument,lanGate=gd.querySelector('#lanRequired');
+      checks.lanRequiredGate=gd.body.classList.contains('lan-required-only')&&!lanGate.hidden&&!gd.querySelector('.brand')&&getComputedStyle(gd.querySelector('.radio-bar')).display==='none'&&getComputedStyle(gd.querySelector('#js8Interface')).display==='none'&&lanGate.querySelector('h1')?.textContent.trim()==='JS8Call requires TRX1 over LAN'&&lanGate.textContent.includes('not available with a Bluetooth or serial/CAT connection')&&lanGate.textContent.includes('Other Icom transceivers')&&!!lanGate.querySelector('a[href="/setup#radioSection"]');
+      checks.lanGateNoLeaveWarning=(()=>{const event=new lanGateFrame.contentWindow.Event('beforeunload',{cancelable:true});return lanGateFrame.contentWindow.dispatchEvent(event)!==false&&!event.defaultPrevented;})();
+      checks.setupJs8Nav=sd.querySelector('a[href="/data"]')?.textContent.trim()==='JS8LAN'&&sd.querySelector('a[href="/data"]')?.title==='Web Client for JS8Call';
+      const missingInputs=[...sd.querySelectorAll('[name="lanip"],[name="lanuser"],[name="lanpass"]')];
+      const setupMissingObserved=radioSection?.open===true&&lanWarning?.hidden===false&&missingInputs.length===3&&missingInputs.every(input=>input.classList.contains('setup-required-missing')&&input.getAttribute('aria-invalid')==='true');
+      const setupValues={lanip:'192.168.1.60',lanuser:'operator',lanpass:'secret123'};
+      missingInputs.forEach(input=>{input.value=setupValues[input.name];input.dispatchEvent(new setupFrame.contentWindow.Event('input',{bubbles:true}));});
+      checks.setupLanWarning=setupMissingObserved&&lanWarning.hidden===true&&missingInputs.every(input=>!input.classList.contains('setup-required-missing')&&input.getAttribute('aria-invalid')==='false');
+      sd.querySelector('#setup-form').requestSubmit();
+      d.querySelector('#trxHelpButton').click();
+      checks.manualHelp=d.querySelector('#trxHelpDialog').open===true&&d.querySelector('#trxHelpModeWarning').hidden===true;
+      d.querySelector('#trxHelpDialog .trx-help-close').click();
+      checks.usbModeNeutral=!d.querySelector('#trxMode').classList.contains('incompatible');
+      f.contentWindow.__dataTest.setRadioMode('CW');
+      checks.incompatibleMode=d.querySelector('#trxMode').classList.contains('incompatible')&&d.querySelector('#trxMode').title.includes('USB');
+      checks.modeHelp=d.querySelector('#trxHelpDialog').open===true&&d.querySelector('#trxHelpModeWarning').hidden===false;
+      d.querySelector('#trxHelpDialog .trx-help-close').click();
+      f.contentWindow.__dataTest.setRadioMode('USB');
+      const change=id=>d.querySelector(id).dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));
+      const callSort=d.querySelector('[data-station-sort="call"]');
+      callSort.click();
+      const sortAscObserved={call:d.querySelector('#stationRows tr')?.dataset.call,direction:callSort.closest('th').getAttribute('aria-sort')};
+      checks.sortAsc=sortAscObserved.call==='K0OG'&&sortAscObserved.direction==='ascending';
+      callSort.click();
+      const sortDescObserved={call:d.querySelector('#stationRows tr')?.dataset.call,direction:callSort.closest('th').getAttribute('aria-sort')};
+      checks.sortDesc=sortDescObserved.call==='KN4CRD'&&sortDescObserved.direction==='descending';
+      d.querySelector('#stationRows tr[data-call="KN4CRD"]').click();
+      checks.stationSelect=d.querySelector('#recipient').value==='KN4CRD'&&f.contentWindow.__dataTest.selectedCall()==='KN4CRD';
+      d.querySelector('#messagePresetsButton').click();
+      d.querySelector('[data-message-preset="snr"]').click();
+      checks.snrPreset=d.querySelector('#messageInput').value==='SNR -12'&&d.querySelector('#messagePresetsMenu').hidden===true;
+      d.querySelector('#messagePresetsButton').click();
+      d.querySelector('[data-message-preset="cq"]').click();
+      checks.cqPreset=d.querySelector('#messageInput').value==='CQ CQ CQ';
+      d.querySelector('#messageInput').value='';d.querySelector('#messageInput').dispatchEvent(new f.contentWindow.Event('input',{bubbles:true}));
+      d.querySelector('#recipientClear')?.click();
+      checks.recipientClear=d.querySelector('#recipient').value===''&&f.contentWindow.__dataTest.selectedCall()==='';
+      const txSessionMode=d.querySelector('#txSessionMode');
+      if(txSessionMode){txSessionMode.value='EMAIL';change('#txSessionMode');}
+      checks.emailPlanned=d.querySelector('#emailSession')?.hidden===false&&d.querySelector('#sendButton').disabled;
+      if(txSessionMode){txSessionMode.value='BIN';change('#txSessionMode');}
+      checks.binPlanned=d.querySelector('#binSession')?.hidden===false&&d.querySelector('#sendButton').disabled;
+      if(txSessionMode){txSessionMode.value='CHAT';change('#txSessionMode');}
+      currentPreset.click();
+      d.querySelector('#recipient').value='K0OG';change('#recipient');
+      d.querySelector('#txSpeed').value='I';change('#txSpeed');
+      d.querySelector('#txSafety').checked=true;change('#txSafety');
+      checks.txEnabled=!d.querySelector('#sendButton').disabled;
+      const gate=d.querySelector('#sendButton').title,diag=d.querySelector('#diagnostics').textContent;
+      if(!checks.txEnabled){checks.txCompleted=false;return fetch('/result',{method:'POST',body:JSON.stringify({pass:false,text:'DATA BROWSER FAIL '+JSON.stringify(checks)+' sort='+JSON.stringify({sortAscObserved,sortDescObserved})+' gate='+gate+' diag='+diag})});}
+      d.querySelector('#messageInput').value='HI';
+      const enterEvent=new f.contentWindow.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true});
+      d.querySelector('#messageInput').dispatchEvent(enterEvent);
+      checks.enterSends=enterEvent.defaultPrevented&&d.querySelector('#messageInput').value==='';
+      let tries=0;
+      const poll=setInterval(()=>{
+        const summary=d.querySelector('#txSummary').textContent,completed=summary.toLowerCase().includes('completed');
+        if(completed||++tries>60){
+          clearInterval(poll);checks.txCompleted=completed;
+          if(!completed){const pass=false;return fetch('/result',{method:'POST',body:JSON.stringify({pass,text:'DATA BROWSER FAIL '+JSON.stringify(checks)+' station='+JSON.stringify(stationObserved)+' sort='+JSON.stringify({sortAscObserved,sortDescObserved})+' gate='+gate+' tx='+summary})});}
+          d.querySelector('#heartbeatButton').click();
+          checks.heartbeatQueued=!d.querySelector('#txSummary').textContent.toLowerCase().includes('completed');
+          let hbTries=0;
+          const hbPoll=setInterval(()=>{
+            const hbSummary=d.querySelector('#txSummary').textContent,hbCompleted=hbSummary.toLowerCase().includes('completed');
+            if(hbCompleted||++hbTries>50){
+              clearInterval(hbPoll);checks.heartbeatTx=hbCompleted;
+              d.querySelector('#tuneButton').click();
+              checks.tuneQueued=d.querySelector('#tuneLabel').textContent==='STOP';
+              let tuneTries=0;
+              const tunePoll=setInterval(()=>{
+                const tuneSummary=d.querySelector('#txSummary').textContent,tuneTransmitting=tuneSummary.toLowerCase().includes('transmitting');
+                if(tuneTransmitting||++tuneTries>30){
+                  clearInterval(tunePoll);checks.tuneTransmitting=tuneTransmitting;
+                  checks.viewportTx=d.body.classList.contains('radio-transmitting')&&getComputedStyle(d.body,'::after').borderTopWidth==='3px';
+                  d.querySelector('#tuneButton').click();
+                  checks.tuneStopped=d.querySelector('#txSummary').textContent.toLowerCase().includes('aborted')&&d.querySelector('#tuneLabel').textContent==='TUNE';
+                  checks.viewportTxCleared=!d.body.classList.contains('radio-transmitting');
+                  const pass=Object.values(checks).every(Boolean);
+                  fetch('/result',{method:'POST',body:JSON.stringify({pass,text:'DATA BROWSER '+(pass?'PASS ':'FAIL ')+JSON.stringify(checks)+' station='+JSON.stringify(stationObserved)+' sort='+JSON.stringify({sortAscObserved,sortDescObserved})+' gate='+gate+' tx='+d.querySelector('#txSummary').textContent+' modem='+d.querySelector('#modemState').textContent+' diag='+diag})});
+                }
+              },100);
+            }
+          },200);
+        }
+      },200);
+      } catch(error) {
+        fetch('/result',{method:'POST',body:JSON.stringify({pass:false,text:'DATA BROWSER CHECK ERROR: '+String(error?.stack||error)})});
+      }
+    },650);
+    } catch(error) {
+      fetch('/result',{method:'POST',body:JSON.stringify({pass:false,text:'DATA BROWSER INIT ERROR: '+String(error?.stack||error)+' body='+d.body.className+' detail='+d.querySelector('#lanRequiredDetail')?.textContent})});
+    }
+  },5000);
+};
+</script>`);return;
+  }
+  const relative=url.pathname==="/data"?"data.html":url.pathname==="/setup"?"setup.html":url.pathname.slice(1);
+  const target=path.resolve(data,relative);
+  if(!target.startsWith(data+path.sep))return res.writeHead(403).end();
+  // Match firmware handleFileFromSPIFFS(): only use advertised encodings.
+  const br=target+".br", gz=target+".gz";
+  const accepts=String(req.headers["accept-encoding"]||"");
+  const encoded=accepts.includes("br")&&fs.existsSync(br)?br:(accepts.includes("gzip")&&fs.existsSync(gz)?gz:target);
+  if(path.basename(target).startsWith("js8-")){if(encoded===br)js8Brotli++;if(encoded===gz)js8Gzip++;}
+  fs.readFile(encoded,(error,bytes)=>{if(error)return res.writeHead(404).end();res.setHeader("Content-Type",mime[path.extname(target)]||"application/octet-stream");if(encoded===br)res.setHeader("Content-Encoding","br");if(encoded===gz)res.setHeader("Content-Encoding","gzip");if(url.pathname==="/js8-jsc.bin.br"){jscRequests++;jscStartedAt=Date.now();res.setHeader("Cache-Control","no-store");res.setHeader("Content-Length",bytes.length);const chunk=Math.ceil(bytes.length/8);let at=0;const tick=()=>{res.write(bytes.subarray(at,Math.min(bytes.length,at+chunk)));at+=chunk;if(at>=bytes.length){jscComplete=true;jscCompleteAt=Date.now();return res.end();}setTimeout(tick,150);};tick();return;}res.end(bytes);});
+});
+server.on("upgrade",(req,socket)=>{if(req.url!=="/audiows")return socket.destroy();wsConnections++;wsOpenedAt=Date.now();if(!jscComplete)earlyWsConnections++;const accept=crypto.createHash("sha1").update(req.headers["sec-websocket-key"]+"258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");socket.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "+accept+"\r\n\r\n");socket.write(frame(1,JSON.stringify({type:"hello",protocol:"AUD1",version:1,streamId,rx:[{kind:"RX_ULAW",sampleRate:8000}],tx:[{kind:"TX_PCM16",sampleRate:48000}],maxPayloadBytes:1920})));const interval=setInterval(()=>{if(socket.destroyed)return clearInterval(interval);socket.write(frame(2,aud1()));},20);socket.on("data",readClientFrames(socket));socket.on("close",()=>clearInterval(interval));socket.on("error",()=>clearInterval(interval));});
+server.listen(0,"127.0.0.1",()=>{chrome=spawn("google-chrome",["--headless=new","--no-sandbox","--disable-gpu","--disable-dev-shm-usage","--no-proxy-server","--host-resolver-rules=MAP ic705.test 127.0.0.1",`http://ic705.test:${server.address().port}/smoke.html`]);let errors="";chrome.stderr.on("data",c=>errors+=c);chrome.on("close",code=>{if(!finished)finish(false,`DATA BROWSER FAIL Chrome exited ${code}\n${errors}`);});timer=setTimeout(()=>finish(false,`DATA BROWSER FAIL timeout prepares=${txPrepares} packets=${txPackets}`),30000);});

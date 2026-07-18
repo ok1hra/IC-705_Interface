@@ -27,7 +27,7 @@ PARTITIONS_OFFSET=0x8000
 BOOT_APP0_OFFSET=0xe000
 APP_OFFSET=0x10000
 SPIFFS_OFFSET=0x210000
-SPIFFS_SIZE_DEC=$((0x1F0000))   # 1966080
+SPIFFS_SIZE_DEC=$((0x1E0000))   # 1966080; exact no_ota.csv partition size
 
 ESP32_CORE_ROOT="${ESP32_CORE_ROOT:-}"
 BOOTLOADER_BIN="${BOOTLOADER_BIN:-}"
@@ -35,7 +35,7 @@ BOOTLOADER_ELF="${BOOTLOADER_ELF:-}"
 BOOT_APP0_BIN="${BOOT_APP0_BIN:-}"
 GEN_PART_BIN="${GEN_PART_BIN:-}"
 ESPTOOL_BIN="${ESPTOOL_BIN:-}"
-MKSPIFFS_BIN="${MKSPIFFS_BIN:-}"
+MKLITTLEFS_BIN="${MKLITTLEFS_BIN:-}"
 
 DO_PUBLISH=0
 PUBLISH_BRANCH="gh-pages"
@@ -51,7 +51,7 @@ Generates build/gh-pages/ with manifest.json and index.html for esp-web-tools.
 
 Steps:
   1. Read firmware version from IC-705_Interface.ino
-  2. Build SPIFFS image from data/
+  2. Build LittleFS image from data/
   3. Generate partition table binary
   4. Create manifest.json and index.html
   5. Optionally publish to gh-pages branch
@@ -65,7 +65,7 @@ Options:
   --boot-app0 PATH       boot_app0.bin           (auto-detected)
   --gen-part PATH        gen_esp32part.py        (auto-detected)
   --esptool PATH         esptool.py              (auto-detected)
-  --mkspiffs PATH        mkspiffs binary         (auto-detected)
+  --mklittlefs PATH      mklittlefs binary       (auto-detected)
   --publish              Push build/gh-pages to gh-pages branch
   --branch NAME          Target Pages branch     (default: gh-pages)
   --remote NAME          Git remote to push to   (default: origin)
@@ -89,7 +89,7 @@ while [[ $# -gt 0 ]]; do
     --boot-app0)    BOOT_APP0_BIN="$2";       shift 2 ;;
     --gen-part)     GEN_PART_BIN="$2";        shift 2 ;;
     --esptool)      ESPTOOL_BIN="$2";         shift 2 ;;
-    --mkspiffs)     MKSPIFFS_BIN="$2";        shift 2 ;;
+    --mklittlefs)   MKLITTLEFS_BIN="$2";      shift 2 ;;
     --publish)      DO_PUBLISH=1;             shift ;;
     --branch)       PUBLISH_BRANCH="$2";      shift 2 ;;
     --remote)       PUBLISH_REMOTE="$2";      shift 2 ;;
@@ -129,7 +129,7 @@ detect_esp32_core_root() {
   return 1
 }
 
-# In core 2.x, esptool.py and mkspiffs ship as separate package tools at
+# In core 2.x, esptool.py and mklittlefs ship as separate package tools at
 #   packages/esp32/tools/<subdir>/<version>/<file>
 # The core lives at packages/esp32/hardware/esp32/<ver>, so the package tools
 # dir is three levels up from the core root.
@@ -163,11 +163,11 @@ if [[ -z "$ESPTOOL_BIN" && -n "$ESP32_CORE_ROOT" ]]; then
     ESPTOOL_BIN="$(find_pkg_tool esptool_py esptool.py || true)"
   fi
 fi
-if [[ -z "$MKSPIFFS_BIN" && -n "$ESP32_CORE_ROOT" ]]; then
-  if [[ -f "${ESP32_CORE_ROOT}/tools/mkspiffs/mkspiffs" ]]; then
-    MKSPIFFS_BIN="${ESP32_CORE_ROOT}/tools/mkspiffs/mkspiffs"
+if [[ -z "$MKLITTLEFS_BIN" && -n "$ESP32_CORE_ROOT" ]]; then
+  if [[ -f "${ESP32_CORE_ROOT}/tools/mklittlefs/mklittlefs" ]]; then
+    MKLITTLEFS_BIN="${ESP32_CORE_ROOT}/tools/mklittlefs/mklittlefs"
   else
-    MKSPIFFS_BIN="$(find_pkg_tool mkspiffs mkspiffs || true)"
+    MKLITTLEFS_BIN="$(find_pkg_tool mklittlefs mklittlefs || true)"
   fi
 fi
 
@@ -184,12 +184,32 @@ require_file "$SKETCH_FILE"    "Sketch file"
 require_file "$BOOT_APP0_BIN"  "boot_app0.bin"
 require_file "$GEN_PART_BIN"   "gen_esp32part.py"
 require_file "$ESPTOOL_BIN"    "esptool.py"
+require_file "$MKLITTLEFS_BIN" "mklittlefs"
 # Bootloader: either a prebuilt --bootloader .bin, or the core ELF we convert below.
 if [[ -n "$BOOTLOADER_BIN" ]]; then
   require_file "$BOOTLOADER_BIN" "Bootloader binary"
 else
   require_file "$BOOTLOADER_ELF" "Bootloader ELF"
 fi
+
+# Refuse a release built from a stale Arduino export.
+while IFS= read -r -d '' source; do
+  if [[ "$source" -nt "$FIRMWARE_BIN" ]]; then
+    echo "ERROR: exported firmware is stale; newer source: $source" >&2
+    echo "       Run Sketch -> Export Compiled Binary again." >&2
+    exit 1
+  fi
+done < <(find "$ROOT_DIR" -maxdepth 1 -type f \
+  \( -name '*.ino' -o -name '*.h' -o -name '*.hpp' -o -name '*.cpp' \) -print0)
+
+# A Pages release must always contain the complete DATA/JS8 runtime.
+for asset in data.html data.css data.js dxcc.js js8-adapter.js js8-aud1.js \
+  js8-audio.js js8-brotli.js js8-brotli.wasm js8-core.js js8-core.wasm \
+  js8-decoder.js js8-decoder.wasm js8-jsc.bin js8-presets.js js8-protocol.js \
+  js8-settings.js js8-timebase.js js8-tx.js js8-worker-runtime.js js8-worker.js \
+  BROTLI-LICENSE.txt THIRD-PARTY-NOTICES.txt; do
+  require_file "${DATA_DIR}/${asset}" "DATA/JS8 asset ${asset}"
+done
 
 # ---------------------------------------------------------------------------
 # Read firmware version
@@ -216,7 +236,14 @@ if [[ ! -f "$PARTITIONS_CSV" ]]; then
   exit 1
 fi
 
+OUTPUT_DIR="$(realpath -m "$OUTPUT_DIR")"
+ROOT_REAL="$(realpath "$ROOT_DIR")"
+case "${OUTPUT_DIR}/" in
+  "${ROOT_REAL}/build/"*|/tmp/*) ;;
+  *) echo "ERROR: --output-dir must be below ${ROOT_REAL}/build or /tmp: ${OUTPUT_DIR}" >&2; exit 1 ;;
+esac
 mkdir -p "$OUTPUT_DIR"
+find "$OUTPUT_DIR" -mindepth 1 -depth -delete
 
 # ---------------------------------------------------------------------------
 # Bootloader binary (from ELF, with DIO flash mode baked into the header)
@@ -239,27 +266,28 @@ PARTITIONS_BIN="${OUTPUT_DIR}/partitions.bin"
 python3 "$GEN_PART_BIN" "$PARTITIONS_CSV" "$PARTITIONS_BIN"
 
 # ---------------------------------------------------------------------------
-# Build SPIFFS image from data/
+# Build LittleFS image from data/
 # ---------------------------------------------------------------------------
 
 SPIFFS_BIN="${OUTPUT_DIR}/spiffs.bin"
+SPIFFS_DATA_DIR="${OUTPUT_DIR}/spiffs-data"
 
-if [[ -d "$DATA_DIR" && -x "$MKSPIFFS_BIN" ]]; then
-  if [[ -x "$GZIP_ASSETS_SCRIPT" ]]; then
-    "$GZIP_ASSETS_SCRIPT" "$DATA_DIR"
-  else
-    echo "WARN: gzip asset helper not found or not executable: $GZIP_ASSETS_SCRIPT" >&2
-  fi
-  echo "==> Building SPIFFS image from data/"
-  "$MKSPIFFS_BIN" -c "$DATA_DIR" -b 4096 -p 256 -s "$SPIFFS_SIZE_DEC" "$SPIFFS_BIN"
-else
-  if [[ ! -d "$DATA_DIR" ]]; then
-    echo "WARN: data/ directory not found — skipping SPIFFS" >&2
-  else
-    echo "WARN: mkspiffs not found at $MKSPIFFS_BIN — skipping SPIFFS" >&2
-  fi
-  SPIFFS_BIN=""
+if [[ ! -x "${ROOT_DIR}/tools/prepare-spiffs-tree.sh" ]]; then
+  echo "ERROR: filesystem staging helper not found" >&2
+  exit 1
 fi
+"${ROOT_DIR}/tools/prepare-spiffs-tree.sh" "$DATA_DIR" "$SPIFFS_DATA_DIR"
+staging_bytes="$(du -sb "$SPIFFS_DATA_DIR" | awk '{print $1}')"
+runtime_reserve_bytes=$((256 * 1024))
+metadata_budget_bytes=$((64 * 1024))
+max_payload_bytes=$((SPIFFS_SIZE_DEC - runtime_reserve_bytes - metadata_budget_bytes))
+[[ "$staging_bytes" -le "$max_payload_bytes" ]] || {
+  echo "ERROR: LittleFS deployment leaves less than the required 256 KiB runtime reserve." >&2
+  echo "       Payload: $staging_bytes B; limit: $max_payload_bytes B; partition: $SPIFFS_SIZE_DEC B." >&2
+  exit 1
+}
+echo "==> Building LittleFS image from data/ (payload $staging_bytes / $max_payload_bytes B)"
+"$MKLITTLEFS_BIN" -c "$SPIFFS_DATA_DIR" -b 4096 -p 256 -s "$SPIFFS_SIZE_DEC" "$SPIFFS_BIN"
 
 # ---------------------------------------------------------------------------
 # Copy binaries
@@ -401,7 +429,7 @@ cat > "${OUTPUT_DIR}/index.html" <<EOF
       line-height: 1.65;
       color: #cbd5e1;
     }
-    ul {
+    ul, ol {
       margin: 0.5rem 0 0;
       padding-left: 1.35rem;
     }
@@ -418,6 +446,37 @@ cat > "${OUTPUT_DIR}/index.html" <<EOF
     .warn-box strong { color: #f87171; }
     .warn-box p { margin: 0; color: #fca5a5; font-size: 0.97rem; line-height: 1.6; }
     .warn-box p + p { margin-top: 0.4rem; }
+    .hardware-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.65rem;
+      margin: 0.85rem 0 0;
+    }
+    .hardware-item {
+      margin: 0;
+      padding: 0.8rem 0.9rem;
+      border: 1px solid rgba(96, 165, 250, 0.22);
+      border-radius: 0.65rem;
+      background: rgba(30, 41, 59, 0.55);
+    }
+    .hardware-item dt {
+      margin-bottom: 0.25rem;
+      color: #93c5fd;
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .hardware-item dd {
+      margin: 0;
+      color: #e2e8f0;
+      font-size: 0.93rem;
+      line-height: 1.45;
+    }
+    .compatibility-note { margin: 0.8rem 0 0; }
+    @media (max-width: 34rem) {
+      .hardware-grid { grid-template-columns: 1fr; }
+    }
     code {
       background: rgba(148, 163, 184, 0.15);
       padding: 0.1rem 0.35rem;
@@ -456,6 +515,34 @@ cat > "${OUTPUT_DIR}/index.html" <<EOF
         </p>
       </div>
 
+      <section aria-labelledby="hardware-title">
+        <h2 id="hardware-title">Required hardware</h2>
+        <dl class="hardware-grid">
+          <div class="hardware-item">
+            <dt>Processor</dt>
+            <dd>Original Espressif ESP32 (Xtensa LX6), compatible with the <strong>ESP32 Dev Module</strong> target.</dd>
+          </div>
+          <div class="hardware-item">
+            <dt>Flash memory</dt>
+            <dd><strong>4 MB minimum</strong>, configured for DIO mode at 80 MHz.</dd>
+          </div>
+          <div class="hardware-item">
+            <dt>RAM</dt>
+            <dd>Standard ESP32 internal SRAM (520 KB). External PSRAM is not required.</dd>
+          </div>
+          <div class="hardware-item">
+            <dt>Flash layout</dt>
+            <dd>No OTA: 2 MB application and approximately 2 MB LittleFS filesystem.</dd>
+          </div>
+        </dl>
+        <p class="muted compatibility-note">
+          This firmware image targets the original ESP32. It is not compatible with ESP32-C3,
+          ESP32-S2, ESP32-S3, or other ESP32 chip families.
+        </p>
+      </section>
+
+      <hr class="divider">
+
       <h2>Flash firmware via USB</h2>
       <p>
         Open this page in <strong>Google Chrome</strong> or <strong>Microsoft Edge</strong>
@@ -465,18 +552,25 @@ cat > "${OUTPUT_DIR}/index.html" <<EOF
       <ul>
         <li>After connecting, select the correct <code>CP210x</code> / <code>CH340</code> / <code>JTAG</code> serial device.</li>
         <li>Choose <strong>Install IC-705 Interface</strong> and follow the prompts.</li>
-        <li>
-          After flashing, open the serial console and press <strong>Reset Device</strong>
-          to see the boot log with the assigned <strong>IP address</strong>.
-        </li>
       </ul>
 
       <div class="cta">
         <esp-web-install-button manifest="manifest.json" baudrate="9600"></esp-web-install-button>
       </div>
 
+      <hr class="divider">
+
+      <h2>Open the interface after flashing</h2>
+      <ol>
+        <li>On its first boot, the device creates the WiFi network <code>IC705-if</code>. Connect to it using password <code>remoteqth</code>.</li>
+        <li>Open <code>http://192.168.4.1/setup</code> in your browser. You can also try <code>http://ic705.local/setup</code>; some phones open the setup portal automatically.</li>
+        <li>Configure your normal WiFi and the IC-705 <strong>TRX1 LAN</strong> address, username, and password. Select <strong>Save &amp; Restart</strong>, then reconnect your phone or computer to the normal WiFi.</li>
+        <li>Find the interface's new IP address in your router's DHCP client list, or open the installer serial console at <code>9600 baud</code> and press <strong>Reset Device</strong> to read it from the boot log.</li>
+        <li>Open <code>http://&lt;assigned-IP&gt;/</code> or try <code>http://ic705.local/</code>. Bookmark the working address.</li>
+      </ol>
+
       <p class="muted">
-        Flashes: bootloader, partition table, boot_app0, firmware$(if [[ -n "$SPIFFS_BIN" ]]; then echo ", SPIFFS filesystem"; fi).
+        Flashes: bootloader, partition table, boot_app0, firmware$(if [[ -n "$SPIFFS_BIN" ]]; then echo ", LittleFS filesystem"; fi).
         For manual flashing use <code>ic705-${FW_REV}-full.bin</code> at offset <code>0x0</code>
         with <code>esptool.py</code>.
       </p>
@@ -494,9 +588,9 @@ echo "    Firmware REV : ${FW_REV}"
 echo "    Partitions   : ${PARTITIONS_CSV_NAME} (no OTA — 2MB APP / 2MB SPIFFS)"
   echo "    Flash mode   : ${FLASH_MODE} ${FLASH_FREQ} (DIO required — Zbit clone flash)"
 if [[ -n "$SPIFFS_BIN" ]]; then
-  echo "    SPIFFS       : included"
+  echo "    LittleFS     : included"
 else
-  echo "    SPIFFS       : skipped"
+  echo "    LittleFS     : skipped"
 fi
 echo ""
 
@@ -539,7 +633,11 @@ else
 fi
 
 find "$TMP_DIR" -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
-cp -R "${OUTPUT_DIR}/." "$TMP_DIR/"
+for release_file in .nojekyll index.html manifest.json bootloader.bin partitions.bin \
+  boot_app0.bin firmware.bin spiffs.bin "ic705-${FW_REV}-full.bin"; do
+  require_file "${OUTPUT_DIR}/${release_file}" "release artifact ${release_file}"
+  cp "${OUTPUT_DIR}/${release_file}" "$TMP_DIR/${release_file}"
+done
 
 git -C "$TMP_DIR" add --all
 

@@ -4,19 +4,18 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>IC-705 Setup</title>
-  <link rel="stylesheet" href="/setup.css">
+  <link rel="stylesheet" href="/setup.css?v=20260718j">
 </head>
 <body>
   <header class="topbar">
     <nav class="tabs" aria-label="Primary">
       <a class="tab" href="/log">QRPLog</a>
       <a class="tab" href="/dxc.html" onclick="window.open(this.href,'DXC','width=600,height=750,left=0,top=0,menubar=no,location=no,status=no'); return false;">DXC</a>
-      <a class="tab" href="/">CAT</a>
-      <a class="tab" href="/data">DATA</a>
-      <a class="tab" href="/ws-cat">DEBUG</a>
+      <a class="tab" href="/data" title="Web Client for JS8Call">JS8LAN</a>
       <a class="tab tab-active" href="/setup">SETUP</a>
       <a class="tab" href="/datasync">LOGSYNC</a>
-      <a class="tab" href="/bd">BD</a>
+      <a class="tab bd-nav" href="/bd" hidden>BD</a>
+      <a class="tab tab-cat-muted" href="/">CAT</a>
       <span id="topbarFw" class="topbar-fw" data-rev=""></span>
     </nav>
   </header>
@@ -98,8 +97,8 @@
           </div>
         </details>
 
-        <details class="setup-section">
-          <summary class="setup-section-title">Radio <span class="setup-local-badge">eeprom</span></summary>
+        <details class="setup-section" id="radioSection">
+          <summary class="setup-section-title">Radio <span class="setup-local-badge">eeprom</span><span id="trx1LanWarning" class="setup-required-warning" role="status" hidden>TRX1 LAN INCOMPLETE</span></summary>
           <div class="setup-section-body">
             <label>USB and CI-V serial baudrate
               <div class="input-with-tip">
@@ -257,7 +256,7 @@
       <div class="setup-form spiffs-form">
 
         <details class="setup-section" id="logSettingsSection">
-          <summary class="setup-section-title">LOG settings <span class="setup-local-badge">spiffs</span></summary>
+          <summary class="setup-section-title">LOG settings <span class="setup-local-badge">littlefs</span></summary>
           <div class="setup-section-body">
             <label>RST default SSB/FM
               <div class="input-with-tip">
@@ -286,7 +285,7 @@
         </details>
 
         <details class="setup-section">
-          <summary class="setup-section-title">CAT page CW memories <span class="setup-local-badge">spiffs</span></summary>
+          <summary class="setup-section-title">CAT page CW memories <span class="setup-local-badge">littlefs</span></summary>
           <div class="setup-section-body">
             <label>CW memory 1
               <div class="input-with-tip">
@@ -316,7 +315,7 @@
         </details>
 
         <details class="setup-section">
-          <summary class="setup-section-title">CAT page frequency memories <span class="setup-local-badge">spiffs</span></summary>
+          <summary class="setup-section-title">CAT page frequency memories <span class="setup-local-badge">littlefs</span></summary>
           <div class="setup-section-body">
             <p class="footnote">Use compact format like <code>14074000 USB</code> or <code>144174000 FM</code>.</p>
             <label>Memory 1
@@ -461,10 +460,41 @@
           if (lanBox) lanBox.style.display = isLan ? '' : 'none';
           if (btBox) btBox.style.display = isLan ? 'none' : '';
         }
+        function refreshTrx1LanWarning() {
+          var sel = document.getElementById('trx1transport');
+          var isLan = sel && sel.value === 'lan';
+          var names = ['lanip', 'lanuser', 'lanpass'];
+          var missing = 0;
+          names.forEach(function (name) {
+            var input = document.querySelector('[name="' + name + '"]');
+            if (!input) return;
+            var empty = isLan && (!input.value.trim() || (name === 'lanip' && input.value.trim() === '0.0.0.0'));
+            input.classList.toggle('setup-required-missing', empty);
+            input.setAttribute('aria-invalid', empty ? 'true' : 'false');
+            if (input.closest('label')) input.closest('label').classList.toggle('setup-label-missing', empty);
+            if (empty) missing++;
+          });
+          var warning = document.getElementById('trx1LanWarning');
+          if (warning) {
+            warning.hidden = !(isLan && missing);
+            warning.textContent = 'TRX1 LAN INCOMPLETE' + (missing ? ' · ' + missing : '');
+          }
+          var section = document.getElementById('radioSection');
+          if (section) section.classList.toggle('setup-section-warning', !!(isLan && missing));
+          return !!(isLan && missing);
+        }
         var trx1t = document.getElementById('trx1transport');
         if (trx1t) {
           refreshTrx1Transport();
-          trx1t.addEventListener('change', refreshTrx1Transport);
+          trx1t.addEventListener('change', function () { refreshTrx1Transport(); refreshTrx1LanWarning(); });
+        }
+        ['lanip', 'lanuser', 'lanpass'].forEach(function (name) {
+          var input = document.querySelector('[name="' + name + '"]');
+          if (input) input.addEventListener('input', refreshTrx1LanWarning);
+        });
+        if (refreshTrx1LanWarning()) {
+          var radioSection = document.getElementById('radioSection');
+          if (radioSection) radioSection.open = true;
         }
         setValue('cwIpOnConnect', data.cwIpOnConnect);
         setValue('manualModeForPhone', data.manualModeForPhone);
@@ -734,7 +764,7 @@
       this.value = "";
     });
   </script>
-  <script src="/fw-version.js"></script>
+  <script src="/fw-version.js?v=20260718k"></script>
   <script>
     (function () {
       var form = document.querySelector('form[action="/setup"]');

@@ -67,7 +67,7 @@
       line-height: 1.65;
       color: #cbd5e1;
     }
-    ul {
+    ul, ol {
       margin: 0.5rem 0 0;
       padding-left: 1.35rem;
     }
@@ -84,6 +84,37 @@
     .warn-box strong { color: #f87171; }
     .warn-box p { margin: 0; color: #fca5a5; font-size: 0.97rem; line-height: 1.6; }
     .warn-box p + p { margin-top: 0.4rem; }
+    .hardware-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.65rem;
+      margin: 0.85rem 0 0;
+    }
+    .hardware-item {
+      margin: 0;
+      padding: 0.8rem 0.9rem;
+      border: 1px solid rgba(96, 165, 250, 0.22);
+      border-radius: 0.65rem;
+      background: rgba(30, 41, 59, 0.55);
+    }
+    .hardware-item dt {
+      margin-bottom: 0.25rem;
+      color: #93c5fd;
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .hardware-item dd {
+      margin: 0;
+      color: #e2e8f0;
+      font-size: 0.93rem;
+      line-height: 1.45;
+    }
+    .compatibility-note { margin: 0.8rem 0 0; }
+    @media (max-width: 34rem) {
+      .hardware-grid { grid-template-columns: 1fr; }
+    }
     code {
       background: rgba(148, 163, 184, 0.15);
       padding: 0.1rem 0.35rem;
@@ -106,7 +137,7 @@
     <div class="card">
       <h1>IC-705 Interface</h1>
       <p class="subtitle">
-        Firmware installer &mdash; version <code>20260712</code> &nbsp;&bull;&nbsp;
+        Firmware installer &mdash; version <code>20260718</code> &nbsp;&bull;&nbsp;
         <a href="https://github.com/ok1hra/IC-705_Interface" target="_blank">GitHub</a>
       </p>
 
@@ -122,6 +153,34 @@
         </p>
       </div>
 
+      <section aria-labelledby="hardware-title">
+        <h2 id="hardware-title">Required hardware</h2>
+        <dl class="hardware-grid">
+          <div class="hardware-item">
+            <dt>Processor</dt>
+            <dd>Original Espressif ESP32 (Xtensa LX6), compatible with the <strong>ESP32 Dev Module</strong> target.</dd>
+          </div>
+          <div class="hardware-item">
+            <dt>Flash memory</dt>
+            <dd><strong>4 MB minimum</strong>, configured for DIO mode at 80 MHz.</dd>
+          </div>
+          <div class="hardware-item">
+            <dt>RAM</dt>
+            <dd>Standard ESP32 internal SRAM (520 KB). External PSRAM is not required.</dd>
+          </div>
+          <div class="hardware-item">
+            <dt>Flash layout</dt>
+            <dd>No OTA: 2 MB application and approximately 2 MB LittleFS filesystem.</dd>
+          </div>
+        </dl>
+        <p class="muted compatibility-note">
+          This firmware image targets the original ESP32. It is not compatible with ESP32-C3,
+          ESP32-S2, ESP32-S3, or other ESP32 chip families.
+        </p>
+      </section>
+
+      <hr class="divider">
+
       <h2>Flash firmware via USB</h2>
       <p>
         Open this page in <strong>Google Chrome</strong> or <strong>Microsoft Edge</strong>
@@ -131,19 +190,26 @@
       <ul>
         <li>After connecting, select the correct <code>CP210x</code> / <code>CH340</code> / <code>JTAG</code> serial device.</li>
         <li>Choose <strong>Install IC-705 Interface</strong> and follow the prompts.</li>
-        <li>
-          After flashing, open the serial console and press <strong>Reset Device</strong>
-          to see the boot log with the assigned <strong>IP address</strong>.
-        </li>
       </ul>
 
       <div class="cta">
         <esp-web-install-button manifest="manifest.json" baudrate="9600"></esp-web-install-button>
       </div>
 
+      <hr class="divider">
+
+      <h2>Open the interface after flashing</h2>
+      <ol>
+        <li>On its first boot, the device creates the WiFi network <code>IC705-if</code>. Connect to it using password <code>remoteqth</code>.</li>
+        <li>Open <code>http://192.168.4.1/setup</code> in your browser. You can also try <code>http://ic705.local/setup</code>; some phones open the setup portal automatically.</li>
+        <li>Configure your normal WiFi and the IC-705 <strong>TRX1 LAN</strong> address, username, and password. Select <strong>Save &amp; Restart</strong>, then reconnect your phone or computer to the normal WiFi.</li>
+        <li>Find the interface's new IP address in your router's DHCP client list, or open the installer serial console at <code>9600 baud</code> and press <strong>Reset Device</strong> to read it from the boot log.</li>
+        <li>Open <code>http://&lt;assigned-IP&gt;/</code> or try <code>http://ic705.local/</code>. Bookmark the working address.</li>
+      </ol>
+
       <p class="muted">
-        Flashes: bootloader, partition table, boot_app0, firmware, SPIFFS filesystem.
-        For manual flashing use <code>ic705-20260712-full.bin</code> at offset <code>0x0</code>
+        Flashes: bootloader, partition table, boot_app0, firmware, LittleFS filesystem.
+        For manual flashing use <code>ic705-20260718-full.bin</code> at offset <code>0x0</code>
         with <code>esptool.py</code>.
       </p>
     </div>
