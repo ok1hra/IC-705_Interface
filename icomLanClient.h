@@ -15,6 +15,10 @@
 // shared parser so LAN gets the same full CAT state (freq, mode, meters, TX...).
 extern void lanCivFrameHandler(const uint8_t *frame, size_t len);
 
+// Implemented in the .ino — receives a chunk of raw RX audio (payload of one audio
+// UDP datagram, codec = AUDIO_RX_CODEC below). Used by the DATA-page waterfall.
+extern void lanAudioHandler(const uint8_t *data, size_t len);
+
 class IcomLanClient {
 public:
   enum State {
@@ -42,6 +46,7 @@ public:
     token = 0;
     haveCaps = false; authOk = false; authAnnounced = false; streamReqSent = false; streamOpened = false;
     civPort = 0;
+    audioPort = 0; audioOpened = false; audioGotHere = false;
 
     state = LAN_AYT;
     stateSince = millis();
@@ -53,6 +58,7 @@ public:
 
   void stop() {
     if (state == LAN_IDLE) return;
+    if (audioOpened) { sendCtrl(audioUdp, audioMyId, audioRemoteId, 0x05, 0); audioUdp.stop(); audioOpened = false; }
     if (streamOpened) sendCivOpenClose(true);
     if (token) sendToken(0x01);        // release
     sendCtrl(ctrlUdp, ctrlMyId, ctrlRemoteId, 0x05, 0);  // disconnect
@@ -74,12 +80,50 @@ public:
     return true;
   }
 
+  // RX audio channel (DATA-page waterfall). The stream request already advertised
+  // rxenable=1 (see sendStreamRequest), so the radio streams once we complete the
+  // audio-channel handshake. Called on WebSocket connect/disconnect so the audio
+  // UDP traffic only exists while the page is open.
+  void startRxAudio() {
+    if (state != LAN_CONNECTED || audioOpened || audioPort == 0) return;
+    openAudioChannel();
+  }
+  void stopRxAudio() {
+    if (!audioOpened) return;
+    sendCtrl(audioUdp, audioMyId, audioRemoteId, 0x05, 0);  // disconnect
+    audioUdp.stop();
+    audioOpened = false; audioGotHere = false;
+    Serial.println("LAN | audio channel closed");
+  }
+  bool rxAudioActive() const { return audioOpened; }
+
+  // Send one TX audio chunk (uLaw payload) to the radio on the audio channel.
+  // Header layout per wfview packettypes.h audio_packet (24 B header + payload).
+  void sendAudioPacket(const uint8_t* payload, size_t plen) {
+    if (!audioOpened || !audioGotHere || plen == 0 || plen > 512) return;
+    uint8_t pk[0x18 + 512];
+    size_t total = 0x18 + plen;
+    memset(pk, 0, 0x18);
+    putLE32(pk+0x00, total);                            // len
+    putLE16(pk+0x06, audioSendSeq++);                   // tracked seq (shared with idles)
+    putLE32(pk+0x08, audioMyId);                        // sentid
+    putLE32(pk+0x0C, audioRemoteId);                    // rcvdid
+    putLE16(pk+0x10, (plen == 0xA0) ? 0x9781 : 0x0080); // ident (0x9781 for 160 B chunks)
+    putBE16(pk+0x12, audioTxSeq++);                     // audio sendseq (BE)
+    putBE16(pk+0x16, (uint16_t)plen);                   // datalen (BE)
+    memcpy(pk+0x18, payload, plen);
+    audioUdp.beginPacket(radioIP, audioPort);
+    audioUdp.write(pk, total);
+    audioUdp.endPacket();
+  }
+
   void loop() {
     if (state == LAN_IDLE || state == LAN_FAILED) return;
     uint32_t now = millis();
 
     pumpControl();
     if (civPort) pumpCiv();
+    if (audioOpened) pumpAudio();
 
     // control-channel periodic sends
     if (state == LAN_AYT) {
@@ -123,6 +167,16 @@ public:
       }
     }
 
+    // audio channel periodic sends (same handshake/keepalive as CI-V; no open/data)
+    if (audioOpened) {
+      if (!audioGotHere) {
+        if (now - audioLastAyt >= 500) { sendCtrl(audioUdp, audioMyId, audioRemoteId, 0x03, 0); audioLastAyt = now; }
+      } else {
+        if (now - audioLastPing >= 500) { sendPing(audioUdp, audioMyId, audioRemoteId, audioPingSeq++); audioLastPing = now; }
+        if (now - audioLastIdle >= 100) { sendTracked(audioUdp, audioPkt0(0x00), 0x10); audioLastIdle = now; }
+      }
+    }
+
     if (state != LAN_CONNECTED && millis() - stateSince > 12000) {
       Serial.println("LAN | timeout in state, giving up");
       state = LAN_FAILED;
@@ -144,7 +198,7 @@ private:
   char username[24] = {0}, password[24] = {0};
   uint8_t radioCivAddr = 0xA4;
 
-  WiFiUDP ctrlUdp, civUdp;
+  WiFiUDP ctrlUdp, civUdp, audioUdp;
   uint32_t ctrlMyId = 0, ctrlRemoteId = 0;
   uint32_t civMyId = 0, civRemoteId = 0;
   uint16_t ctrlSendSeq = 1, civSendSeq = 1;
@@ -170,6 +224,21 @@ private:
   uint32_t civHereTime = 0, civNextOpen = 0, lastFreqPoll = 0, lastAuxPoll = 0, lastCivDataMs = 0, lastRxMs = 0;
   uint32_t civLastAyt = 0, civLastPing = 0, civLastIdle = 0;
   uint8_t auxRot = 0;
+
+  // ---- RX audio channel ----
+  // Codec byte per RS-BA1: 0x01 = uLaw 8-bit 1ch (PCMU, lightest — ~8 kB/s @ 8 kHz,
+  // ~6 packets/s so the single-threaded loop tolerates it), 0x04 = LPCM 16-bit 1ch.
+  // If the radio refuses to stream, try LPCM16 (0x04 @ 16000/48000) — see
+  // docs/icom-lan-implementace.md and the bench note (LPCM16/48k verified working).
+  static const uint8_t  AUDIO_RX_CODEC   = 0x01;
+  static const uint32_t AUDIO_RX_SAMPLE  = 8000;    // Hz
+  static const uint8_t  AUDIO_TX_CODEC   = 0x01;    // uLaw 8-bit 1ch (M3 TX)
+  static const uint32_t AUDIO_TX_SAMPLE  = 8000;    // Hz
+  static const uint16_t AUDIO_LOCAL_PORT = 50003;
+  bool audioOpened = false, audioGotHere = false;
+  uint32_t audioMyId = 0, audioRemoteId = 0;
+  uint16_t audioSendSeq = 1, audioPingSeq = 0, audioTxSeq = 0;
+  uint32_t audioHereTime = 0, audioLastPing = 0, audioLastIdle = 0, audioLastAyt = 0;
 
   State state = LAN_IDLE;
   uint32_t stateSince = 0, lastAyt = 0, lastPing = 0, lastIdle = 0, lastReauth = 0;
@@ -221,9 +290,14 @@ private:
   }
   size_t ctrlPkt(uint16_t /*len*/, uint16_t type) { return hdr16(ctrlMyId, ctrlRemoteId, type, 0); }
   size_t civPkt0(uint16_t type) { return hdr16(civMyId, civRemoteId, type, 0); }
+  size_t audioPkt0(uint16_t type) { return hdr16(audioMyId, audioRemoteId, type, 0); }
 
   // remote port depends on channel
-  uint16_t currentRemote(WiFiUDP& u) { return (&u == &ctrlUdp) ? ctrlPort : civPort; }
+  uint16_t currentRemote(WiFiUDP& u) {
+    if (&u == &ctrlUdp) return ctrlPort;
+    if (&u == &civUdp)  return civPort;
+    return audioPort;
+  }
 
   void sendCtrl(WiFiUDP& u, uint32_t myId, uint32_t rid, uint16_t type, uint16_t seq) {
     hdr16(myId, rid, type, seq);
@@ -233,7 +307,7 @@ private:
   // tracked packet: stamp seq into bytes 6-7 (we don't buffer for retransmit in
   // this minimal client — the IC-705 rarely asks and freq is re-polled anyway)
   void sendTracked(WiFiUDP& u, size_t len, uint16_t /*hint*/) {
-    uint16_t& seq = (&u == &ctrlUdp) ? ctrlSendSeq : civSendSeq;
+    uint16_t& seq = (&u == &ctrlUdp) ? ctrlSendSeq : (&u == &civUdp ? civSendSeq : audioSendSeq);
     putLE16(buf+6, seq++);
     u.beginPacket(radioIP, currentRemote(u)); u.write(buf, len); u.endPacket();
   }
@@ -297,13 +371,21 @@ private:
     memcpy(buf+0x2a, radioMac, 6);
     memcpy(buf+0x40, radioName, strnlen(radioName, 15));
     uint8_t u[16]; passcode(username, u); memcpy(buf+0x60, u, 16);
-    // no-audio: rxenable/txenable/codecs/samples all zero
+    // RX audio enabled (TX off). Field offsets verified in tools/icom-lan-login-test.py.
+    // The radio only actually streams once we complete the audio-channel handshake
+    // (openAudioChannel), so advertising it here costs nothing until the page opens.
+    buf[0x70] = 1;                         // rxenable
+    buf[0x71] = 1;                         // txenable (M3: TX audio)
+    buf[0x72] = AUDIO_RX_CODEC;            // rxcodec
+    buf[0x73] = AUDIO_TX_CODEC;            // txcodec
+    putBE32(buf+0x74, AUDIO_RX_SAMPLE);    // rxsample rate
+    putBE32(buf+0x78, AUDIO_TX_SAMPLE);    // txsample rate
     putBE32(buf+0x7c, 50002);              // civ local port
-    putBE32(buf+0x80, 50003);              // audio local port (unused)
+    putBE32(buf+0x80, AUDIO_LOCAL_PORT);   // audio local port
     putBE32(buf+0x84, 150);                // txbuffer
     buf[0x88] = 1;                         // convert
     sendTracked(ctrlUdp, 0x90, 0x90);
-    Serial.println("LAN | stream request sent (no audio)");
+    Serial.println("LAN | stream request sent (rx+tx audio uLaw/8k)");
   }
 
   void sendCivOpenClose(bool close) {
@@ -474,6 +556,51 @@ private:
     auxRot = 0;
     civLastAyt = civLastPing = civLastIdle = 0;
     setState(LAN_CIV_AYT);
+  }
+
+  void openAudioChannel() {
+    audioUdp.begin(AUDIO_LOCAL_PORT);
+    audioMyId = mkId(AUDIO_LOCAL_PORT);
+    audioRemoteId = 0;
+    audioGotHere = false;
+    audioSendSeq = 1; audioPingSeq = 0; audioTxSeq = 0;
+    audioHereTime = 0; audioLastPing = audioLastIdle = audioLastAyt = 0;
+    audioOpened = true;
+    Serial.print("LAN | audio channel open, remote port="); Serial.println(audioPort);
+  }
+
+  void pumpAudio() {
+    int n;
+    while ((n = audioUdp.parsePacket()) > 0) {
+      int r = audioUdp.read(buf, sizeof(buf));
+      if (r < 0x10) continue;
+      lastRxMs = millis();
+      handleAudio(buf, r);
+    }
+  }
+
+  void handleAudio(uint8_t* r, int n) {
+    uint16_t type = getLE16(r+4);
+    if (n == 0x15 && type == 0x07 && r[0x10] == 0x00) {          // ping request -> reply
+      sendPingReply(audioUdp, audioMyId, audioRemoteId, getLE16(r+6), getLE32(r+0x11));
+      return;
+    }
+    if (n == 0x10) {
+      if (type == 0x04 && !audioGotHere) {                       // IAmHere
+        audioGotHere = true; audioRemoteId = getLE32(r+8); audioHereTime = millis();
+        sendCtrl(audioUdp, audioMyId, audioRemoteId, 0x06, 1);   // AreYouReady
+        Serial.println("LAN | audio: I am here");
+      } else if (type == 0x06) {                                 // Ready (rare)
+        audioRemoteId = getLE32(r+8);
+      }
+      return;
+    }
+    // audio data packet: header is 0x18 bytes, PCM/uLaw payload follows (wfview
+    // icomudpaudio.cpp: type != 0x01 && len >= 0x20, data = r.mid(0x18)).
+    uint32_t plen = getLE32(r+0);
+    if (type != 0x01 && plen >= 0x20 && n > 0x18) {
+      lanAudioHandler(r + 0x18, (size_t)(n - 0x18));
+    }
   }
 
   void handleCiv(uint8_t* r, int n) {

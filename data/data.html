@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IC-705 DATA</title>
+  <link rel="stylesheet" href="/cat.css">
+  <link rel="stylesheet" href="/data.css">
+</head>
+<body>
+  <header class="topbar">
+    <nav class="tabs" aria-label="Primary">
+      <a class="tab" href="/log">QRPLog</a>
+      <a class="tab" href="/dxc.html" onclick="window.open(this.href,'DXC','width=600,height=750,left=0,top=0,menubar=no,location=no,status=no'); return false;">DXC</a>
+      <a class="tab" href="/">CAT</a>
+      <a class="tab tab-active" href="/data">DATA</a>
+      <a class="tab" href="/ws-cat">DEBUG</a>
+      <a class="tab" href="/setup">SETUP</a>
+      <a class="tab" href="/datasync">LOGSYNC</a>
+      <a class="tab" href="/bd">BD</a>
+      <span id="topbarFw" class="topbar-fw"></span>
+    </nav>
+  </header>
+
+  <main class="data-shell">
+    <section class="data-panel">
+
+      <!-- Top strip: digital-mode selector (more modes added over time) + test toggle -->
+      <div class="mode-strip">
+        <label class="field-row" for="modeSelect">
+          <span>DIGI MODE</span>
+          <select id="modeSelect"></select>
+        </label>
+      </div>
+
+      <!-- Header above the waterfall: freq + mode (left), HF PWR (right) -->
+      <div class="wf-header">
+        <div class="wf-header-left">
+          <span id="hdrFreq" class="hdr-freq">--.---.--</span>
+          <span id="hdrMode" class="hdr-mode">---</span>
+        </div>
+        <div class="wf-header-right">
+          <span class="hdr-label">HF PWR</span>
+          <span id="hdrPwr" class="hdr-pwr">-- %</span>
+        </div>
+      </div>
+
+      <!-- Waterfall: scrolling spectrogram + marker overlay + frequency axis -->
+      <div class="wf-wrap">
+        <canvas id="waterfall" class="wf-canvas" width="1024" height="260"></canvas>
+        <canvas id="wfOverlay" class="wf-overlay" width="1024" height="260"></canvas>
+        <div id="wfBanner" class="wf-banner" hidden>
+          <p>TRX1 není připojen v režimu LAN — datové rozhraní je neaktivní.</p>
+        </div>
+      </div>
+      <canvas id="wfAxis" class="wf-axis" width="1024" height="22"></canvas>
+
+      <!-- Decoder (RX) receive field -->
+      <section class="io-panel">
+        <div class="io-head">
+          <span class="io-title">Dekodér (RX)</span>
+          <span id="decoderStatus" class="io-status">—</span>
+          <button id="clearDecoder" class="mini-button" type="button">Clear</button>
+        </div>
+        <div id="decoderOut" class="io-output" aria-live="polite"></div>
+      </section>
+
+      <!-- Encoder (TX) input field -->
+      <section class="io-panel">
+        <div class="io-head">
+          <span class="io-title">Kodér (TX)</span>
+          <span id="encoderStatus" class="io-status">—</span>
+          <span class="io-tone">Tón <span id="toneReadout">1500</span> Hz</span>
+        </div>
+        <textarea id="encoderIn" class="io-input" rows="2" placeholder="Text k vysílání…" spellcheck="false"></textarea>
+        <div class="io-actions">
+          <button id="txButton" class="io-tx" type="button" disabled>Vysílat</button>
+        </div>
+      </section>
+
+      <footer class="status-row">
+        <span id="statusLink">Link ----</span>
+        <span id="statusSample">-- Hz</span>
+        <span id="statusFw">FW ----</span>
+      </footer>
+    </section>
+  </main>
+
+  <script src="/fw-version.js"></script>
+  <script src="/data.js"></script>
+</body>
+</html>

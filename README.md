@@ -58,6 +58,8 @@
 
 ## WEB app user Manual
 - [docs/user-manual.md](docs/user-manual.md) — setup, web UI, CW/RTTY, MQTT, troubleshooting
+- [docs/js8call-modem-implementation.md](docs/js8call-modem-implementation.md) — implementation plan for the browser-based JS8Call modem
+- [docs/aud1-audio-websocket-protocol.md](docs/aud1-audio-websocket-protocol.md) — proposed versioned RX/TX audio WebSocket envelope
 <img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/hw/sw-block.png">
 
 ## Hardware

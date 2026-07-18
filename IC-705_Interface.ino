@@ -241,6 +241,7 @@ volatile bool btConnectPending = false;
   #define HTTP_MAX_DATA_WAIT 1000
   #include <WebServer.h>
   #include <mbedtls/sha1.h>
+  #include <lwip/sockets.h>   // raw select() to poll audio-WS writability (never block the loop)
   // #include <ETH.h>
   // int SsidPassSize = (sizeof(SsidPass)/sizeof(char *))/2; //array size
   // int SelectSsidPass = -1;
@@ -367,6 +368,13 @@ int incomingByte = 0;   // for incoming serial data
   WiFiServer dxcRawServer(82);
   WiFiClient DxcTelnetClient;
   WiFiClient DxcWsClient;
+  WiFiServer audioWsServer(83);        // binary WebSocket: RX audio (uLaw) -> DATA page
+  WiFiClient AudioWsClient;
+  uint32_t audioRxPackets = 0;         // counts forwarded audio datagrams per WS session
+  uint8_t  audioTxBuf[1400];           // coalesce ~20ms radio packets into fewer WS frames
+  size_t   audioTxLen = 0;
+  bool     audioTxKeyed = false;       // M3: PTT keyed for browser-sourced TX audio
+  uint32_t audioTxLastMs = 0;          // last TX audio/keep-alive — dead-man un-key timer
   String DxcHost = "";
   uint16_t DxcPort = 7300;
   IPAddress DxcHostIp;                // cached resolve — hostByName blocks the loop for seconds
@@ -548,6 +556,14 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   String ExtractHttpHeader(const String& request, const String& headerName);
   String DxcComputeWebSocketAccept(const String& secKey);
   String Base64Encode(const uint8_t* data, size_t length);
+  bool AudioSendBinary(const uint8_t* payload, size_t length);
+  void audioFlush(void);
+  void audioPttOn(void);
+  void audioPttOff(void);
+  void AudioDisconnectWs(void);
+  bool AudioHandleWsUpgrade(WiFiClient& webClient, const String& request);
+  void AudioHandleWsClient(void);
+  void audioHandleRawClient(void);
 #endif
 
 //-------------------------------------------------------------------------------------------------------
@@ -2137,6 +2153,7 @@ void setupWebServer(void){
   webServer.on("/ws-cat",   HTTP_GET,  [](){ handleFileFromSPIFFS("/ws-cat.html"); });
   webServer.on("/log",      HTTP_GET,  [](){ handleFileFromSPIFFS("/log.html"); });
   webServer.on("/datasync", HTTP_GET,  [](){ handleFileFromSPIFFS("/datasync.html"); });
+  webServer.on("/data",     HTTP_GET,  [](){ handleFileFromSPIFFS("/data.html"); });
 
   webServer.on("/dxcinfo", HTTP_GET, [](){
     webServer.sendHeader("Cache-Control", "no-cache");
@@ -2579,8 +2596,10 @@ void setup(){
       MDNS.addService("ws", "tcp", 80);
       setupWebServer();
       dxcRawServer.begin();
+      audioWsServer.begin();
       Serial.println("HTTP| web server started");
       Serial.println("HTTP| DXC WS server started on port 82");
+      Serial.println("HTTP| Audio WS server started on port 83");
       Serial.println("mDNS| responder started");
     }
   #endif
@@ -2687,6 +2706,8 @@ void loop(){
   _TIMED("TrxNet",          TrxNetLoop())
   _TIMED("DxcLoop",         DxcLoop())
   _TIMED("dxcRaw",          dxcHandleRawClient())
+  _TIMED("audioRaw",        audioHandleRawClient())
+  _TIMED("audioWs",         AudioHandleWsClient())
 
   // TrxNet: process pending /s-hz command (set TRX1 VFO via CI-V)
   if (trxFreqPending) {
@@ -2975,6 +2996,9 @@ void lanClientLoop(){
 
   if (lanClient.connected()) {
     lanBackoff = 3000;   // healthy link resets the reconnect backoff
+    // (re)start RX audio if the DATA page is open but the audio channel isn't up
+    // yet — covers WS-connected-before-LAN and LAN-reconnect-while-page-open.
+    if (AudioWsClient.connected() && !lanClient.rxAudioActive()) lanClient.startRxAudio();
     if (statusPower == 0) {
       statusPower = 1;
       digitalWrite(PowerOnPin, HIGH);
@@ -3406,7 +3430,9 @@ void processCivBuffer(uint8_t len) {
       stateRitRaw = decodeCivBcdBytesLsb(pl + 1, 3); // LSB-first, 3 bytes only, sign byte excluded
     }
     if (cmd == 0x1C && plLen >= 2 && pl[0] == 0x00) {
-      stateTx = (pl[1] == 0x01);
+      bool newTx = (pl[1] == 0x01);
+      if (newTx != stateTx) { Serial.print("CIV | radio TX state -> "); Serial.println(newTx ? "TX" : "RX"); }
+      stateTx = newTx;
     }
     if (cmd == 0x04 && plLen >= 2) {
       stateFilter = (uint8_t)pl[1];
@@ -5056,4 +5082,203 @@ void dxcHandleRawClient(){
     client.stop();
   }
   // on success, client is stored in DxcWsClient — do NOT stop it
+}
+
+// ── DATA-page audio WebSocket (port 83, /audiows) ─────────────────────────────
+// Binary channel that forwards raw RX audio (uLaw) from the IC-705 LAN audio
+// stream to the browser waterfall. Modeled on the DXC port-82 WebSocket above.
+
+// Is the audio socket writable right now? Zero-timeout select() poll — WiFiClient::write()
+// otherwise blocks the whole cooperative loop up to 10 s (10 retries x 1 s select) when the
+// browser's socket buffer is full, which starves CI-V/CAT. If not writable we drop the
+// frame (a harmless audio gap) instead of stalling.
+bool audioSocketWritable(){
+  int fd = AudioWsClient.fd();
+  if(fd < 0) return false;
+  fd_set wset; FD_ZERO(&wset); FD_SET(fd, &wset);
+  struct timeval tv = {0, 0};
+  return select(fd + 1, NULL, &wset, NULL, &tv) > 0 && FD_ISSET(fd, &wset);
+}
+
+bool AudioSendBinary(const uint8_t* payload, size_t length){
+  if(!AudioWsClient.connected()) return false;
+  if(!audioSocketWritable()) return false;   // buffer full -> drop frame, never block
+  uint8_t header[4];
+  size_t headerLen = 0;
+  header[headerLen++] = 0x80 | 0x2;                 // FIN + binary opcode
+  if(length < 126){
+    header[headerLen++] = uint8_t(length);
+  }else if(length <= 0xFFFF){
+    header[headerLen++] = 126;
+    header[headerLen++] = uint8_t((length >> 8) & 0xFF);
+    header[headerLen++] = uint8_t(length & 0xFF);
+  }else{
+    return false;                                   // audio chunks are always < 64k
+  }
+  if(AudioWsClient.write(header, headerLen) != headerLen){ AudioDisconnectWs(); return false; }
+  if(length > 0 && payload != nullptr){
+    if(AudioWsClient.write(payload, length) != length){ AudioDisconnectWs(); return false; }
+  }
+  return true;
+}
+
+// Flush the coalesced audio buffer as one WS frame.
+void audioFlush(){
+  if(audioTxLen == 0) return;
+  AudioSendBinary(audioTxBuf, audioTxLen);
+  audioTxLen = 0;
+}
+
+// ── M3 TX: key/un-key PTT via CI-V (LAN); dead-man safety un-keys on loss ──────
+void audioPttOn(){
+  if(audioTxKeyed) { audioTxLastMs = millis(); return; }
+  if(!lanMode || !lanClient.connected()){ Serial.println("AUD | PTT ON skipped (LAN not connected)"); return; }
+  uint8_t f[] = {0x1C, 0x00, 0x01};          // TX ON (same CI-V as CAT-page PTT)
+  bool ok = lanClient.sendCommand(f, 3);
+  uint8_t rd[] = {0x1C, 0x00};               // read back -> "CIV | radio TX state" log
+  lanClient.sendCommand(rd, 2);
+  audioTxKeyed = true; audioTxLastMs = millis();
+  Serial.print("AUD | PTT ON (TX audio) sendCommand="); Serial.println(ok ? "ok" : "FAIL");
+}
+void audioPttOff(){
+  if(!audioTxKeyed) return;
+  audioTxKeyed = false;
+  uint8_t f[] = {0x1C, 0x00, 0x00};          // TX OFF
+  if(lanMode && lanClient.connected()) lanClient.sendCommand(f, 3);
+  Serial.println("AUD | PTT OFF");
+}
+
+void AudioDisconnectWs(){
+  audioPttOff();                              // safety: never leave PTT keyed
+  if(AudioWsClient.connected()) AudioWsClient.stop();
+  lanClient.stopRxAudio();
+}
+
+// Called by the LAN client for every RX audio datagram payload (~160 B / 20 ms).
+// Coalesce a few packets into one WS frame to cut the frame rate (~50/s -> ~10/s)
+// and keep the single-threaded loop responsive to the port-80 /state polls.
+void lanAudioHandler(const uint8_t *data, size_t len){
+  if(len == 0 || !AudioWsClient.connected()) return;
+  if(audioRxPackets == 0){ Serial.print("AUD | rx audio flowing, first packet "); Serial.print(len); Serial.println(" B"); }
+  audioRxPackets++;
+  if(len > sizeof(audioTxBuf)){ AudioSendBinary(data, len); return; }   // oversized: send as-is
+  if(audioTxLen + len > sizeof(audioTxBuf)) audioFlush();
+  memcpy(audioTxBuf + audioTxLen, data, len);
+  audioTxLen += len;
+  if(audioTxLen >= 512) audioFlush();                                   // keep frames < 1 MSS
+}
+
+bool AudioHandleWsUpgrade(WiFiClient& webClient, const String& request){
+  String secKey     = ExtractHttpHeader(request, "Sec-WebSocket-Key");
+  String upgrade    = ExtractHttpHeader(request, "Upgrade");
+  String connection = ExtractHttpHeader(request, "Connection");
+  upgrade.toLowerCase();
+  connection.toLowerCase();
+  if(secKey.length() == 0 || upgrade != "websocket" || connection.indexOf("upgrade") < 0){
+    webClient.println(F("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n"));
+    return false;
+  }
+  if(AudioWsClient.connected()) AudioDisconnectWs();
+  String accept = DxcComputeWebSocketAccept(secKey);
+  webClient.println(F("HTTP/1.1 101 Switching Protocols"));
+  webClient.println(F("Upgrade: websocket"));
+  webClient.println(F("Connection: Upgrade"));
+  webClient.print(F("Sec-WebSocket-Accept: "));
+  webClient.println(accept);
+  webClient.println();
+  AudioWsClient = webClient;
+  AudioWsClient.setNoDelay(true);
+  audioRxPackets = 0;
+  lanClient.startRxAudio();                          // opens the LAN audio channel
+  Serial.println("AUD | WS client connected -> RX audio on");
+  return true;
+}
+
+void AudioHandleWsClient(){
+  if(!AudioWsClient.connected()){
+    if(audioTxKeyed) audioPttOff();
+    if(lanClient.rxAudioActive()) lanClient.stopRxAudio();
+    audioTxLen = 0;
+    return;
+  }
+  // bound audio latency: flush the coalesce buffer at least every ~100 ms
+  static uint32_t lastFlush = 0;
+  if(millis() - lastFlush >= 100){ audioFlush(); lastFlush = millis(); }
+  // dead-man safety: un-key PTT if keyed but no TX audio arrived recently
+  if(audioTxKeyed && millis() - audioTxLastMs > 500){ Serial.println("AUD | dead-man: no TX audio -> unkey"); audioPttOff(); }
+
+  // Browser -> ESP32: text frames = TX control ("TX1"/"TX0"), binary frames = TX
+  // audio (uLaw) forwarded to the radio. Read the whole frame so framing stays synced.
+  while(AudioWsClient.available() >= 2){
+    uint8_t hdr[2];
+    if(AudioWsClient.read(hdr, 2) != 2){ AudioDisconnectWs(); return; }
+    uint8_t opcode = hdr[0] & 0x0F;
+    bool masked = (hdr[1] & 0x80) != 0;
+    uint64_t payloadLen = hdr[1] & 0x7F;
+    if(payloadLen == 126){
+      uint8_t ext[2];
+      while(AudioWsClient.connected() && AudioWsClient.available() < 2) delay(1);
+      if(AudioWsClient.read(ext, 2) != 2){ AudioDisconnectWs(); return; }
+      payloadLen = (uint16_t(ext[0]) << 8) | uint16_t(ext[1]);
+    }else if(payloadLen == 127){
+      uint8_t ext[8];
+      while(AudioWsClient.connected() && AudioWsClient.available() < 8) delay(1);
+      if(AudioWsClient.read(ext, 8) != 8){ AudioDisconnectWs(); return; }
+      payloadLen = 0;
+      for(int i = 0; i < 8; i++) payloadLen = (payloadLen << 8) | ext[i];
+    }
+    uint8_t maskKey[4] = {0,0,0,0};
+    if(masked){
+      while(AudioWsClient.connected() && AudioWsClient.available() < 4) delay(1);
+      if(AudioWsClient.read(maskKey, 4) != 4){ AudioDisconnectWs(); return; }
+    }
+    if(payloadLen > 512){ AudioDisconnectWs(); return; }   // audio chunks are small
+    static uint8_t payload[512];
+    size_t needed = size_t(payloadLen);
+    while(AudioWsClient.connected() && AudioWsClient.available() < int(needed)) delay(1);
+    if(needed > 0 && AudioWsClient.read(payload, needed) != int(needed)){ AudioDisconnectWs(); return; }
+    if(masked){ for(size_t i = 0; i < needed; i++) payload[i] ^= maskKey[i % 4]; }
+
+    if(opcode == 0x8){ AudioDisconnectWs(); return; }                 // close
+    else if(opcode == 0x2){                                           // TX audio
+      lanClient.sendAudioPacket(payload, needed);
+      audioTxLastMs = millis();
+      static uint32_t txAudioPkts = 0;
+      if((txAudioPkts++ % 50) == 0){ Serial.print("AUD | TX audio -> radio, "); Serial.print(needed); Serial.print(" B, pkt#"); Serial.println(txAudioPkts); }
+    }
+    else if(opcode == 0x1){                                            // TX control
+      if(needed >= 3 && payload[0]=='T' && payload[1]=='X'){
+        if(payload[2]=='1') audioPttOn();
+        else if(payload[2]=='0') audioPttOff();
+      }
+    }
+  }
+}
+
+void audioHandleRawClient(){
+  WiFiClient client = audioWsServer.available();
+  if(!client) return;
+  String request = "";
+  unsigned long timeout = millis() + 2000;
+  while(client.connected() && millis() < timeout){
+    while(client.available()){
+      char c = client.read();
+      request += c;
+      if(request.endsWith("\r\n\r\n")) goto audioDone;
+    }
+    delay(1);
+  }
+  audioDone:
+  int uriStart = request.indexOf(' ') + 1;
+  int uriEnd   = request.indexOf(' ', uriStart);
+  String uri   = request.substring(uriStart, uriEnd);
+  if(uri != "/audiows"){
+    client.println(F("HTTP/1.1 404 Not Found\r\nConnection: close\r\n"));
+    client.stop();
+    return;
+  }
+  if(!AudioHandleWsUpgrade(client, request)){
+    client.stop();
+  }
+  // on success, client is stored in AudioWsClient — do NOT stop it
 }
