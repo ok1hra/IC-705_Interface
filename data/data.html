@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>JS8Call</title>
-  <link rel="stylesheet" href="/cat.css?v=20260718n">
-  <link rel="stylesheet" href="/data.css?v=20260718n">
+  <link rel="stylesheet" href="/cat.css?v=20260718s">
+  <link rel="stylesheet" href="/data.css?v=20260718s">
 </head>
 <body class="startup-pending lan-config-checking">
   <header class="site-topbar">
@@ -28,6 +28,7 @@
     </div>
     <span id="trxMode" class="trx-mode">---</span>
     <span id="linkState" class="live">● OFFLINE</span>
+    <button id="trxReconnect" class="trx-reconnect" type="button" hidden>Reconnect</button>
     <span id="operatorState" class="operator"></span>
     <span class="spacer"></span>
     <span id="utcClock" class="pill">UTC --:--:--</span>
@@ -154,6 +155,7 @@
           <label>Mode <select id="txSessionMode"><option>CHAT</option><option>EMAIL</option><option>BIN</option></select></label>
           <small id="txSessionModeHint">Keyboard-to-keyboard messages</small>
         </div>
+        <div id="txPayload" class="tx-payload" hidden></div>
         <section id="chatSession">
           <div class="keyboard-session">
             <header><div><strong id="sessionCall">No station selected</strong><small id="sessionMeta">Choose a callsign from traffic or stations</small></div><button id="abortButton" class="abort" type="button" hidden>ABORT</button></header>
@@ -234,17 +236,17 @@
     <a href="https://github.com/ok1hra/IC-705_Interface" target="_blank" rel="noopener">GitHub</a><span aria-hidden="true">|</span><a href="/THIRD-PARTY-NOTICES.txt" target="_blank" rel="noopener">Licenses</a>
   </footer>
 
-  <script src="/fw-version.js?v=20260718n"></script>
-  <script src="/js8-settings.js?v=20260718n"></script>
-  <script src="/js8-presets.js?v=20260718n"></script>
-  <script src="/js8-protocol.js?v=20260718n"></script>
-  <script src="/js8-timebase.js?v=20260718n"></script>
-  <script src="/js8-aud1.js?v=20260718n"></script>
-  <script src="/js8-audio.js?v=20260718n"></script>
-  <script src="/js8-tx.js?v=20260718n"></script>
-  <script src="/js8-core.js?v=20260718n"></script>
-  <script src="/js8-adapter.js?v=20260718n"></script>
-  <script src="/dxcc.js?v=20260718n"></script>
-  <script src="/data.js?v=20260718n"></script>
+  <script src="/fw-version.js?v=20260718s"></script>
+  <script src="/js8-settings.js?v=20260718s"></script>
+  <script src="/js8-presets.js?v=20260718s"></script>
+  <script src="/js8-protocol.js?v=20260718s"></script>
+  <script src="/js8-timebase.js?v=20260718s"></script>
+  <script src="/js8-aud1.js?v=20260718s"></script>
+  <script src="/js8-audio.js?v=20260718s"></script>
+  <script src="/js8-tx.js?v=20260718s"></script>
+  <script src="/js8-core.js?v=20260718s"></script>
+  <script src="/js8-adapter.js?v=20260718s"></script>
+  <script src="/dxcc.js?v=20260718s"></script>
+  <script src="/data.js?v=20260718s"></script>
 </body>
 </html>

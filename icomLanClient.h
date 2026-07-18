@@ -157,20 +157,24 @@ public:
         if (civOpenSent && !civGotData && (int32_t)(now - civNextOpen) >= 0) {
           sendCivOpenClose(false); civNextOpen = now + 500;
         }
-        if (civOpenSent && now - lastFreqPoll >= 1000) {
-          if (!scopeOff) { sendCivFrame3(0x27, 0x11, 0x00); scopeOff = true; }  // disable scope stream
-          uint8_t f[] = {0x03}; sendCiv(f, 1);   // read frequency
-          uint8_t m[] = {0x04}; sendCiv(m, 1);   // read mode
+        if (civOpenSent && !scopeOff) {
+          sendCivFrame3(0x27, 0x11, 0x00);       // disable unsolicited scope stream
+          scopeOff = true;
           lastFreqPoll = now;
         }
-        // Aux telemetry for full CAT parity: S-meter + power every tick (live
-        // metering), one rotating item from the rest — no BT coex to throttle.
-        if (civOpenSent && scopeOff && now - lastAuxPoll >= 200) {
-          uint8_t sm[] = {0x15, 0x02}; sendCiv(sm, 2);   // S-meter (RX)
-          uint8_t pw[] = {0x15, 0x11}; sendCiv(pw, 2);   // power meter (TX)
-          sendAuxRot(auxRot);
-          auxRot = (auxRot + 1) % 10;
-          lastAuxPoll = now;
+        // CI-V remains a serial command stream even when transported over UDP.
+        // Pace one request per tick; sending freq+mode+telemetry as a burst made
+        // the IC-705 commonly answer the first (frequency) and drop read-mode.
+        if (civOpenSent && scopeOff && now - lastFreqPoll >= 100) {
+          switch (auxRot) {
+            case 0: { uint8_t b[]={0x03};       sendCiv(b,1); break; } // frequency
+            case 1: { uint8_t b[]={0x26,0x00};  sendCiv(b,2); break; } // selected mode+data+filter
+            case 2: { uint8_t b[]={0x15,0x02};  sendCiv(b,2); break; } // S-meter
+            case 3: { uint8_t b[]={0x15,0x11};  sendCiv(b,2); break; } // power meter
+            default: sendAuxRot(auxRot - 4); break;
+          }
+          auxRot = (auxRot + 1) % 14;
+          lastFreqPoll = now;
         }
       }
     }
@@ -189,12 +193,17 @@ public:
       Serial.println("LAN | timeout in state, giving up");
       state = LAN_FAILED;
     }
-    // liveness watchdog: base it on ANY received packet, not CI-V data. The
-    // radio pings us ~1/s independently of CI-V, and CI-V is silent when idle
-    // (transceive only fires on change). 6 s of total silence = link dead
-    // (WiFi drop / radio off). Frequency is held at its last known value.
+    // Whole-session watchdog catches a complete radio/WiFi outage.
     if (state == LAN_CONNECTED && millis() - lastRxMs > 6000) {
       Serial.println("LAN | no packets 6s, link lost");
+      state = LAN_FAILED;
+    }
+    // Control and audio pings can remain alive after the CI-V command channel
+    // has wedged. We continuously poll several CAT values, so six seconds
+    // without one valid non-scope frame FROM the radio means the usable CAT
+    // link is dead even if the surrounding UDP session still answers pings.
+    if (state == LAN_CONNECTED && millis() - lastCivDataMs > 6000) {
+      Serial.println("LAN | no valid CI-V replies 6s, CAT link lost");
       state = LAN_FAILED;
     }
   }
@@ -229,7 +238,7 @@ private:
 
   // CI-V channel progress
   bool civGotHere = false, civOpenSent = false, civGotData = false, scopeOff = false;
-  uint32_t civHereTime = 0, civNextOpen = 0, lastFreqPoll = 0, lastAuxPoll = 0, lastCivDataMs = 0, lastRxMs = 0;
+  uint32_t civHereTime = 0, civNextOpen = 0, lastFreqPoll = 0, lastCivDataMs = 0, lastRxMs = 0;
   uint32_t civLastAyt = 0, civLastPing = 0, civLastIdle = 0;
   uint8_t auxRot = 0;
 
@@ -609,7 +618,7 @@ private:
     civTxHistory.clear();
     civDataSeq = 0;
     lastCivDataMs = millis();
-    lastFreqPoll = lastAuxPoll = 0;
+    lastFreqPoll = 0;
     auxRot = 0;
     civLastAyt = civLastPing = civLastIdle = 0;
     setState(LAN_CIV_AYT);
@@ -686,34 +695,38 @@ private:
       uint16_t plen = getLE32(r+0) & 0xFFFF;
       uint16_t dlen = getLE16(r+0x11);
       if (((dlen + 0x15) & 0xFFFF) != plen) return;
-      civGotData = true;
-      lastCivDataMs = millis();
       // split possibly-multiple CI-V frames FE FE .. FD in payload
+      bool gotValidRadioFrame = false;
       int i = 0x15;
       while (i + 5 <= n) {
         if (r[i] != 0xFE || r[i+1] != 0xFE) { i++; continue; }
         int e = i + 2;
         while (e < n && r[e] != 0xFD) e++;
         if (e >= n) break;
-        parseCivFrame(r + i, e - i + 1);
+        if (parseCivFrame(r + i, e - i + 1)) gotValidRadioFrame = true;
         i = e + 1;
       }
-      maybeConnected();              // first data frame after the handshake -> CONNECTED
+      if (gotValidRadioFrame) {
+        civGotData = true;
+        lastCivDataMs = millis();
+        maybeConnected();            // first real radio frame after handshake -> CONNECTED
+      }
       return;
     }
   }
 
-  void parseCivFrame(const uint8_t* f, int len) {
-    if (len < 6) return;
+  bool parseCivFrame(const uint8_t* f, int len) {
+    if (len < 6) return false;
     // CI-V frame: FE FE <to> <from> <cmd> ... FD. Only process frames FROM the
     // radio (from-addr == radioCivAddr); the radio echoes our own commands back
     // (from == 0xE1 controller), which must not be parsed as replies.
-    if (f[3] != radioCivAddr) return;
-    if (f[4] == 0x27) return;                            // scope data, ignore
+    if (f[3] != radioCivAddr) return false;
+    if (f[4] == 0x27) return false;                      // scope data does not prove CAT replies
     lanCivFrameHandler(f, (size_t)len);                  // full CAT parse in the .ino
     // NOTE: state is intentionally NOT driven here — see maybeConnected(). A radio
     // that streams CI-V data before finishing its civ handshake used to flip the
     // state (and the log) CIV_OPEN<->CONNECTED on every frame.
+    return true;
   }
 
   // Single promotion point to LAN_CONNECTED: reached only once the civ handshake

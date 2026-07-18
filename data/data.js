@@ -5,7 +5,7 @@
 
 const PAGE_PARAMS = new URLSearchParams(location.search);
 const TEST_MODE = PAGE_PARAMS.has("test");
-const ASSET_REV = "20260718n";
+const ASSET_REV = "20260718s";
 const assetUrl = path => `${path}?v=${ASSET_REV}`;
 const TRX_HELP_SEEN_KEY = "ic705.data.trx-help-seen.v1";
 const AUDIO_WS_PORT = Number(new URLSearchParams(location.search).get("audioPort")) || 83;
@@ -65,6 +65,7 @@ const dom = {
   trxHelpButton:$("trxHelpButton"), trxHelpDialog:$("trxHelpDialog"),
   trxHelpModeWarning:$("trxHelpModeWarning"),
   frequencyMenu:$("frequencyMenu"), linkState:$("linkState"), operatorState:$("operatorState"),
+  trxReconnect:$("trxReconnect"),
   utcClock:$("utcClock"), timingState:$("timingState"), modeSelect:$("modeSelect"),
   modemState:$("modemState"), js8:$("js8Interface"),
   spectrumSummary:$("spectrumSummary"), waterfall:$("waterfall"), canvas:$("waterfallCanvas"),
@@ -76,10 +77,13 @@ const dom = {
   tune:$("tuneButton"), tuneLabel:$("tuneLabel"), tuneOffset:$("tuneOffset"),
   sessionCall:$("sessionCall"), sessionMeta:$("sessionMeta"), abort:$("abortButton"),
   txSessionMode:$("txSessionMode"), txSessionModeHint:$("txSessionModeHint"),
+  txPayload:$("txPayload"),
   chatSession:$("chatSession"), emailSession:$("emailSession"), binSession:$("binSession"),
   chat:$("chatThread"), composer:$("composer"), message:$("messageInput"), send:$("sendButton"),
   messagePresetsButton:$("messagePresetsButton"), messagePresetsMenu:$("messagePresetsMenu"),
   traffic:$("traffic"), trafficSummary:$("trafficSummary"), stationRows:$("stationRows"),
+  trafficSection:document.querySelector('[data-section="traffic"]'),
+  stationsSection:document.querySelector('[data-section="stations"]'),
   stationHead:document.querySelector(".traffic-table thead"), reply:document.querySelector('[data-section="reply"]'),
   stationSummary:$("stationSummary"), myCall:$("myCall"), myGrid:$("myGrid"),
   followSpeed:$("followSpeed"), clockCorrection:$("clockCorrection"), autoTiming:$("autoTiming"),
@@ -95,7 +99,7 @@ const dom = {
 const loaded = Js8Settings.load(localStorage);
 let settings = loaded.settings;
 const state = {
-  radio:{connected:false, transceiverType:"", power:false, frequency:0, mode:"", tx:false, rfPower:0},
+  radio:{connected:false, lanStatus:"connecting", transceiverType:"", power:false, frequency:0, mode:"", tx:false, rfPower:0},
   activeMode:settings.activeModem, selectedCall:"", activity:emptyActivity(),
   activityFrequency:0, activitySessions:[],
   conversations:{}, audioStatus:"stopped", decoderStatus:"loading", txStatus:"idle",
@@ -106,6 +110,9 @@ const state = {
   txSessionMode:"CHAT", audioDb:-90, tuneActive:false, spectrumWasTransmitting:false,
   help:{incompatibleActive:false},
   lanConfig:{checked:false, ready:false, detail:""},
+  ownCallAttention:{call:"", messages:new Set(), stations:new Set()},
+  activeOutgoing:null, lastOutgoing:null,
+  settingsDraft:{myCall:null,grid:null}, reconnectPending:false,
 };
 let audioSource = null, activeDecoder = null, activeEncoder = null, txTick = null;
 let radioPollInFlight = false;
@@ -131,6 +138,19 @@ function speedDetail(mode) {
 }
 function callOf(message) { return (message.callsigns || []).find(call => call && !call.startsWith("@") && call !== currentJs8().myCall) || ""; }
 function currentJs8() { return settings.modems.js8call; }
+function sameCall(left,right) {
+  return Boolean(right) && String(left||"").toUpperCase()===String(right).toUpperCase();
+}
+function messageMentionsCall(message,call) {
+  return Boolean(call) && (message.callsigns||[]).some(value=>sameCall(value,call));
+}
+function ownCallText(text,call) {
+  const html=esc(text);
+  if(!call)return html;
+  const escaped=String(call).replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
+  return html.replace(new RegExp(`(^|[^A-Z0-9/])(${escaped})(?=$|[^A-Z0-9/])`,"gi"),
+    '$1<span class="own-callsign" data-own-call="true">$2</span>');
+}
 
 function activityMessageKey(item) {
   return `${item.firstSlotUtcMs || 0}|${item.lastSlotUtcMs || 0}|${item.submode}|${item.offsetHz}|${item.text}|${(item.raw || []).join("")}`;
@@ -364,12 +384,11 @@ function handleDecoderEvent(event) {
 function handleEncoderEvent(event) {
   if (event.type !== "tx") return;
   state.txState = event.state; state.txStatus = event.state.status;
+  updateOutgoingTxProgress(event.state);
   const running = !["idle","completed","aborted","fault"].includes(state.txStatus);
   state.tuneActive=running && Boolean(event.state.frames?.some(frame=>frame.role==="tune"));
   dom.abort.hidden = !running;
   if (!running && txTick) { clearInterval(txTick); txTick = null; }
-  if (state.txStatus === "completed" || state.txStatus === "aborted" || state.txStatus === "fault")
-    updateLastOutgoing(state.txStatus);
   renderControls();
 }
 
@@ -557,6 +576,10 @@ function renderHeader() {
   dom.linkState.textContent=starting ? (state.startup.failed ? "● LOAD ERROR" : "● LOADING")
     : connected ? (transmitting ? "● TX" : "● RX LIVE") : "● OFFLINE";
   dom.linkState.classList.toggle("error",state.startup.failed || (!starting && !connected));
+  const reconnectVisible=state.lanConfig.ready && !connected && state.radio.lanStatus==="disconnected";
+  dom.trxReconnect.hidden=!reconnectVisible;
+  dom.trxReconnect.disabled=state.reconnectPending;
+  dom.trxReconnect.textContent=state.reconnectPending ? "Connecting…" : "Reconnect";
   dom.operatorState.textContent=`${currentJs8().myCall} · ${currentJs8().grid}`;
   const tb=audioSource ? audioSource.state().timebase : null;
   dom.timingState.textContent=tb ? `${tb.clock.status} · ${signed(tb.correction.totalMs)} ms` : "clock unchecked";
@@ -598,7 +621,9 @@ function renderControls() {
   dom.recipient.value=state.selectedCall; dom.txSpeed.value=js8.speed;
   dom.txSpeedResolved.textContent=js8.speed==="AUTO" ? `→ ${speedDetail(mode)}` : `${MODE_PERIOD_SECONDS[mode]} s`;
   dom.txOffset.value=js8.txOffsetHz; dom.spectrumSummary.textContent=`RX ${RX_LOW}–${RX_HIGH} Hz · TX ${js8.txOffsetHz} Hz · ${speedDetail(mode)}`;
-  dom.myCall.value=js8.myCall; dom.myGrid.value=js8.grid; dom.followSpeed.checked=js8.followSpeed;
+  dom.myCall.value=state.settingsDraft.myCall===null?js8.myCall:state.settingsDraft.myCall;
+  dom.myGrid.value=state.settingsDraft.grid===null?js8.grid:state.settingsDraft.grid;
+  dom.followSpeed.checked=js8.followSpeed;
   dom.clockCorrection.value=js8.clockCorrectionMs; dom.autoTiming.checked=js8.autoTiming;
   dom.txGain.value=js8.txGain; dom.txSafety.checked=js8.txSafetyAccepted;
   dom.settingsSummary.textContent=`${js8.myCall} · ${js8.grid} · ${js8.speed}`;
@@ -626,7 +651,7 @@ function renderControls() {
   dom.txSummary.textContent=state.txState ? `${state.txState.status}${state.txState.frameCount ? ` · frame ${Math.min(state.txState.frameIndex+1,state.txState.frameCount)}/${state.txState.frameCount}` : ""}${state.txState.error ? ` · ${state.txState.error}` : ""}` : "Idle";
   dom.modemState.textContent=state.decoderStatus === "ready" ? "JS8Call ready · auto speed RX" : state.decoderStatus;
   dom.modemState.className=`modem-state ${state.decoderStatus === "ready" ? "available" : state.decoderStatus.includes("error") ? "error" : ""}`;
-  drawTxMarker(); renderHeader();
+  renderTxPayload(); drawTxMarker(); renderHeader();
 }
 
 function chooseCall(call) {
@@ -684,6 +709,20 @@ function renderStationSort() {
   });
 }
 
+function openSectionsForNewOwnCall(messages,calls) {
+  const own=currentJs8().myCall;
+  const previous=state.ownCallAttention;
+  const messageKeys=new Set(messages.filter(item=>messageMentionsCall(item,own)).map(activityMessageKey));
+  const stationKeys=new Set(calls.filter(item=>sameCall(item.call,own))
+    .map(item=>`${item.call}|${activityCallSignature(item)}`));
+  const sameOperator=previous.call===own;
+  if(messageKeys.size && (!sameOperator || [...messageKeys].some(key=>!previous.messages.has(key))))
+    dom.trafficSection.open=true;
+  if(stationKeys.size && (!sameOperator || [...stationKeys].some(key=>!previous.stations.has(key))))
+    dom.stationsSection.open=true;
+  state.ownCallAttention={call:own,messages:messageKeys,stations:stationKeys};
+}
+
 function renderActivity() {
   const messages=state.activity.messages || [], calls=state.activity.calls || [];
   dom.trafficSummary.textContent=`${messages.length} message${messages.length===1?"":"s"}`;
@@ -692,28 +731,57 @@ function renderActivity() {
   dom.traffic.innerHTML=recent.length ? recent.map(message => {
     const call=callOf(message), when=new Date(message.lastSlotUtcMs || message.firstSlotUtcMs || 0).toISOString().slice(11,19);
     const operational=Array.isArray(message.kinds) && !message.kinds.includes("data");
-    return `<article class="message${operational?" operational":""}"><span class="message-meta"><span>${when}</span><span>${MODE_TO_SPEED[message.submode]||"?"}</span><span>${Math.round(message.offsetHz)} Hz</span></span><strong data-call="${esc(call)}">${esc(call || "JS8")}</strong><span class="message-text">${esc(message.text)}</span></article>`;
+    const ownCall=sameCall(call,currentJs8().myCall);
+    return `<article class="message${operational?" operational":""}"><span class="message-meta"><span>${when}</span><span>${MODE_TO_SPEED[message.submode]||"?"}</span><span>${Math.round(message.offsetHz)} Hz</span></span><strong data-call="${esc(call)}"${ownCall?' class="own-callsign" data-own-call="true"':""}>${esc(call || "JS8")}</strong><span class="message-text">${ownCallText(message.text,currentJs8().myCall)}</span></article>`;
   }).join("") : '<div class="empty-row">Waiting for JS8 activity…</div>';
   dom.stationRows.innerHTML=sortedStations(calls).map(item=>{
     const direction=stationDirection(item);
     const directionHtml=direction ? `<span title="${esc(direction.source)} · ${direction.qrbKm} km · ${direction.azimuthDeg}°"><span class="station-bearing" style="transform:rotate(${direction.azimuthDeg}deg)">↑</span><span class="station-distance">${(direction.qrbKm/1000).toFixed(1)}</span></span>` : "—";
-    return `<tr data-call="${esc(item.call)}" class="${item.call===state.selectedCall?"selected":""}"><td class="call">${esc(item.call)}</td><td>${signed(item.snr)}</td><td>${Math.round(item.offsetHz)}</td><td>${speedDetail(item.submode)}</td><td class="station-direction">${directionHtml}</td><td>${age(item.lastSlotUtcMs)}</td></tr>`;
+    const ownCall=sameCall(item.call,currentJs8().myCall);
+    return `<tr data-call="${esc(item.call)}" class="${item.call===state.selectedCall?"selected":""}"><td class="call${ownCall?" own-callsign":""}"${ownCall?' data-own-call="true"':""}>${esc(item.call)}</td><td>${signed(item.snr)}</td><td>${Math.round(item.offsetHz)}</td><td>${speedDetail(item.submode)}</td><td class="station-direction">${directionHtml}</td><td>${age(item.lastSlotUtcMs)}</td></tr>`;
   }).join("");
+  openSectionsForNewOwnCall(recent,calls);
   renderStationSort();
   renderConversation();
 }
 
 function age(utcMs) { const seconds=Math.max(0,Math.round((Date.now()-Number(utcMs||0))/1000)); return seconds<60?`${seconds}s`:`${Math.floor(seconds/60)}m`; }
+function messageBelongsToConversation(message) {
+  const calls=message.callsigns||[];
+  if(!sameCall(calls[0],state.selectedCall))return false;
+  const directed=Array.isArray(message.kinds)&&message.kinds.includes("directed");
+  return !directed || !calls[1] || sameCall(calls[1],currentJs8().myCall);
+}
 function conversationItems() {
-  const received=(state.activity.messages||[]).filter(message=>(message.callsigns||[]).includes(state.selectedCall)).map(message=>({direction:"incoming",time:new Date(message.lastSlotUtcMs||0).toISOString().slice(11,19),text:message.text,status:"received"}));
+  const received=(state.activity.messages||[]).filter(messageBelongsToConversation).map(message=>({direction:"incoming",time:new Date(message.lastSlotUtcMs||0).toISOString().slice(11,19),text:message.text,status:"received"}));
   return [...received,...(state.conversations[state.selectedCall]||[])].sort((a,b)=>a.time.localeCompare(b.time));
+}
+function renderOutgoingText(item) {
+  const length=item.text.length;
+  const sent=Math.max(0,Math.min(length,Number(item.sentChars)||0));
+  const failed=["aborted","fault"].includes(item.status);
+  const active=!failed&&sent<length&&Number(item.activeFraction)>0;
+  const pendingStart=Math.min(length,sent+(active?1:0));
+  let html="";
+  if(sent>0)html+=`<span class="tx-copy tx-copy-sent">${esc(item.text.slice(0,sent))}</span>`;
+  if(active)html+=`<span class="tx-copy tx-copy-active" style="--tx-character-progress:${Math.round(item.activeFraction*100)}%">${esc(item.text.slice(sent,sent+1))}</span>`;
+  if(pendingStart<length)html+=`<span class="tx-copy ${failed?"tx-copy-failed":"tx-copy-pending"}">${esc(item.text.slice(pendingStart))}</span>`;
+  if(!html)html=`<span class="tx-copy ${failed?"tx-copy-failed":"tx-copy-pending"}">${esc(item.text)}</span>`;
+  if(item.status==="completed")html+='<span class="tx-eot" title="End of transmission">♢</span>';
+  return html;
+}
+function renderTxPayload() {
+  const item=state.lastOutgoing;
+  dom.txPayload.hidden=!item;
+  if(!item){dom.txPayload.textContent="";return;}
+  dom.txPayload.innerHTML=`<strong>LAST TX</strong><span class="tx-payload-copy">${renderOutgoingText(item)}</span><small>${esc(item.status)}</small>`;
 }
 function renderConversation() {
   dom.sessionCall.textContent=state.selectedCall || "No station selected";
   const station=state.activity.calls.find(item=>item.call===state.selectedCall);
   dom.sessionMeta.textContent=station ? `${signed(station.snr)} dB · ${Math.round(station.offsetHz)} Hz · speed ${speedDetail(station.submode)}` : "Choose a callsign from traffic or stations";
   const items=state.selectedCall ? conversationItems() : [];
-  dom.chat.innerHTML=items.length ? items.map(item=>`<div class="chat-row ${item.direction}"><article class="chat-bubble"><header><strong>${item.direction==="incoming"?esc(state.selectedCall):esc(currentJs8().myCall)}</strong><time>${esc(item.time)}</time></header><div>${esc(item.text)}</div><footer>${esc(item.status)}</footer></article></div>`).join("") : '<div class="chat-empty">No messages in this session.</div>';
+  dom.chat.innerHTML=items.length ? items.map(item=>`<div class="chat-row ${item.direction}"><article class="chat-bubble" data-message-status="${esc(item.status)}"><header><strong>${item.direction==="incoming"?esc(state.selectedCall):esc(currentJs8().myCall)}</strong><time>${esc(item.time)}</time></header><div class="chat-message">${item.direction==="outgoing"?renderOutgoingText(item):esc(item.text)}</div><footer>${esc(item.status)}</footer></article></div>`).join("") : '<div class="chat-empty">No messages in this session.</div>';
   dom.chat.scrollTop=dom.chat.scrollHeight;
 }
 
@@ -744,31 +812,53 @@ function driveEncoder(prepared, onError) {
   }).catch(onError);
 }
 
+function queueOutgoing(messageText, conversationCall="") {
+  const item={direction:"outgoing",time:new Date().toISOString().slice(11,19),
+    text:messageText,status:"queued",sentChars:0,activeFraction:0,txRenderKey:""};
+  if(conversationCall){
+    if(!state.conversations[conversationCall])state.conversations[conversationCall]=[];
+    state.conversations[conversationCall].push(item);
+  }
+  state.activeOutgoing=item;
+  state.lastOutgoing=item;
+  renderConversation();
+  renderTxPayload();
+  return item;
+}
+
+function failOutgoing(item,error) {
+  state.txStatus="fault";
+  dom.modemState.textContent=error.message;
+  dom.modemState.className="modem-state error";
+  item.status="fault";
+  item.activeFraction=0;
+  if(state.activeOutgoing===item)state.activeOutgoing=null;
+  renderControls();
+  renderConversation();
+}
+
 function startTx(text) {
   const js8=currentJs8();
   const cq=cqType(text);
   if(cq){
+    const preview=Js8Protocol.buildCqFrames({myCall:js8.myCall,grid:js8.grid,cq});
+    const item=queueOutgoing(preview[0].messageText);
     activeEncoder.setToneOffset(js8.txOffsetHz).configure({myCall:js8.myCall,toCall:"",mode:selectedMode(),clockCorrectionMs:js8.clockCorrectionMs});
-    driveEncoder(activeEncoder.encode("",{kind:"cq",cq,grid:js8.grid,toneHz:js8.txOffsetHz}),error=>{
-      state.txStatus="fault";dom.modemState.textContent=error.message;
-      dom.modemState.className="modem-state error";renderControls();
-    });
+    driveEncoder(activeEncoder.encode("",{kind:"cq",cq,grid:js8.grid,toneHz:js8.txOffsetHz}),error=>failOutgoing(item,error));
     return;
   }
   activeEncoder.setToneOffset(js8.txOffsetHz).configure({myCall:js8.myCall,toCall:state.selectedCall,mode:selectedMode(),clockCorrectionMs:js8.clockCorrectionMs});
-  const item={direction:"outgoing",time:new Date().toISOString().slice(11,19),text,status:"queued"};
-  if (!state.conversations[state.selectedCall]) state.conversations[state.selectedCall]=[];
-  state.conversations[state.selectedCall].push(item); renderConversation();
-  driveEncoder(activeEncoder.encode(text),error=>{state.txStatus="fault";dom.modemState.textContent=error.message;dom.modemState.className="modem-state error";item.status="fault";renderControls();renderConversation();});
+  const item=queueOutgoing(Js8Protocol.formatDirectedMessage({myCall:js8.myCall,
+    toCall:state.selectedCall,text}),state.selectedCall);
+  driveEncoder(activeEncoder.encode(text),error=>failOutgoing(item,error));
 }
 
 function startHeartbeat() {
   const js8=currentJs8(), tone=js8.txOffsetHz;
+  const preview=Js8Protocol.buildHeartbeatFrames({myCall:js8.myCall,grid:js8.grid});
+  const item=queueOutgoing(preview[0].messageText);
   activeEncoder.setToneOffset(tone).configure({myCall:js8.myCall,toCall:"",mode:selectedMode(),clockCorrectionMs:js8.clockCorrectionMs});
-  driveEncoder(activeEncoder.encode("",{kind:"heartbeat",grid:js8.grid,toneHz:tone}),error=>{
-    state.txStatus="fault"; dom.modemState.textContent=error.message;
-    dom.modemState.className="modem-state error"; renderControls();
-  });
+  driveEncoder(activeEncoder.encode("",{kind:"heartbeat",grid:js8.grid,toneHz:tone}),error=>failOutgoing(item,error));
 }
 
 function toggleTune() {
@@ -803,10 +893,30 @@ function insertMessagePreset(key) {
   dom.message.setSelectionRange(value.length,value.length);
 }
 
-function updateLastOutgoing(status) {
-  const list=state.conversations[state.selectedCall] || [];
-  const item=[...list].reverse().find(entry=>entry.direction==="outgoing" && ["queued","transmitting"].includes(entry.status));
-  if (item) item.status=status; renderConversation();
+function updateOutgoingTxProgress(txState) {
+  const item=state.activeOutgoing;
+  if(!item)return;
+  const frames=txState.frames||[];
+  let sent=Number(item.sentChars)||0;
+  for(let index=0;index<Math.min(txState.frameIndex,frames.length);index+=1)
+    sent=Math.max(sent,Number(frames[index].textEnd)||0);
+  let activeFraction=0;
+  const frame=frames[txState.frameIndex];
+  const frameStart=Number(frame?.textStart)||0,frameEnd=Number(frame?.textEnd)||frameStart;
+  if(frame&&frameEnd>frameStart&&txState.status==="transmitting"){
+    const exact=frameStart+(frameEnd-frameStart)*Math.max(0,Math.min(1,Number(txState.frameProgress)||0));
+    sent=Math.max(sent,Math.floor(exact));
+    activeFraction=exact-Math.floor(exact);
+  }else if(frame&&frameEnd>frameStart&&txState.status==="draining"){
+    sent=Math.max(sent,frameEnd);
+  }
+  if(txState.status==="completed")sent=item.text.length;
+  item.sentChars=Math.max(0,Math.min(item.text.length,sent));
+  item.activeFraction=["aborted","fault","completed"].includes(txState.status)?0:activeFraction;
+  item.status=txState.status;
+  const renderKey=`${item.status}|${item.sentChars}|${Math.round(item.activeFraction*20)}`;
+  if(renderKey!==item.txRenderKey){item.txRenderKey=renderKey;renderConversation();renderTxPayload();}
+  if(["aborted","fault","completed"].includes(txState.status))state.activeOutgoing=null;
 }
 
 async function pollRadio() {
@@ -821,6 +931,21 @@ async function pollRadio() {
     ensureAudio(); if(activityFrequencyChanged)renderActivity(); renderHeader(); renderControls();
   } catch (_error) { state.radio.connected=false; stopAudio(); renderHeader(); renderControls(); }
   finally { radioPollInFlight=false; }
+}
+
+async function reconnectRadio() {
+  if(state.reconnectPending)return;
+  state.reconnectPending=true; renderHeader();
+  try {
+    const response=await fetch("/lan/reconnect",{method:"POST"});
+    if(!response.ok)throw new Error(`Reconnect failed (HTTP ${response.status})`);
+    state.radio.lanStatus="connecting";
+  } catch(error) {
+    dom.modemState.textContent=error.message;
+    dom.modemState.className="modem-state error";
+  } finally {
+    state.reconnectPending=false; renderHeader();
+  }
 }
 
 async function checkLanConfiguration() {
@@ -866,6 +991,7 @@ function confirmJs8Leave(event) {
 function bind() {
   dom.modeSelect.addEventListener("change",()=>selectMode(dom.modeSelect.value));
   dom.trxHelpButton.addEventListener("click",()=>openTrxHelp("manual"));
+  dom.trxReconnect.addEventListener("click",reconnectRadio);
   dom.trxHelpDialog.addEventListener("click",event=>{if(event.target===dom.trxHelpDialog)dom.trxHelpDialog.close();});
   dom.trxFrequency.addEventListener("click",()=>{const open=dom.frequencyMenu.hidden;dom.frequencyMenu.hidden=!open;dom.trxFrequency.setAttribute("aria-expanded",String(open));});
   dom.frequencyMenu.addEventListener("click",event=>{const button=event.target.closest("[data-frequency]");if(button)requestFrequency(Number(button.dataset.frequency));});
@@ -888,14 +1014,16 @@ function bind() {
   dom.stationHead.addEventListener("click",event=>{const button=event.target.closest("[data-station-sort]");if(!button)return;const key=button.dataset.stationSort;if(state.stationSort.key===key)state.stationSort.direction=state.stationSort.direction==="asc"?"desc":"asc";else state.stationSort={key,direction:"asc"};renderActivity();});
   dom.txSpeed.addEventListener("change",()=>setJs8Setting("speed",dom.txSpeed.value));
   dom.txOffset.addEventListener("change",()=>setJs8Setting("txOffsetHz",Math.max(RX_LOW,Math.min(RX_HIGH,Number(dom.txOffset.value)||1500))));
-  dom.myCall.addEventListener("change",()=>setJs8Setting("myCall",dom.myCall.value.toUpperCase()));
-  dom.myGrid.addEventListener("change",()=>setJs8Setting("grid",dom.myGrid.value.toUpperCase()));
+  dom.myCall.addEventListener("input",()=>{state.settingsDraft.myCall=dom.myCall.value;});
+  dom.myGrid.addEventListener("input",()=>{state.settingsDraft.grid=dom.myGrid.value;});
+  dom.myCall.addEventListener("change",()=>{const value=dom.myCall.value.toUpperCase();state.settingsDraft.myCall=null;setJs8Setting("myCall",value);renderActivity();});
+  dom.myGrid.addEventListener("change",()=>{const value=dom.myGrid.value.toUpperCase();state.settingsDraft.grid=null;setJs8Setting("grid",value);});
   dom.followSpeed.addEventListener("change",()=>setJs8Setting("followSpeed",dom.followSpeed.checked));
   dom.clockCorrection.addEventListener("change",()=>setJs8Setting("clockCorrectionMs",Number(dom.clockCorrection.value)||0));
   dom.autoTiming.addEventListener("change",()=>setJs8Setting("autoTiming",dom.autoTiming.checked));
   dom.txGain.addEventListener("change",()=>setJs8Setting("txGain",Number(dom.txGain.value)||.55));
   dom.txSafety.addEventListener("change",()=>setJs8Setting("txSafetyAccepted",dom.txSafety.checked));
-  dom.resetSettings.addEventListener("click",()=>{const reset=Js8Settings.reset(localStorage);settings=reset.settings;state.activeMode=settings.activeModem;dom.storageState.textContent=reset.label;applySettingsToRuntime();renderControls();});
+  dom.resetSettings.addEventListener("click",()=>{const reset=Js8Settings.reset(localStorage);settings=reset.settings;state.settingsDraft={myCall:null,grid:null};state.activeMode=settings.activeModem;dom.storageState.textContent=reset.label;applySettingsToRuntime();renderActivity();renderControls();});
   dom.startupRetry.addEventListener("click",()=>location.reload());
   dom.heartbeat.addEventListener("click",()=>{if(!dom.heartbeat.disabled)startHeartbeat();});
   dom.tune.addEventListener("click",()=>{if(!dom.tune.disabled)toggleTune();});
@@ -925,6 +1053,7 @@ async function init() {
   if (TEST_MODE) self.__dataTest={
     setActivity(activity){state.testActivityLocked=true;applyDecoderActivity(activity);renderActivity();},
     setRadioFrequency(frequency){state.radio.frequency=Number(frequency)||0;if(selectActivityFrequency(state.radio.frequency))renderActivity();renderHeader();renderControls();},
+    setRadioConnection(connected,lanStatus=connected?"linked":"disconnected"){state.radio.connected=Boolean(connected);state.radio.lanStatus=lanStatus;renderHeader();renderControls();},
     activityCounts(){return {messages:state.activity.messages.length,calls:state.activity.calls.length};},
     setRadioMode(mode){state.radio.mode=mode;renderHeader();},
     setRadioTx(tx){state.radio.tx=Boolean(tx);renderHeader();},

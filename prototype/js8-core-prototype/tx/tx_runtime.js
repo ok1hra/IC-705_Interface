@@ -153,6 +153,7 @@
       this.mode = 0; this.toneHz = 1500; this.txId = 0; this.nextSlotUtcMs = null;
       this.prebufferStartUtcMs = null; this.endUtcMs = null;
       this.watchdogUtcMs = null; this.packets = []; this.packetIndex = 0;
+      this.currentUtcMs = null;
       this.immediate = false;
       this._audioEnded = false;
       this.error = ""; this.transitions = [];
@@ -170,6 +171,7 @@
         throw new Error("invalid TX mode or tone");
       this.frames = this.buildFrames(request);
       this.frameIndex = 0; this.mode = request.mode; this.toneHz = request.toneHz;
+      this.currentUtcMs = nowUtcMs;
       this.immediate = request.immediate === true || request.kind === "tune";
       this.activePrebufferMs = this.immediate ? Math.min(this.prebufferMs, 250)
                                                : this.prebufferMs;
@@ -190,6 +192,7 @@
       const modulationStartedMs = this.monotonicNow();
       const pcm = this.encoder(frame, this.mode, this.toneHz);
       const scheduledAtUtcMs = nowUtcMs + Math.max(0, this.monotonicNow() - modulationStartedMs);
+      this.currentUtcMs = scheduledAtUtcMs;
       this.txId = this.nextTxId++;
       this.packets = packetizeTxPcm48k(pcm, {streamId: this.streamId, txId: this.txId});
       this.packetIndex = 0;
@@ -220,6 +223,7 @@
     }
 
     tick(nowUtcMs = Date.now()) {
+      this.currentUtcMs = nowUtcMs;
       try {
         if (this.status === "waiting-slot" && nowUtcMs >= this.prebufferStartUtcMs) {
           this.sink.begin(this.txId);
@@ -275,6 +279,7 @@
     }
 
     abort(reason = "operator", nowUtcMs = Date.now()) {
+      this.currentUtcMs = nowUtcMs;
       if (!["idle", "completed", "aborted"].includes(this.status))
         this.sink.abort(this.txId, reason);
       this.packets = [];
@@ -287,6 +292,7 @@
     }
 
     fail(reason, nowUtcMs) {
+      this.currentUtcMs = nowUtcMs;
       this.error = reason;
       this.sink.abort(this.txId, reason);
       this.packets = [];
@@ -294,12 +300,16 @@
     }
 
     snapshot() {
+      const duration=Number(this.endUtcMs)-Number(this.nextSlotUtcMs);
+      const frameProgress=this.status==="draining" ? 1 : this.status==="transmitting"&&duration>0
+        ? Math.max(0,Math.min(1,(Number(this.currentUtcMs)-Number(this.nextSlotUtcMs))/duration)) : 0;
       return {status: this.status, mode: this.mode, toneHz: this.toneHz,
         frameIndex: this.frameIndex, frameCount: this.frames.length, txId: this.txId,
         nextSlotUtcMs: this.nextSlotUtcMs,
         prebufferStartUtcMs:this.prebufferStartUtcMs, endUtcMs: this.endUtcMs,
         watchdogUtcMs: this.watchdogUtcMs, packetCount: this.packets.length,
         packetIndex:this.packetIndex,
+        nowUtcMs:this.currentUtcMs, frameProgress,
         immediate:this.immediate,
         ptt: Boolean(this.sink.ptt), error: this.error,
         transitions: this.transitions.slice(), frames: this.frames.slice()};

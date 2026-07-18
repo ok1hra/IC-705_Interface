@@ -360,6 +360,9 @@ String  lanRadioIp = "";        // radio IP for LAN mode
 String  lanUser = "";           // ICOM network username
 String  lanPass = "";           // ICOM network password
 uint32_t lanFreqTmp = 0;        // last freq published to TrxNet (change detect)
+bool    lanReconnectRequested = false;
+uint32_t lanRetryAt = 0;
+uint32_t lanBackoff = 3000;
 WiFiUDP trxUdp;
 TrxNet  net(trxUdp);
 char    trxDeviceName[TRXNET_MAX_DEVICE_NAME];
@@ -547,6 +550,7 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   bool catWriteFrame(const uint8_t *frame, size_t frameLen, bool broadcastTx);
   void setModesText(const char *value);
   void copyModesText(char *dest, size_t destSize);
+  bool applyModeState(uint8_t modeId, bool dataMode);
   String extractJsonString(const String &json, const char *key);
   String extractJsonObject(const String &json, const char *key);
   bool extractJsonBool(const String &json, const char *key, bool defaultValue);
@@ -1506,14 +1510,19 @@ void buildStateJson(char *buf, size_t bufSize){
   char addrStr[5];
   snprintf(addrStr, sizeof(addrStr), "0x%02X", radio_address);
   bool radioLinked = lanMode ? lanClient.connected() : btClientConnected;
-  const char *btStat = lanMode ? (lanClient.connected() ? "LAN linked" : "LAN connecting") :
+  const char *lanStatus = !lanMode ? "disabled" :
+                          (lanClient.connected() ? "linked" :
+                          ((lanClient.status() == IcomLanClient::LAN_IDLE || lanClient.failed())
+                           ? "disconnected" : "connecting"));
+  const char *btStat = lanMode ? (lanClient.connected() ? "LAN linked" :
+                       (strcmp(lanStatus, "connecting") == 0 ? "LAN connecting" : "LAN disconnected")) :
                        (!btClientConnected ? "BT idle" :
                        (radio_address == 0x00 ? "BT linked | searching CI-V" : "BT linked"));
   const char *wifiStat = APmode ? "WiFi AP" :
                          (WiFiStationReady() ? "WiFi STA" : "WiFi down");
   int rssi = (APmode || !WiFiStationReady()) ? -999 : (int)WiFi.RSSI();
   snprintf(buf, bufSize,
-    "{\"connected\":%s,\"btStatus\":\"%s\",\"wifiStatus\":\"%s\","
+    "{\"connected\":%s,\"lanStatus\":\"%s\",\"btStatus\":\"%s\",\"wifiStatus\":\"%s\","
     "\"wifiRssi\":%d,\"fwRev\":\"%u\",\"bdSupported\":%s,\"power\":%s,"
     "\"frequency\":%u,\"mode\":\"%s\",\"filter\":%u,"
     "\"radioAddress\":\"%s\",\"transceiverType\":\"%s\",\"tx\":%s,\"ritRaw\":%u,"
@@ -1521,7 +1530,7 @@ void buildStateJson(char *buf, size_t bufSize){
     "\"afGain\":%u,\"keySpeed\":%u,\"rfPower\":%u,"
     "\"supplyVolts\":%.2f,\"swr\":%.2f,"
     "\"preamp\":%u,\"vox\":%u,\"dxcConnected\":%s}",
-    radioLinked ? "true" : "false", btStat, wifiStat,
+    radioLinked ? "true" : "false", lanStatus, btStat, wifiStat,
     rssi, (unsigned)REV, bdEnabled ? "true" : "false", statusPower ? "true" : "false",
     (unsigned)frequency, modesSnapshot, (unsigned)stateFilter,
     addrStr, transceiverType.c_str(), stateTx ? "true" : "false", (unsigned)stateRitRaw,
@@ -2309,6 +2318,16 @@ void setupWebServer(void){
   webServer.collectHeaders(requestHeaders, 1);
   webServer.on("/state", HTTP_GET, handleGetState);
   webServer.on("/cmd", HTTP_POST, handlePostCmd);
+  webServer.on("/lan/reconnect", HTTP_POST, [](){
+    webServer.sendHeader("Connection", "close");
+    webServer.client().setNoDelay(true);
+    if (!lanMode) {
+      webServer.send(409, "application/json", "{\"ok\":false,\"error\":\"lan_not_active\"}");
+      return;
+    }
+    lanReconnectRequested = true;
+    webServer.send(202, "application/json", "{\"ok\":true}");
+  });
   webServer.on("/config/download", HTTP_GET,  handleConfigDownload);
   webServer.on("/config/upload",   HTTP_POST, handleConfigUpload);
   webServer.on("/log-config", HTTP_GET,  handleGetLogConfig);
@@ -3197,8 +3216,19 @@ void Watchdog(){
 // TrxNet publish and band decoder work unchanged. Auto-reconnects on failure.
 void lanClientLoop(){
   if (!lanMode) return;
-  static uint32_t lanRetryAt = 0;
-  static uint32_t lanBackoff = 3000;
+  if (lanReconnectRequested) {
+    lanReconnectRequested = false;
+    lanClient.stop();
+    lanRetryAt = 0;
+    lanBackoff = 3000;
+    IPAddress rip;
+    if (rip.fromString(lanRadioIp) && lanUser.length() > 0 && lanPass.length() > 0) {
+      Serial.println("LAN | manual reconnect requested");
+      lanClient.begin(rip, 50001, lanUser.c_str(), lanPass.c_str(), configuredCivAddress);
+    } else {
+      Serial.println("LAN | manual reconnect skipped, configuration incomplete");
+    }
+  }
   lanClient.loop();
 
   if (lanClient.connected()) {
@@ -3612,6 +3642,15 @@ void processCivBuffer(uint8_t len) {
           if (len >= 8) stateFilter = read_buffer[6];
         }
         break;
+
+      // IC-705 selected-mode response: 26 00 <mode> <data> <filter>.
+      // Unlike legacy 04 it reports DATA mode, so JS8LAN can distinguish USB-D.
+      case 0x26:
+        if (len >= 10 && read_buffer[5] == 0x00) {
+          applyModeState(read_buffer[6], read_buffer[7] != 0);
+          stateFilter = read_buffer[8];
+        }
+        break;
     }
   }
 
@@ -3835,27 +3874,37 @@ void printFrequency(void){
 //     //read_buffer[6] -> 01 - Wide, 02 - Medium, 03 - Narrow
 //   #endif
 // }
+bool applyModeState(uint8_t modeId, bool dataMode){
+  const char *base = nullptr;
+  switch (modeId) {
+    case 0x00: base = "LSB"; break;
+    case 0x01: base = "USB"; break;
+    case 0x02: base = "AM"; break;
+    case 0x03: base = "CW"; break;
+    case 0x04: base = "RTTY"; break;
+    case 0x05: base = "FM"; break;
+    case 0x06: base = "WFM"; break;
+    case 0x07: base = "CW-R"; break;
+    case 0x08: base = "RTTY-R"; break;
+    case 0x17: base = "DV"; break;
+    default: setModesText("UNK"); return false;
+  }
+  char displayMode[sizeof(modes)];
+  snprintf(displayMode, sizeof(displayMode), dataMode ? "%s-D" : "%s", base);
+  setModesText(displayMode);
+  return true;
+}
+
 void printMode(void){
   #if defined(BLUETOOTH)
     uint8_t modeId = read_buffer[5];
-
-    switch (modeId) {
-      case 0x00: setModesText("LSB"); break;
-      case 0x01: setModesText("USB"); break;
-      case 0x02: setModesText("AM");  break;
-      case 0x03: setModesText("CW");  break;
-      case 0x04: setModesText("RTTY"); break;
-      case 0x05: setModesText("FM");  break;
-      case 0x06: setModesText("WFM"); break;
-      case 0x17: setModesText("DV");  break;
-      default:
-        setModesText("UNK");
-        if (Debug == true) {
-          Serial.print("CAT | invalid/unknown mode id: 0x");
-          if (modeId < 16) Serial.print("0");
-          Serial.println(modeId, HEX);
-        }
-        return;
+    if (!applyModeState(modeId, false)) {
+      if (Debug == true) {
+        Serial.print("CAT | invalid/unknown mode id: 0x");
+        if (modeId < 16) Serial.print("0");
+        Serial.println(modeId, HEX);
+      }
+      return;
     }
 
     if (Debug == true) {

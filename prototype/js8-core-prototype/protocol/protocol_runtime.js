@@ -20,6 +20,12 @@
     " FB", " HW CPY?", " SK", " RR", " QSL?", " QSL", " CMD", " SNR",
     " NO", " YES", " 73", " HEARTBEAT SNR", " AGN?", " "
   ];
+  const CHECKSUM_COMMANDS = new Set([5, 9, 10, 11, 12, 13, 24]);
+  const DIRECTED_COMMANDS = COMMANDS.map((command, index) =>
+    ({command, index, token:command.trim()}))
+    .filter(item => item.token && item.index !== 31 && !CHECKSUM_COMMANDS.has(item.index))
+    .sort((left, right) => right.token.length - left.token.length);
+  DIRECTED_COMMANDS.push({command:" SNR?", index:0, token:"?"});
   const SPECIAL_CALLS = [
     "<....>", "@ALLCALL", "@JS8NET", "@DX/NA", "@DX/SA", "@DX/EU",
     "@DX/AS", "@DX/AF", "@DX/OC", "@DX/AN", "@REGION/1", "@REGION/2",
@@ -269,7 +275,31 @@
 
   function formatSnr(value) {
     const clamped = Math.max(-60, Math.min(60, value));
-    return clamped >= 0 ? `+${clamped}` : String(clamped);
+    return clamped >= 0 ? `+${String(clamped).padStart(2,"0")}`
+      : `-${String(Math.abs(clamped)).padStart(2,"0")}`;
+  }
+
+  function parseDirectedCommand(input) {
+    const source = String(input).trim().toUpperCase();
+    for (const item of DIRECTED_COMMANDS) {
+      const token = item.token;
+      if (source !== token && !source.startsWith(`${token} `) &&
+          !(token === ">" && source.startsWith(">"))) continue;
+      let consumed = token.length;
+      let packedNumber = 0;
+      let suffix = "";
+      if (item.index === 25 || item.index === 29) {
+        const number = source.slice(consumed).match(/^\s+([+-]?\d{1,2})(?=\s|$)/);
+        if (number) {
+          const normalized = Math.max(-30, Math.min(31, Number(number[1])));
+          packedNumber = normalized + 31;
+          suffix = ` ${formatSnr(normalized)}`;
+          consumed += number[0].length;
+        }
+      }
+      return {...item, source, consumed, packedNumber, suffix};
+    }
+    return {source, consumed:0, index:31, command:" ", packedNumber:0, suffix:""};
   }
 
   function huffmanDecode(bits) {
@@ -304,26 +334,52 @@
     return {raw: pack72(value), consumed};
   }
 
-  function packDirectedHeader(fromCall, toCall) {
+  function packDirectedHeader(fromCall, toCall, command = 31, number = 0) {
     const from = packCallsign(fromCall);
     const to = packCallsign(toCall);
     if (!from || !to) throw new Error("reply requires two packable base callsigns");
     let value = BigInt(FRAME.DIRECTED);
     value = (value << 28n) | BigInt(from.value);
     value = (value << 28n) | BigInt(to.value);
-    value = (value << 5n) | 31n; // Directed free-text command.
-    const extra = (from.portable ? 0x80 : 0) | (to.portable ? 0x40 : 0);
+    value = (value << 5n) | BigInt(command & 31);
+    const extra = (from.portable ? 0x80 : 0) | (to.portable ? 0x40 : 0) |
+      (number & 0x3f);
     return pack72((value << 8n) | BigInt(extra));
   }
 
+  function directedMessageLayout({myCall, toCall, text}) {
+    const parsed = parseDirectedCommand(text);
+    const from = String(myCall).trim().toUpperCase();
+    const to = String(toCall).trim().toUpperCase();
+    if (parsed.consumed) {
+      const headerText = `${from}: ${to}${parsed.command}${parsed.suffix}`;
+      const remainder = parsed.source.slice(parsed.consumed);
+      return {...parsed, headerText, remainder, messageText:headerText + remainder};
+    }
+    const headerText = `${from}: ${to}${parsed.source ? " " : ""}`;
+    return {...parsed, headerText, remainder:parsed.source,
+            messageText:headerText + parsed.source};
+  }
+
+  function formatDirectedMessage(request) {
+    return directedMessageLayout(request).messageText;
+  }
+
   function buildReplyFrames({myCall, toCall, text}) {
-    const frames = [{raw: packDirectedHeader(myCall, toCall), frameType: 0,
-                     role: "directed"}];
-    let remaining = String(text).trim();
+    const layout = directedMessageLayout({myCall, toCall, text});
+    const frames = [{raw:packDirectedHeader(myCall, toCall, layout.index,
+                                            layout.packedNumber), frameType:0,
+      role:"directed", textStart:0, textEnd:layout.headerText.length,
+      messageText:layout.messageText}];
+    let remaining = layout.remainder;
+    let textStart = layout.headerText.length;
     while (remaining) {
       const packed = packHuffmanData(remaining);
-      frames.push({raw: packed.raw, frameType: 0, role: "data"});
+      const textEnd = textStart + packed.consumed;
+      frames.push({raw:packed.raw, frameType:0, role:"data", textStart, textEnd,
+                   messageText:layout.messageText});
       remaining = remaining.slice(packed.consumed);
+      textStart = textEnd;
     }
     frames[0].frameType |= 1;
     frames[frames.length - 1].frameType |= 2;
@@ -333,11 +389,15 @@
   function buildHeartbeatFrames({myCall, grid}) {
     const callsign = packAlphaNumeric50(myCall);
     if (callsign === 0n) throw new Error("heartbeat requires a valid callsign");
-    const number = packGrid(grid);
+    const normalizedGrid = String(grid).trim().toUpperCase();
+    const grid4 = /^[A-R]{2}[0-9]{2}/.test(normalizedGrid) ? normalizedGrid.slice(0,4) : "";
+    const number = packGrid(grid4);
     const packed11 = BigInt((number >> 5) & 0x7ff);
     const packed8 = BigInt((number & 0x1f) << 3); // bits3=0: HEARTBEAT, not CQ.
     const value = (((BigInt(FRAME.HEARTBEAT) << 50n) | callsign) << 11n) | packed11;
-    return [{raw:pack72((value << 8n) | packed8), frameType:3, role:"heartbeat"}];
+    const messageText = `${String(myCall).trim().toUpperCase()}: @HB HEARTBEAT${grid4 ? ` ${grid4}` : ""}`;
+    return [{raw:pack72((value << 8n) | packed8), frameType:3, role:"heartbeat",
+             textStart:0, textEnd:messageText.length, messageText}];
   }
 
   function buildCqFrames({myCall, grid, cq = "CQ CQ CQ"}) {
@@ -345,11 +405,15 @@
     if (callsign === 0n) throw new Error("CQ requires a valid callsign");
     const cqIndex = CQ.indexOf(String(cq).trim().toUpperCase());
     if (cqIndex < 0) throw new Error("unsupported CQ type");
-    const number = packGrid(grid) | 0x8000;
+    const normalizedGrid = String(grid).trim().toUpperCase();
+    const grid4 = /^[A-R]{2}[0-9]{2}/.test(normalizedGrid) ? normalizedGrid.slice(0,4) : "";
+    const number = packGrid(grid4) | 0x8000;
     const packed11 = BigInt((number >> 5) & 0x7ff);
     const packed8 = BigInt(((number & 0x1f) << 3) | cqIndex);
     const value = (((BigInt(FRAME.HEARTBEAT) << 50n) | callsign) << 11n) | packed11;
-    return [{raw:pack72((value << 8n) | packed8), frameType:3, role:"cq"}];
+    const messageText = `${String(myCall).trim().toUpperCase()}: @ALLCALL ${CQ[cqIndex]}${grid4 ? ` ${grid4}` : ""}`;
+    return [{raw:pack72((value << 8n) | packed8), frameType:3, role:"cq",
+             textStart:0, textEnd:messageText.length, messageText}];
   }
 
   function buildTxFrames(request) {
@@ -510,6 +574,7 @@
   }
 
   return {ActivityStore, FRAME, JscDictionary, buildCqFrames, buildHeartbeatFrames, buildReplyFrames,
+          formatDirectedMessage,
           buildTxFrames, decodeFrame,
           pack72, unpack72};
 });
