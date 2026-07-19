@@ -20,20 +20,30 @@ public:
   }
   int endPacket() { return 1; }
 
-  int parsePacket() { return packets.empty() ? 0 : static_cast<int>(packets.front().size()); }
+  int parsePacket() {
+    if (packets.empty()) return 0;
+    remote_ = packets.front().from;
+    return static_cast<int>(packets.front().data.size());
+  }
   int read(uint8_t* destination, size_t capacity) {
     if (packets.empty()) return 0;
-    const std::vector<uint8_t> packet = packets.front();
+    const std::vector<uint8_t> packet = packets.front().data;
     packets.pop_front();
     const size_t length = std::min(capacity, packet.size());
     std::copy(packet.begin(), packet.begin() + length, destination);
     return static_cast<int>(length);
   }
+  IPAddress remoteIP() const { return remote_; }
 
-  void receive(const std::vector<uint8_t>& packet) { packets.push_back(packet); }
+  // Source defaults to 0.0.0.0, which matches a default-constructed radioIP, so
+  // tests that never call begin() are unaffected by the sender-identity guard.
+  void receive(const std::vector<uint8_t>& packet) { receive(IPAddress(0), packet); }
+  void receive(IPAddress from, const std::vector<uint8_t>& packet) { packets.push_back({from, packet}); }
   size_t writeCalls = 0;
   std::vector<std::vector<uint8_t>> writes;
 
 private:
-  std::deque<std::vector<uint8_t>> packets;
+  struct Datagram { IPAddress from; std::vector<uint8_t> data; };
+  std::deque<Datagram> packets;
+  IPAddress remote_{0};
 };

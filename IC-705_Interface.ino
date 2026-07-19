@@ -1525,8 +1525,13 @@ void buildStateJson(char *buf, size_t bufSize){
   const char *wifiStat = APmode ? "WiFi AP" :
                          (WiFiStationReady() ? "WiFi STA" : "WiFi down");
   int rssi = (APmode || !WiFiStationReady()) ? -999 : (int)WiFi.RSSI();
+  // Finer LAN health than a single "connected": CAT stream actually delivering,
+  // and audio sub-stream carrying fresh payload. Both false in BT mode.
+  bool lanCatHealthy = lanMode && lanClient.catHealthy();
+  bool lanAudioReady = lanMode && lanClient.audioReady();
   snprintf(buf, bufSize,
-    "{\"connected\":%s,\"lanStatus\":\"%s\",\"btStatus\":\"%s\",\"wifiStatus\":\"%s\","
+    "{\"connected\":%s,\"catHealthy\":%s,\"audioReady\":%s,"
+    "\"lanStatus\":\"%s\",\"btStatus\":\"%s\",\"wifiStatus\":\"%s\","
     "\"wifiRssi\":%d,\"fwRev\":\"%u\",\"bdSupported\":%s,\"power\":%s,"
     "\"frequency\":%u,\"mode\":\"%s\",\"filter\":%u,"
     "\"radioAddress\":\"%s\",\"transceiverType\":\"%s\",\"tx\":%s,\"ritRaw\":%u,"
@@ -1534,7 +1539,8 @@ void buildStateJson(char *buf, size_t bufSize){
     "\"afGain\":%u,\"keySpeed\":%u,\"rfPower\":%u,"
     "\"supplyVolts\":%.2f,\"swr\":%.2f,"
     "\"preamp\":%u,\"vox\":%u,\"dxcConnected\":%s}",
-    radioLinked ? "true" : "false", lanStatus, btStat, wifiStat,
+    radioLinked ? "true" : "false", lanCatHealthy ? "true" : "false",
+    lanAudioReady ? "true" : "false", lanStatus, btStat, wifiStat,
     rssi, (unsigned)REV, bdEnabled ? "true" : "false", statusPower ? "true" : "false",
     (unsigned)frequency, modesSnapshot, (unsigned)stateFilter,
     addrStr, transceiverType.c_str(), stateTx ? "true" : "false", (unsigned)stateRitRaw,
@@ -1549,7 +1555,7 @@ void buildStateJson(char *buf, size_t bufSize){
 void handleGetState(){
   // CAT page polls /state?fast=1 — hold the fast BT poll cadence while it's open
   if (webServer.arg("fast") == "1") catFastUntil = millis() + CAT_FAST_HOLD_MS;
-  static char stateBuf[640];
+  static char stateBuf[720];
   buildStateJson(stateBuf, sizeof(stateBuf));
   webServer.sendHeader("Cache-Control", "no-cache");
   webServer.sendHeader("Connection", "close");

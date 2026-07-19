@@ -109,7 +109,9 @@ static void idleHealthy(IcomLanClient& client, uint32_t ms) {
   while (testMillis < target) {
     uint32_t remaining = target - testMillis;
     testMillis += remaining < 100 ? remaining : 100;
-    client.ctrlUdp.receive(controlPingReply());
+    // Source the keepalive from the configured radio so the sender-identity
+    // guard accepts it (radioIP defaults to 0, matching packets injected as 0).
+    client.ctrlUdp.receive(client.radioIP, controlPingReply());
     client.loop();
     if (client.failed()) return;
   }
@@ -593,6 +595,65 @@ int main() {
     client.loop();
     if (!client.failed()) {
       std::fprintf(stderr, "generic login error progressed into authentication\n");
+      ok = false;
+    }
+  }
+
+  {
+    // Sender identity: only datagrams from the configured radio IP drive session
+    // health. A foreign packet on our control port must be ignored, a genuine one
+    // accepted.
+    IcomLanClient client;
+    client.state = IcomLanClient::LAN_CONNECTED;
+    client.radioIP = IPAddress(0x0102030Au);
+    client.stateSince = testMillis;
+    client.lastCtrlRxMs = testMillis;
+    client.lastCivDataMs = testMillis;
+
+    uint32_t healthy = testMillis;
+    testMillis += 100;
+    client.ctrlUdp.receive(IPAddress(0x0BADCAFEu), controlPingReply());  // foreign
+    client.loop();
+    if (client.lastCtrlRxMs != healthy) {
+      std::fprintf(stderr, "foreign control packet refreshed session health\n");
+      ok = false;
+    }
+    testMillis += 100;
+    client.ctrlUdp.receive(IPAddress(0x0102030Au), controlPingReply());  // radio
+    client.loop();
+    if (client.lastCtrlRxMs != testMillis) {
+      std::fprintf(stderr, "control packet from the radio was rejected\n");
+      ok = false;
+    }
+  }
+
+  {
+    // Audio sub-stream no-data recovery: linked but the radio streams no payload
+    // -> reopen the sub-stream in place (handshake restarts, control untouched).
+    IcomLanClient client;
+    client.state = IcomLanClient::LAN_CONNECTED;
+    client.radioIP = IPAddress(0x0102030Au);
+    client.audioPort = 50003;
+    client.audioOpened = true;
+    client.audioGotHere = true;
+    client.audioRemoteId = 0x1234;
+    client.stateSince = testMillis;
+    client.lastCtrlRxMs = testMillis;
+    client.audioLastDataMs = testMillis;
+    client.audioUdp.writeCalls = 0;
+
+    idleHealthy(client, 6000);   // > LAN_AUDIO_NODATA_MS with no audio payload
+
+    if (client.failed()) {
+      std::fprintf(stderr, "audio no-data recovery dropped the whole session\n");
+      ok = false;
+    }
+    if (client.audioGotHere) {
+      std::fprintf(stderr, "audio no-data did not reopen the sub-stream\n");
+      ok = false;
+    }
+    if (client.audioUdp.writeCalls == 0) {
+      std::fprintf(stderr, "audio reopen sent no disconnect/handshake traffic\n");
       ok = false;
     }
   }

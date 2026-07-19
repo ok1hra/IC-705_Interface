@@ -140,17 +140,19 @@ víc částí aplikace než jen CAT parser.
 3. **Control Ready se po ztrátě neopakuje.** CI-V handshake je po auditu odolný,
    control handshake zatím spoléhá na jediný AreYouReady paket.
 
-4. **Jeden stav `CONNECTED` má příliš mnoho významů.** Další refaktor má oddělit
-   `sessionConnected`, `catHealthy` a `audioReady`; jinak změna CAT health dál
-   ovlivňuje PWR a audio lifecycle.
+4. **Jeden stav `CONNECTED` má příliš mnoho významů.** ✅ VYŘEŠENO (viz doplněk
+   níže). PWR/TX už korektně sledovaly `state==CONNECTED` a CI-V recovery `state`
+   neměnila; doplněny accessory `catHealthy()` / `audioReady()` a vystaveny v
+   `/state`, takže UI hlásí CAT/audio zvlášť místo přetíženého `connected`.
 
-5. **Audio podkanál nemá vlastní no-data recovery.** Pokud zůstane UDP audio
-   socket otevřený, ale rádio neposílá payload, UI už správně ukazuje `RX WAIT`,
-   avšak firmware audio kanál sám nezavře a znovu neotevře.
+5. **Audio podkanál nemá vlastní no-data recovery.** ✅ VYŘEŠENO. Audio má nyní
+   `audioLastDataMs` watchdog; při >`LAN_AUDIO_NODATA_MS` (5 s) bez payloadu
+   `reopenAudio()` zopakuje handshake podkanálu bez dotčení control/CI-V session.
 
-6. **Control health neověřuje identitu odesílatele.** Oddělení control/CAT/audio
-   odstranilo aktuální falešnou živost, ale `pumpControl()` zatím považuje každý
-   dostatečně dlouhý paket na lokálním control portu za aktivitu session.
+6. **Control health neověřuje identitu odesílatele.** ✅ VYŘEŠENO. `fromRadio()`
+   guard v `pumpControl()`/`pumpCiv()`/`pumpAudio()` zahodí datagram, jehož zdroj
+   není nakonfigurovaná `radioIP` — cizí/spoofnutý provoz už neobnoví session
+   health ani neinjektuje CAT/audio.
 
 7. **Příčina fyzického zmizení WLAN ikony není z dodaného logu prokázaná.**
    Nové rozlišené konce (`radio disconnected session`, `token auth rejected`,
@@ -217,6 +219,29 @@ Zbývá: cleanup sendy v `stop()` (~4 blokující sendy na mrtvé lince) zůstá
 neohraničené — sémanticky důležité pro uvolnění session rádia; sledovat v příštím
 logu, jestli po tomto fixu ještě zbývá vícesekundový `stop()` blok.
 
+## Doplněk 2026-07-19: identita, audio recovery, split CONNECTED (#6/#5/#4)
+
+Druhý ~2h test potvrdil kompenzaci i rate limit a self-heal reconnect. Následně
+uzavřeny tři audit body:
+
+- **#6 identita odesílatele.** `fromRadio(u)` = `u.remoteIP() == radioIP`. Přidán
+  do všech tří receive smyček; cizí datagram na lokálním portu se odčerpá a
+  ignoruje (neobnoví `lastCtrlRxMs`, nedostane se do handlerů).
+- **#5 audio no-data recovery.** `audioLastDataMs` se stampuje při open, IAmHere
+  a každém audio payloadu, a je zahrnut do stall-kompenzace (loop stall netriggeruje
+  reopen). Při >5 s bez payloadu `reopenAudio()` = disconnect + `openAudioChannel()`.
+- **#4 split CONNECTED.** Chování bylo správné (PWR/TX = session), přidány jen
+  accessory `catHealthy()` (`CONNECTED && civGotData && !civRecovering`) a
+  `audioReady()` (linked + čerstvý payload) a vystaveny v `/state` jako
+  `catHealthy`/`audioReady`. `/state` buffer zvětšen na 720 B.
+
+**#5 missed TX slot (page-load) — vědomě neopraveno.** `aud1TxTargetMs` je
+wall-clock deadline JS8 slotu; prodloužení grace (dnes 100 ms) by klíčovalo pozdě
+a poškodilo časování JS8. Prázdný prebuffer na page-loadu je symptom hladovění
+smyčky (browser načítá wasm, WS RX se nestíhá vyprázdnit) a sám se opraví na dalším
+cyklu. Patří do overload větve (audio na jádro 0 / neblokující WS send), ne do
+riskantní úpravy TX. Abort+retry je zde korektní chování.
+
 ## Regresní pokrytí
 
 `prototype/js8-core-prototype/firmware/icom_lan_client_health_smoke.cpp` ověřuje:
@@ -243,4 +268,7 @@ logu, jestli po tomto fixu ještě zbývá vícesekundový `stop()` blok.
   nezhodnotí jako ticho linky — netriggeruje CAT reopen ani drop session;
 - retransmit range unroll odbaví plný duplikovaný rozsah (16), když je budget k dispozici;
 - retransmit rate limit odbaví max `LAN_RETRANSMIT_BUDGET` sekvencí za iteraci a
-  zbytek odloží (deferred), takže storm nezmrazí smyčku.
+  zbytek odloží (deferred), takže storm nezmrazí smyčku;
+- cizí control paket (jiná zdrojová IP než `radioIP`) neobnoví session health,
+  paket od rádia ano;
+- audio podkanál bez payloadu >`LAN_AUDIO_NODATA_MS` se reopenne, aniž shodí session.

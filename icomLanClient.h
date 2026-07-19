@@ -77,9 +77,19 @@ public:
     lastServiceMs = 0;
   }
 
+  // connected() = authenticated session is up. It deliberately stays true while
+  // a CI-V sub-stream recovers or audio is quiet, so PWR and TX (which own the
+  // radio) do not flap on sub-stream hiccups. The two finer signals below let
+  // the UI report CAT/audio health separately instead of overloading this one.
   bool connected() const { return state == LAN_CONNECTED; }
   bool failed() const    { return state == LAN_FAILED; }
   State status() const   { return state; }
+  // CI-V stream is actually delivering data and not mid-recovery.
+  bool catHealthy() const { return state == LAN_CONNECTED && civGotData && !civRecovering; }
+  // Audio sub-stream linked and delivering fresh payload (firmware-side RX-live).
+  bool audioReady() const {
+    return audioOpened && audioGotHere && (millis() - audioLastDataMs) < LAN_AUDIO_NODATA_MS;
+  }
 
   // Send a CI-V command body (cmd + payload, WITHOUT the FE FE <to><from> .. FD
   // wrapper — sendCiv adds it with the LAN controller address 0xE1). Used by
@@ -154,6 +164,7 @@ public:
         forgiveClock(stateSince, now, forgive);
         if (civHealthProbePending) forgiveClock(civHealthProbeSentMs, now, forgive);
         if (civRecovering)         forgiveClock(civRecoveryStartedMs, now, forgive);
+        if (audioOpened)           forgiveClock(audioLastDataMs, now, forgive);
         if (gap >= LAN_STALL_LOG_MS) {
           Serial.print("LAN | loop stall "); Serial.print(gap);
           Serial.println("ms, health timers forgiven");
@@ -287,6 +298,9 @@ public:
       } else {
         if (now - audioLastPing >= 500) { sendPing(audioUdp, audioMyId, audioRemoteId, audioPingSeq++); audioLastPing = now; }
         if (now - audioLastIdle >= 100) { sendTracked(audioUdp, audioPkt0(0x00), 0x10); audioLastIdle = now; }
+        // Sub-stream wedged (linked but no payload): recover it in place. The
+        // stall credit above keeps a mere loop stall from tripping this.
+        if (now - audioLastDataMs > LAN_AUDIO_NODATA_MS) reopenAudio();
       }
     }
 
@@ -351,10 +365,15 @@ private:
   static const uint8_t  AUDIO_TX_CODEC   = 0x01;    // uLaw 8-bit 1ch (M3 TX)
   static const uint32_t AUDIO_TX_SAMPLE  = 8000;    // Hz
   static const uint16_t AUDIO_LOCAL_PORT = 50003;
+  // Once the audio sub-stream handshake completes the radio streams uLaw
+  // continuously (~6 packets/s of AF, even on a quiet channel), so a multi-second
+  // payload gap means the sub-stream wedged while control/CI-V stayed healthy.
+  static const uint32_t LAN_AUDIO_NODATA_MS = 5000;
   bool audioOpened = false, audioGotHere = false;
   uint32_t audioMyId = 0, audioRemoteId = 0;
   uint16_t audioSendSeq = 1, audioPingSeq = 0, audioTxSeq = 0;
   uint32_t audioHereTime = 0, audioLastPing = 0, audioLastIdle = 0, audioLastAyt = 0;
+  uint32_t audioLastDataMs = 0;
 
   State state = LAN_IDLE;
   uint32_t stateSince = 0, lastAyt = 0, lastPing = 0, lastIdle = 0, lastReauth = 0;
@@ -673,11 +692,16 @@ private:
   }
 
   // ---- receive ----
+  // Only the configured radio may drive session state. A datagram that lands on
+  // one of our local ports from any other source is drained and ignored, so
+  // stray or spoofed traffic cannot refresh session health or inject CAT/audio.
+  bool fromRadio(WiFiUDP& u) { return u.remoteIP() == radioIP; }
+
   void pumpControl() {
     int n;
     while ((n = ctrlUdp.parsePacket()) > 0) {
       int r = ctrlUdp.read(buf, sizeof(buf));
-      if (r < 0x10) continue;
+      if (r < 0x10 || !fromRadio(ctrlUdp)) continue;
       lastCtrlRxMs = millis();      // authenticated session health is control-channel health
       handleControl(buf, r);
     }
@@ -686,7 +710,7 @@ private:
     int n;
     while ((n = civUdp.parsePacket()) > 0) {
       int r = civUdp.read(buf, sizeof(buf));
-      if (r < 0x10) continue;
+      if (r < 0x10 || !fromRadio(civUdp)) continue;
       handleCiv(buf, r);
     }
   }
@@ -808,15 +832,25 @@ private:
     audioGotHere = false;
     audioSendSeq = 1; audioPingSeq = 0; audioTxSeq = 0;
     audioHereTime = 0; audioLastPing = audioLastIdle = audioLastAyt = 0;
+    audioLastDataMs = millis();   // start the no-data watchdog from channel open
     audioOpened = true;
     Serial.print("LAN | audio channel open, remote port="); Serial.println(audioPort);
+  }
+
+  // Recover a wedged audio sub-stream in place: release the old one and repeat
+  // the handshake, without disturbing the authenticated control/CI-V session.
+  void reopenAudio() {
+    Serial.println("LAN | audio no data, reopening sub-stream");
+    sendCtrl(audioUdp, audioMyId, audioRemoteId, 0x05, 0);  // disconnect old
+    audioUdp.stop();
+    openAudioChannel();
   }
 
   void pumpAudio() {
     int n;
     while ((n = audioUdp.parsePacket()) > 0) {
       int r = audioUdp.read(buf, sizeof(buf));
-      if (r < 0x10) continue;
+      if (r < 0x10 || !fromRadio(audioUdp)) continue;
       handleAudio(buf, r);
     }
   }
@@ -830,6 +864,7 @@ private:
     if (n == 0x10) {
       if (type == 0x04 && !audioGotHere) {                       // IAmHere
         audioGotHere = true; audioRemoteId = getLE32(r+8); audioHereTime = millis();
+        audioLastDataMs = millis();   // restart the no-data window once linked
         sendCtrl(audioUdp, audioMyId, audioRemoteId, 0x06, 1);   // AreYouReady
         Serial.println("LAN | audio: I am here");
       } else if (type == 0x06) {                                 // Ready (rare)
@@ -841,6 +876,7 @@ private:
     // icomudpaudio.cpp: type != 0x01 && len >= 0x20, data = r.mid(0x18)).
     uint32_t plen = getLE32(r+0);
     if (type != 0x01 && plen >= 0x20 && n > 0x18) {
+      audioLastDataMs = millis();
       lanAudioHandler(r + 0x18, (size_t)(n - 0x18), getBE16(r + 0x12));
     }
   }
