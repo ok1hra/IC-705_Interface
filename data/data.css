@@ -410,6 +410,11 @@ button { color: inherit; cursor: pointer; }
 .settings-storage a { color:var(--cyan); }
 .compact-diagnostics { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 14px; padding: 10px; color: var(--muted); }
 .compact-diagnostics code { color: var(--text); white-space: normal; }
+.traffic-filter { display:flex; flex-wrap:wrap; gap:5px; padding:7px 10px; border-bottom:1px solid #1d322e; }
+.traffic-filter button { padding:3px 8px; border:1px solid var(--line); border-radius:999px; color:var(--muted); background:transparent; font-size:11px; line-height:1.4; cursor:pointer; }
+.traffic-filter button:hover:not(:disabled) { color:var(--text); border-color:#3d675e; }
+.traffic-filter button.active { color:var(--cyan); border-color:var(--cyan); background:#123029; }
+.traffic-filter button:disabled { opacity:.4; cursor:not-allowed; }
 .empty-row { padding:18px; color:var(--muted); text-align:center; }
 .table-scroll { overflow-x:auto; }
 .modem-state.error, .live.error { color:var(--red); }

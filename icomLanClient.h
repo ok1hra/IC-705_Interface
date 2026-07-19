@@ -59,6 +59,7 @@ public:
     state = LAN_AYT;
     stateSince = millis();
     lastCtrlRxMs = millis();
+    lastServiceMs = 0;   // no baseline until the first serviced loop() of this session
     lastAyt = 0; lastPing = 0; lastIdle = 0;
     Serial.print("LAN | begin -> "); Serial.print(radioIP);
     Serial.print(":"); Serial.println(ctrlPort);
@@ -73,6 +74,7 @@ public:
     civUdp.stop();
     ctrlUdp.stop();
     state = LAN_IDLE;
+    lastServiceMs = 0;
   }
 
   bool connected() const { return state == LAN_CONNECTED; }
@@ -130,10 +132,50 @@ public:
     if (state == LAN_IDLE || state == LAN_FAILED) return;
     uint32_t now = millis();
 
+    // Loop-stall compensation, applied before any health check runs. Health
+    // decisions below measure RX silence in wall-clock, but this client is
+    // serviced cooperatively — a single unserviced gap of 1-4 s is normal under
+    // page-load/audio load and is NOT link silence (the socket simply was not
+    // read). Credit each tick with at most LAN_STALL_CREDIT_MS of observed
+    // silence and forgive the excess: a transient multi-second stall therefore
+    // advances the health windows by only ~one credit, so it cannot false-fire
+    // civSilent (false CAT reopen) or the 6 s control-loss drop. Sustained
+    // slowness still credits a full LAN_STALL_CREDIT_MS every tick, so a
+    // genuinely dead link keeps accruing silence and is always eventually caught
+    // — the compensation delays honest failure, it never masks it. Real RX that
+    // arrives during the gap refreshes these clocks in the pumps below (which
+    // run after this), so a live link is unaffected.
+    if (lastServiceMs) {
+      uint32_t gap = now - lastServiceMs;
+      if (gap > LAN_STALL_CREDIT_MS) {
+        uint32_t forgive = gap - LAN_STALL_CREDIT_MS;
+        forgiveClock(lastCtrlRxMs, now, forgive);
+        forgiveClock(lastCivDataMs, now, forgive);
+        forgiveClock(stateSince, now, forgive);
+        if (civHealthProbePending) forgiveClock(civHealthProbeSentMs, now, forgive);
+        if (civRecovering)         forgiveClock(civRecoveryStartedMs, now, forgive);
+        if (gap >= LAN_STALL_LOG_MS) {
+          Serial.print("LAN | loop stall "); Serial.print(gap);
+          Serial.println("ms, health timers forgiven");
+        }
+      }
+    }
+    lastServiceMs = now;
+
+    retransmitBudget = LAN_RETRANSMIT_BUDGET;
+    rtxResent = rtxFilled = rtxDeferred = 0;
+
     pumpControl();
     if (state == LAN_FAILED) return;
     if (civPort) pumpCiv();
     if (audioOpened) pumpAudio();
+
+    if (rtxResent || rtxFilled || rtxDeferred) {
+      Serial.print("LAN | retransmit resent="); Serial.print(rtxResent);
+      Serial.print(" filled="); Serial.print(rtxFilled);
+      if (rtxDeferred) { Serial.print(" deferred="); Serial.print(rtxDeferred); }
+      Serial.println();
+    }
 
     // control-channel periodic sends
     if (state == LAN_AYT) {
@@ -317,6 +359,24 @@ private:
   State state = LAN_IDLE;
   uint32_t stateSince = 0, lastAyt = 0, lastPing = 0, lastIdle = 0, lastReauth = 0;
 
+  // Loop-stall compensation. This client is serviced cooperatively from the
+  // Arduino loop and from long HTTP/audio-WS sends; a single unserviced gap of
+  // 1-4 s is normal under page-load/audio load. RX "silence" measured across
+  // such a gap is not evidence of a dead link (the socket simply was not read),
+  // so health timers must not count it. lastServiceMs is the millis() of the
+  // previous loop() body; 0 means "no baseline yet" (fresh session).
+  uint32_t lastServiceMs = 0;
+  static const uint32_t LAN_STALL_CREDIT_MS = 300;   // max silence credited per tick; excess forgiven
+  static const uint32_t LAN_STALL_LOG_MS    = 800;   // only log substantial stalls
+
+  // Retransmit rate limit. Each reply is a blocking UDP send; cap how many run
+  // per loop() iteration so a storm (or the stale full-history request after a
+  // reconnect) cannot monopolise the cooperative loop. Counters summarise the
+  // iteration instead of one Serial line per sequence.
+  static const int LAN_RETRANSMIT_BUDGET = 16;
+  int retransmitBudget = 0;
+  uint16_t rtxResent = 0, rtxFilled = 0, rtxDeferred = 0;
+
   uint8_t buf[1500];
 
   // Match the protocol's roughly ten-second replay horizon. Eight/sixteen
@@ -405,12 +465,8 @@ private:
     const uint8_t* packet = nullptr;
     if (&u == &ctrlUdp) packet = ctrlTxHistory.find(sequence, len);
     else if (&u == &civUdp) packet = civTxHistory.find(sequence, len);
-    if (!packet || len == 0) {
-      Serial.print("LAN | retransmit miss seq=0x"); Serial.println(sequence, HEX);
-      return false;
-    }
+    if (!packet || len == 0) return false;
     u.beginPacket(radioIP, currentRemote(u)); u.write(packet, len); u.endPacket();
-    Serial.print("LAN | retransmit seq=0x"); Serial.println(sequence, HEX);
     return true;
   }
 
@@ -418,14 +474,25 @@ private:
     uint32_t myId = (&u == &ctrlUdp) ? ctrlMyId : civMyId;
     uint32_t remoteId = (&u == &ctrlUdp) ? ctrlRemoteId : civRemoteId;
     sendCtrl(u, myId, remoteId, 0x00, sequence);
-    Serial.print("LAN | retransmit unavailable, filled seq=0x"); Serial.println(sequence, HEX);
+  }
+
+  // Answer one requested sequence, but only while this loop() iteration still
+  // has retransmit budget. Every reply is a blocking UDP send; on a congested
+  // WiFi link a single send can take tens of ms, so an unbounded range (or the
+  // stale full-history request the radio fires right after reconnect) used to
+  // freeze the whole firmware for seconds. Deferred sequences are simply left
+  // for the radio to re-request on the next tick, spreading the work out.
+  void respondRetransmit(WiFiUDP& u, uint16_t sequence) {
+    if (retransmitBudget <= 0) { rtxDeferred++; return; }
+    retransmitBudget--;
+    if (resendTracked(u, sequence)) rtxResent++;
+    else { fillMissingTracked(u, sequence); rtxFilled++; }
   }
 
   bool handleRetransmitRequest(WiFiUDP& u, const uint8_t* packet, int length) {
     if (length < 0x10 || getLE16(packet+4) != 0x01) return false;
     if (length == 0x10) {
-      uint16_t sequence = getLE16(packet+6);
-      if (!resendTracked(u, sequence)) fillMissingTracked(u, sequence);
+      respondRetransmit(u, getLE16(packet+6));
       return true;
     }
     // A variable-length request carries inclusive little-endian start/end
@@ -441,10 +508,8 @@ private:
         Serial.println("LAN | retransmit range rejected");
         continue;
       }
-      for (uint16_t offset = 0; offset < count; ++offset) {
-        uint16_t sequence = (uint16_t)(first + offset);
-        if (!resendTracked(u, sequence)) fillMissingTracked(u, sequence);
-      }
+      for (uint16_t offset = 0; offset < count; ++offset)
+        respondRetransmit(u, (uint16_t)(first + offset));
     }
     return true;
   }
@@ -597,6 +662,14 @@ private:
     // Match the reference client renewal cadence. Renewing twice as often adds
     // tracked control traffic without improving session liveness.
     if (authOk && now - lastReauth >= 60000) { sendToken(0x05); lastReauth = now; }
+  }
+
+  // Advance a past timestamp toward `now` by up to `amount` ms, never past
+  // `now`. Clamping to the timestamp's own age keeps unsigned subtraction from
+  // wrapping when a clock was refreshed slightly after the previous service point.
+  static inline void forgiveClock(uint32_t& ts, uint32_t now, uint32_t amount) {
+    uint32_t age = now - ts;
+    ts += (age > amount) ? amount : age;
   }
 
   // ---- receive ----

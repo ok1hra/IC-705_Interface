@@ -115,6 +115,7 @@ const dom = {
   messagePresetsButton:$("messagePresetsButton"), messagePresetsMenu:$("messagePresetsMenu"),
   traffic:$("traffic"), trafficSummary:$("trafficSummary"), stationRows:$("stationRows"),
   trafficSection:document.querySelector('[data-section="traffic"]'),
+  trafficFilter:document.querySelector(".traffic-filter"),
   stationsSection:document.querySelector('[data-section="stations"]'),
   stationHead:document.querySelector(".traffic-table thead"), reply:document.querySelector('[data-section="reply"]'),
   stationSummary:$("stationSummary"), myCall:$("myCall"), myGrid:$("myGrid"),
@@ -145,7 +146,7 @@ const state = {
   txState:null, txWasmReady:false, pendingFrequency:null, lastAudioMs:0,
   startup:{ready:false, failed:false, progress:0, label:"Loading JS8Call modem",
     detail:"Preparing modem components…"},
-  stationSort:{key:"lastSlotUtcMs", direction:"desc"}, testActivityLocked:false,
+  stationSort:{key:"lastSlotUtcMs", direction:"desc"}, trafficFilter:"all", testActivityLocked:false,
   txSessionMode:"CHAT", audioDb:-90, tuneActive:false, spectrumWasTransmitting:false,
   help:{incompatibleActive:false},
   lanConfig:{checked:false, ready:false, detail:""},
@@ -472,6 +473,7 @@ const wfCtx = dom.canvas.getContext("2d"), overlayCtx = dom.overlay.getContext("
 const fftRe = new Float32Array(FFT_SIZE), fftIm = new Float32Array(FFT_SIZE), ring = new Float32Array(FFT_SIZE);
 const hann = Float32Array.from({length:FFT_SIZE}, (_, i) => .5 - .5 * Math.cos(2 * Math.PI * i / (FFT_SIZE - 1)));
 let ringPos = 0, hop = 0, spectrumFill = 0, spectrumRows = 0;
+let lastSlotIndex = null, lastSlotPeriod = 0;
 let agcLow = -85, agcHigh = -35, agcReady = false;
 
 function fft(re, im) {
@@ -496,7 +498,7 @@ function radioTransmitting() { return Boolean(state.radio.tx || sinkProxy.ptt); 
 
 function resetSpectrumAnalyzer() {
   ring.fill(0); ringPos=0; hop=0; spectrumFill=0; agcReady=false;
-  agcLow=-85; agcHigh=-35;
+  agcLow=-85; agcHigh=-35; lastSlotIndex=null;
 }
 
 function ingestSpectrum(samples) {
@@ -545,6 +547,16 @@ function drawSpectrum() {
   const row=wfCtx.createImageData(dom.canvas.width,1);
   for (let x=0;x<dom.canvas.width;x++) { const bin=Math.min(values.length-1,Math.floor(x*values.length/dom.canvas.width)); const c=color((values[bin]-agcLow)/(agcHigh-agcLow)); const at=x*4; row.data[at]=c[0];row.data[at+1]=c[1];row.data[at+2]=c[2];row.data[at+3]=255; }
   wfCtx.putImageData(row,0,0);
+  // JS8 time-slot ruler: burn a faint horizontal line into the newest row whenever a
+  // UTC slot boundary passes, so it scrolls down with the history. Same clock/period as
+  // the slot meter (renderRhythm) — the ruler and the slot-fill bar stay in lockstep.
+  const slotPeriodMs=(MODE_PERIOD_SECONDS[selectedMode()] || 15)*1000;
+  const slotCorrection=audioSource ? Number(audioSource.state().timebase?.correction?.totalMs || 0) : 0;
+  const slotIndex=Math.floor((Date.now()+slotCorrection)/slotPeriodMs);
+  if(lastSlotPeriod===slotPeriodMs && lastSlotIndex!==null && slotIndex!==lastSlotIndex){
+    wfCtx.fillStyle="rgba(200,210,230,0.28)"; wfCtx.fillRect(0,0,dom.canvas.width,1);
+  }
+  lastSlotIndex=slotIndex; lastSlotPeriod=slotPeriodMs;
   spectrumRows++;
 }
 
@@ -786,6 +798,7 @@ function renderBinControls() {
   if(!prepared&&!binState.preparing)error=error||"Select a file.";
   if(binState.preparing)error="Preparing SHA-256 and blocks…";
   if(binState.storageError)error=binState.storageError;
+  if(sameCall(binState.peerDraft,currentJs8().myCall))error="Nelze poslat soubor vlastní značce";
   dom.binError.textContent=error;
   const blocks=txBlockReasons(false);
   if(error)blocks.push(error);
@@ -862,6 +875,7 @@ function renderControls() {
 function chooseCall(call) {
   if (!call) return clearRecipient();
   if (call.startsWith("@")) return;
+  if (sameCall(call,currentJs8().myCall)) return rejectOwnCall();
   state.selectedCall=call;binState.peerDraft=call;
   state.txSessionMode="CHAT";
   const station=state.activity.calls.find(item=>item.call===call);
@@ -875,6 +889,13 @@ function clearRecipient() {
   state.selectedCall="";
   renderActivity(); renderControls();
   dom.recipient.focus({preventScroll:true});
+}
+
+// You can't work yourself: refuse your own callsign as recipient, revert the field to the
+// current selection and explain why. Covers both a table-row click and a typed callsign.
+function rejectOwnCall() {
+  dom.recipient.value=state.selectedCall;
+  dom.sessionMeta.textContent="Nelze volat vlastní značku";
 }
 
 function stationDirection(station) {
@@ -928,11 +949,38 @@ function openSectionsForNewOwnCall(messages,calls) {
   state.ownCallAttention={call:own,messages:messageKeys,stations:stationKeys};
 }
 
+const TRAFFIC_WINDOWS={"30m":30*60*1000, "2h":2*60*60*1000};
+function messageTimeMs(message){return Number(message.lastSlotUtcMs || message.firstSlotUtcMs || 0);}
+// Recent-traffic filter: one active mode at a time. Time windows are rolling (recomputed
+// each render against Date.now()); MYCALL keeps only frames mentioning the operator's call.
+function filterTraffic(messages,own){
+  const filter=state.trafficFilter;
+  if(filter==="mycall")return own ? messages.filter(message=>messageMentionsCall(message,own)) : messages;
+  const windowMs=TRAFFIC_WINDOWS[filter];
+  if(!windowMs)return messages;
+  const cutoff=Date.now()-windowMs;
+  return messages.filter(message=>messageTimeMs(message)>=cutoff);
+}
+function renderTrafficFilterButtons(own){
+  if(state.trafficFilter==="mycall" && !own)state.trafficFilter="all";
+  for(const button of dom.trafficFilter.querySelectorAll("[data-traffic-filter]")){
+    const value=button.dataset.trafficFilter, active=value===state.trafficFilter;
+    button.classList.toggle("active",active);
+    button.setAttribute("aria-pressed",String(active));
+    if(value==="mycall")button.disabled=!own;
+  }
+}
+
 function renderActivity() {
   const messages=state.activity.messages || [], calls=state.activity.calls || [];
-  dom.trafficSummary.textContent=`${messages.length} message${messages.length===1?"":"s"}`;
+  const own=currentJs8().myCall;
+  renderTrafficFilterButtons(own);
+  const filtered=filterTraffic(messages,own);
+  dom.trafficSummary.textContent=filtered.length===messages.length
+    ? `${messages.length} message${messages.length===1?"":"s"}`
+    : `${filtered.length} / ${messages.length} messages`;
   dom.stationSummary.textContent=`${calls.length} active`;
-  const recent=[...messages].sort((a,b)=>Number(b.lastSlotUtcMs||b.firstSlotUtcMs||0)-Number(a.lastSlotUtcMs||a.firstSlotUtcMs||0)).slice(0,100);
+  const recent=[...filtered].sort((a,b)=>Number(b.lastSlotUtcMs||b.firstSlotUtcMs||0)-Number(a.lastSlotUtcMs||a.firstSlotUtcMs||0)).slice(0,100);
   dom.traffic.innerHTML=recent.length ? recent.map(message => {
     const call=callOf(message), when=new Date(message.lastSlotUtcMs || message.firstSlotUtcMs || 0).toISOString().slice(11,19);
     const operational=Array.isArray(message.kinds) && !message.kinds.includes("data");
@@ -1497,8 +1545,21 @@ async function requestFrequency(frequency) {
   try {
     const response=await fetch("/cmd",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type:"setFrequency",frequency:String(frequency)})});
     if (!response.ok) throw new Error(`TRX request ${response.status}`);
+    await ensureUsbDataMode();
     return true;
   } catch (error) { dom.modemState.textContent=error.message; dom.modemState.className="modem-state error"; state.pendingFrequency=null; renderHeader(); throw error; }
+}
+
+// Tuning a preset also prepares the radio for JS8 by switching to USB-D, but only when
+// not already there. Best-effort: a failed mode set never rolls back the frequency change.
+// Uses the generic civ.raw endpoint (26 00 <mode> <data> <filter>) so the firmware CAT
+// code stays untouched — USB (0x01), DATA on (0x01), current FILx slot (fallback FIL1).
+async function ensureUsbDataMode() {
+  if (!state.radio.connected || state.radio.mode === "USB-D") return;
+  const filter=[1,2,3].includes(Number(state.radio.filter)) ? Number(state.radio.filter) : 1;
+  const data="26000101"+String(filter).padStart(2,"0");
+  try { await fetch("/cmd",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type:"civ.raw",data})}); }
+  catch (_error) {}
 }
 
 function driveEncoder(prepared, onError) {
