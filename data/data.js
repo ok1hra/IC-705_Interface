@@ -554,7 +554,7 @@ function drawSpectrum() {
   const slotCorrection=audioSource ? Number(audioSource.state().timebase?.correction?.totalMs || 0) : 0;
   const slotIndex=Math.floor((Date.now()+slotCorrection)/slotPeriodMs);
   if(lastSlotPeriod===slotPeriodMs && lastSlotIndex!==null && slotIndex!==lastSlotIndex){
-    wfCtx.fillStyle="rgba(200,210,230,0.28)"; wfCtx.fillRect(0,0,dom.canvas.width,1);
+    wfCtx.fillStyle="rgba(235,240,250,0.6)"; wfCtx.fillRect(0,0,dom.canvas.width,2);
   }
   lastSlotIndex=slotIndex; lastSlotPeriod=slotPeriodMs;
   spectrumRows++;
@@ -1798,6 +1798,7 @@ function bind() {
   dom.binStop.addEventListener("click",stopFileTransfer);
   dom.binDownload.addEventListener("click",downloadReceivedFile);
   for (const container of [dom.traffic,dom.stationRows]) container.addEventListener("click",event=>{const node=event.target.closest("[data-call]");if(node)chooseCall(node.dataset.call);});
+  dom.trafficFilter.addEventListener("click",event=>{const button=event.target.closest("[data-traffic-filter]");if(!button||button.disabled)return;state.trafficFilter=button.dataset.trafficFilter;renderActivity();});
   dom.stationHead.addEventListener("click",event=>{const button=event.target.closest("[data-station-sort]");if(!button)return;const key=button.dataset.stationSort;if(state.stationSort.key===key)state.stationSort.direction=state.stationSort.direction==="asc"?"desc":"asc";else state.stationSort={key,direction:"asc"};renderActivity();});
   dom.txSpeed.addEventListener("change",()=>setJs8Setting("speed",dom.txSpeed.value));
   dom.txOffset.addEventListener("change",()=>setJs8Setting("txOffsetHz",Math.max(RX_LOW,Math.min(RX_HIGH,Number(dom.txOffset.value)||1500))));
