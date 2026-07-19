@@ -104,7 +104,7 @@ bool cwIpOnConnect  = true;       // announce WiFi IP via CW on first BT connect
 volatile bool cwIpSendPending = false;
 
 #define LOOP_WARN_MS 200
-#define REV 20260719
+#define REV 20260720
 #define WIFI
 #define UDP_TO_FSK
 #define WDT         // watchdog timer
@@ -396,6 +396,14 @@ int incomingByte = 0;   // for incoming serial data
   uint32_t audioRxPackets = 0;         // counts forwarded audio datagrams per WS session
   uint8_t  audioTxBuf[1400];           // coalesce ~20ms radio packets into fewer WS frames
   size_t   audioTxLen = 0;
+  // Outgoing browser-WS byte ring. RX audio is enqueued here (even from the LAN
+  // UDP receive path) and drained with non-blocking ::send, so no WS write ever
+  // blocks the cooperative loop and the LAN-UDP owner never performs a socket
+  // send. ~2 s at 8 kB/s absorbs transient browser/WiFi stalls before dropping.
+  // Heap-allocated in setup() — too large for the static DRAM (.bss) segment.
+  static const size_t WS_OUT_SIZE = 16384;
+  uint8_t* wsOut = nullptr;
+  size_t   wsOutHead = 0, wsOutTail = 0, wsOutLen = 0;
   bool     audioTxKeyed = false;       // M3: PTT keyed for browser-sourced TX audio
   uint32_t audioTxLastMs = 0;          // last TX audio/keep-alive — dead-man un-key timer
   uint32_t audioStreamId = 0;          // changes for every WebSocket media epoch
@@ -612,6 +620,8 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   String Base64Encode(const uint8_t* data, size_t length);
   bool AudioSendBinary(const uint8_t* payload, size_t length);
   bool AudioSendText(const String& text);
+  void wsRingReset(void);
+  void audioDrainWs(void);
   void audioFlush(void);
   void audioPttOn(void);
   void audioPttOff(void);
@@ -2517,6 +2527,8 @@ void wsClearSplitProbe(void){
 //-------------------------------------------------------------------------------------------------------
 
 void setup(){
+
+  wsOut = (uint8_t*)malloc(WS_OUT_SIZE);   // outgoing browser-audio WS ring (heap, not .bss)
 
   if (!EEPROM.begin(EEPROM_SIZE)){
     Serial.begin(BaudRate);
@@ -5376,23 +5388,57 @@ void dxcHandleRawClient(){
 // Versioned AUD1 channel carrying timed RX uLaw and paced TX PCM16 between the
 // IC-705 LAN session and the browser modem Worker.
 
-// Is the audio socket writable right now? Zero-timeout select() poll — WiFiClient::write()
-// otherwise blocks the whole cooperative loop up to 10 s (10 retries x 1 s select) when the
-// browser's socket buffer is full, which starves CI-V/CAT. If not writable we drop the
-// frame (a harmless audio gap) instead of stalling.
-bool audioSocketWritable(){
+void wsRingReset(){ wsOutHead = wsOutTail = wsOutLen = 0; }
+
+// Append bytes to the outgoing WS ring (wraparound). Caller guarantees room.
+static void wsRingWrite(const uint8_t* src, size_t len){
+  size_t first = WS_OUT_SIZE - wsOutHead;
+  if(first > len) first = len;
+  memcpy(wsOut + wsOutHead, src, first);
+  if(len > first) memcpy(wsOut, src + first, len - first);
+  wsOutHead = (wsOutHead + len) % WS_OUT_SIZE;
+  wsOutLen += len;
+}
+
+// Enqueue one complete WS frame (header + payload) atomically. A frame is queued
+// whole or dropped whole, so the byte stream the browser reads is always a clean
+// sequence of frames. Returns false when the ring is full (drop -> RX gap).
+static bool wsEnqueueFrame(const uint8_t* header, size_t headerLen,
+                           const uint8_t* payload, size_t payloadLen){
+  if(!wsOut) return false;
+  if(headerLen + payloadLen > WS_OUT_SIZE - wsOutLen) return false;
+  wsRingWrite(header, headerLen);
+  if(payloadLen) wsRingWrite(payload, payloadLen);
+  return true;
+}
+
+// Non-blocking drain of the WS ring to the browser socket. ::send with
+// MSG_DONTWAIT never blocks the cooperative loop; a partial send just leaves the
+// rest for the next tick (TCP keeps byte order, so a frame split across sends is
+// fine). Mirrors the web-server file-stream pattern.
+void audioDrainWs(){
+  if(wsOutLen == 0 || !AudioWsClient.connected()) return;
   int fd = AudioWsClient.fd();
-  if(fd < 0) return false;
-  fd_set wset; FD_ZERO(&wset); FD_SET(fd, &wset);
-  struct timeval tv = {0, 0};
-  return select(fd + 1, NULL, &wset, NULL, &tv) > 0 && FD_ISSET(fd, &wset);
+  if(fd < 0) return;
+  while(wsOutLen > 0){
+    size_t chunk = WS_OUT_SIZE - wsOutTail;   // contiguous run to buffer end
+    if(chunk > wsOutLen) chunk = wsOutLen;
+    int n = ::send(fd, wsOut + wsOutTail, chunk, MSG_DONTWAIT);
+    if(n > 0){
+      wsOutTail = (wsOutTail + (size_t)n) % WS_OUT_SIZE;
+      wsOutLen -= (size_t)n;
+    }else if(n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == ENOMEM)){
+      break;                                    // socket full -> finish next tick
+    }else{
+      AudioDisconnectWs();                       // peer gone / hard error
+      return;
+    }
+  }
 }
 
 bool AudioSendBinary(const uint8_t* payload, size_t length){
   if(!AudioWsClient.connected()) return false;
-  if(!audioSocketWritable()) return false;   // buffer full -> drop frame, never block
-  uint8_t header[4];
-  size_t headerLen = 0;
+  uint8_t header[4]; size_t headerLen = 0;
   header[headerLen++] = 0x80 | 0x2;                 // FIN + binary opcode
   if(length < 126){
     header[headerLen++] = uint8_t(length);
@@ -5403,15 +5449,11 @@ bool AudioSendBinary(const uint8_t* payload, size_t length){
   }else{
     return false;                                   // audio chunks are always < 64k
   }
-  if(AudioWsClient.write(header, headerLen) != headerLen){ AudioDisconnectWs(); return false; }
-  if(length > 0 && payload != nullptr){
-    if(AudioWsClient.write(payload, length) != length){ AudioDisconnectWs(); return false; }
-  }
-  return true;
+  return wsEnqueueFrame(header, headerLen, payload, length);   // false -> ring full, drop
 }
 
 bool AudioSendText(const String& text){
-  if(!AudioWsClient.connected() || !audioSocketWritable()) return false;
+  if(!AudioWsClient.connected()) return false;
   size_t length = text.length();
   uint8_t header[4]; size_t headerLen = 0;
   header[headerLen++] = 0x80 | 0x1;
@@ -5421,9 +5463,7 @@ bool AudioSendText(const String& text){
     header[headerLen++] = uint8_t(length >> 8);
     header[headerLen++] = uint8_t(length);
   }else return false;
-  if(AudioWsClient.write(header, headerLen) != headerLen){ AudioDisconnectWs(); return false; }
-  if(length && AudioWsClient.write((const uint8_t*)text.c_str(), length) != length){ AudioDisconnectWs(); return false; }
-  return true;
+  return wsEnqueueFrame(header, headerLen, (const uint8_t*)text.c_str(), length);
 }
 
 static void aud1PutBE16(uint8_t* p, uint16_t value){ p[0] = uint8_t(value >> 8); p[1] = uint8_t(value); }
@@ -5564,6 +5604,7 @@ void AudioDisconnectWs(){
   else
     aud1TxResetState();
   if(AudioWsClient.connected()) AudioWsClient.stop();
+  wsRingReset();
   aud1WsParser.reset();
   lanClient.stopRxAudio();
 }
@@ -5702,6 +5743,7 @@ bool AudioHandleWsUpgrade(WiFiClient& webClient, const String& request){
   webClient.println();
   AudioWsClient = webClient;
   AudioWsClient.setNoDelay(true);
+  wsRingReset();
   audioRxPackets = 0; audioTxLen = 0;
   audioStreamId = esp_random(); if(audioStreamId == 0) audioStreamId = 1;
   audioRxSequence = 0; audioRxFirstSample = 0; audioRxFirst = true; audioRxDiscontinuity = false;
@@ -5775,6 +5817,7 @@ void AudioHandleWsClient(){
   // bound RX audio latency: flush the coalesce buffer at least every ~100 ms
   static uint32_t lastFlush = 0;
   if(millis() - lastFlush >= 100){ audioFlush(); lastFlush = millis(); }
+  audioDrainWs();   // push queued frames (incl. those enqueued from the LAN path)
 }
 
 void audioHandleRawClient(){

@@ -249,6 +249,34 @@ smyčky (browser načítá wasm, WS RX se nestíhá vyprázdnit) a sám se oprav
 cyklu. Patří do overload větve (audio na jádro 0 / neblokující WS send), ne do
 riskantní úpravy TX. Abort+retry je zde korektní chování.
 
+## Doplněk 2026-07-20: neblokující audio WS + oddělení od LAN UDP (overload)
+
+Kořen chronických 1–2 s stallů (`audioWs`/`LanClient`): RX audio se do prohlížeče
+posílalo přes blokující `AudioWsClient.write()`, a to i **uvnitř** `pumpAudio()`
+(přes `lanAudioHandler → audioFlush`), takže blokace se počítala jednou jako
+`audioWs`, podruhé jako `LanClient` a přímo krmila kaskádu CAT-timeout → retransmit
+→ control-loss. `select()` pre-check blokaci jen zmírňoval (částečný zápis do
+neplného bufferu stejně dočkal).
+
+**Řešení A+B (jeden výstupní WS byte-ring):**
+- Veškerý výstup do prohlížeče (binární audio i textové `AUD1` řízení) se
+  **enqueuje** do ringu `wsOut` (16 kB, heap — do statického DRAM se nevešel).
+  `wsEnqueueFrame` přidá rámec celý, nebo ho celý zahodí → stream je vždy čistá
+  sekvence WS rámců. Drop → `audioRxDiscontinuity`.
+- `pumpAudio`/`lanAudioHandler` už **nedělají socket send**, jen enqueue → LAN UDP
+  cesta je štíhlá (to je oddělení dle auditu: UDP reliability vs audio consumer).
+- `audioDrainWs()` vyprazdňuje ring **neblokujícím** `::send(MSG_DONTWAIT)`
+  (vzor jako web-server file stream); částečný send nechá zbytek na příští tick
+  (TCP drží pořadí). Voláno z `AudioHandleWsClient` (každou iteraci + v
+  cooperative-yield při servírování souborů).
+
+Tím mizí obě blokace → rozbití feedback loopu. Ring ~2 s absorbuje přechodné
+browser/WiFi stally než začne dropovat (frame nese sample-timestampy, časování
+JS8 dekódu se buffrováním nekazí). Zbylá blokující cesta: `sendAudioPacket` (TX
+audio LAN UDP) — nižší priorita (UDP blokuje vzácně). Ověřit na dalším živém logu.
+Vedlejší efekt: rychlejší smyčka by měla odstranit i `TX prebuffer missed slot`
+na page-loadu (#5).
+
 ## Regresní pokrytí
 
 `prototype/js8-core-prototype/firmware/icom_lan_client_health_smoke.cpp` ověřuje:

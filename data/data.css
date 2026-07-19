@@ -382,7 +382,7 @@ button { color: inherit; cursor: pointer; }
 .message-meta { display:flex; gap:8px; color:var(--muted); font-size:11px; white-space:nowrap; }
 .message strong { color: var(--cyan); cursor: pointer; }
 .own-callsign { color: var(--red) !important; }
-.message-text { min-width:0; overflow:hidden; color:#fff; text-overflow:ellipsis; white-space:nowrap; }
+.message-text { min-width:0; color:#fff; white-space:normal; overflow-wrap:anywhere; }
 .message.directed { border-left: 3px solid var(--amber); }
 .message.operational { opacity: .48; }
 .message.operational:hover { opacity: .82; }
