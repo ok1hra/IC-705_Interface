@@ -398,6 +398,19 @@ button { color: inherit; cursor: pointer; }
 .traffic-table tr { cursor: pointer; }
 .traffic-table tr:hover, .traffic-table tr.selected { background: #17342e; }
 
+/* Stations map: azimuthal-equidistant radar centred on my QTH. Dots = stations (cyan),
+   lines to centre are dim so they don't fight the dots, amber centre dot = me. */
+.station-map { padding: 10px; text-align: center; }
+.station-map-svg { width: 100%; max-width: 360px; aspect-ratio: 1 / 1; height: auto; margin: 0 auto; display: block; }
+.map-frame { fill: none; stroke: var(--line); stroke-width: 1.5; }
+.map-ring { fill: none; stroke: var(--line); stroke-width: 1; opacity: .5; }
+.map-compass { fill: var(--muted); font: 700 11px ui-monospace, monospace; text-anchor: middle; dominant-baseline: central; }
+.map-scale { fill: var(--muted); font: 600 11px ui-monospace, monospace; text-anchor: end; }
+.map-link { stroke: var(--line); stroke-width: 1; }
+.map-dot circle { fill: var(--cyan); opacity: .85; }
+.map-badge { fill: var(--text); font: 700 9px ui-monospace, monospace; }
+.map-center { fill: var(--amber); }
+
 .settings { padding: 10px; display: grid; grid-template-columns: repeat(2, minmax(260px, 1fr)); gap: 8px 18px; }
 .settings label { display: grid; grid-template-columns: 130px minmax(0, 1fr) auto; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
 .settings input:disabled { opacity: .5; }

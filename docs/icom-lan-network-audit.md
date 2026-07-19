@@ -145,9 +145,12 @@ víc částí aplikace než jen CAT parser.
    neměnila; doplněny accessory `catHealthy()` / `audioReady()` a vystaveny v
    `/state`, takže UI hlásí CAT/audio zvlášť místo přetíženého `connected`.
 
-5. **Audio podkanál nemá vlastní no-data recovery.** ✅ VYŘEŠENO. Audio má nyní
-   `audioLastDataMs` watchdog; při >`LAN_AUDIO_NODATA_MS` (5 s) bez payloadu
-   `reopenAudio()` zopakuje handshake podkanálu bez dotčení control/CI-V session.
+5. **Audio podkanál nemá vlastní no-data recovery.** ❌ ZAMÍTNUTO po živém testu.
+   Automatický reopen na payload-ticho je chybný: (a) rádio na tichém/zašuměném
+   kanálu audio legitimně neposílá, takže „no data" NENÍ zaseknutí; (b) reopen je
+   destruktivní — po odpojení/znovuotevření podkanálu rádio audio neobnoví →
+   nekonečná smyčka reopenů. UI už správně ukazuje `RX WAIT`. Ponechán jen
+   `audioLastDataMs` + `audioReady()` jako RX-live indikátor (freshness, ne reopen).
 
 6. **Control health neověřuje identitu odesílatele.** ✅ VYŘEŠENO. `fromRadio()`
    guard v `pumpControl()`/`pumpCiv()`/`pumpAudio()` zahodí datagram, jehož zdroj
@@ -227,9 +230,13 @@ uzavřeny tři audit body:
 - **#6 identita odesílatele.** `fromRadio(u)` = `u.remoteIP() == radioIP`. Přidán
   do všech tří receive smyček; cizí datagram na lokálním portu se odčerpá a
   ignoruje (neobnoví `lastCtrlRxMs`, nedostane se do handlerů).
-- **#5 audio no-data recovery.** `audioLastDataMs` se stampuje při open, IAmHere
-  a každém audio payloadu, a je zahrnut do stall-kompenzace (loop stall netriggeruje
-  reopen). Při >5 s bez payloadu `reopenAudio()` = disconnect + `openAudioChannel()`.
+- **#5 audio no-data recovery — ZAMÍTNUTO (živý test).** Prototyp reopenu na
+  payload-ticho způsobil nekonečnou smyčku `audio no data, reopening` (rádio na
+  tichém kanálu nestreamuje a po reopenu audio neobnoví). Odstraněno. Ponechán jen
+  `audioLastDataMs` (stampovaný na open/IAmHere/payloadu, stall-forgiven) a
+  `audioReady()` = linked + čerstvý payload do `LAN_AUDIO_FRESH_MS` (5 s), jako
+  RX-live indikátor. Skutečné audio zaseknutí (vs. tichý kanál) z firmwaru
+  nerozlišíme, takže žádný auto-reopen.
 - **#4 split CONNECTED.** Chování bylo správné (PWR/TX = session), přidány jen
   accessory `catHealthy()` (`CONNECTED && civGotData && !civRecovering`) a
   `audioReady()` (linked + čerstvý payload) a vystaveny v `/state` jako
@@ -271,4 +278,5 @@ riskantní úpravy TX. Abort+retry je zde korektní chování.
   zbytek odloží (deferred), takže storm nezmrazí smyčku;
 - cizí control paket (jiná zdrojová IP než `radioIP`) neobnoví session health,
   paket od rádia ano;
-- audio podkanál bez payloadu >`LAN_AUDIO_NODATA_MS` se reopenne, aniž shodí session.
+- `audioReady()` je true po čerstvém payloadu a false po delším tichu, aniž se
+  reopenne podkanál nebo shodí session.

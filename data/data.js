@@ -117,6 +117,8 @@ const dom = {
   trafficSection:document.querySelector('[data-section="traffic"]'),
   trafficFilter:document.querySelector(".traffic-filter"),
   stationsSection:document.querySelector('[data-section="stations"]'),
+  stationMapSection:document.querySelector('[data-section="stations-map"]'),
+  stationMap:$("stationMap"), stationMapSummary:$("stationMapSummary"),
   stationHead:document.querySelector(".traffic-table thead"), reply:document.querySelector('[data-section="reply"]'),
   stationSummary:$("stationSummary"), myCall:$("myCall"), myGrid:$("myGrid"),
   followSpeed:$("followSpeed"), clockCorrection:$("clockCorrection"), autoTiming:$("autoTiming"),
@@ -995,7 +997,66 @@ function renderActivity() {
   }).join("");
   openSectionsForNewOwnCall(recent,calls);
   renderStationSort();
+  renderStationMap(calls);
   renderConversation();
+}
+
+// STATIONS MAP: azimuthal-equidistant radar centred on my QTH. Dots are stations placed by
+// azimuth (0deg = N = up) and linear distance (furthest sits at the plotting edge). Summary
+// count is always refreshed; the SVG is only built while the disclosure is open.
+function renderStationMap(calls) {
+  const placed=[], noPos=[];
+  for(const item of (calls||[])){
+    const dir=stationDirection(item);
+    if(dir && Number.isFinite(dir.qrbKm) && Number.isFinite(dir.azimuthDeg)) placed.push({item,dir});
+    else noPos.push(item);
+  }
+  dom.stationMapSummary.textContent=noPos.length ? `${placed.length} on map · ${noPos.length} no pos` : `${placed.length} on map`;
+  if(!dom.stationMapSection || !dom.stationMapSection.open) return;
+  if(!self.DXCC || !DXCC.locatorToLatLon(currentJs8().grid)){
+    dom.stationMap.innerHTML='<div class="empty-row">Set My grid to see the map.</div>'; return;
+  }
+  if(!placed.length){
+    dom.stationMap.innerHTML='<div class="empty-row">Waiting for stations with position…</div>'; return;
+  }
+  dom.stationMap.innerHTML=buildStationMapSvg(placed);
+}
+
+const MAP={CX:150, CY:150, R_FRAME:132, R_PLOT:120, DOT:4, LABEL_R:143};
+function stationMapTip({item,dir}){
+  return `${item.call} · ${signed(item.snr)} dB · ${Math.round(dir.qrbKm)} km · ${dir.azimuthDeg}°`;
+}
+function buildStationMapSvg(placed) {
+  const {CX,CY,R_FRAME,R_PLOT,DOT,LABEL_R}=MAP;
+  const maxKm=Math.max(...placed.map(p=>p.dir.qrbKm)) || 1;
+  const points=placed.map(({item,dir})=>{
+    const r=(dir.qrbKm/maxKm)*R_PLOT, a=dir.azimuthDeg*Math.PI/180;
+    return {item,dir,x:CX+r*Math.sin(a),y:CY-r*Math.cos(a)};
+  });
+  // Merge dots that would touch (centre-to-centre distance <= one diameter). Greedy single pass;
+  // each cluster keeps the first member's position so a dot never drifts off its real bearing.
+  const clusters=[], touch=DOT*2;
+  for(const p of points){
+    const c=clusters.find(cl=>Math.hypot(cl.x-p.x,cl.y-p.y)<=touch);
+    if(c) c.members.push(p); else clusters.push({x:p.x,y:p.y,members:[p]});
+  }
+  const frame=
+    `<circle cx="${CX}" cy="${CY}" r="${(R_PLOT/3).toFixed(1)}" class="map-ring"/>`+
+    `<circle cx="${CX}" cy="${CY}" r="${(R_PLOT*2/3).toFixed(1)}" class="map-ring"/>`+
+    `<circle cx="${CX}" cy="${CY}" r="${R_FRAME}" class="map-frame"/>`+
+    `<text x="${CX}" y="${CY-LABEL_R}" class="map-compass">N</text>`+
+    `<text x="${CX+LABEL_R}" y="${CY}" class="map-compass">E</text>`+
+    `<text x="${CX}" y="${CY+LABEL_R}" class="map-compass">S</text>`+
+    `<text x="${CX-LABEL_R}" y="${CY}" class="map-compass">W</text>`+
+    `<text x="294" y="14" class="map-scale">${(maxKm/1000).toFixed(1)} kkm</text>`;
+  const links=clusters.map(c=>`<line x1="${c.x.toFixed(1)}" y1="${c.y.toFixed(1)}" x2="${CX}" y2="${CY}" class="map-link"/>`).join("");
+  const dots=clusters.map(c=>{
+    const tip=esc(c.members.map(stationMapTip).join("\n"));
+    const badge=c.members.length>1 ? `<text x="${(c.x+6).toFixed(1)}" y="${(c.y-5).toFixed(1)}" class="map-badge">×${c.members.length}</text>` : "";
+    return `<g class="map-dot"><circle cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="${DOT}"><title>${tip}</title></circle>${badge}</g>`;
+  }).join("");
+  const center=`<circle cx="${CX}" cy="${CY}" r="5" class="map-center"><title>${esc(currentJs8().myCall||"My station")}</title></circle>`;
+  return `<svg viewBox="0 0 300 300" class="station-map-svg" role="img" aria-label="Stations radar map">${frame}${links}${dots}${center}</svg>`;
 }
 
 function age(utcMs) { const seconds=Math.max(0,Math.round((Date.now()-Number(utcMs||0))/1000)); return seconds<60?`${seconds}s`:`${Math.floor(seconds/60)}m`; }
@@ -1821,6 +1882,7 @@ function bind() {
   dom.message.addEventListener("keydown",event=>{if(event.key!=="Enter" || event.isComposing)return;event.preventDefault();if(!dom.send.disabled)dom.composer.requestSubmit();});
   dom.abort.addEventListener("click",()=>activeEncoder&&activeEncoder.abort());
   document.querySelectorAll("details[data-section]").forEach(details=>details.addEventListener("toggle",()=>{settings.ui.disclosures[details.dataset.section]=details.open;persistSettings(false);}));
+  dom.stationMapSection.addEventListener("toggle",()=>{if(dom.stationMapSection.open)renderStationMap(state.activity.calls||[]);});
   window.addEventListener("resize",resizeWaterfall);
   window.addEventListener("beforeunload",confirmJs8Leave);
   window.addEventListener("pagehide",()=>{if(activeEncoder)activeEncoder.abort();stopAudio();});

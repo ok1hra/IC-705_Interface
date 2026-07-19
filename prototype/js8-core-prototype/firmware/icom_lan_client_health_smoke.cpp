@@ -628,8 +628,9 @@ int main() {
   }
 
   {
-    // Audio sub-stream no-data recovery: linked but the radio streams no payload
-    // -> reopen the sub-stream in place (handshake restarts, control untouched).
+    // audioReady() = linked audio sub-stream with fresh payload. Payload silence
+    // (normal on a quiet channel) makes it false but must NOT reopen the stream
+    // or drop the session — the radio simply streams nothing until there is AF.
     IcomLanClient client;
     client.state = IcomLanClient::LAN_CONNECTED;
     client.radioIP = IPAddress(0x0102030Au);
@@ -640,20 +641,24 @@ int main() {
     client.stateSince = testMillis;
     client.lastCtrlRxMs = testMillis;
     client.audioLastDataMs = testMillis;
+    if (!client.audioReady()) {
+      std::fprintf(stderr, "audioReady false right after fresh payload\n");
+      ok = false;
+    }
     client.audioUdp.writeCalls = 0;
 
-    idleHealthy(client, 6000);   // > LAN_AUDIO_NODATA_MS with no audio payload
+    idleHealthy(client, 8000);   // long payload silence, healthy loop
 
     if (client.failed()) {
-      std::fprintf(stderr, "audio no-data recovery dropped the whole session\n");
+      std::fprintf(stderr, "audio payload silence dropped the whole session\n");
       ok = false;
     }
-    if (client.audioGotHere) {
-      std::fprintf(stderr, "audio no-data did not reopen the sub-stream\n");
+    if (!client.audioGotHere || !client.audioOpened) {
+      std::fprintf(stderr, "audio payload silence disturbed the sub-stream\n");
       ok = false;
     }
-    if (client.audioUdp.writeCalls == 0) {
-      std::fprintf(stderr, "audio reopen sent no disconnect/handshake traffic\n");
+    if (client.audioReady()) {
+      std::fprintf(stderr, "audioReady stayed true through long payload silence\n");
       ok = false;
     }
   }

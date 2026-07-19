@@ -88,7 +88,7 @@ public:
   bool catHealthy() const { return state == LAN_CONNECTED && civGotData && !civRecovering; }
   // Audio sub-stream linked and delivering fresh payload (firmware-side RX-live).
   bool audioReady() const {
-    return audioOpened && audioGotHere && (millis() - audioLastDataMs) < LAN_AUDIO_NODATA_MS;
+    return audioOpened && audioGotHere && (millis() - audioLastDataMs) < LAN_AUDIO_FRESH_MS;
   }
 
   // Send a CI-V command body (cmd + payload, WITHOUT the FE FE <to><from> .. FD
@@ -298,9 +298,9 @@ public:
       } else {
         if (now - audioLastPing >= 500) { sendPing(audioUdp, audioMyId, audioRemoteId, audioPingSeq++); audioLastPing = now; }
         if (now - audioLastIdle >= 100) { sendTracked(audioUdp, audioPkt0(0x00), 0x10); audioLastIdle = now; }
-        // Sub-stream wedged (linked but no payload): recover it in place. The
-        // stall credit above keeps a mere loop stall from tripping this.
-        if (now - audioLastDataMs > LAN_AUDIO_NODATA_MS) reopenAudio();
+        // No automatic reopen on payload silence: the radio legitimately streams
+        // nothing on a quiet/squelched channel, and reopening the sub-stream stops
+        // it resuming. audioLastDataMs only feeds audioReady()/the RX-live status.
       }
     }
 
@@ -365,10 +365,10 @@ private:
   static const uint8_t  AUDIO_TX_CODEC   = 0x01;    // uLaw 8-bit 1ch (M3 TX)
   static const uint32_t AUDIO_TX_SAMPLE  = 8000;    // Hz
   static const uint16_t AUDIO_LOCAL_PORT = 50003;
-  // Once the audio sub-stream handshake completes the radio streams uLaw
-  // continuously (~6 packets/s of AF, even on a quiet channel), so a multi-second
-  // payload gap means the sub-stream wedged while control/CI-V stayed healthy.
-  static const uint32_t LAN_AUDIO_NODATA_MS = 5000;
+  // Freshness window for audioReady(): the radio only streams audio while there
+  // is AF (nothing on a quiet/squelched channel), so this is a "recently flowing"
+  // threshold for the RX-live status, NOT a wedge/reopen trigger.
+  static const uint32_t LAN_AUDIO_FRESH_MS = 5000;
   bool audioOpened = false, audioGotHere = false;
   uint32_t audioMyId = 0, audioRemoteId = 0;
   uint16_t audioSendSeq = 1, audioPingSeq = 0, audioTxSeq = 0;
@@ -835,15 +835,6 @@ private:
     audioLastDataMs = millis();   // start the no-data watchdog from channel open
     audioOpened = true;
     Serial.print("LAN | audio channel open, remote port="); Serial.println(audioPort);
-  }
-
-  // Recover a wedged audio sub-stream in place: release the old one and repeat
-  // the handshake, without disturbing the authenticated control/CI-V session.
-  void reopenAudio() {
-    Serial.println("LAN | audio no data, reopening sub-stream");
-    sendCtrl(audioUdp, audioMyId, audioRemoteId, 0x05, 0);  // disconnect old
-    audioUdp.stop();
-    openAudioChannel();
   }
 
   void pumpAudio() {
