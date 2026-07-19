@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>JS8Call</title>
-  <link rel="stylesheet" href="/cat.css?v=20260718s">
-  <link rel="stylesheet" href="/data.css?v=20260718s">
+  <link rel="stylesheet" href="/cat.css?v=20260719d">
+  <link rel="stylesheet" href="/data.css?v=20260719d">
 </head>
 <body class="startup-pending lan-config-checking">
   <header class="site-topbar">
@@ -53,7 +53,7 @@
           </li>
           <li>
             <strong>Connect the IC-705 to WLAN.</strong>
-            <p>Open <code>MENU → SET → WLAN Set</code>, switch <code>WLAN</code> on, and connect the radio to the same network as this interface. Direct IC-705 access-point mode can also be used.</p>
+            <p>Open <code>MENU → SET → WLAN Set</code>, switch <code>WLAN</code> on, and connect the radio to the same network as this interface. On firmware versions that provide it, direct IC-705 access-point mode can also be used.</p>
           </li>
           <li>
             <strong>Enable network control.</strong>
@@ -77,7 +77,7 @@
               <div><dt>DATA MOD</dt><dd>WLAN</dd></div>
               <div><dt>CI-V address / transceive</dt><dd>A4h / ON</dd></div>
             </dl>
-            <p>Finish with <code>&lt;&lt;Write&gt;&gt; → YES</code>. Separately set <code>Connectors → MOD Input → WLAN MOD Level</code> to <code>50%</code> as a safe starting point. <code>DATA OFF MOD</code> may remain on the normal microphone input so voice operation still works outside data mode.</p>
+            <p>Finish with <code>&lt;&lt;Write&gt;&gt; → YES</code>. Separately set <code>MENU → SET → Connectors → MOD Input → WLAN MOD Level</code> to <code>25%</code> as the recommended JS8LAN starting point. <code>DATA OFF MOD</code> may remain on the normal microphone input so voice operation still works outside data mode.</p>
           </li>
           <li>
             <strong>Load and verify the preset.</strong>
@@ -85,7 +85,7 @@
           </li>
           <li>
             <strong>Complete the JS8Call page setup.</strong>
-            <p>Choose a JS8 dial frequency by tapping the TRX frequency, set <code>My callsign</code> and <code>My grid</code>, wait for the audio clock to lock, and confirm <code>Enable radio TX</code>. Use TUNE briefly and adjust TX audio gain or WLAN MOD Level for a clean signal with little or no ALC indication.</p>
+            <p>Choose a JS8 dial frequency by tapping the TRX frequency, set <code>My callsign</code> and <code>My grid</code>, wait for the audio clock to lock, and confirm <code>Enable radio TX</code>. Start with <code>TX audio gain 0.25</code> and <code>WLAN MOD Level 25%</code>. Use TUNE briefly, change only one level at a time, and aim for a clean signal with little or no ALC indication.</p>
           </li>
         </ol>
         <p class="trx-help-note"><strong>Reminder:</strong> JS8Call is a high-duty-cycle digital mode. Use conservative RF power and verify antenna matching before transmitting.</p>
@@ -94,6 +94,52 @@
         <span>Source: Icom IC-705 manuals and JS8Call user guide</span>
         <button class="trx-help-done" type="submit" value="close">CLOSE</button>
       </footer>
+    </form>
+  </dialog>
+
+  <dialog id="emailGatewayDialog" class="email-dialog">
+    <form id="emailGatewayForm" method="dialog">
+      <header><strong id="emailGatewayDialogTitle">Add email gateway</strong><button type="button" data-email-dialog-close aria-label="Close">×</button></header>
+      <div class="email-dialog-grid">
+        <label>Name <input id="emailGatewayName" maxlength="80" required></label>
+        <label>Gateway callsign <input id="emailGatewayTarget" maxlength="80" placeholder="OK1XYZ or @APRSIS" required></label>
+        <label>Dial frequency <span><input id="emailGatewayDial" type="number" min="1" step="1" required><small>Hz</small></span></label>
+        <label>Audio offset <span><input id="emailGatewayOffset" type="number" min="500" max="2700" step="1" required><small>Hz</small></span></label>
+        <label>Format <select id="emailGatewayFormat"><option value="direct">Direct: EMAIL</option><option value="direct-msg">Direct: MSG EMAIL</option><option value="template">Custom template</option><option value="aprs-email2">APRS EMAIL-2</option></select></label>
+        <label id="emailGatewayTemplateRow" hidden>Template <input id="emailGatewayTemplate" placeholder="{TARGET} MSG EMAIL {EMAIL} {BODY}"></label>
+        <label>Maximum body <span><input id="emailGatewayMaxBody" type="number" min="1" max="500" step="1" value="60" required><small>characters</small></span></label>
+        <label>Character policy <select id="emailGatewayPolicy"><option value="js8">JS8</option><option value="ascii">Conservative ASCII</option><option value="aprs">APRS</option></select></label>
+      </div>
+      <p id="emailGatewayError" class="form-error" role="alert"></p>
+      <footer><button type="button" data-email-dialog-close>Cancel</button><button class="primary" type="submit">Save gateway</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="emailConfirmDialog" class="email-dialog email-confirm-dialog">
+    <form method="dialog">
+      <header><strong>Confirm radio email transmission</strong><button type="button" value="cancel" aria-label="Close">×</button></header>
+      <dl class="email-confirm-details"><dt>Gateway</dt><dd id="emailConfirmGateway"></dd><dt>Dial frequency</dt><dd id="emailConfirmFrequency"></dd><dt>Audio offset</dt><dd id="emailConfirmOffset"></dd><dt>Estimated JS8 frames</dt><dd id="emailConfirmFrames"></dd></dl>
+      <label class="email-confirm-payload">JS8Call payload <output id="emailConfirmPayload"></output></label>
+      <div class="email-privacy-warning"><strong>Open radio channel</strong><p>The email address and message are not private or encrypted. Other stations may receive, store, or forward them. Do not send passwords, access codes, health, payment, or other sensitive data.</p><p>RF transmission does not guarantee that the gateway received the message or that the email was delivered.</p></div>
+      <footer><button type="submit" value="cancel">Cancel</button><button id="emailConfirmSend" class="primary" type="submit" value="send">Tune and transmit</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="binConfirmDialog" class="email-dialog bin-confirm-dialog">
+    <form method="dialog">
+      <header><strong>Confirm JS8 file transfer</strong><button type="button" value="cancel" aria-label="Close">×</button></header>
+      <dl class="email-confirm-details"><dt>Peer</dt><dd id="binConfirmPeer"></dd><dt>File</dt><dd id="binConfirmFile"></dd><dt>JS8 profile</dt><dd id="binConfirmProfile"></dd><dt>Transfer plan</dt><dd id="binConfirmPlan"></dd><dt>SHA-256</dt><dd id="binConfirmHash" class="hash-value"></dd></dl>
+      <div class="email-privacy-warning"><strong>Long, open radio transmission</strong><p>The file is not encrypted. Confirm that the peer operator expects this transfer and that the frequency is suitable for extended high-duty-cycle traffic.</p><p>The OFFER starts a negotiated transfer. Data is sent only after the peer accepts it.</p></div>
+      <footer><button id="binCopyHash" type="button">COPY HASH</button><button type="submit" value="cancel">Cancel</button><button class="primary" type="submit" value="send">SEND OFFER</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="binIncomingDialog" class="email-dialog bin-confirm-dialog">
+    <form method="dialog">
+      <header><strong>Incoming JS8 file offer</strong><button type="button" value="reject" aria-label="Close">×</button></header>
+      <dl class="email-confirm-details"><dt>From</dt><dd id="binIncomingPeer"></dd><dt>File</dt><dd id="binIncomingFile"></dd><dt>Size</dt><dd id="binIncomingSize"></dd><dt>Hash identifier</dt><dd id="binIncomingHash" class="hash-value"></dd></dl>
+      <div class="email-privacy-warning"><strong>Untrusted radio data</strong><p>The callsign is not a cryptographic identity. Accepted data is stored without being opened and becomes downloadable only after CRC, size, and SHA-256 verification.</p></div>
+      <footer><button type="submit" value="reject">REJECT</button><button class="primary" type="submit" value="accept">ACCEPT</button></footer>
     </form>
   </dialog>
 
@@ -179,17 +225,37 @@
             <button id="sendButton" type="submit" hidden disabled aria-hidden="true" tabindex="-1">Send</button>
           </form>
         </section>
-        <section id="emailSession" class="planned-session" hidden>
-          <header><strong>EMAIL</strong><span>Planned — transport will be implemented later.</span></header>
-          <div class="planned-form">
-            <label>Email address <input type="email" placeholder="recipient@example.net" disabled></label>
-            <label>Server callsign <span class="server-field"><select disabled><option>Select a server</option></select><button type="button" disabled aria-label="Add server callsign">+</button></span></label>
-            <label>Short message <textarea placeholder="Short plain-text message" disabled></textarea></label>
-          </div>
+        <section id="emailSession" class="email-session" hidden>
+          <header><strong>EMAIL</strong><span>Short radio email through a configured JS8 gateway.</span></header>
+          <form id="emailComposer" class="email-form">
+            <label>Email address <input id="emailAddress" type="email" maxlength="254" autocomplete="off" placeholder="recipient@example.net" required></label>
+            <label>Gateway callsign <span class="gateway-field"><select id="emailGateway"><option value="">Add or select a gateway</option></select><button id="emailGatewayAdd" type="button" aria-label="Add gateway" title="Add gateway">+</button><button id="emailGatewayEdit" type="button" aria-label="Edit gateway" title="Edit gateway">✎</button><button id="emailGatewayDelete" type="button" aria-label="Delete gateway" title="Delete gateway">×</button></span></label>
+            <div id="emailGatewayDetails" class="email-gateway-details"><span>Target</span><code>—</code><span>Dial</span><code>—</code><span>Offset</span><code>—</code><span>Format</span><code>—</code></div>
+            <label>Short message <textarea id="emailMessage" rows="2" placeholder="Short plain-text message" required></textarea></label>
+            <small id="emailBudget" class="email-budget">Select a gateway to see the message limit.</small>
+            <label class="email-preview">JS8Call payload <output id="emailPreview">Complete the form to preview the exact radio payload.</output></label>
+            <p id="emailError" class="form-error" role="alert"></p>
+            <div class="email-submit-row"><span id="emailStatus">Draft is not stored in message history.</span><button id="emailSend" type="submit" disabled>TUNE AND SEND</button></div>
+          </form>
         </section>
-        <section id="binSession" class="planned-session" hidden>
-          <header><strong>BIN</strong><span>Planned — binary transfer will be implemented later.</span></header>
-          <div class="planned-form"><label>Binary file <input type="file" disabled></label><small>Select a recipient callsign in CHAT before a future point-to-point file transfer.</small></div>
+        <section id="binSession" class="bin-session" hidden>
+          <header><strong>BIN</strong><span>Reliable point-to-point transfer of small files using JS8 ~F1.</span></header>
+          <form id="binComposer" class="bin-form">
+            <label>Peer callsign <input id="binRecipient" type="text" maxlength="8" autocomplete="off" placeholder="Select a heard station"></label>
+            <label>Binary file <input id="binFile" type="file"></label>
+            <div id="binFileDetails" class="bin-file-details"><span>Size</span><code>—</code><span>Profile</span><code>—</code><span>Blocks</span><code>—</code><span>Estimate</span><code>—</code></div>
+            <label class="bin-expect"><input id="binPeerExpected" type="checkbox"> The peer operator expects this transfer.</label>
+            <p id="binError" class="form-error" role="alert"></p>
+            <div class="email-submit-row"><span id="binDraftStatus">Files are prepared locally and stored for resume.</span><button id="binOffer" type="submit" disabled>PREPARE OFFER</button></div>
+          </form>
+          <section id="binTransferPanel" class="bin-transfer-panel" hidden>
+            <header><div><strong id="binTransferTitle">File transfer</strong><small id="binTransferPeer"></small></div><span id="binTransferState" class="bin-state">IDLE</span></header>
+            <progress id="binProgress" max="1" value="0">0%</progress>
+            <div class="bin-progress-copy"><span id="binProgressText">0 / 0 blocks</span><span id="binTransferRate">— B/min</span><span id="binLastActivity">No activity</span></div>
+            <dl class="bin-transfer-details"><dt>Transfer ID</dt><dd id="binTransferId">—</dd><dt>SHA-256</dt><dd id="binTransferHash" class="hash-value">—</dd><dt>Last protocol message</dt><dd id="binProtocolMessage">—</dd></dl>
+            <div id="binTransferLog" class="bin-transfer-log" aria-live="polite"></div>
+            <footer><button id="binPause" type="button">PAUSE</button><button id="binResume" type="button" hidden>RESUME</button><button id="binStop" class="danger" type="button">STOP</button><button id="binDownload" class="primary" type="button" hidden>SAVE FILE</button></footer>
+          </section>
         </section>
       </details>
 
@@ -205,8 +271,8 @@
           <th><button type="button" data-station-sort="snr">SNR <span class="sort-arrow"></span></button></th>
           <th><button type="button" data-station-sort="offsetHz">Hz <span class="sort-arrow"></span></button></th>
           <th><button type="button" data-station-sort="submode">Speed <span class="sort-arrow"></span></button></th>
-          <th><button type="button" data-station-sort="distance">Direction · 1000 km <span class="sort-arrow"></span></button></th>
-          <th><button type="button" data-station-sort="lastSlotUtcMs">Last heard <span class="sort-arrow"></span></button></th>
+          <th><button type="button" data-station-sort="distance" title="Direction · distance in 1000 km" aria-label="Direction and distance in 1000 km">kkm <span class="sort-arrow"></span></button></th>
+          <th><button type="button" data-station-sort="lastSlotUtcMs" title="Last heard" aria-label="Last heard">Last <span class="sort-arrow"></span></button></th>
         </tr></thead><tbody id="stationRows"></tbody></table></div>
       </details>
 
@@ -236,17 +302,19 @@
     <a href="https://github.com/ok1hra/IC-705_Interface" target="_blank" rel="noopener">GitHub</a><span aria-hidden="true">|</span><a href="/THIRD-PARTY-NOTICES.txt" target="_blank" rel="noopener">Licenses</a>
   </footer>
 
-  <script src="/fw-version.js?v=20260718s"></script>
-  <script src="/js8-settings.js?v=20260718s"></script>
-  <script src="/js8-presets.js?v=20260718s"></script>
-  <script src="/js8-protocol.js?v=20260718s"></script>
-  <script src="/js8-timebase.js?v=20260718s"></script>
-  <script src="/js8-aud1.js?v=20260718s"></script>
-  <script src="/js8-audio.js?v=20260718s"></script>
-  <script src="/js8-tx.js?v=20260718s"></script>
-  <script src="/js8-core.js?v=20260718s"></script>
-  <script src="/js8-adapter.js?v=20260718s"></script>
-  <script src="/dxcc.js?v=20260718s"></script>
-  <script src="/data.js?v=20260718s"></script>
+  <script src="/fw-version.js?v=20260719d"></script>
+  <script src="/js8-settings.js?v=20260719d"></script>
+  <script src="/js8-email.js?v=20260719d"></script>
+  <script src="/js8-file-transfer.js?v=20260719d"></script>
+  <script src="/js8-presets.js?v=20260719d"></script>
+  <script src="/js8-protocol.js?v=20260719d"></script>
+  <script src="/js8-timebase.js?v=20260719d"></script>
+  <script src="/js8-aud1.js?v=20260719d"></script>
+  <script src="/js8-audio.js?v=20260719d"></script>
+  <script src="/js8-tx.js?v=20260719d"></script>
+  <script src="/js8-core.js?v=20260719d"></script>
+  <script src="/js8-adapter.js?v=20260719d"></script>
+  <script src="/dxcc.js?v=20260719d"></script>
+  <script src="/data.js?v=20260719d"></script>
 </body>
 </html>

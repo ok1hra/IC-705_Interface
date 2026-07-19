@@ -50,7 +50,7 @@ f.onload=()=>{
       {text:'K0OG: OK1HRA OLDER',callsigns:['K0OG','OK1HRA'],kinds:['directed','data'],submode:0,offsetHz:700,firstSlotUtcMs:now-3000,lastSlotUtcMs:now-3000},
       {text:'KN4CRD: GENERAL',callsigns:['KN4CRD'],kinds:['compound','data'],submode:0,offsetHz:750,firstSlotUtcMs:now-2500,lastSlotUtcMs:now-2500},
       {text:'KN4CRD: DL1ABC PRIVATE',callsigns:['KN4CRD','DL1ABC'],kinds:['directed','data'],submode:0,offsetHz:750,firstSlotUtcMs:now-2200,lastSlotUtcMs:now-2200},
-      {text:'KN4CRD: @HB HEARTBEAT EM73',callsigns:['KN4CRD'],kinds:['heartbeat'],submode:0,offsetHz:750,firstSlotUtcMs:now-2000,lastSlotUtcMs:now-2000},
+      {text:'KN4CRD: @HB EM73',callsigns:['KN4CRD'],kinds:['heartbeat'],submode:0,offsetHz:750,firstSlotUtcMs:now-2000,lastSlotUtcMs:now-2000},
       {text:'KN4CRD: OK1HRA FOR YOU',callsigns:['KN4CRD','OK1HRA'],kinds:['directed','data'],submode:0,offsetHz:750,firstSlotUtcMs:now-1800,lastSlotUtcMs:now-1800},
       {text:'K0OG: OK1HRA NEWEST',callsigns:['K0OG','OK1HRA'],kinds:['directed','data'],submode:0,offsetHz:700,firstSlotUtcMs:now-1000,lastSlotUtcMs:now-1000}
     ],calls:[
@@ -74,14 +74,22 @@ f.onload=()=>{
     f.contentWindow.__dataTest.setRadioFrequency(7078000);
     d.querySelector('#trxFrequency').click();
     const originalPreset=d.querySelector('[data-frequency="14078000"]');
-    const editingCall=d.querySelector('#myCall'),editingGrid=d.querySelector('#myGrid');
+    const editingCall=d.querySelector('#myCall'),editingGrid=d.querySelector('#myGrid'),editingTxGain=d.querySelector('#txGain');
+    const defaultTxGain=editingTxGain.value==='0.25';
     editingCall.focus();editingCall.value='N0';editingCall.dispatchEvent(new f.contentWindow.Event('input',{bubbles:true}));
     editingGrid.value='';editingGrid.dispatchEvent(new f.contentWindow.Event('input',{bubbles:true}));
+    editingTxGain.focus();editingTxGain.value='0.35';editingTxGain.dispatchEvent(new f.contentWindow.Event('input',{bubbles:true}));
+    f.contentWindow.__dataTest.setRadioConnection(true,'linked');
+    f.contentWindow.__dataTest.setAudioLive(false);
+    const connectedWithoutAudioIsNotLive=!d.querySelector('#linkState').textContent.includes('RX LIVE');
     setTimeout(()=>{
       try {
       const modemSettingsEditingStable=editingCall.value==='N0'&&editingGrid.value==='';
+      const txGainEditingStable=editingTxGain.value==='0.35';
       editingCall.value='OK1HRA';editingCall.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));
       editingGrid.value='JO70';editingGrid.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));
+      editingTxGain.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));
+      const savedTxGain=JSON.parse(f.contentWindow.localStorage.getItem('ic705.data.js8-settings')).modems.js8call.txGain;
       const currentPreset=d.querySelector('[data-frequency="14078000"]');
       const stationObserved={speed:d.querySelector('#stationRows tr[data-call="K0OG"] td:nth-child(4)')?.textContent.trim(),fallbackTitle:d.querySelector('#stationRows tr[data-call="K0OG"] .station-direction span')?.title,gridTitle:d.querySelector('#stationRows tr[data-call="KN4CRD"] .station-direction span')?.title,distance:d.querySelector('#stationRows tr[data-call="K0OG"] .station-distance')?.textContent};
       const overlay=d.querySelector('#waterfallOverlay'),overlayContext=overlay.getContext('2d'),hzX=hz=>Math.round((hz-500)/(2700-500)*overlay.width);
@@ -107,8 +115,12 @@ f.onload=()=>{
         frequencyScopedActivity:originalBandActivity.messages===6&&originalBandActivity.calls===3&&otherBandStartsEmpty.messages===0&&otherBandStartsEmpty.calls===0&&otherBandActivity.messages===1&&otherBandActivity.calls===1&&restoredBandActivity.messages===6&&restoredBandActivity.calls===3&&withinToleranceActivity.messages===6&&withinToleranceActivity.calls===3,
         emptyIdentityDefaults,
         modemSettingsEditingStable,
+        defaultTxGain,
+        txGainEditingStable,
+        txGainSaved:savedTxGain===0.35,
         reconnectVisible,
         reconnectRequested,
+        connectedWithoutAudioIsNotLive,
         english:d.body.textContent.includes('TX SESSION'),
         js8:d.querySelector('#modeSelect').value==='js8call',
         modemApi:['AudioSource','Modems','registerModem','Decoder','Encoder'].every(name=>name in f.contentWindow),
@@ -151,12 +163,14 @@ f.onload=()=>{
         leaveWarning:(()=>{const event=new f.contentWindow.Event('beforeunload',{cancelable:true});return f.contentWindow.dispatchEvent(event)===false&&event.defaultPrevented;})(),
         helpButton:d.querySelector('#trxHelpButton')?.textContent.trim()==='?',
         helpSteps:d.querySelectorAll('#trxHelpDialog .trx-setup-steps > li').length===8&&d.querySelector('#trxHelpDialog').textContent.includes('DATA MOD')&&d.querySelector('#trxHelpDialog').textContent.includes('WLAN'),
+        helpAudioPath:[...d.querySelectorAll('#trxHelpDialog code')].some(node=>{const text=node.textContent;return text.startsWith('MENU')&&text.includes('SET')&&text.includes('Connectors')&&text.includes('MOD Input')&&text.endsWith('WLAN MOD Level');}),
+        helpAudioLevels:(()=>{const codes=[...d.querySelectorAll('#trxHelpDialog code')].map(node=>node.textContent);return codes.includes('25%')&&codes.includes('TX audio gain 0.25')&&codes.includes('WLAN MOD Level 25%')&&!codes.includes('50%');})(),
         firstVisitHelp:window.firstVisitHelpObserved===true,
         txSafe:d.querySelector('#sendButton').disabled,
         worker:d.querySelector('#modemState').textContent.includes('ready'),
         loading:window.loadingObserved===true,
         directedCommandFrame:(()=>{const frames=f.contentWindow.Js8Protocol.buildReplyFrames({myCall:'OK1HRA',toCall:'K0OG',text:'SNR -12'}),decoded=f.contentWindow.Js8Protocol.decodeFrame({...frames[0],submode:0,offsetHz:1500,slotUtcMs:0});return frames.length===1&&frames[0].raw==='TBx2Q-uJkbaJ'&&frames[0].messageText==='OK1HRA: K0OG SNR -12'&&decoded.command===' SNR'&&decoded.number==='-12';})(),
-        heartbeatProtocolFrame:(()=>{const frames=f.contentWindow.Js8Protocol.buildHeartbeatFrames({myCall:'OK1HRA',grid:'JO70AA'});return frames.length===1&&frames[0].raw==='31-QkpgqOT6W'&&frames[0].messageText==='OK1HRA: @HB HEARTBEAT JO70';})()
+        heartbeatProtocolFrame:(()=>{const frames=f.contentWindow.Js8Protocol.buildHeartbeatFrames({myCall:'OK1HRA',grid:'JO70AA'}),decoded=f.contentWindow.Js8Protocol.decodeFrame({...frames[0],submode:0,offsetHz:1500,slotUtcMs:0});return frames.length===1&&frames[0].raw==='31-QkpgqOT6W'&&frames[0].messageText==='OK1HRA: @HB JO70'&&decoded.command==='HEARTBEAT'&&decoded.text==='OK1HRA: @HB JO70 ';})()
       };
       const sd=setupFrame.contentDocument,radioSection=sd.querySelector('#radioSection'),lanWarning=sd.querySelector('#trx1LanWarning');
       const gd=lanGateFrame.contentDocument,lanGate=gd.querySelector('#lanRequired');
@@ -189,7 +203,7 @@ f.onload=()=>{
       d.querySelector('#stationRows tr[data-call="KN4CRD"]').click();
       checks.stationSelect=d.querySelector('#recipient').value==='KN4CRD'&&f.contentWindow.__dataTest.selectedCall()==='KN4CRD';
       const recipientThread=d.querySelector('#chatThread').textContent;
-      checks.recipientTrafficFilter=recipientThread.includes('FOR YOU')&&recipientThread.includes('GENERAL')&&recipientThread.includes('HEARTBEAT')&&!recipientThread.includes('PRIVATE');
+      checks.recipientTrafficFilter=recipientThread.includes('FOR YOU')&&recipientThread.includes('GENERAL')&&recipientThread.includes('@HB EM73')&&!recipientThread.includes('HEARTBEAT')&&!recipientThread.includes('PRIVATE');
       d.querySelector('#messagePresetsButton').click();
       d.querySelector('[data-message-preset="snr"]').click();
       checks.snrPreset=d.querySelector('#messageInput').value==='SNR -12'&&d.querySelector('#messagePresetsMenu').hidden===true;
@@ -201,9 +215,33 @@ f.onload=()=>{
       checks.recipientClear=d.querySelector('#recipient').value===''&&f.contentWindow.__dataTest.selectedCall()==='';
       const txSessionMode=d.querySelector('#txSessionMode');
       if(txSessionMode){txSessionMode.value='EMAIL';change('#txSessionMode');}
-      checks.emailPlanned=d.querySelector('#emailSession')?.hidden===false&&d.querySelector('#sendButton').disabled;
+      d.querySelector('#emailGatewayAdd')?.click();
+      const setEmailField=(selector,value)=>{const input=d.querySelector(selector);input.value=value;input.dispatchEvent(new f.contentWindow.Event('input',{bubbles:true}));};
+      setEmailField('#emailGatewayName','Fixture APRS');setEmailField('#emailGatewayTarget','@APRSIS');setEmailField('#emailGatewayDial','7078000');setEmailField('#emailGatewayOffset','1500');
+      d.querySelector('#emailGatewayFormat').value='aprs-email2';change('#emailGatewayFormat');
+      setEmailField('#emailGatewayMaxBody','40');d.querySelector('#emailGatewayPolicy').value='aprs';
+      d.querySelector('#emailGatewayForm').requestSubmit();
+      setEmailField('#emailAddress','user@example.com');setEmailField('#emailMessage','TEST');
+      checks.emailReady=d.querySelector('#emailSession')?.hidden===false&&d.querySelector('#emailPreview').textContent==='@APRSIS CMD :EMAIL-2  :USER@EXAMPLE.COM TEST'&&d.querySelector('#emailSession').textContent.includes('Gateway callsign')&&d.querySelector('#emailSend').disabled;
       if(txSessionMode){txSessionMode.value='BIN';change('#txSessionMode');}
-      checks.binPlanned=d.querySelector('#binSession')?.hidden===false&&d.querySelector('#sendButton').disabled;
+      checks.binReady=d.querySelector('#binSession')?.hidden===false&&!d.querySelector('#binFile').disabled&&!d.querySelector('#binRecipient').disabled&&d.querySelector('#binOffer').disabled&&d.querySelector('#binSession').textContent.includes('Reliable point-to-point');
+      d.querySelector('#txSpeed').value='E';change('#txSpeed');
+      const slowLimits=d.querySelector('#binFileDetails').textContent;
+      d.querySelector('#txSpeed').value='C';change('#txSpeed');
+      const js840Limits=d.querySelector('#binFileDetails').textContent;
+      d.querySelector('#txSpeed').value='A';change('#txSpeed');
+      const normalLimits=d.querySelector('#binFileDetails').textContent;
+      checks.binLimits=slowLimits.includes('Hard limit')&&slowLimits.includes('1 KiB')&&js840Limits.includes('Hard limit')&&js840Limits.includes('8 KiB')&&normalLimits.includes('Recommended')&&normalLimits.includes('1 KiB')&&normalLimits.includes('2 KiB');
+      checks.binPrepared=false;
+      checks.binStorage=false;
+      const binInput=d.querySelector('#binFile'),oversizeFixture=new f.contentWindow.File([new Uint8Array(2049)],'too-large.bin',{type:'application/octet-stream'});
+      Object.defineProperty(binInput,'files',{configurable:true,value:[oversizeFixture]});change('#binFile');
+      checks.binOversizeRejected=f.contentWindow.__dataTest.fileProtocol().prepared===null&&d.querySelector('#binError').textContent.includes('exceeds')&&d.querySelector('#binOffer').disabled;
+      const binFixture=new f.contentWindow.File([new Uint8Array([0,1,2,3,4])],'tiny.bin',{type:'application/octet-stream'});
+      Object.defineProperty(binInput,'files',{configurable:true,value:[binFixture]});change('#binFile');
+      setTimeout(()=>{const prepared=f.contentWindow.__dataTest.fileProtocol().prepared;checks.binPrepared=prepared?.manifest.originalSize===5&&prepared?.manifest.blockCount===1&&prepared?.manifest.sha256Hex.length===64;},500);
+      const binStore=new f.contentWindow.Js8FileTransfer.TransferStore();
+      binStore.save({id:'SMOKE1',direction:'tx',state:'complete',blocks:[new Uint8Array([1,2,3])]}).then(()=>binStore.get('SMOKE1')).then(saved=>{checks.binStorage=saved?.blocks?.[0]?.[2]===3;return binStore.delete('SMOKE1');}).catch(()=>{});
       if(txSessionMode){txSessionMode.value='CHAT';change('#txSessionMode');}
       currentPreset.click();
       d.querySelector('#recipient').value='K0OG';change('#recipient');
@@ -241,7 +279,7 @@ f.onload=()=>{
           checks.txFailedVisual=d.querySelector('.chat-row.outgoing:last-child .tx-copy-failed')?.textContent==='OK1HRA: K0OG WILL FAIL';
           d.querySelector('#heartbeatButton').click();
           checks.heartbeatQueued=!d.querySelector('#txSummary').textContent.toLowerCase().includes('completed');
-          checks.heartbeatPayload=d.querySelector('#txPayload')?.textContent.includes('OK1HRA: @HB HEARTBEAT JO70');
+          checks.heartbeatPayload=d.querySelector('#txPayload')?.textContent.includes('OK1HRA: @HB JO70')&&!d.querySelector('#txPayload')?.textContent.includes('HEARTBEAT');
           let hbTries=0;
           const hbPoll=setInterval(()=>{
             const hbSummary=d.querySelector('#txSummary').textContent,hbCompleted=hbSummary.toLowerCase().includes('completed');

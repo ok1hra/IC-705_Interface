@@ -23,7 +23,7 @@
   const CHECKSUM_COMMANDS = new Set([5, 9, 10, 11, 12, 13, 24]);
   const DIRECTED_COMMANDS = COMMANDS.map((command, index) =>
     ({command, index, token:command.trim()}))
-    .filter(item => item.token && item.index !== 31 && !CHECKSUM_COMMANDS.has(item.index))
+    .filter(item => item.token && item.index !== 31)
     .sort((left, right) => right.token.length - left.token.length);
   DIRECTED_COMMANDS.push({command:" SNR?", index:0, token:"?"});
   const SPECIAL_CALLS = [
@@ -56,6 +56,14 @@
   const HUFF_ENCODE = Object.fromEntries(
     Object.entries(HUFF).map(([code, character]) => [character, code])
   );
+  // Stable literal prefix of the upstream JSC map. Dense frames are required
+  // for gateway payload characters (notably @, _, and :) absent from Huffman.
+  const JSC_LITERALS = ["E","T","A","O","I","N","S","H","R","D","L","C",
+    "U","M","W","F","G","Y","P","B",",",".","V","K","-","+","\"","?",
+    "!","'","X",")","(","0","J","1","Q","=","2",":","Z","3","5","4",
+    "9","8","6","7","_","/","&","$","%","#","@","*",">","<","[",
+    "]","{","}","|",";","^","`","~"," ","\\","\n"];
+  const JSC_LITERAL_INDEX = Object.fromEntries(JSC_LITERALS.map((value,index)=>[value,index]));
 
   function bytesOf(input) {
     return input instanceof Uint8Array ? input : new Uint8Array(input);
@@ -321,7 +329,7 @@
     let consumed = 0;
     for (const character of text) {
       const code = HUFF_ENCODE[character];
-      if (!code) throw new Error(`character not supported by JS8 Huffman: ${character}`);
+      if (!code) return {raw:"",consumed:0};
       if (bits.length + code.length >= 72) break;
       for (const bit of code) bits.push(bit === "1");
       consumed += 1;
@@ -332,6 +340,59 @@
     let value = 0n;
     for (const bit of bits) value = (value << 1n) | (bit ? 1n : 0n);
     return {raw: pack72(value), consumed};
+  }
+
+  function appendBits(bits,value,width) {
+    for(let shift=width-1;shift>=0;shift-=1)bits.push(((value>>shift)&1)===1);
+  }
+
+  function denseCodeword(index) {
+    const parts=[];
+    parts.unshift({value:(index%7)<<1,width:5});
+    let quotient=Math.floor(index/7);
+    while(quotient>0){
+      quotient-=1;
+      parts.unshift({value:(quotient%9)+7,width:4});
+      quotient=Math.floor(quotient/9);
+    }
+    const bits=[];
+    for(const part of parts)appendBits(bits,part.value,part.width);
+    return bits;
+  }
+
+  function packDenseData(input) {
+    const text=String(input).toUpperCase(),bits=[true,true];
+    let consumed=0;
+    for(const character of text){
+      const index=JSC_LITERAL_INDEX[character];
+      if(index==null)break;
+      const code=denseCodeword(index);
+      if(bits.length+code.length>=72)break;
+      bits.push(...code); consumed+=1;
+    }
+    if(consumed===0)return {raw:"",consumed:0};
+    const used=bits.length;
+    while(bits.length<72)bits.push(bits.length!==used);
+    let value=0n;
+    for(const bit of bits)value=(value<<1n)|(bit?1n:0n);
+    return {raw:pack72(value),consumed};
+  }
+
+  function packData(input) {
+    const huffman=packHuffmanData(input),dense=packDenseData(input);
+    const packed=huffman.consumed>dense.consumed?huffman:dense;
+    if(!packed.consumed)throw new Error(`character not supported by JS8: ${String(input)[0]||""}`);
+    return packed;
+  }
+
+  function checksum16(input) {
+    let crc=0;
+    for(const character of String(input)){
+      crc^=character.charCodeAt(0)&0xff;
+      for(let bit=0;bit<8;bit+=1)crc=(crc&1)?(crc>>>1)^0x8408:crc>>>1;
+    }
+    const alphabet="0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ+-./?";
+    return alphabet[Math.floor(crc/(41*41))]+alphabet[Math.floor(crc/41)%41]+alphabet[crc%41];
   }
 
   function packDirectedHeader(fromCall, toCall, command = 31, number = 0) {
@@ -372,9 +433,15 @@
       role:"directed", textStart:0, textEnd:layout.headerText.length,
       messageText:layout.messageText}];
     let remaining = layout.remainder;
+    if(layout.consumed&&CHECKSUM_COMMANDS.has(layout.index)&&remaining){
+      remaining=remaining.trimStart();
+      const skipAprsChecksum=String(toCall).trim().toUpperCase()==="@APRSIS"&&
+        (layout.index===9||layout.index===10);
+      if(!skipAprsChecksum)remaining+=` ${checksum16(remaining)}`;
+    }
     let textStart = layout.headerText.length;
     while (remaining) {
-      const packed = packHuffmanData(remaining);
+      const packed = packData(remaining);
       const textEnd = textStart + packed.consumed;
       frames.push({raw:packed.raw, frameType:0, role:"data", textStart, textEnd,
                    messageText:layout.messageText});
@@ -395,7 +462,7 @@
     const packed11 = BigInt((number >> 5) & 0x7ff);
     const packed8 = BigInt((number & 0x1f) << 3); // bits3=0: HEARTBEAT, not CQ.
     const value = (((BigInt(FRAME.HEARTBEAT) << 50n) | callsign) << 11n) | packed11;
-    const messageText = `${String(myCall).trim().toUpperCase()}: @HB HEARTBEAT${grid4 ? ` ${grid4}` : ""}`;
+    const messageText = `${String(myCall).trim().toUpperCase()}: @HB${grid4 ? ` ${grid4}` : ""}`;
     return [{raw:pack72((value << 8n) | packed8), frameType:3, role:"heartbeat",
              textStart:0, textEnd:messageText.length, messageText}];
   }
@@ -475,9 +542,12 @@
       const grid = unpackGrid(number & 0x7fff);
       const target = isCq ? "@ALLCALL" : "@HB";
       const command = isCq ? CQ[bits3] : "HEARTBEAT";
+      const text = isCq
+        ? `${callsign}: ${target} ${command}${grid ? ` ${grid}` : ""} `
+        : `${callsign}: ${target}${grid ? ` ${grid}` : ""} `;
       return {kind: isCq ? "cq" : "heartbeat", protocolType: flag, from: callsign,
               to: target, command, grid, callsigns: [callsign],
-              text: `${callsign}: ${target} ${command}${grid ? ` ${grid}` : ""} `};
+              text};
     }
     let extra = "";
     if (number <= NBASEGRID) extra = ` ${unpackGrid(number)}`;
@@ -574,7 +644,7 @@
   }
 
   return {ActivityStore, FRAME, JscDictionary, buildCqFrames, buildHeartbeatFrames, buildReplyFrames,
-          formatDirectedMessage,
+          checksum16, formatDirectedMessage,
           buildTxFrames, decodeFrame,
           pack72, unpack72};
 });

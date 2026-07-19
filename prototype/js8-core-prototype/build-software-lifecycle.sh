@@ -8,6 +8,7 @@ node "$prototype_dir/transport/ws_audio_source_smoke.js"
 node "$prototype_dir/integration/adapter_smoke.js"
 sh "$prototype_dir/build-firmware-aud1-smoke.sh"
 sh "$prototype_dir/build-firmware-tx-gate-smoke.sh"
+sh "$prototype_dir/build-firmware-aud1-ws-parser-smoke.sh"
 sh "$prototype_dir/build-ui-smoke.sh" --screenshots
 sh "$prototype_dir/build-browser-audio-source.sh"
 echo "SOFTWARE LIFECYCLE PASS"

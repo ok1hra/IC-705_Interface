@@ -58,7 +58,7 @@ public:
 
     state = LAN_AYT;
     stateSince = millis();
-    lastRxMs = millis();
+    lastCtrlRxMs = millis();
     lastAyt = 0; lastPing = 0; lastIdle = 0;
     Serial.print("LAN | begin -> "); Serial.print(radioIP);
     Serial.print(":"); Serial.println(ctrlPort);
@@ -123,6 +123,7 @@ public:
     audioUdp.beginPacket(radioIP, audioPort);
     audioUdp.write(pk, total);
     audioUdp.endPacket();
+    audioLastIdle = millis();
   }
 
   void loop() {
@@ -130,6 +131,7 @@ public:
     uint32_t now = millis();
 
     pumpControl();
+    if (state == LAN_FAILED) return;
     if (civPort) pumpCiv();
     if (audioOpened) pumpAudio();
 
@@ -148,16 +150,61 @@ public:
         if (now - civLastAyt >= 500) { sendCtrl(civUdp, civMyId, civRemoteId, 0x03, 0); civLastAyt = now; }
       } else {
         if (now - civLastPing >= 500) { sendPing(civUdp, civMyId, civRemoteId, civPingSeq++); civLastPing = now; }
-        if (now - civLastIdle >= 100) { sendTracked(civUdp, civPkt0(0x00), 0x10); civLastIdle = now; }
-        // radio sends no "ready" on CI-V — open 0.5 s after IAmHere, then retry
-        if (!civOpenSent && now - civHereTime >= 500) {
-          Serial.println("LAN | civ: no ready, opening anyway");
-          civOpenSent = true; sendCivOpenClose(false); civNextOpen = now + 500;
+        // IC-705 can stream radio->client data before this exchange completes,
+        // but it drops client->radio CI-V commands. Never confuse that
+        // half-connection with an open command channel: retry Ready until the
+        // radio acknowledges it, then (and only then) send CI-V open.
+        if (!civGotReady && now - civLastReady >= 500) {
+          sendCtrl(civUdp, civMyId, civRemoteId, 0x06, 1);
+          civLastReady = now;
+          if (!civReadyWaitAnnounced) {
+            Serial.println("LAN | civ: waiting for ready");
+            civReadyWaitAnnounced = true;
+          }
         }
-        if (civOpenSent && !civGotData && (int32_t)(now - civNextOpen) >= 0) {
+        // A received frame only proves that CI-V worked at that instant. The
+        // stream can later wedge while control/audio pings remain healthy.
+        // Several unsupported telemetry reads can also legitimately produce a
+        // >2 s reply gap, so first probe frequency on the existing stream. Only
+        // reopen CI-V if this known-supported liveness command also times out.
+        bool civSilent = civGotData && now - lastCivDataMs >= 2000;
+        if (civSilent && !civRecovering && !civHealthProbePending) {
+          // Preempt a timed-out auxiliary request; normal polling stays gated
+          // until this probe either receives its 03 reply or enters recovery.
+          civRequestPending = false;
+          uint8_t b[]={0x03}; sendCiv(b,1);
+          civHealthProbePending = true;
+          civHealthProbeSentMs = now;
+          lastFreqPoll = now;
+        } else if (civHealthProbePending && now - civHealthProbeSentMs >= 1000) {
+          civHealthProbePending = false;
+          civRecovering = true;
+          civRecoveryStartedMs = now;
+          civGotData = false;
+          civRequestPending = false;
+          civNextOpen = now;
+          Serial.println("LAN | CAT probe timeout, reopening CI-V stream");
+        }
+        if (civRecovering && now - civRecoveryStartedMs >= 6000) {
+          Serial.println("LAN | CAT recovery failed, reconnecting session");
+          state = LAN_FAILED;
+          return;
+        }
+        if (civGotReady && civOpenSent && !civGotData
+            && (int32_t)(now - civNextOpen) >= 0) {
           sendCivOpenClose(false); civNextOpen = now + 500;
         }
-        if (civOpenSent && !scopeOff) {
+        // Establish request/reply health with one conservative command before
+        // starting the telemetry rotation. Transceive broadcasts remain useful
+        // UI input, but do not satisfy this addressed E1 probe.
+        if (civGotReady && civOpenSent && !civGotData && !civHealthProbePending
+            && now - lastFreqPoll >= 500
+            && civCanSendRequest(now)) {
+          uint8_t b[]={0x03}; sendCiv(b,1);
+          lastFreqPoll = now;
+        }
+        if (civGotReady && civOpenSent && civGotData && !civHealthProbePending && !scopeOff
+            && civCanSendRequest(now)) {
           sendCivFrame3(0x27, 0x11, 0x00);       // disable unsolicited scope stream
           scopeOff = true;
           lastFreqPoll = now;
@@ -165,17 +212,29 @@ public:
         // CI-V remains a serial command stream even when transported over UDP.
         // Pace one request per tick; sending freq+mode+telemetry as a burst made
         // the IC-705 commonly answer the first (frequency) and drop read-mode.
-        if (civOpenSent && scopeOff && now - lastFreqPoll >= 100) {
+        if (civGotReady && civOpenSent && civGotData && !civHealthProbePending
+            && scopeOff && now - lastFreqPoll >= 100
+            && civCanSendRequest(now)) {
           switch (auxRot) {
             case 0: { uint8_t b[]={0x03};       sendCiv(b,1); break; } // frequency
             case 1: { uint8_t b[]={0x26,0x00};  sendCiv(b,2); break; } // selected mode+data+filter
-            case 2: { uint8_t b[]={0x15,0x02};  sendCiv(b,2); break; } // S-meter
-            case 3: { uint8_t b[]={0x15,0x11};  sendCiv(b,2); break; } // power meter
-            default: sendAuxRot(auxRot - 4); break;
+            case 2: {
+              // Legacy fallback for radios/configurations that do not answer
+              // 26 00. Once selected-mode works, avoid overwriting USB-D with
+              // the data-mode-blind 04 response.
+              if (!civSelectedModeSeen) { uint8_t b[]={0x04}; sendCiv(b,1); }
+              break;
+            }
+            case 3: { uint8_t b[]={0x15,0x02};  sendCiv(b,2); break; } // S-meter
+            case 4: { uint8_t b[]={0x15,0x11};  sendCiv(b,2); break; } // power meter
+            default: sendAuxRot(auxRot - 5); break;
           }
-          auxRot = (auxRot + 1) % 14;
+          auxRot = (auxRot + 1) % 15;
           lastFreqPoll = now;
         }
+        // sendTracked() resets civLastIdle. Put the idle check after open/data
+        // so a useful packet due on this tick suppresses a redundant idle.
+        if (now - civLastIdle >= 100) { sendTracked(civUdp, civPkt0(0x00), 0x10); }
       }
     }
 
@@ -193,17 +252,11 @@ public:
       Serial.println("LAN | timeout in state, giving up");
       state = LAN_FAILED;
     }
-    // Whole-session watchdog catches a complete radio/WiFi outage.
-    if (state == LAN_CONNECTED && millis() - lastRxMs > 6000) {
-      Serial.println("LAN | no packets 6s, link lost");
-      state = LAN_FAILED;
-    }
-    // Control and audio pings can remain alive after the CI-V command channel
-    // has wedged. We continuously poll several CAT values, so six seconds
-    // without one valid non-scope frame FROM the radio means the usable CAT
-    // link is dead even if the surrounding UDP session still answers pings.
-    if (state == LAN_CONNECTED && millis() - lastCivDataMs > 6000) {
-      Serial.println("LAN | no valid CI-V replies 6s, CAT link lost");
+    // Whole-session health belongs to the authenticated control channel.
+    // CI-V retransmit requests or an open browser audio socket must not keep a
+    // dead radio login reported as CONNECTED.
+    if (state == LAN_CONNECTED && millis() - lastCtrlRxMs > 6000) {
+      Serial.println("LAN | no control packets 6s, link lost");
       state = LAN_FAILED;
     }
   }
@@ -237,9 +290,13 @@ private:
   uint16_t civPort = 0, audioPort = 0;
 
   // CI-V channel progress
-  bool civGotHere = false, civOpenSent = false, civGotData = false, scopeOff = false;
-  uint32_t civHereTime = 0, civNextOpen = 0, lastFreqPoll = 0, lastCivDataMs = 0, lastRxMs = 0;
-  uint32_t civLastAyt = 0, civLastPing = 0, civLastIdle = 0;
+  bool civGotHere = false, civGotReady = false, civOpenSent = false, civGotData = false, scopeOff = false;
+  bool civRecovering = false, civReadyWaitAnnounced = false, civRequestPending = false;
+  bool civHealthProbePending = false;
+  bool civSelectedModeSeen = false;
+  uint32_t civNextOpen = 0, lastFreqPoll = 0, lastCivDataMs = 0, lastCtrlRxMs = 0;
+  uint32_t civLastAyt = 0, civLastReady = 0, civLastPing = 0, civLastIdle = 0;
+  uint32_t civRequestSentMs = 0, civHealthProbeSentMs = 0, civRecoveryStartedMs = 0;
   uint8_t auxRot = 0;
 
   // ---- RX audio channel ----
@@ -262,11 +319,12 @@ private:
 
   uint8_t buf[1500];
 
-  // A blocked web response can keep the cooperative loop away from UDP for
-  // more than a second. Preserve enough control/CI-V tracked packets to answer
-  // the radio's immediate retransmit request after the loop resumes.
-  IcomLanTxHistory<0x90, 8> ctrlTxHistory;
-  IcomLanTxHistory<64, 16> civTxHistory;
+  // Match the protocol's roughly ten-second replay horizon. Eight/sixteen
+  // entries covered less than two seconds at the 100 ms channel cadence, so a
+  // blocked cooperative loop evicted exactly the packets the radio later
+  // requested and the radio then stopped accepting subsequent CAT commands.
+  IcomLanTxHistory<0x90, 128> ctrlTxHistory;
+  IcomLanTxHistory<64, 128> civTxHistory;
 
   // ---- little/big-endian writers ----
   static void putLE16(uint8_t*p,uint16_t v){p[0]=v;p[1]=v>>8;}
@@ -337,6 +395,9 @@ private:
     if (&u == &ctrlUdp) ctrlTxHistory.remember(packetSeq, buf, len);
     else if (&u == &civUdp) civTxHistory.remember(packetSeq, buf, len);
     u.beginPacket(radioIP, currentRemote(u)); u.write(buf, len); u.endPacket();
+    if (&u == &ctrlUdp) lastIdle = millis();
+    else if (&u == &civUdp) civLastIdle = millis();
+    else audioLastIdle = millis();
   }
 
   bool resendTracked(WiFiUDP& u, uint16_t sequence) {
@@ -367,11 +428,23 @@ private:
       if (!resendTracked(u, sequence)) fillMissingTracked(u, sequence);
       return true;
     }
-    // A variable-length request carries a little-endian sequence list after
-    // the common 16-byte header.
-    for (int at = 0x10; at + 1 < length; at += 2) {
-      uint16_t sequence = getLE16(packet+at);
-      if (!resendTracked(u, sequence)) fillMissingTracked(u, sequence);
+    // A variable-length request carries inclusive little-endian start/end
+    // ranges, not a flat sequence list. IC-705 also commonly duplicates each
+    // range in the same datagram. Treating the endpoints as individual packets
+    // produced the live BE,C5 -> BF,C4 -> C0,C3 retry pattern and stalled CAT.
+    static const uint16_t MAX_RETRANSMIT_RANGE = 50;
+    for (int at = 0x10; at + 3 < length; at += 4) {
+      uint16_t first = getLE16(packet+at);
+      uint16_t last = getLE16(packet+at+2);
+      uint16_t count = (uint16_t)(last - first) + 1;
+      if (count == 0 || count > MAX_RETRANSMIT_RANGE) {
+        Serial.println("LAN | retransmit range rejected");
+        continue;
+      }
+      for (uint16_t offset = 0; offset < count; ++offset) {
+        uint16_t sequence = (uint16_t)(first + offset);
+        if (!resendTracked(u, sequence)) fillMissingTracked(u, sequence);
+      }
     }
     return true;
   }
@@ -479,6 +552,8 @@ private:
     putBE16(buf+0x13, civDataSeq++);       // CI-V sendseq (BE), separate counter
     memcpy(buf+0x15, fr, fl);
     sendTracked(civUdp, 0x15 + fl, 0x15);
+    civRequestPending = true;
+    civRequestSentMs = millis();
   }
   void sendCivFrame3(uint8_t a, uint8_t b, uint8_t c) { uint8_t f[]={a,b,c}; sendCiv(f,3); }
 
@@ -499,6 +574,16 @@ private:
     }
   }
 
+  // CI-V remains a serial request/reply stream inside UDP. A new command may
+  // follow an addressed radio response immediately, or an unanswered command
+  // after a bounded timeout so one unsupported query cannot stop the rotation.
+  bool civCanSendRequest(uint32_t now) {
+    if (!civRequestPending) return true;
+    if (now - civRequestSentMs < 500) return false;
+    civRequestPending = false;
+    return true;
+  }
+
   // send the stream request once, only after BOTH auth 0x05 ack and caps arrived
   void maybeRequestStream() {
     if (authOk && haveCaps && !streamReqSent) {
@@ -509,9 +594,9 @@ private:
   }
 
   void reauthMaybe(uint32_t now) {
-    // renew the token well before its ~60 s expiry (safety margin against the
-    // radio dropping the session on token timeout)
-    if (authOk && now - lastReauth >= 30000) { sendToken(0x05); lastReauth = now; }
+    // Match the reference client renewal cadence. Renewing twice as often adds
+    // tracked control traffic without improving session liveness.
+    if (authOk && now - lastReauth >= 60000) { sendToken(0x05); lastReauth = now; }
   }
 
   // ---- receive ----
@@ -520,7 +605,7 @@ private:
     while ((n = ctrlUdp.parsePacket()) > 0) {
       int r = ctrlUdp.read(buf, sizeof(buf));
       if (r < 0x10) continue;
-      lastRxMs = millis();          // any packet proves the link is alive
+      lastCtrlRxMs = millis();      // authenticated session health is control-channel health
       handleControl(buf, r);
     }
   }
@@ -529,7 +614,6 @@ private:
     while ((n = civUdp.parsePacket()) > 0) {
       int r = civUdp.read(buf, sizeof(buf));
       if (r < 0x10) continue;
-      lastRxMs = millis();
       handleCiv(buf, r);
     }
   }
@@ -560,6 +644,7 @@ private:
       uint16_t tr = getLE16(r+0x1a);
       Serial.print("LAN | login response err=0x"); Serial.println(err, HEX);
       if (err == 0xFEFFFFFF) { Serial.println("LAN | BAD USERNAME/PASSWORD"); state = LAN_FAILED; return; }
+      if (err != 0) { Serial.println("LAN | login rejected"); state = LAN_FAILED; return; }
       if (tr == tokRequest) {
         token = getLE32(r+0x1c);
         sendToken(0x02); sendToken(0x05);              // confirm + auth
@@ -569,6 +654,13 @@ private:
     }
     if (n == 0x40) {                                   // auth response
       if (r[0x14] == 0x02 && r[0x15] == 0x05) {
+        uint32_t err = getLE32(r+0x30);
+        if (err != 0) {
+          authOk = false;
+          Serial.print("LAN | token auth rejected err=0x"); Serial.println(err, HEX);
+          state = LAN_FAILED;
+          return;
+        }
         authOk = true; lastReauth = millis();
         if (!authAnnounced) { Serial.println("LAN | auth OK"); authAnnounced = true; }
         maybeRequestStream();
@@ -577,7 +669,16 @@ private:
     }
     if (n == 0x50) {                                   // status (stream ports)
       uint32_t err = getLE32(r+0x30);
-      if (err == 0xFFFFFFFF) { Serial.println("LAN | stream refused (reboot radio)"); state = LAN_FAILED; return; }
+      if (r[0x40] == 0x01) {
+        Serial.println("LAN | radio disconnected session");
+        state = LAN_FAILED;
+        return;
+      }
+      if (err != 0) {
+        Serial.print("LAN | stream refused err=0x"); Serial.println(err, HEX);
+        state = LAN_FAILED;
+        return;
+      }
       uint16_t cp = getBE16(r+0x42);
       if (cp == 0) {
         // radio still holding a prior session — fast-fail so we back off and retry
@@ -613,14 +714,17 @@ private:
     civUdp.begin(50002);
     civMyId = mkId(50002);
     civRemoteId = 0;
-    civGotHere = civOpenSent = civGotData = scopeOff = false;
+    civGotHere = civGotReady = civOpenSent = civGotData = scopeOff = false;
+    civRecovering = civReadyWaitAnnounced = civRequestPending = civSelectedModeSeen = false;
+    civHealthProbePending = false;
+    civRecoveryStartedMs = 0;
     civSendSeq = 1;
     civTxHistory.clear();
     civDataSeq = 0;
     lastCivDataMs = millis();
     lastFreqPoll = 0;
     auxRot = 0;
-    civLastAyt = civLastPing = civLastIdle = 0;
+    civLastAyt = civLastReady = civLastPing = civLastIdle = 0;
     setState(LAN_CIV_AYT);
   }
 
@@ -640,7 +744,6 @@ private:
     while ((n = audioUdp.parsePacket()) > 0) {
       int r = audioUdp.read(buf, sizeof(buf));
       if (r < 0x10) continue;
-      lastRxMs = millis();
       handleAudio(buf, r);
     }
   }
@@ -680,14 +783,22 @@ private:
     if (handleRetransmitRequest(civUdp, r, n)) return;
     if (n == 0x10) {
       if (type == 0x04 && !civGotHere) {
-        civGotHere = true; civRemoteId = sentid; civHereTime = millis();
+        civGotHere = true; civRemoteId = sentid;
         Serial.println("LAN | civ: I am here");
         sendCtrl(civUdp, civMyId, civRemoteId, 0x06, 1);
+        civLastReady = millis();
         setState(LAN_CIV_OPEN);
         maybeConnected();            // data may have raced ahead of this handshake
       } else if (type == 0x06) {                       // ready (rare on IC-705)
         civRemoteId = sentid;
-        if (!civOpenSent) { civOpenSent = true; sendCivOpenClose(false); civNextOpen = millis()+500; }
+        civGotReady = true;
+        if (!civOpenSent) {
+          Serial.println("LAN | civ: ready");
+          civOpenSent = true;
+          sendCivOpenClose(false);
+          civNextOpen = millis()+500;
+          lastFreqPoll = millis()-500;
+        }
       }
       return;
     }
@@ -707,6 +818,9 @@ private:
         i = e + 1;
       }
       if (gotValidRadioFrame) {
+        if (civRecovering) Serial.println("LAN | CAT replies restored");
+        civRecovering = false;
+        civRecoveryStartedMs = 0;
         civGotData = true;
         lastCivDataMs = millis();
         maybeConnected();            // first real radio frame after handshake -> CONNECTED
@@ -726,7 +840,15 @@ private:
     // NOTE: state is intentionally NOT driven here — see maybeConnected(). A radio
     // that streams CI-V data before finishing its civ handshake used to flip the
     // state (and the log) CIV_OPEN<->CONNECTED on every frame.
-    return true;
+    // A transceive broadcast (to=0x00, cmd=0x00) is useful radio state while
+    // tuning, but it does not prove that the radio accepts our E1 CAT polls.
+    bool addressedReply = f[2] == 0xE1;
+    if (addressedReply) {
+      civRequestPending = false;
+      if (f[4] == 0x03) civHealthProbePending = false;
+      if (f[4] == 0x26 && len >= 7 && f[5] == 0x00) civSelectedModeSeen = true;
+    }
+    return addressedReply;
   }
 
   // Single promotion point to LAN_CONNECTED: reached only once the civ handshake

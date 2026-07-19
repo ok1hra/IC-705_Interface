@@ -104,7 +104,7 @@ bool cwIpOnConnect  = true;       // announce WiFi IP via CW on first BT connect
 volatile bool cwIpSendPending = false;
 
 #define LOOP_WARN_MS 200
-#define REV 20260718
+#define REV 20260719
 #define WIFI
 #define UDP_TO_FSK
 #define WDT         // watchdog timer
@@ -354,6 +354,7 @@ char CwMsg[37] = "";
 #include <TrxNet.h>
 #include "icomLanClient.h"      // LAN CI-V transport (alternative to BT)
 #include "aud1_tx_state.h"      // shared TX-state predicates used by native regression tests
+#include "aud1_ws_parser.h"     // incremental, non-blocking browser WebSocket framing
 IcomLanClient lanClient;
 bool    lanMode = true;         // true when transceiverType == "IC-705-LAN" (LAN is the default)
 String  lanRadioIp = "";        // radio IP for LAN mode
@@ -414,6 +415,9 @@ int incomingByte = 0;   // for incoming serial data
   uint32_t aud1TxDeadlineMs = 0, aud1TxPrebufferSamples = 0;
   uint64_t aud1TxExpectedSample = 0, aud1TxTotalSamples = 0, aud1TxConsumedUlaw = 0;
   bool aud1TxLastSeen = false;
+  Aud1WsParser aud1WsParser;
+  static const size_t AUD1_WS_RX_BYTE_BUDGET = 32768; // yield even when browser continuously streams
+  static const uint32_t AUD1_WS_SLOT_BACKLOG_GRACE_MS = 100;
   String DxcHost = "";
   uint16_t DxcPort = 7300;
   IPAddress DxcHostIp;                // cached resolve — hostByName blocks the loop for seconds
@@ -612,7 +616,7 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   void audioPttOn(void);
   void audioPttOff(void);
   void aud1TxAbort(const String& reason, bool notify = true);
-  void aud1TxTick(void);
+  void aud1TxTick(bool deferPrebufferMiss = false);
   void AudioDisconnectWs(void);
   bool AudioHandleWsUpgrade(WiFiClient& webClient, const String& request);
   void AudioHandleWsClient(void);
@@ -3263,8 +3267,8 @@ void lanClientLoop(){
     if (lanClient.failed()) {
       lanClient.stop();                 // sends disconnect/token-release -> state IDLE
       lanRetryAt = millis() + lanBackoff;
-      if (lanBackoff < 20000) lanBackoff *= 2;
       Serial.print("LAN | reconnect in "); Serial.print(lanBackoff/1000); Serial.println("s");
+      if (lanBackoff < 20000) lanBackoff *= 2;
     } else if (lanClient.status() == IcomLanClient::LAN_IDLE && lanRetryAt && millis() >= lanRetryAt) {
       lanRetryAt = 0;
       IPAddress rip;
@@ -5508,12 +5512,18 @@ static size_t aud1RingRead(uint8_t* output, size_t count){
   return read;
 }
 
-void aud1TxTick(){
+void aud1TxTick(bool deferPrebufferMiss){
   uint32_t now = millis();
   if(aud1TxState == AUD1_TX_READY || aud1TxState == AUD1_TX_PREBUFFER){
     if((int32_t)(now - aud1TxTargetMs) < 0) return;
     size_t required = (aud1TxPrebufferSamples + 5) / 6;
-    if(aud1TxExpectedSample < aud1TxPrebufferSamples || aud1TxUsed < required){ aud1TxAbort("TX prebuffer missed slot"); return; }
+    if(aud1TxExpectedSample < aud1TxPrebufferSamples || aud1TxUsed < required){
+      // A complete packet may already be queued behind a fragmented TCP read.
+      // Give the non-blocking parser a short, bounded chance to consume only
+      // that backlog; never wait here and never key without the full prebuffer.
+      if(deferPrebufferMiss && (int32_t)(now - aud1TxTargetMs) <= (int32_t)AUD1_WS_SLOT_BACKLOG_GRACE_MS) return;
+      aud1TxAbort("TX prebuffer missed slot"); return;
+    }
     audioPttOn();
     if(!audioTxKeyed){ aud1TxAbort("PTT command failed"); return; }
     aud1TxState = AUD1_TX_STREAM; aud1TxNextDrainMs = now;
@@ -5548,6 +5558,7 @@ void AudioDisconnectWs(){
   else
     aud1TxResetState();
   if(AudioWsClient.connected()) AudioWsClient.stop();
+  aud1WsParser.reset();
   lanClient.stopRxAudio();
 }
 
@@ -5589,8 +5600,10 @@ static void aud1HandleControl(const String& json){
   uint32_t txId = (uint32_t)aud1JsonU64(json, "txId");
   if(type == "tx.abort"){
     if((aud1TxState == AUD1_TX_READY || aud1TxState == AUD1_TX_PREBUFFER ||
-        aud1TxState == AUD1_TX_STREAM) && (!txId || txId == aud1TxId))
-      aud1TxAbort("operator abort");
+        aud1TxState == AUD1_TX_STREAM) && (!txId || txId == aud1TxId)){
+      String reason = extractJsonString(json, "reason");
+      aud1TxAbort(reason.length() && reason != "operator" ? String("client abort: ") + reason : "operator abort");
+    }
     return;
   }
   if(type != "tx.prepare") return;
@@ -5640,10 +5653,12 @@ static bool aud1AcceptTxPacket(const uint8_t* wire, size_t length){
   uint16_t flags = aud1GetBE16(wire+6);
   bool first = (flags & 0x0001) != 0, last = (flags & 0x0002) != 0;
   size_t samples = (length-40)/2, ulawSamples = samples/6;
+  if(aud1TxUsed + ulawSamples > AUD1_TX_RING_SIZE){
+    aud1TxAbort("TX ring overflow before write"); return false;
+  }
   if((aud1TxExpectedSequence == 0) != first || (flags & ~0x0003) != 0 ||
      aud1TxExpectedSample + samples > aud1TxTotalSamples ||
      aud1TxReceivedPackets + 1 > aud1TxExpectedPackets ||
-     aud1TxUsed + ulawSamples > AUD1_TX_RING_SIZE ||
      (last && (aud1TxExpectedSample + samples != aud1TxTotalSamples ||
                aud1TxReceivedPackets + 1 != aud1TxExpectedPackets)) ||
      (!last && aud1TxReceivedPackets + 1 == aud1TxExpectedPackets)){
@@ -5685,6 +5700,7 @@ bool AudioHandleWsUpgrade(WiFiClient& webClient, const String& request){
   audioStreamId = esp_random(); if(audioStreamId == 0) audioStreamId = 1;
   audioRxSequence = 0; audioRxFirstSample = 0; audioRxFirst = true; audioRxDiscontinuity = false;
   audioRadioSequenceValid = false; audioRadioExpectedSequence = 0;
+  aud1WsParser.reset();
   aud1TxResetState(); aud1TxId = 0;
   String hello = "{\"type\":\"hello\",\"protocol\":\"AUD1\",\"version\":1,\"streamId\":" +
                  String(audioStreamId) + ",\"rx\":[{\"kind\":\"RX_ULAW\",\"sampleRate\":8000}]," +
@@ -5701,47 +5717,55 @@ void AudioHandleWsClient(){
       aud1TxAbort("WebSocket disconnected", false);
     if(lanClient.rxAudioActive()) lanClient.stopRxAudio();
     audioTxLen = 0;
+    aud1WsParser.reset();
     return;
   }
-  // Browser -> ESP32: JSON TX intent and AUD1 TX_PCM16 packets.
-  // Drain already-arrived frames before checking the TX slot. Otherwise a
-  // packet waiting in the TCP buffer at the boundary is mistaken for a missed
-  // prebuffer and all following packets become continuity errors.
-  while(AudioWsClient.available() >= 2){
-    uint8_t hdr[2];
-    if(AudioWsClient.read(hdr, 2) != 2){ AudioDisconnectWs(); return; }
-    uint8_t opcode = hdr[0] & 0x0F;
-    bool masked = (hdr[1] & 0x80) != 0;
-    uint64_t payloadLen = hdr[1] & 0x7F;
-    if(payloadLen == 126){
-      uint8_t ext[2];
-      while(AudioWsClient.connected() && AudioWsClient.available() < 2) delay(1);
-      if(AudioWsClient.read(ext, 2) != 2){ AudioDisconnectWs(); return; }
-      payloadLen = (uint16_t(ext[0]) << 8) | uint16_t(ext[1]);
-    }else if(payloadLen == 127){
-      uint8_t ext[8];
-      while(AudioWsClient.connected() && AudioWsClient.available() < 8) delay(1);
-      if(AudioWsClient.read(ext, 8) != 8){ AudioDisconnectWs(); return; }
-      payloadLen = 0;
-      for(int i = 0; i < 8; i++) payloadLen = (payloadLen << 8) | ext[i];
-    }
-    uint8_t maskKey[4] = {0,0,0,0};
-    if(masked){
-      while(AudioWsClient.connected() && AudioWsClient.available() < 4) delay(1);
-      if(AudioWsClient.read(maskKey, 4) != 4){ AudioDisconnectWs(); return; }
-    }
-    if(payloadLen > 2048){ AudioDisconnectWs(); return; }
-    static uint8_t payload[2049];
-    size_t needed = size_t(payloadLen);
-    while(AudioWsClient.connected() && AudioWsClient.available() < int(needed)) delay(1);
-    if(needed > 0 && AudioWsClient.read(payload, needed) != int(needed)){ AudioDisconnectWs(); return; }
-    if(masked){ for(size_t i = 0; i < needed; i++) payload[i] ^= maskKey[i % 4]; }
+  // Browser -> ESP32: consume only bytes which have already arrived. The old
+  // parser waited for the rest of every TCP-fragmented frame and kept draining
+  // an unbounded stream in one call, starving the 20 ms TX ring service.
+  uint8_t chunk[512];
+  size_t byteBudget = AUD1_WS_RX_BYTE_BUDGET;
+  while(byteBudget > 0){
+    int available = AudioWsClient.available();
+    if(available <= 0) break;
+    size_t take = size_t(available);
+    if(take > sizeof(chunk)) take = sizeof(chunk);
+    if(take > byteBudget) take = byteBudget;
+    int received = AudioWsClient.read(chunk, take);
+    if(received <= 0) break;
+    byteBudget -= size_t(received);
 
-    if(opcode == 0x8){ AudioDisconnectWs(); return; }                 // close
-    else if(opcode == 0x2) aud1AcceptTxPacket(payload, needed);
-    else if(opcode == 0x1){ payload[needed] = 0; aud1HandleControl(String((char*)payload)); }
+    for(int index = 0; index < received; index++){
+      Aud1WsParser::Result result = aud1WsParser.push(chunk[index]);
+      if(result == Aud1WsParser::Error){ AudioDisconnectWs(); return; }
+      if(result != Aud1WsParser::FrameReady) continue;
+
+      uint8_t opcode = aud1WsParser.opcode();
+      size_t length = aud1WsParser.payloadSize();
+      uint8_t* payload = aud1WsParser.payload();
+      if(opcode == 0x8){ aud1WsParser.reset(); AudioDisconnectWs(); return; }
+      if(opcode == 0x2){
+        aud1AcceptTxPacket(payload, length);
+        // Once keyed, drain according to elapsed monotonic time between every
+        // received packet. Before keying, start as soon as the full prebuffer
+        // is present but do not fault while queued bytes remain to be parsed.
+        size_t required = (aud1TxPrebufferSamples + 5) / 6;
+        if(aud1TxState == AUD1_TX_STREAM ||
+           ((aud1TxState == AUD1_TX_READY || aud1TxState == AUD1_TX_PREBUFFER) &&
+            aud1TxExpectedSample >= aud1TxPrebufferSamples && aud1TxUsed >= required))
+          aud1TxTick(true);
+      }else if(opcode == 0x1){
+        payload[length] = 0;
+        aud1HandleControl(String((char*)payload));
+      }
+      aud1WsParser.reset();
+    }
   }
-  aud1TxTick();
+
+  // If a frame/backlog straddles the exact slot boundary, defer only the
+  // missing-prebuffer decision (never PTT safety or an active-stream drain).
+  bool rxPending = aud1WsParser.inProgress() || AudioWsClient.available() > 0;
+  aud1TxTick(rxPending);
   // bound RX audio latency: flush the coalesce buffer at least every ~100 ms
   static uint32_t lastFlush = 0;
   if(millis() - lastFlush >= 100){ audioFlush(); lastFlush = millis(); }

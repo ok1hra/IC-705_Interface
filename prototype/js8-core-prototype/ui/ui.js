@@ -54,7 +54,7 @@
       {call: "KN4ZXG", snr: -27, offsetHz: 1866, mode: "A", age: "43 s", grid: "FM16"},
     ],
     messages: [
-      {time: "22:14:03", from: "KN4ZXG", to: "@HB", text: "HEARTBEAT FM16", mode: "A", offsetHz: 1866},
+      {time: "22:14:03", from: "KN4ZXG", to: "@HB", text: "FM16", mode: "A", offsetHz: 1866},
       {time: "22:14:11", from: "KD8SKZ", to: "KN4CRD", text: "HEARTBEAT SNR -14", mode: "A", offsetHz: 806},
       {time: "22:14:18", from: "K0OG", to: "KN4CRD", text: "SNR +2", mode: "A", offsetHz: 703},
       {time: "22:14:30", from: "KN4CRD", to: "", text: "TEST", mode: "E", offsetHz: 1291},

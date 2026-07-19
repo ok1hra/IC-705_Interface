@@ -22,7 +22,7 @@
     return {schemaVersion: SCHEMA_VERSION, activeModem: "js8call",
       modems: {js8call: {myCall: "", grid: "", speed: "AUTO",
         txOffsetHz: 1500, clockCorrectionMs: 0, autoTiming: true,
-        followSpeed:true, txGain:0.55, txSafetyAccepted:false}},
+        followSpeed:true, txGain:0.25, txSafetyAccepted:false}},
       ui: {disclosures: {spectrum: true, reply: true, traffic: false,
         stations: false, settings: false, timing: false}}};
   }
@@ -50,7 +50,7 @@
         clockCorrectionMs: Math.round(clamp(js8.clockCorrectionMs,
           -1000, 1000, 0)), autoTiming: js8.autoTiming !== false,
         followSpeed:js8.followSpeed !== false,
-        txGain:clamp(js8.txGain, 0.1, 0.8, 0.55),
+        txGain:clamp(js8.txGain, 0.1, 0.8, 0.25),
         txSafetyAccepted:js8.txSafetyAccepted === true}},
       ui: {disclosures}};
   }

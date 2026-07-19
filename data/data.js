@@ -5,7 +5,7 @@
 
 const PAGE_PARAMS = new URLSearchParams(location.search);
 const TEST_MODE = PAGE_PARAMS.has("test");
-const ASSET_REV = "20260718s";
+const ASSET_REV = "20260719d";
 const assetUrl = path => `${path}?v=${ASSET_REV}`;
 const TRX_HELP_SEEN_KEY = "ic705.data.trx-help-seen.v1";
 const AUDIO_WS_PORT = Number(new URLSearchParams(location.search).get("audioPort")) || 83;
@@ -80,6 +80,38 @@ const dom = {
   txPayload:$("txPayload"),
   chatSession:$("chatSession"), emailSession:$("emailSession"), binSession:$("binSession"),
   chat:$("chatThread"), composer:$("composer"), message:$("messageInput"), send:$("sendButton"),
+  emailComposer:$("emailComposer"), emailAddress:$("emailAddress"),
+  emailGateway:$("emailGateway"), emailGatewayAdd:$("emailGatewayAdd"),
+  emailGatewayEdit:$("emailGatewayEdit"), emailGatewayDelete:$("emailGatewayDelete"),
+  emailGatewayDetails:$("emailGatewayDetails"), emailMessage:$("emailMessage"),
+  emailBudget:$("emailBudget"), emailPreview:$("emailPreview"), emailError:$("emailError"),
+  emailStatus:$("emailStatus"), emailSend:$("emailSend"),
+  emailGatewayDialog:$("emailGatewayDialog"), emailGatewayForm:$("emailGatewayForm"),
+  emailGatewayDialogTitle:$("emailGatewayDialogTitle"), emailGatewayName:$("emailGatewayName"),
+  emailGatewayTarget:$("emailGatewayTarget"), emailGatewayDial:$("emailGatewayDial"),
+  emailGatewayOffset:$("emailGatewayOffset"), emailGatewayFormat:$("emailGatewayFormat"),
+  emailGatewayTemplateRow:$("emailGatewayTemplateRow"), emailGatewayTemplate:$("emailGatewayTemplate"),
+  emailGatewayMaxBody:$("emailGatewayMaxBody"), emailGatewayPolicy:$("emailGatewayPolicy"),
+  emailGatewayError:$("emailGatewayError"), emailConfirmDialog:$("emailConfirmDialog"),
+  emailConfirmGateway:$("emailConfirmGateway"), emailConfirmFrequency:$("emailConfirmFrequency"),
+  emailConfirmOffset:$("emailConfirmOffset"), emailConfirmFrames:$("emailConfirmFrames"),
+  emailConfirmPayload:$("emailConfirmPayload"),
+  binComposer:$("binComposer"), binRecipient:$("binRecipient"), binFile:$("binFile"),
+  binFileDetails:$("binFileDetails"), binPeerExpected:$("binPeerExpected"),
+  binError:$("binError"), binDraftStatus:$("binDraftStatus"), binOffer:$("binOffer"),
+  binTransferPanel:$("binTransferPanel"), binTransferTitle:$("binTransferTitle"),
+  binTransferPeer:$("binTransferPeer"), binTransferState:$("binTransferState"),
+  binProgress:$("binProgress"), binProgressText:$("binProgressText"),
+  binTransferRate:$("binTransferRate"), binLastActivity:$("binLastActivity"),
+  binTransferId:$("binTransferId"), binTransferHash:$("binTransferHash"),
+  binProtocolMessage:$("binProtocolMessage"), binTransferLog:$("binTransferLog"),
+  binPause:$("binPause"), binResume:$("binResume"), binStop:$("binStop"),
+  binDownload:$("binDownload"), binConfirmDialog:$("binConfirmDialog"),
+  binConfirmPeer:$("binConfirmPeer"), binConfirmFile:$("binConfirmFile"),
+  binConfirmProfile:$("binConfirmProfile"), binConfirmPlan:$("binConfirmPlan"),
+  binConfirmHash:$("binConfirmHash"), binCopyHash:$("binCopyHash"), binIncomingDialog:$("binIncomingDialog"),
+  binIncomingPeer:$("binIncomingPeer"), binIncomingFile:$("binIncomingFile"),
+  binIncomingSize:$("binIncomingSize"), binIncomingHash:$("binIncomingHash"),
   messagePresetsButton:$("messagePresetsButton"), messagePresetsMenu:$("messagePresetsMenu"),
   traffic:$("traffic"), trafficSummary:$("trafficSummary"), stationRows:$("stationRows"),
   trafficSection:document.querySelector('[data-section="traffic"]'),
@@ -98,6 +130,13 @@ const dom = {
 
 const loaded = Js8Settings.load(localStorage);
 let settings = loaded.settings;
+const emailState = {gateways:Js8Email.load(localStorage),selectedId:"",editingId:"",
+  pendingDraft:null,activeOutgoing:null,status:"Draft is not stored in message history."};
+if(emailState.gateways.length)emailState.selectedId=emailState.gateways[0].id;
+const transferStore=new Js8FileTransfer.TransferStore();
+const binState={sessions:[],active:null,prepared:null,preparing:false,peerDraft:"",
+  txQueue:[],txCurrent:null,responseTimer:null,incomingOffer:null,nackParts:new Map(),
+  lastProtocol:"",storageError:"",restored:false};
 const state = {
   radio:{connected:false, lanStatus:"connecting", transceiverType:"", power:false, frequency:0, mode:"", tx:false, rfPower:0},
   activeMode:settings.activeModem, selectedCall:"", activity:emptyActivity(),
@@ -112,7 +151,7 @@ const state = {
   lanConfig:{checked:false, ready:false, detail:""},
   ownCallAttention:{call:"", messages:new Set(), stations:new Set()},
   activeOutgoing:null, lastOutgoing:null,
-  settingsDraft:{myCall:null,grid:null}, reconnectPending:false,
+  settingsDraft:{myCall:null,grid:null,txGain:null}, reconnectPending:false,
 };
 let audioSource = null, activeDecoder = null, activeEncoder = null, txTick = null;
 let radioPollInFlight = false;
@@ -193,6 +232,9 @@ function applyDecoderActivity(snapshot) {
     if(decoderActivitySeen.messages.has(key))continue;
     decoderActivitySeen.messages.add(key);
     activity.messages.push({...item});
+    Promise.resolve(handleFileActivityMessage(item)).catch(error=>{
+      binState.storageError=error.message; renderControls();
+    });
   }
   if(activity.messages.length>200)activity.messages.splice(0,activity.messages.length-200);
   const calls=new Map(activity.calls.map(item=>[item.call,item]));
@@ -390,6 +432,8 @@ function handleEncoderEvent(event) {
   dom.abort.hidden = !running;
   if (!running && txTick) { clearInterval(txTick); txTick = null; }
   renderControls();
+  if(!running&&binState.txCurrent&&["completed","aborted","fault"].includes(state.txStatus))
+    queueMicrotask(()=>finishFileProtocolTx(state.txStatus));
 }
 
 // ---- AUD1 audio and waterfall ----------------------------------------------
@@ -412,12 +456,15 @@ function ensureAudio() {
 function stopAudio() {
   if (!audioSource) return;
   if (activeEncoder && activeEncoder.disconnect) activeEncoder.disconnect();
-  audioSource.stop(); audioSource = null; state.audioStatus = "stopped";
+  audioSource.stop(); audioSource = null; state.audioStatus = "stopped"; state.lastAudioMs=0;
 }
 
 function onAudioStatus(status) {
   state.audioStatus = status.message ? `${status.type}: ${status.message}` : status.type;
-  if (status.type === "closed" && activeEncoder && activeEncoder.disconnect) activeEncoder.disconnect();
+  if (status.type === "closed") {
+    state.lastAudioMs=0;
+    if (activeEncoder && activeEncoder.disconnect) activeEncoder.disconnect();
+  }
   renderHeader(); renderControls(); renderDiagnostics();
 }
 
@@ -559,6 +606,7 @@ function openTrxHelp(reason = "manual") {
 function renderHeader() {
   const connected=state.radio.connected && state.radio.transceiverType === "IC-705-LAN";
   const transmitting=radioTransmitting();
+  const receiving=connected && state.lastAudioMs>0 && performance.now()-state.lastAudioMs<1500;
   if(state.spectrumWasTransmitting && !transmitting)resetSpectrumAnalyzer();
   state.spectrumWasTransmitting=transmitting;
   const modeCompatible=["USB","USB-D"].includes(state.radio.mode);
@@ -574,8 +622,9 @@ function renderHeader() {
   document.body.classList.toggle("radio-transmitting",transmitting);
   const starting=!state.startup.ready;
   dom.linkState.textContent=starting ? (state.startup.failed ? "● LOAD ERROR" : "● LOADING")
-    : connected ? (transmitting ? "● TX" : "● RX LIVE") : "● OFFLINE";
+    : connected ? (transmitting ? "● TX" : receiving ? "● RX LIVE" : "● RX WAIT") : "● OFFLINE";
   dom.linkState.classList.toggle("error",state.startup.failed || (!starting && !connected));
+  dom.linkState.classList.toggle("warning",!starting && connected && !transmitting && !receiving);
   const reconnectVisible=state.lanConfig.ready && !connected && state.radio.lanStatus==="disconnected";
   dom.trxReconnect.hidden=!reconnectVisible;
   dom.trxReconnect.disabled=state.reconnectPending;
@@ -600,12 +649,13 @@ function renderStartup() {
   if(!pending)requestAnimationFrame(resizeWaterfall);
 }
 
-function txBlockReasons(needsRecipient) {
+function txBlockReasons(needsRecipient,allowFileTransfer=false) {
   const js8=currentJs8(), connected=state.radio.connected && state.radio.transceiverType === "IC-705-LAN";
   const busy=!['idle','completed','aborted','fault'].includes(state.txStatus);
   const mediaLocked=Boolean(audioSource && audioSource.state().timebase.media.status==="locked");
   const reasons=[];
   if(busy)reasons.push("TX is busy"); if(!connected)reasons.push("IC-705 LAN is offline");
+  if(state.radio.tx&&!busy)reasons.push("TRX PTT is active");
   if(!["USB","USB-D"].includes(state.radio.mode))reasons.push("TRX mode must be USB or USB-D");
   if(!state.txWasmReady)reasons.push("TX core is loading");
   if(state.decoderStatus!=="ready")reasons.push("decoder is loading");
@@ -613,7 +663,162 @@ function txBlockReasons(needsRecipient) {
   if(needsRecipient && !state.selectedCall)reasons.push("select a recipient");
   if(!js8.myCall)reasons.push("set My callsign");
   if(!js8.txSafetyAccepted)reasons.push("confirm Enable radio TX");
+  if(!allowFileTransfer&&binState.active&&!terminalTransferState(binState.active.state))reasons.push("a file-transfer session is active");
   return reasons;
+}
+
+function selectedEmailGateway() {
+  return emailState.gateways.find(item=>item.id===emailState.selectedId) || null;
+}
+
+function emailFrameEstimate(draft) {
+  const transport=Js8Email.transportParts(draft.payload,draft.gateway.target);
+  return Js8Protocol.buildReplyFrames({myCall:currentJs8().myCall,
+    toCall:transport.toCall,text:transport.text}).length;
+}
+
+function emailTxMode() {
+  return currentJs8().speed==="AUTO"?0:SPEED_TO_MODE[currentJs8().speed];
+}
+
+function emailDraftResult() {
+  const gateway=selectedEmailGateway();
+  if(!gateway)return {gateway:null,draft:null,error:"Select or add a gateway."};
+  try {
+    const draft=Js8Email.buildDraft(gateway,dom.emailAddress.value,dom.emailMessage.value);
+    emailFrameEstimate(draft);
+    return {gateway,draft,error:""};
+  } catch(error) { return {gateway,draft:null,error:error.message}; }
+}
+
+function renderEmailControls() {
+  const selected=selectedEmailGateway();
+  const optionKey=`${emailState.selectedId}|${emailState.gateways.map(item=>`${item.id}:${item.name}`).join("|")}`;
+  if(dom.emailGateway.dataset.options!==optionKey){
+    dom.emailGateway.innerHTML='<option value="">Add or select a gateway</option>'+emailState.gateways
+      .filter(item=>item.enabled).map(item=>`<option value="${esc(item.id)}">${esc(item.name)}</option>`).join("");
+    dom.emailGateway.value=emailState.selectedId;
+    dom.emailGateway.dataset.options=optionKey;
+  }
+  dom.emailGatewayEdit.disabled=!selected; dom.emailGatewayDelete.disabled=!selected;
+  const values=selected?[selected.target,`${(selected.dialFrequencyHz/1e6).toFixed(6)} MHz`,
+    `${selected.offsetHz} Hz`,selected.format]:["—","—","—","—"];
+  dom.emailGatewayDetails.innerHTML=`<span>Target</span><code>${esc(values[0])}</code><span>Dial</span><code>${esc(values[1])}</code><span>Offset</span><code>${esc(values[2])}</code><span>Format</span><code>${esc(values[3])}</code>`;
+  const email=dom.emailAddress.value.trim();
+  const budget=selected?Js8Email.getBodyBudget(selected,email):0;
+  const normalizedLength=dom.emailMessage.value.replace(/[\r\n\t]+/g," ").replace(/\s+/g," ").trim().length;
+  dom.emailBudget.textContent=selected
+    ? `${Math.max(0,budget-normalizedLength)} of ${budget} characters remaining${selected.format==="aprs-email2"?" (email address included in APRS limit)":""}.`
+    : "Select a gateway to see the message limit.";
+  dom.emailBudget.classList.toggle("invalid",Boolean(selected&&normalizedLength>budget));
+  const result=emailDraftResult();
+  dom.emailPreview.textContent=result.draft?result.draft.payload:"Complete the form to preview the exact radio payload.";
+  const touched=email.length>0||dom.emailMessage.value.trim().length>0;
+  dom.emailError.textContent=touched?result.error:"";
+  const blocks=txBlockReasons(false);
+  if(!result.draft)blocks.push(result.error);
+  dom.emailSend.disabled=blocks.filter(Boolean).length>0;
+  dom.emailSend.title=blocks.filter(Boolean).join("; ");
+  const outgoing=emailState.activeOutgoing;
+  if(outgoing){
+    if(outgoing.status==="completed")emailState.status="RF transmission completed. Gateway reception and email delivery are unconfirmed.";
+    else if(outgoing.status==="fault"||outgoing.status==="aborted")emailState.status=`RF transmission ${outgoing.status}. Email was not confirmed.`;
+    else emailState.status=`RF transmission ${outgoing.status}. Gateway reception is not yet confirmed.`;
+  }
+  dom.emailStatus.textContent=emailState.status;
+}
+
+function currentBinProfile() {
+  const js8=currentJs8();
+  let submode=SPEED_TO_MODE[js8.speed];
+  if(js8.speed==="AUTO"){
+    const station=state.activity.calls.find(item=>item.call===state.selectedCall);
+    submode=station?Number(station.submode):0;
+  }
+  return Js8FileTransfer.profileForSubmode(submode);
+}
+
+function formatBytes(value) {
+  const bytes=Number(value)||0;
+  if(bytes<1024)return `${bytes} B`;
+  const kib=bytes/1024;
+  return `${Number.isInteger(kib)?kib:kib.toFixed(1)} KiB`;
+}
+
+function formatMinutes(value) {
+  const minutes=Math.max(0,Math.ceil(Number(value)||0));
+  return minutes<60?`${minutes} min`:`${Math.floor(minutes/60)} h ${minutes%60} min`;
+}
+
+function terminalTransferState(value) {
+  return ["complete","cancelled","rejected","failed"].includes(value);
+}
+
+function binSessionCounts(record) {
+  if(!record)return {valid:0,total:0,bytes:0};
+  const total=Number(record.blockCount)||0;
+  if(record.direction==="tx"){
+    const acknowledged=new Set(record.acknowledged||[]);
+    let bytes=0;for(const sequence of acknowledged)if(sequence>0&&record.blocks?.[sequence])bytes+=record.blocks[sequence].length;
+    return {valid:[...acknowledged].filter(value=>value>0).length,total,bytes};
+  }
+  let valid=0,bytes=0;for(let sequence=1;sequence<=total;sequence+=1)if(record.blocks?.[sequence]){valid+=1;bytes+=record.blocks[sequence].length;}
+  return {valid,total,bytes};
+}
+
+function renderBinControls() {
+  if(!binState.peerDraft&&state.selectedCall)binState.peerDraft=state.selectedCall;
+  if(document.activeElement!==dom.binRecipient)dom.binRecipient.value=binState.peerDraft;
+  const profile=currentBinProfile(),prepared=binState.prepared;
+  const estimate=prepared?Js8FileTransfer.estimateDuration(prepared.manifest.originalSize,profile):null;
+  const details=[
+    ["Size",prepared?formatBytes(prepared.manifest.originalSize):"—"],
+    ["Profile",`${profile.label} · ${profile.periodSeconds} s`],
+    ["Hard limit",profile.hardLimit?formatBytes(profile.hardLimit):"Disabled"],
+    ["Recommended",profile.warningSize?`≤ ${formatBytes(profile.warningSize)}`:"Disabled"],
+    ["Blocks",prepared?`${prepared.manifest.blockCount} + manifest`:"—"],
+    ["Estimate",estimate?`${formatMinutes(estimate.optimisticMinutes)}–${formatMinutes(estimate.plannedMinutes)}`:"—"]
+  ];
+  dom.binFileDetails.innerHTML=details.map(([label,value])=>`<span>${esc(label)}</span><code>${esc(value)}</code>`).join("");
+  let error="";
+  try{Js8FileTransfer.normalizeCallsign(binState.peerDraft);if(prepared)Js8FileTransfer.enforceFileLimit(prepared.manifest.originalSize,profile);}
+  catch(reason){error=reason.message;}
+  if(!prepared&&!binState.preparing)error=error||"Select a file.";
+  if(binState.preparing)error="Preparing SHA-256 and blocks…";
+  if(binState.storageError)error=binState.storageError;
+  dom.binError.textContent=error;
+  const blocks=txBlockReasons(false);
+  if(error)blocks.push(error);
+  if(!dom.binPeerExpected.checked)blocks.push("confirm that the peer expects the transfer");
+  if(binState.active&&!terminalTransferState(binState.active.state))blocks.push("another file-transfer session is active");
+  dom.binOffer.disabled=blocks.length>0;
+  dom.binOffer.title=blocks.join("; ");
+  dom.binOffer.textContent=binState.preparing?"PREPARING…":"PREPARE OFFER";
+  dom.binDraftStatus.textContent=prepared
+    ? `${prepared.manifest.fileName} · SHA-256 ${prepared.manifest.sha256Hex.slice(0,16)}… · maximum ${formatBytes(profile.hardLimit)}`
+    : profile.hardLimit?`${profile.label} accepts up to ${formatBytes(profile.hardLimit)}. The file is checked before loading.`:`${profile.label} file transfer is disabled.`;
+  const record=binState.active;
+  dom.binTransferPanel.hidden=!record;
+  if(!record)return;
+  const counts=binSessionCounts(record),elapsedMinutes=Math.max(1/60,(Date.now()-(record.startedAt||record.createdAt||Date.now()))/60000);
+  dom.binTransferTitle.textContent=record.fileName;
+  dom.binTransferPeer.textContent=`${record.direction==="tx"?"To":"From"} ${record.peerCallsign}`;
+  dom.binTransferState.textContent=String(record.state||"idle").toUpperCase().replaceAll("-"," ");
+  dom.binProgress.max=Math.max(1,counts.total);dom.binProgress.value=counts.valid;
+  dom.binProgress.textContent=`${Math.round(counts.valid/Math.max(1,counts.total)*100)}%`;
+  dom.binProgressText.textContent=`${counts.valid} / ${counts.total} data blocks${record.retransmittedBlocks?` · ${record.retransmittedBlocks} repaired`:""}`;
+  const measuredRate=Math.round(counts.bytes/elapsedMinutes),remainingBytes=Math.max(0,record.originalSize-counts.bytes);
+  dom.binTransferRate.textContent=`${measuredRate} B/min${measuredRate>0&&remainingBytes?` · ETA ${formatMinutes(remainingBytes/measuredRate)}`:""}`;
+  dom.binLastActivity.textContent=record.lastActivityAt?`${age(record.lastActivityAt)} ago${record.lastSnr!=null?` · ${signed(record.lastSnr)} dB`:""}`:"No activity";
+  dom.binTransferId.textContent=record.id;
+  dom.binTransferHash.textContent=record.sha256Hex||record.hash12||"Pending manifest";
+  dom.binProtocolMessage.textContent=binState.lastProtocol||record.lastProtocol||"—";
+  dom.binTransferLog.innerHTML=(record.log||[]).slice(-30).map(item=>`<div><span>${esc(new Date(item.at).toISOString().slice(11,19))}</span><code>${esc(item.text)}</code></div>`).join("");
+  dom.binPause.hidden=record.state==="paused"||terminalTransferState(record.state);
+  dom.binPause.disabled=false;
+  dom.binResume.hidden=record.state!=="paused";
+  dom.binStop.disabled=terminalTransferState(record.state);
+  dom.binDownload.hidden=!(record.direction==="rx"&&record.state==="complete"&&record.fileBytes);
 }
 
 function renderControls() {
@@ -625,11 +830,11 @@ function renderControls() {
   dom.myGrid.value=state.settingsDraft.grid===null?js8.grid:state.settingsDraft.grid;
   dom.followSpeed.checked=js8.followSpeed;
   dom.clockCorrection.value=js8.clockCorrectionMs; dom.autoTiming.checked=js8.autoTiming;
-  dom.txGain.value=js8.txGain; dom.txSafety.checked=js8.txSafetyAccepted;
+  dom.txGain.value=state.settingsDraft.txGain===null?js8.txGain:state.settingsDraft.txGain; dom.txSafety.checked=js8.txSafetyAccepted;
   dom.settingsSummary.textContent=`${js8.myCall} · ${js8.grid} · ${js8.speed}`;
   const busy=!["idle","completed","aborted","fault"].includes(state.txStatus);
   const txBlocks=txBlockReasons(!cqType(dom.message.value)), heartbeatBlocks=txBlockReasons(false), tuneBlocks=txBlockReasons(false);
-  if(state.txSessionMode!=="CHAT")txBlocks.push(`${state.txSessionMode} is not implemented yet`);
+  if(state.txSessionMode!=="CHAT")txBlocks.push(`${state.txSessionMode} uses its own form`);
   dom.send.disabled=txBlocks.length>0; dom.send.title=txBlocks.join("; ");
   dom.heartbeat.disabled=heartbeatBlocks.length>0; dom.heartbeat.title=heartbeatBlocks.join("; ");
   dom.heartbeatOffset.textContent=`${js8.txOffsetHz} Hz`;
@@ -646,18 +851,18 @@ function renderControls() {
   dom.chatSession.hidden=state.txSessionMode!=="CHAT";
   dom.emailSession.hidden=state.txSessionMode!=="EMAIL";
   dom.binSession.hidden=state.txSessionMode!=="BIN";
-  dom.txSessionModeHint.textContent=({CHAT:"Keyboard-to-keyboard messages",EMAIL:"Short email via a selected JS8 server — planned",BIN:"Point-to-point binary file transfer — planned"})[state.txSessionMode];
+  dom.txSessionModeHint.textContent=({CHAT:"Keyboard-to-keyboard messages",EMAIL:"Short radio email via a configured JS8 gateway",BIN:"Reliable store-and-resume transfer for small files"})[state.txSessionMode];
   dom.send.textContent=busy ? "QUEUED" : "SEND";
   dom.txSummary.textContent=state.txState ? `${state.txState.status}${state.txState.frameCount ? ` · frame ${Math.min(state.txState.frameIndex+1,state.txState.frameCount)}/${state.txState.frameCount}` : ""}${state.txState.error ? ` · ${state.txState.error}` : ""}` : "Idle";
   dom.modemState.textContent=state.decoderStatus === "ready" ? "JS8Call ready · auto speed RX" : state.decoderStatus;
   dom.modemState.className=`modem-state ${state.decoderStatus === "ready" ? "available" : state.decoderStatus.includes("error") ? "error" : ""}`;
-  renderTxPayload(); drawTxMarker(); renderHeader();
+  renderEmailControls(); renderBinControls(); renderTxPayload(); drawTxMarker(); renderHeader();
 }
 
 function chooseCall(call) {
   if (!call) return clearRecipient();
   if (call.startsWith("@")) return;
-  state.selectedCall=call;
+  state.selectedCall=call;binState.peerDraft=call;
   state.txSessionMode="CHAT";
   const station=state.activity.calls.find(item=>item.call===call);
   if (station && currentJs8().followSpeed && currentJs8().speed!=="AUTO") currentJs8().speed=MODE_TO_SPEED[station.submode] || currentJs8().speed;
@@ -794,6 +999,497 @@ function renderDiagnostics() {
   $("resetTiming").addEventListener("click",()=>{audioSource.resetTiming();renderDiagnostics();renderHeader();});
 }
 
+function openEmailGatewayDialog(gateway=null) {
+  emailState.editingId=gateway?.id||"";
+  dom.emailGatewayDialogTitle.textContent=gateway?"Edit email gateway":"Add email gateway";
+  dom.emailGatewayName.value=gateway?.name||"";
+  dom.emailGatewayTarget.value=gateway?.target||"";
+  dom.emailGatewayDial.value=gateway?.dialFrequencyHz||state.radio.frequency||"";
+  dom.emailGatewayOffset.value=gateway?.offsetHz||currentJs8().txOffsetHz;
+  dom.emailGatewayFormat.value=gateway?.format||"direct";
+  dom.emailGatewayTemplate.value=gateway?.template||"{TARGET} MSG EMAIL {EMAIL} {BODY}";
+  dom.emailGatewayMaxBody.value=gateway?.maxBodyLength||60;
+  dom.emailGatewayPolicy.value=gateway?.characterPolicy||"js8";
+  dom.emailGatewayTemplateRow.hidden=dom.emailGatewayFormat.value!=="template";
+  dom.emailGatewayError.textContent="";
+  dom.emailGatewayDialog.showModal();
+  dom.emailGatewayName.focus();
+}
+
+function gatewayFromDialog() {
+  return Js8Email.normalizeGateway({id:emailState.editingId||undefined,
+    name:dom.emailGatewayName.value,target:dom.emailGatewayTarget.value,
+    dialFrequencyHz:Number(dom.emailGatewayDial.value),offsetHz:Number(dom.emailGatewayOffset.value),
+    format:dom.emailGatewayFormat.value,template:dom.emailGatewayTemplate.value,
+    maxBodyLength:Number(dom.emailGatewayMaxBody.value),characterPolicy:dom.emailGatewayPolicy.value});
+}
+
+function saveEmailGateway(event) {
+  event.preventDefault();
+  try {
+    const gateway=gatewayFromDialog();
+    const index=emailState.gateways.findIndex(item=>item.id===gateway.id);
+    if(index>=0)emailState.gateways.splice(index,1,gateway);else emailState.gateways.push(gateway);
+    emailState.gateways=Js8Email.save(localStorage,emailState.gateways);
+    emailState.selectedId=gateway.id; emailState.status="Gateway profile saved locally.";
+    dom.emailGatewayDialog.close(); renderControls();
+  } catch(error) { dom.emailGatewayError.textContent=error.message; }
+}
+
+function deleteSelectedEmailGateway() {
+  const gateway=selectedEmailGateway();
+  if(!gateway||!confirm(`Delete gateway profile “${gateway.name}”?`))return;
+  emailState.gateways=emailState.gateways.filter(item=>item.id!==gateway.id);
+  emailState.gateways=Js8Email.save(localStorage,emailState.gateways);
+  emailState.selectedId=emailState.gateways[0]?.id||"";
+  emailState.status="Gateway profile deleted."; renderControls();
+}
+
+function openEmailConfirmation() {
+  const result=emailDraftResult();
+  if(!result.draft){dom.emailError.textContent=result.error;return;}
+  const draft=result.draft;
+  emailState.pendingDraft=draft;
+  dom.emailConfirmGateway.textContent=`${draft.gateway.name} · ${draft.gateway.target}`;
+  dom.emailConfirmFrequency.textContent=`${(draft.gateway.dialFrequencyHz/1e6).toFixed(6)} MHz`;
+  dom.emailConfirmOffset.textContent=`${draft.gateway.offsetHz} Hz`;
+  dom.emailConfirmFrames.textContent=String(emailFrameEstimate(draft));
+  dom.emailConfirmPayload.textContent=draft.payload;
+  dom.emailConfirmDialog.returnValue="";
+  dom.emailConfirmDialog.showModal();
+}
+
+function waitForRadioFrequency(frequency,timeoutMs=12000) {
+  return new Promise((resolve,reject)=>{
+    const started=Date.now();
+    const timer=setInterval(()=>{
+      if(state.radio.frequency===frequency){clearInterval(timer);resolve();}
+      else if(Date.now()-started>=timeoutMs){clearInterval(timer);reject(new Error("TRX did not confirm the gateway dial frequency."));}
+    },100);
+  });
+}
+
+function startEmailTx(draft) {
+  const js8=currentJs8(),transport=Js8Email.transportParts(draft.payload,draft.gateway.target);
+  activeEncoder.setToneOffset(draft.gateway.offsetHz).configure({myCall:js8.myCall,
+    toCall:transport.toCall,mode:emailTxMode(),clockCorrectionMs:js8.clockCorrectionMs});
+  const item=queueOutgoing(Js8Protocol.formatDirectedMessage({myCall:js8.myCall,
+    toCall:transport.toCall,text:transport.text}));
+  item.email=true; emailState.activeOutgoing=item;
+  driveEncoder(activeEncoder.encode(transport.text),error=>failOutgoing(item,error));
+}
+
+async function transmitPendingEmail() {
+  const draft=emailState.pendingDraft; emailState.pendingDraft=null;
+  if(!draft)return;
+  try {
+    const current=Js8Email.buildDraft(draft.gateway,draft.recipientEmail,draft.body);
+    if(current.payload!==draft.payload)throw new Error("Email draft changed before transmission.");
+    const blocks=txBlockReasons(false);
+    if(blocks.length)throw new Error(blocks.join("; "));
+    emailState.status="Tuning the TRX to the gateway…"; renderControls();
+    if(currentJs8().txOffsetHz!==draft.gateway.offsetHz)setJs8Setting("txOffsetHz",draft.gateway.offsetHz);
+    if(state.radio.frequency!==draft.gateway.dialFrequencyHz){
+      await requestFrequency(draft.gateway.dialFrequencyHz);
+      await waitForRadioFrequency(draft.gateway.dialFrequencyHz);
+    }
+    const readyBlocks=txBlockReasons(false);
+    if(readyBlocks.length)throw new Error(readyBlocks.join("; "));
+    startEmailTx(draft);
+    dom.emailMessage.value="";
+    emailState.status="Queued for RF transmission. Gateway reception and email delivery are unconfirmed.";
+    renderControls();
+  } catch(error) {
+    if(state.pendingFrequency===draft.gateway.dialFrequencyHz)state.pendingFrequency=null;
+    emailState.status=`Email TX failed: ${error.message}`;
+    dom.emailError.textContent=error.message; renderControls();
+  }
+}
+
+function addTransferLog(record,text) {
+  if(!record)return;
+  if(!Array.isArray(record.log))record.log=[];
+  record.log.push({at:Date.now(),text:String(text)});
+  if(record.log.length>100)record.log.splice(0,record.log.length-100);
+  record.lastActivityAt=Date.now();record.lastProtocol=String(text);binState.lastProtocol=String(text);
+}
+
+async function saveTransfer(record) {
+  if(!record)return false;
+  record.updatedAt=Date.now();
+  const index=binState.sessions.findIndex(item=>item.id===record.id);
+  if(index>=0)binState.sessions[index]=record;else binState.sessions.push(record);
+  try{await transferStore.save(record);binState.storageError="";renderControls();return true;}
+  catch(error){binState.storageError=`Transfer storage failed: ${error.message}`;renderControls();return false;}
+}
+
+function transferRecordFromPrepared(prepared,peer,profile) {
+  const now=Date.now();
+  return {id:prepared.manifest.transferId,direction:"tx",peerCallsign:peer,
+    fileName:prepared.manifest.fileName,mimeType:prepared.manifest.mimeType,
+    originalSize:prepared.manifest.originalSize,compression:"none",
+    blockSize:prepared.manifest.blockSize,blockCount:prepared.manifest.blockCount,
+    sha256Hex:prepared.manifest.sha256Hex,hash12:prepared.manifest.hash12,
+    blocks:prepared.blocks.map(item=>item.bytes),profileKey:profile.key,submode:profile.submode,
+    windowSize:profile.windowSize,state:"offered",acknowledged:[],retransmitQueue:[],
+    retransmittedBlocks:0,lastWindow:[],offerAttempts:0,statusAttempts:0,
+    createdAt:now,startedAt:now,updatedAt:now,lastActivityAt:now,log:[]};
+}
+
+function encodedTransferBlock(record,sequence) {
+  const bytes=record.blocks?.[sequence];
+  if(!bytes)throw new Error(`Transfer block ${sequence} is unavailable.`);
+  return {sequence,binaryLength:bytes.length,crc16:Js8FileTransfer.crc16Ccitt(bytes),
+    payloadBase32:Js8FileTransfer.base32Encode(bytes),bytes};
+}
+
+function clearTransferTimer() {
+  if(binState.responseTimer)clearTimeout(binState.responseTimer);
+  binState.responseTimer=null;
+}
+
+function queueFileProtocol(record,peer,messages,onDone=null,force=false) {
+  const list=Array.isArray(messages)?messages:[messages];
+  list.forEach((text,index)=>binState.txQueue.push({record,peer,text,
+    onSent:index===list.length-1?onDone:null,force}));
+  pumpFileProtocolTx();
+}
+
+function pumpFileProtocolTx() {
+  if(binState.txCurrent||!binState.txQueue.length)return;
+  const task=binState.txQueue[0];
+  if(task.record?.state==="paused"&&!task.force)return;
+  if(!["idle","completed","aborted","fault"].includes(state.txStatus))return;
+  const blocks=txBlockReasons(false,true);
+  if(blocks.length){
+    if(task.record&&!terminalTransferState(task.record.state)){task.record.state="paused";addTransferLog(task.record,`PAUSED ${blocks.join("; ")}`);saveTransfer(task.record);}
+    return;
+  }
+  binState.txQueue.shift();binState.txCurrent=task;
+  addTransferLog(task.record,`TX ${task.text}`);
+  const js8=currentJs8(),profile=task.record?Js8FileTransfer.PROFILES[task.record.profileKey]:currentBinProfile();
+  activeEncoder.setToneOffset(js8.txOffsetHz).configure({myCall:js8.myCall,toCall:task.peer,
+    mode:profile.submode,clockCorrectionMs:js8.clockCorrectionMs});
+  const item=queueOutgoing(Js8Protocol.formatDirectedMessage({myCall:js8.myCall,toCall:task.peer,text:task.text}));
+  item.fileTransfer=true;task.outgoing=item;
+  driveEncoder(activeEncoder.encode(task.text),error=>failOutgoing(item,error));
+}
+
+function finishFileProtocolTx(status) {
+  const task=binState.txCurrent;if(!task)return;
+  binState.txCurrent=null;
+  if(status==="completed"){
+    Promise.resolve(task.onSent&&task.onSent()).catch(error=>failTransfer(task.record,error));
+    pumpFileProtocolTx();
+    return;
+  }
+  if(task.record&&!terminalTransferState(task.record.state)&&task.record.state!=="paused"){
+    task.record.state="paused";addTransferLog(task.record,`TX ${status}; session paused`);saveTransfer(task.record);
+  }
+  binState.txQueue=[];renderControls();
+}
+
+function transferTimeoutMs(record,kind) {
+  if(TEST_MODE)return 3000;
+  const profile=Js8FileTransfer.PROFILES[record.profileKey]||Js8FileTransfer.PROFILES.NORMAL;
+  return 1000*(kind==="offer"?profile.offerTimeoutSeconds:profile.statusTimeoutSeconds);
+}
+
+function armTransferTimeout(record,kind) {
+  clearTransferTimer();
+  binState.responseTimer=setTimeout(()=>handleTransferTimeout(record,kind),transferTimeoutMs(record,kind));
+}
+
+function handleTransferTimeout(record,kind) {
+  if(binState.active!==record||terminalTransferState(record.state)||record.state==="paused")return;
+  if(kind==="offer"&&record.offerAttempts<=Js8FileTransfer.DEFAULTS.offerRetries){
+    addTransferLog(record,"ACCEPT timeout; repeating OFFER");sendFileOffer(record);return;
+  }
+  record.statusAttempts=(record.statusAttempts||0)+1;
+  if(record.statusAttempts<=Js8FileTransfer.DEFAULTS.statusRetries){
+    addTransferLog(record,"Status timeout; sending QUERY");
+    queueFileProtocol(record,record.peerCallsign,Js8FileTransfer.encodeQuery(record.id),()=>armTransferTimeout(record,"status"));
+    saveTransfer(record);return;
+  }
+  record.state="paused";addTransferLog(record,"Timeout retry limit reached; session paused");saveTransfer(record);
+}
+
+function sendFileOffer(record) {
+  record.state="waiting-accept";record.offerAttempts=(record.offerAttempts||0)+1;
+  const text=Js8FileTransfer.encodeOffer({transferId:record.id,originalSize:record.originalSize,
+    blockCount:record.blockCount,blockSize:record.blockSize,compression:record.compression,
+    hash12:record.hash12,fileName:record.fileName});
+  queueFileProtocol(record,record.peerCallsign,text,()=>{saveTransfer(record);armTransferTimeout(record,"offer");});
+  saveTransfer(record);
+}
+
+function transferFrameCount(peer,text) {
+  return Js8Protocol.buildReplyFrames({myCall:currentJs8().myCall,toCall:peer,text}).length;
+}
+
+function sendNextFileWindow(record) {
+  if(record.state==="paused"||terminalTransferState(record.state))return;
+  const acknowledged=new Set(record.acknowledged||[]),all=Array.from({length:record.blockCount+1},(_,index)=>index);
+  let sequences=[];
+  if(record.retransmitQueue?.length){sequences=record.retransmitQueue.splice(0,record.windowSize);record.retransmittedBlocks=(record.retransmittedBlocks||0)+sequences.length;}
+  else sequences=all.filter(sequence=>!acknowledged.has(sequence)).slice(0,record.windowSize);
+  if(!sequences.length){record.state="waiting-complete";addTransferLog(record,"All blocks acknowledged; waiting for COMPLETE");saveTransfer(record);armTransferTimeout(record,"status");return;}
+  const profile=Js8FileTransfer.PROFILES[record.profileKey],dutySequences=[];let seconds=0;
+  for(const sequence of sequences){
+    const text=Js8FileTransfer.encodeData(record.id,encodedTransferBlock(record,sequence));
+    const duration=transferFrameCount(record.peerCallsign,text)*profile.periodSeconds;
+    if(dutySequences.length&&seconds+duration>Js8FileTransfer.DEFAULTS.maxContinuousTxSeconds)break;
+    dutySequences.push(sequence);seconds+=duration;
+  }
+  sequences=dutySequences;record.lastWindow=sequences.slice();record.statusScope=Math.max(...sequences);record.state="sending";
+  const messages=sequences.map(sequence=>Js8FileTransfer.encodeData(record.id,encodedTransferBlock(record,sequence)));
+  messages.push(Js8FileTransfer.encodeEnd(record.id,Math.max(...sequences)));
+  queueFileProtocol(record,record.peerCallsign,messages,()=>{record.state="waiting-status";record.statusAttempts=0;addTransferLog(record,"RX status window");saveTransfer(record);armTransferTimeout(record,"status");});
+  saveTransfer(record);
+}
+
+function acknowledgeThrough(record,through,missing=[]) {
+  const missingSet=new Set(missing),acknowledged=new Set(record.acknowledged||[]);
+  for(let sequence=0;sequence<=Math.min(Number(through)||0,record.blockCount);sequence+=1)
+    if(!missingSet.has(sequence))acknowledged.add(sequence);
+  record.acknowledged=[...acknowledged].sort((a,b)=>a-b);
+}
+
+function failTransfer(record,error) {
+  clearTransferTimer();
+  if(record){record.state="failed";addTransferLog(record,`FAILED ${error.message||error}`);saveTransfer(record);}
+  binState.storageError=error.message||String(error);renderControls();
+}
+
+async function prepareSelectedFile() {
+  const file=dom.binFile.files&&dom.binFile.files[0];
+  binState.prepared=null;binState.storageError="";
+  if(!file){renderControls();return;}
+  binState.preparing=true;renderControls();
+  try{
+    const profile=currentBinProfile();Js8FileTransfer.enforceFileLimit(file.size,profile);
+    const bytes=new Uint8Array(await file.arrayBuffer());
+    binState.prepared=await Js8FileTransfer.prepareBytes(bytes,{fileName:file.name,mimeType:file.type});
+  }catch(error){binState.storageError=error.message;}
+  finally{binState.preparing=false;renderControls();}
+}
+
+function openBinConfirmation() {
+  if(!binState.prepared)return;
+  let peer;try{peer=Js8FileTransfer.normalizeCallsign(binState.peerDraft);}catch(error){binState.storageError=error.message;renderControls();return;}
+  const profile=currentBinProfile(),manifest=binState.prepared.manifest,estimate=Js8FileTransfer.estimateDuration(manifest.originalSize,profile);
+  dom.binConfirmPeer.textContent=peer;dom.binConfirmFile.textContent=`${manifest.fileName} · ${formatBytes(manifest.originalSize)}`;
+  dom.binConfirmProfile.textContent=`${profile.label} · ${profile.periodSeconds} s frames · ${profile.windowSize}-block negotiated window`;
+  dom.binConfirmPlan.textContent=estimate?`${formatMinutes(estimate.optimisticMinutes)}–${formatMinutes(estimate.plannedMinutes)}, including 30% repair reserve${manifest.originalSize>=profile.warningSize?" · ABOVE RECOMMENDED SIZE; operators must remain present":""}`:"Unavailable";
+  dom.binConfirmHash.textContent=manifest.sha256Hex;
+  dom.binConfirmDialog.returnValue="";dom.binConfirmDialog.showModal();
+}
+
+async function copyPreparedFileHash() {
+  const hash=binState.prepared?.manifest.sha256Hex;if(!hash)return;
+  try{
+    if(navigator.clipboard?.writeText)await navigator.clipboard.writeText(hash);
+    else{const input=document.createElement("textarea");input.value=hash;document.body.append(input);input.select();document.execCommand("copy");input.remove();}
+    dom.binCopyHash.textContent="COPIED";setTimeout(()=>dom.binCopyHash.textContent="COPY HASH",1200);
+  }catch(error){binState.storageError=`Unable to copy hash: ${error.message}`;renderControls();}
+}
+
+async function beginPreparedTransfer() {
+  const prepared=binState.prepared;if(!prepared)return;
+  try{
+    const peer=Js8FileTransfer.normalizeCallsign(binState.peerDraft),profile=currentBinProfile();
+    Js8FileTransfer.enforceFileLimit(prepared.manifest.originalSize,profile);
+    const record=transferRecordFromPrepared(prepared,peer,profile);
+    binState.active=record;binState.sessions.push(record);binState.prepared=null;dom.binFile.value="";
+    addTransferLog(record,`CREATED ${record.fileName} ${record.originalSize}B SHA256 ${record.sha256Hex}`);
+    if(!await saveTransfer(record)){record.state="failed";return;}
+    sendFileOffer(record);
+  }catch(error){binState.storageError=error.message;renderControls();}
+}
+
+function radioMessageEndpoints(item) {
+  const prefix=String(item.text||"").slice(0,String(item.text||"").indexOf(Js8FileTransfer.PROTOCOL_PREFIX));
+  const match=/^\s*([^:\s]+):\s+([^\s]+)/.exec(prefix);
+  const calls=item.callsigns||[];
+  return {from:String(match?.[1]||calls[0]||"").toUpperCase(),to:String(match?.[2]||calls[1]||"").toUpperCase()};
+}
+
+async function handleFileActivityMessage(item) {
+  if(!String(item.text||"").includes(Js8FileTransfer.PROTOCOL_PREFIX))return;
+  let message;try{message=Js8FileTransfer.parseMessage(item.text);}catch(error){binState.lastProtocol=`RX INVALID ${error.message}`;renderControls();return;}
+  if(!message)return;
+  const endpoints=radioMessageEndpoints(item),own=currentJs8().myCall;
+  if(!sameCall(endpoints.to,own)||sameCall(endpoints.from,own))return;
+  binState.lastProtocol=`RX ${String(item.text).slice(String(item.text).indexOf("~F1"))}`;
+  if(message.type==="offer"){await handleIncomingFileOffer(message,endpoints.from,item.submode,item.snr);return;}
+  const record=binState.active;
+  if(!record||record.id!==message.id||!sameCall(record.peerCallsign,endpoints.from))return;
+  const station=state.activity.calls.find(item=>sameCall(item.call,endpoints.from));
+  if(station)record.lastSnr=station.snr;
+  addTransferLog(record,binState.lastProtocol);
+  clearTransferTimer();
+  if(record.direction==="tx")await handleOutgoingFileResponse(record,message);
+  else await handleIncomingFileMessage(record,message);
+  if(!await saveTransfer(record)){record.state="paused";clearTransferTimer();}
+}
+
+async function handleIncomingFileOffer(message,peer,submode,snr) {
+  const active=binState.active;
+  if(active&&!terminalTransferState(active.state)){
+    if(active.direction==="rx"&&active.id===message.id&&sameCall(active.peerCallsign,peer)){
+      const profile=Js8FileTransfer.PROFILES[active.profileKey];queueFileProtocol(active,peer,Js8FileTransfer.encodeAccept(active.id,active.windowSize,profile),null,true);
+    }else queueFileProtocol(active,peer,Js8FileTransfer.encodeReject(message.id,"BUSY"),null,true);
+    return;
+  }
+  const profile=Js8FileTransfer.profileForSubmode(submode);
+  try{
+    Js8FileTransfer.enforceFileLimit(message.size,profile);
+    if(message.compression!=="none"||message.blockSize!==Js8FileTransfer.DEFAULTS.blockSizeBytes||message.blockCount!==Math.ceil(message.size/message.blockSize))throw new Error("Unsupported OFFER parameters.");
+  }catch(_error){queueFileProtocol(null,peer,Js8FileTransfer.encodeReject(message.id,"POLICY"),null,true);return;}
+  binState.incomingOffer={...message,peer,profileKey:profile.key,snr};
+  dom.binIncomingPeer.textContent=peer;dom.binIncomingFile.textContent=message.fileName;
+  dom.binIncomingSize.textContent=formatBytes(message.size);dom.binIncomingHash.textContent=message.hash12;
+  dom.binIncomingDialog.returnValue="";dom.binIncomingDialog.showModal();
+}
+
+async function acceptIncomingFileOffer() {
+  const offer=binState.incomingOffer;if(!offer)return;
+  const now=Date.now(),profile=Js8FileTransfer.PROFILES[offer.profileKey];
+  const record={id:offer.id,direction:"rx",peerCallsign:offer.peer,fileName:offer.fileName,
+    mimeType:"application/octet-stream",originalSize:offer.size,compression:offer.compression,
+    blockSize:offer.blockSize,blockCount:offer.blockCount,hash12:offer.hash12,sha256Hex:"",
+    blocks:Array(offer.blockCount+1).fill(null),profileKey:profile.key,submode:profile.submode,
+    windowSize:profile.windowSize,state:"receiving",retransmittedBlocks:0,createdAt:now,
+    startedAt:now,updatedAt:now,lastActivityAt:now,lastSnr:offer.snr,log:[]};
+  binState.active=record;binState.sessions.push(record);binState.incomingOffer=null;
+  addTransferLog(record,`ACCEPTED OFFER ${record.fileName} ${record.originalSize}B`);
+  if(!await saveTransfer(record)){
+    record.state="failed";queueFileProtocol(null,record.peerCallsign,Js8FileTransfer.encodeReject(record.id,"STORAGE"),null,true);return;
+  }
+  queueFileProtocol(record,record.peerCallsign,Js8FileTransfer.encodeAccept(record.id,record.windowSize,profile),null,true);
+}
+
+function rejectIncomingFileOffer(reason="POLICY") {
+  const offer=binState.incomingOffer;if(!offer)return;
+  queueFileProtocol(null,offer.peer,Js8FileTransfer.encodeReject(offer.id,reason),null,true);
+  binState.incomingOffer=null;renderControls();
+}
+
+async function handleOutgoingFileResponse(record,message) {
+  if(message.type==="accept"){
+    if(!message.profile||message.windowSize<1){failTransfer(record,new Error("Peer returned an invalid ACCEPT."));return;}
+    record.profileKey=message.profile.key;record.submode=message.profile.submode;
+    record.windowSize=Math.min(record.windowSize,message.windowSize,8);record.accepted=true;record.state="sending";record.statusAttempts=0;sendNextFileWindow(record);return;
+  }
+  if(message.type==="ack"){
+    acknowledgeThrough(record,message.sequence);record.statusAttempts=0;sendNextFileWindow(record);return;
+  }
+  if(message.type==="nack"){
+    const key=`${message.id}`;let parts=binState.nackParts.get(key)||{total:message.parts,values:new Map()};parts.values.set(message.part,message.sequences);binState.nackParts.set(key,parts);
+    if(parts.values.size<parts.total){armTransferTimeout(record,"status");return;}
+    const missing=[...parts.values.values()].flat();binState.nackParts.delete(key);
+    if(missing==="ALL"||missing.includes?.("ALL")){record.acknowledged=[];record.retransmitQueue=Array.from({length:record.blockCount+1},(_,index)=>index);}
+    else{acknowledgeThrough(record,record.statusScope??Math.max(...(record.lastWindow||[0])),missing);record.retransmitQueue=[...new Set(missing)].filter(sequence=>sequence>=0&&sequence<=record.blockCount);}
+    sendNextFileWindow(record);return;
+  }
+  if(message.type==="complete"){
+    if(message.hash12!==record.hash12){failTransfer(record,new Error("Peer COMPLETE hash does not match."));return;}
+    record.state="complete";record.completedAt=Date.now();addTransferLog(record,"COMPLETE verified by peer");return;
+  }
+  if(message.type==="reject"){record.state="rejected";addTransferLog(record,`REJECTED ${message.reason}`);return;}
+  if(message.type==="cancel"){record.state="cancelled";addTransferLog(record,`CANCELLED BY PEER ${message.reason}`);return;}
+  if(message.type==="query"){
+    if(record.state==="complete")queueFileProtocol(record,record.peerCallsign,Js8FileTransfer.encodeComplete(record.id,record.hash12),null,true);
+    else if(record.lastWindow?.length)queueFileProtocol(record,record.peerCallsign,Js8FileTransfer.encodeEnd(record.id,Math.max(...record.lastWindow)),null,true);
+  }
+}
+
+function expectedIncomingBlockLength(record,sequence) {
+  if(sequence===0)return 32;
+  if(sequence<1||sequence>record.blockCount)throw new Error("DATA sequence is outside this transfer.");
+  return sequence===record.blockCount?record.originalSize-record.blockSize*(record.blockCount-1):record.blockSize;
+}
+
+function incomingMissing(record,through=record.blockCount) {
+  const result=[];for(let sequence=0;sequence<=Math.min(through,record.blockCount);sequence+=1)if(!record.blocks[sequence])result.push(sequence);return result;
+}
+
+async function finishIncomingTransfer(record) {
+  record.state="verifying";await saveTransfer(record);
+  try{
+    const result=await Js8FileTransfer.verifyReceived(record);record.sha256Hex=result.sha256Hex;
+    record.fileBytes=result.bytes;record.state="complete";record.completedAt=Date.now();
+    addTransferLog(record,`SHA256 OK ${result.sha256Hex}`);
+    queueFileProtocol(record,record.peerCallsign,Js8FileTransfer.encodeComplete(record.id,result.hash12),null,true);
+  }catch(error){record.state="failed";addTransferLog(record,`HASH FAILED ${error.message}`);queueFileProtocol(record,record.peerCallsign,Js8FileTransfer.encodeNacks(record.id,"ALL"),null,true);}
+}
+
+async function handleIncomingFileMessage(record,message) {
+  if(message.type==="data"){
+    try{
+      const length=expectedIncomingBlockLength(record,message.sequence),bytes=Js8FileTransfer.decodeDataMessage(message,length);
+      if(!record.blocks[message.sequence])record.blocks[message.sequence]=bytes;
+      else addTransferLog(record,`DUPLICATE block ${message.sequence}`);
+    }catch(error){addTransferLog(record,`BAD block ${message.sequence}: ${error.message}`);}
+    return;
+  }
+  if(message.type==="end"){
+    const missing=incomingMissing(record,message.sequence);
+    if(missing.length){queueFileProtocol(record,record.peerCallsign,Js8FileTransfer.encodeNacks(record.id,missing),null,true);return;}
+    queueFileProtocol(record,record.peerCallsign,Js8FileTransfer.encodeAck(record.id,message.sequence),()=>{if(!incomingMissing(record).length)return finishIncomingTransfer(record);},true);return;
+  }
+  if(message.type==="query"){
+    const missing=incomingMissing(record);
+    if(missing.length)queueFileProtocol(record,record.peerCallsign,Js8FileTransfer.encodeNacks(record.id,missing),null,true);
+    else if(record.state==="complete")queueFileProtocol(record,record.peerCallsign,Js8FileTransfer.encodeComplete(record.id,record.hash12),null,true);
+    else queueFileProtocol(record,record.peerCallsign,Js8FileTransfer.encodeAck(record.id,record.blockCount),()=>finishIncomingTransfer(record),true);
+    return;
+  }
+  if(message.type==="cancel"){record.state="cancelled";addTransferLog(record,`CANCELLED BY PEER ${message.reason}`);}
+}
+
+function pauseFileTransfer() {
+  const record=binState.active;if(!record||terminalTransferState(record.state))return;
+  clearTransferTimer();binState.txQueue=[];record.state="paused";addTransferLog(record,"PAUSED BY OPERATOR");saveTransfer(record);
+  if(binState.txCurrent)activeEncoder.abort();
+}
+
+function resumeFileTransfer() {
+  const record=binState.active;if(!record||record.state!=="paused")return;
+  record.state=record.direction==="rx"?"receiving":"sending";addTransferLog(record,"RESUMED BY OPERATOR");saveTransfer(record);
+  if(record.direction==="tx"){
+    if(!record.accepted)sendFileOffer(record);
+    else queueFileProtocol(record,record.peerCallsign,Js8FileTransfer.encodeQuery(record.id),()=>armTransferTimeout(record,"status"));
+  }else{
+    const missing=incomingMissing(record);
+    queueFileProtocol(record,record.peerCallsign,missing.length?Js8FileTransfer.encodeNacks(record.id,missing):Js8FileTransfer.encodeAck(record.id,record.blockCount),null,true);
+  }
+}
+
+function stopFileTransfer() {
+  const record=binState.active;if(!record||terminalTransferState(record.state))return;
+  clearTransferTimer();binState.txQueue=[];record.state="cancelled";addTransferLog(record,"CANCELLED BY OPERATOR");saveTransfer(record);
+  const sendCancel=()=>queueFileProtocol(record,record.peerCallsign,Js8FileTransfer.encodeCancel(record.id,"USER"),null,true);
+  if(binState.txCurrent){const current=binState.txCurrent;current.onSent=sendCancel;activeEncoder.abort();setTimeout(sendCancel,0);}else sendCancel();
+}
+
+function downloadReceivedFile() {
+  const record=binState.active;if(!record||record.direction!=="rx"||record.state!=="complete"||!record.fileBytes)return;
+  const url=URL.createObjectURL(new Blob([record.fileBytes],{type:record.mimeType||"application/octet-stream"}));
+  const anchor=document.createElement("a");anchor.href=url;anchor.download=record.fileName;anchor.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+
+async function restoreFileTransfers() {
+  try{
+    binState.sessions=await transferStore.all();
+    const sorted=[...binState.sessions].sort((a,b)=>Number(b.updatedAt||0)-Number(a.updatedAt||0));
+    const resumable=sorted.find(item=>!terminalTransferState(item.state));
+    binState.active=resumable||sorted[0]||null;
+    if(resumable){resumable.state="paused";addTransferLog(resumable,"RESTORED AFTER PAGE RELOAD");await saveTransfer(resumable);}
+  }catch(error){binState.storageError=`Transfer restore failed: ${error.message}`;}
+  binState.restored=true;renderControls();
+}
+
 // ---- radio commands and TX --------------------------------------------------
 
 async function requestFrequency(frequency) {
@@ -801,7 +1497,8 @@ async function requestFrequency(frequency) {
   try {
     const response=await fetch("/cmd",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type:"setFrequency",frequency:String(frequency)})});
     if (!response.ok) throw new Error(`TRX request ${response.status}`);
-  } catch (error) { dom.modemState.textContent=error.message; dom.modemState.className="modem-state error"; state.pendingFrequency=null; renderHeader(); }
+    return true;
+  } catch (error) { dom.modemState.textContent=error.message; dom.modemState.className="modem-state error"; state.pendingFrequency=null; renderHeader(); throw error; }
 }
 
 function driveEncoder(prepared, onError) {
@@ -994,7 +1691,7 @@ function bind() {
   dom.trxReconnect.addEventListener("click",reconnectRadio);
   dom.trxHelpDialog.addEventListener("click",event=>{if(event.target===dom.trxHelpDialog)dom.trxHelpDialog.close();});
   dom.trxFrequency.addEventListener("click",()=>{const open=dom.frequencyMenu.hidden;dom.frequencyMenu.hidden=!open;dom.trxFrequency.setAttribute("aria-expanded",String(open));});
-  dom.frequencyMenu.addEventListener("click",event=>{const button=event.target.closest("[data-frequency]");if(button)requestFrequency(Number(button.dataset.frequency));});
+  dom.frequencyMenu.addEventListener("click",event=>{const button=event.target.closest("[data-frequency]");if(button)requestFrequency(Number(button.dataset.frequency)).catch(()=>{});});
   dom.waterfall.addEventListener("click",event=>{const rect=dom.waterfall.getBoundingClientRect();setJs8Setting("txOffsetHz",Math.round(RX_LOW+(event.clientX-rect.left)/rect.width*(RX_HIGH-RX_LOW)));activeEncoder&&activeEncoder.setToneOffset(currentJs8().txOffsetHz);});
   dom.recipient.addEventListener("change",()=>chooseCall(dom.recipient.value.toUpperCase().replace(/[^A-Z0-9/]/g,"")));
   dom.recipientClear.addEventListener("click",clearRecipient);
@@ -1010,20 +1707,50 @@ function bind() {
   });
   document.addEventListener("click",event=>{if(!event.target.closest(".message-field"))closeMessagePresets();});
   dom.txSessionMode.addEventListener("change",()=>{state.txSessionMode=dom.txSessionMode.value;renderControls();});
+  dom.emailAddress.addEventListener("input",renderControls);
+  dom.emailMessage.addEventListener("input",renderControls);
+  dom.emailGateway.addEventListener("change",()=>{emailState.selectedId=dom.emailGateway.value;emailState.status="Draft is not stored in message history.";renderControls();});
+  dom.emailGatewayAdd.addEventListener("click",()=>openEmailGatewayDialog());
+  dom.emailGatewayEdit.addEventListener("click",()=>{const gateway=selectedEmailGateway();if(gateway)openEmailGatewayDialog(gateway);});
+  dom.emailGatewayDelete.addEventListener("click",deleteSelectedEmailGateway);
+  dom.emailGatewayFormat.addEventListener("change",()=>{
+    dom.emailGatewayTemplateRow.hidden=dom.emailGatewayFormat.value!=="template";
+    if(dom.emailGatewayFormat.value==="aprs-email2"&&!emailState.editingId){dom.emailGatewayMaxBody.value="40";dom.emailGatewayPolicy.value="aprs";dom.emailGatewayTarget.value=dom.emailGatewayTarget.value||"@APRSIS";}
+  });
+  dom.emailGatewayForm.addEventListener("submit",saveEmailGateway);
+  dom.emailGatewayDialog.querySelectorAll("[data-email-dialog-close]").forEach(button=>button.addEventListener("click",()=>dom.emailGatewayDialog.close()));
+  dom.emailComposer.addEventListener("submit",event=>{event.preventDefault();if(!dom.emailSend.disabled)openEmailConfirmation();});
+  dom.emailMessage.addEventListener("keydown",event=>{if(event.key==="Enter"&&event.ctrlKey&&!event.isComposing){event.preventDefault();if(!dom.emailSend.disabled)openEmailConfirmation();}});
+  dom.emailConfirmDialog.querySelector('header button').addEventListener("click",()=>dom.emailConfirmDialog.close("cancel"));
+  dom.emailConfirmDialog.addEventListener("close",()=>{if(dom.emailConfirmDialog.returnValue==="send")transmitPendingEmail();else emailState.pendingDraft=null;});
+  dom.binRecipient.addEventListener("input",()=>{binState.peerDraft=dom.binRecipient.value.toUpperCase().replace(/[^A-Z0-9/]/g,"");renderControls();});
+  dom.binFile.addEventListener("change",prepareSelectedFile);
+  dom.binPeerExpected.addEventListener("change",renderControls);
+  dom.binComposer.addEventListener("submit",event=>{event.preventDefault();if(!dom.binOffer.disabled)openBinConfirmation();});
+  dom.binConfirmDialog.querySelector('header button').addEventListener("click",()=>dom.binConfirmDialog.close("cancel"));
+  dom.binCopyHash.addEventListener("click",copyPreparedFileHash);
+  dom.binConfirmDialog.addEventListener("close",()=>{if(dom.binConfirmDialog.returnValue==="send")beginPreparedTransfer();});
+  dom.binIncomingDialog.querySelector('header button').addEventListener("click",()=>dom.binIncomingDialog.close("reject"));
+  dom.binIncomingDialog.addEventListener("close",()=>{if(dom.binIncomingDialog.returnValue==="accept")acceptIncomingFileOffer();else rejectIncomingFileOffer("POLICY");});
+  dom.binPause.addEventListener("click",pauseFileTransfer);
+  dom.binResume.addEventListener("click",resumeFileTransfer);
+  dom.binStop.addEventListener("click",stopFileTransfer);
+  dom.binDownload.addEventListener("click",downloadReceivedFile);
   for (const container of [dom.traffic,dom.stationRows]) container.addEventListener("click",event=>{const node=event.target.closest("[data-call]");if(node)chooseCall(node.dataset.call);});
   dom.stationHead.addEventListener("click",event=>{const button=event.target.closest("[data-station-sort]");if(!button)return;const key=button.dataset.stationSort;if(state.stationSort.key===key)state.stationSort.direction=state.stationSort.direction==="asc"?"desc":"asc";else state.stationSort={key,direction:"asc"};renderActivity();});
   dom.txSpeed.addEventListener("change",()=>setJs8Setting("speed",dom.txSpeed.value));
   dom.txOffset.addEventListener("change",()=>setJs8Setting("txOffsetHz",Math.max(RX_LOW,Math.min(RX_HIGH,Number(dom.txOffset.value)||1500))));
   dom.myCall.addEventListener("input",()=>{state.settingsDraft.myCall=dom.myCall.value;});
   dom.myGrid.addEventListener("input",()=>{state.settingsDraft.grid=dom.myGrid.value;});
+  dom.txGain.addEventListener("input",()=>{state.settingsDraft.txGain=dom.txGain.value;});
   dom.myCall.addEventListener("change",()=>{const value=dom.myCall.value.toUpperCase();state.settingsDraft.myCall=null;setJs8Setting("myCall",value);renderActivity();});
   dom.myGrid.addEventListener("change",()=>{const value=dom.myGrid.value.toUpperCase();state.settingsDraft.grid=null;setJs8Setting("grid",value);});
   dom.followSpeed.addEventListener("change",()=>setJs8Setting("followSpeed",dom.followSpeed.checked));
   dom.clockCorrection.addEventListener("change",()=>setJs8Setting("clockCorrectionMs",Number(dom.clockCorrection.value)||0));
   dom.autoTiming.addEventListener("change",()=>setJs8Setting("autoTiming",dom.autoTiming.checked));
-  dom.txGain.addEventListener("change",()=>setJs8Setting("txGain",Number(dom.txGain.value)||.55));
+  dom.txGain.addEventListener("change",()=>{const value=state.settingsDraft.txGain===null?dom.txGain.value:state.settingsDraft.txGain;state.settingsDraft.txGain=null;setJs8Setting("txGain",Number(value)||.25);});
   dom.txSafety.addEventListener("change",()=>setJs8Setting("txSafetyAccepted",dom.txSafety.checked));
-  dom.resetSettings.addEventListener("click",()=>{const reset=Js8Settings.reset(localStorage);settings=reset.settings;state.settingsDraft={myCall:null,grid:null};state.activeMode=settings.activeModem;dom.storageState.textContent=reset.label;applySettingsToRuntime();renderActivity();renderControls();});
+  dom.resetSettings.addEventListener("click",()=>{const reset=Js8Settings.reset(localStorage);settings=reset.settings;state.settingsDraft={myCall:null,grid:null,txGain:null};state.activeMode=settings.activeModem;dom.storageState.textContent=reset.label;applySettingsToRuntime();renderActivity();renderControls();});
   dom.startupRetry.addEventListener("click",()=>location.reload());
   dom.heartbeat.addEventListener("click",()=>{if(!dom.heartbeat.disabled)startHeartbeat();});
   dom.tune.addEventListener("click",()=>{if(!dom.tune.disabled)toggleTune();});
@@ -1047,6 +1774,7 @@ async function init() {
     if (Object.prototype.hasOwnProperty.call(settings.ui.disclosures,details.dataset.section)) details.open=settings.ui.disclosures[details.dataset.section];
   dom.storageState.textContent=loaded.label;
   renderStartup(); selectMode(state.activeMode); resizeWaterfall(); renderActivity(); renderDiagnostics();
+  restoreFileTransfers();
   setInterval(()=>{dom.utcClock.textContent=`UTC ${new Date().toISOString().slice(11,19)}`;},250);
   renderRhythm(); setInterval(renderRhythm,100);
   pollRadio(); setInterval(pollRadio,500);
@@ -1054,12 +1782,15 @@ async function init() {
     setActivity(activity){state.testActivityLocked=true;applyDecoderActivity(activity);renderActivity();},
     setRadioFrequency(frequency){state.radio.frequency=Number(frequency)||0;if(selectActivityFrequency(state.radio.frequency))renderActivity();renderHeader();renderControls();},
     setRadioConnection(connected,lanStatus=connected?"linked":"disconnected"){state.radio.connected=Boolean(connected);state.radio.lanStatus=lanStatus;renderHeader();renderControls();},
+    setAudioLive(live){state.lastAudioMs=live?performance.now():0;renderHeader();},
     activityCounts(){return {messages:state.activity.messages.length,calls:state.activity.calls.length};},
     setRadioMode(mode){state.radio.mode=mode;renderHeader();},
     setRadioTx(tx){state.radio.tx=Boolean(tx);renderHeader();},
     feedSpectrum(samples){ingestSpectrum(samples);},
     spectrumState(){return {agcLow,agcHigh,agcReady,rows:spectrumRows,fill:spectrumFill};},
-    selectedCall(){return state.selectedCall;}
+    selectedCall(){return state.selectedCall;},
+    fileProtocol(){return {prepared:binState.prepared,active:binState.active,lastProtocol:binState.lastProtocol};},
+    receiveFileMessage(item){return handleFileActivityMessage(item);}
   };
 }
 

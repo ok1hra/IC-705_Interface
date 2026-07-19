@@ -86,6 +86,12 @@ add_executable(js8-aud1-disconnect-smoke
 target_include_directories(js8-aud1-disconnect-smoke PRIVATE ${PROJECT_REPOSITORY})
 target_compile_options(js8-aud1-disconnect-smoke PRIVATE -Wall -Wextra -Wpedantic)
 
+add_executable(js8-aud1-ws-parser-smoke
+  firmware/aud1_ws_parser_smoke.cpp
+)
+target_include_directories(js8-aud1-ws-parser-smoke PRIVATE ${PROJECT_REPOSITORY})
+target_compile_options(js8-aud1-ws-parser-smoke PRIVATE -Wall -Wextra -Wpedantic)
+
 include(CheckIncludeFileCXX)
 check_include_file_cxx("boost/crc.hpp" JS8_PROTO_HAVE_BOOST_CRC)
 if(JS8_PROTO_HAVE_BOOST_CRC)
