@@ -287,6 +287,11 @@ button { color: inherit; cursor: pointer; }
 .message-preset-menu small { color:var(--muted); font-size:10px; }
 .send-hint { grid-column:4; justify-self:end; margin-top:-5px; color:var(--muted); font-size:10px; }
 .abort { border: 1px solid var(--red); background: transparent; color: var(--red); border-radius: 5px; padding: 5px 8px; }
+.session-actions { display: flex; align-items: center; gap: 8px; }
+.log-qso { border: 1px solid var(--cyan); background: transparent; color: var(--cyan); border-radius: 5px; padding: 5px 8px; font-weight: 800; cursor: pointer; }
+.log-qso:disabled { opacity: .45; cursor: default; border-color: var(--line); color: var(--muted); }
+.chat-row.system { justify-content: center; padding: 0; }
+.chat-system { color: var(--muted); font-size: 10px; text-align: center; padding: 3px 10px; border: 1px dashed var(--line); border-radius: 10px; background: #0d1a17; overflow-wrap: anywhere; }
 .planned-session { margin:10px; padding:12px; border:1px dashed #4b615c; border-radius:6px; background:#091310; }
 .planned-session[hidden] { display:none; }
 .planned-session > header { display:flex; align-items:baseline; gap:10px; margin-bottom:10px; }

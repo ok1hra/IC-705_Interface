@@ -178,6 +178,63 @@
     );
   }
 
+  // Build + store a QSO in one shot: DXCC lookup (+ QRB/azimuth from the log's
+  // locator and a received grid, falling back to DXCC entity coordinates),
+  // serial number from a fresh read of the log, then addQso and bump nextQsoNumber.
+  // Shared so both the QRPLog page and the JS8 TX session log the same shape.
+  function commitQso(fields) {
+    const call = String(fields.call || '').toUpperCase();
+    if (!call) return Promise.reject(new Error('Missing callsign'));
+    return getLog(fields.logId).then(log => {
+      if (!log) throw new Error('No active log');
+      const now     = new Date();
+      const dateUtc = now.toISOString().slice(0, 10);
+      const timeUtc = String(now.getUTCHours()).padStart(2, '0') + ':' +
+                      String(now.getUTCMinutes()).padStart(2, '0');
+      const grid    = String(fields.grid || '').toUpperCase();
+
+      let dxcc = global.DXCC ? global.DXCC.lookupDxcc(call) : null;
+      if (dxcc && global.DXCC) {
+        const myLoc = log.myLocator || '';
+        const myPos = myLoc ? global.DXCC.locatorToLatLon(myLoc) : null;
+        const dxPos = (grid && global.DXCC.locatorToLatLon(grid)) ||
+                      { lat: dxcc.latitude, lon: dxcc.longitude };
+        if (myPos && dxPos) {
+          const { qrbKm, azimuthDeg } = global.DXCC.calculateQrbAzimuth(
+            myPos.lat, myPos.lon, dxPos.lat, dxPos.lon);
+          dxcc.qrbKm      = qrbKm;
+          dxcc.azimuthDeg = azimuthDeg;
+        }
+      }
+
+      const qso = {
+        logId:            log.id,
+        qsoNumber:        log.nextQsoNumber,
+        qsoDateUtc:       dateUtc,
+        timeOnUtc:        timeUtc,
+        timestampUtc:     now.toISOString(),
+        call,
+        rstSent:          fields.rstSent || '',
+        rstReceived:      fields.rstReceived || '',
+        exchangeReceived: fields.exchangeReceived || '',
+        frequencyHz:      fields.frequencyHz || 0,
+        frequencyDisplay: fields.frequencyDisplay || '',
+        mode:             fields.mode || '',
+        trx:              fields.trx || '',
+        dxcc:             dxcc || null,
+        locatorReceived:  grid || '',
+        bandClass:        fields.bandClass || 'HF',
+        note:             fields.note || '',
+        source:           fields.source || '',
+      };
+
+      return addQso(qso).then(saved => {
+        log.nextQsoNumber = (log.nextQsoNumber || 1) + 1;
+        return updateLog(log).then(() => saved);
+      });
+    });
+  }
+
   // ── Settings (key/value) ───────────────────────────────────────────────────
 
   function getSetting(key, defaultVal) {
@@ -221,7 +278,7 @@
     // logs
     createLog, getLogs, getLog, updateLog, deleteLog,
     // qso
-    addQso, getQso, updateQso, getQsosForLog, deleteQso, findDupes, findPartial, findDupesGlobal, findPartialGlobal,
+    addQso, getQso, updateQso, getQsosForLog, deleteQso, findDupes, findPartial, findDupesGlobal, findPartialGlobal, commitQso,
     // settings
     getSetting, setSetting, getAllSettings,
     // runtime state

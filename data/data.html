@@ -204,7 +204,7 @@
         <div id="txPayload" class="tx-payload" hidden></div>
         <section id="chatSession">
           <div class="keyboard-session">
-            <header><div><strong id="sessionCall">No station selected</strong><small id="sessionMeta">Choose a callsign from traffic or stations</small></div><button id="abortButton" class="abort" type="button" hidden>ABORT</button></header>
+            <header><div><strong id="sessionCall">No station selected</strong><small id="sessionMeta">Choose a callsign from traffic or stations</small></div><span class="session-actions"><button id="logQsoButton" class="log-qso" type="button" disabled title="Select a station to log">LOG QSO</button><button id="abortButton" class="abort" type="button" hidden>ABORT</button></span></header>
             <div id="chatThread" class="chat-thread"><div class="chat-empty">No messages in this session.</div></div>
           </div>
           <form id="composer" class="composer">
@@ -326,6 +326,7 @@
   <script src="/js8-core.js?v=20260719d"></script>
   <script src="/js8-adapter.js?v=20260719d"></script>
   <script src="/dxcc.js?v=20260719d"></script>
-  <script src="/data.js?v=20260719d"></script>
+  <script src="/log-db.js?v=20260720a"></script>
+  <script src="/data.js?v=20260720a"></script>
 </body>
 </html>

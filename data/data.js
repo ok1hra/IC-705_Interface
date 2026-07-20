@@ -75,7 +75,7 @@ const dom = {
   txOffset:$("txOffset"), audioLevel:$("audioLevel"), txSummary:$("txSummary"),
   heartbeat:$("heartbeatButton"), heartbeatOffset:$("heartbeatOffset"),
   tune:$("tuneButton"), tuneLabel:$("tuneLabel"), tuneOffset:$("tuneOffset"),
-  sessionCall:$("sessionCall"), sessionMeta:$("sessionMeta"), abort:$("abortButton"),
+  sessionCall:$("sessionCall"), sessionMeta:$("sessionMeta"), abort:$("abortButton"), logQso:$("logQsoButton"),
   txSessionMode:$("txSessionMode"), txSessionModeHint:$("txSessionModeHint"),
   txPayload:$("txPayload"),
   chatSession:$("chatSession"), emailSession:$("emailSession"), binSession:$("binSession"),
@@ -156,6 +156,7 @@ const state = {
   ownCallAttention:{call:"", messages:new Set(), stations:new Set()},
   activeOutgoing:null, lastOutgoing:null,
   settingsDraft:{myCall:null,grid:null,txGain:null}, reconnectPending:false,
+  activeLog:null, loggedCalls:new Set(),
 };
 let audioSource = null, activeDecoder = null, activeEncoder = null, txTick = null;
 let radioPollInFlight = false;
@@ -1254,13 +1255,96 @@ function renderConversation() {
   dom.sessionCall.textContent=state.selectedCall || "No station selected";
   const station=state.activity.calls.find(item=>item.call===state.selectedCall);
   dom.sessionMeta.textContent=station ? `${signed(station.snr)} dB · ${Math.round(station.offsetHz)} Hz · speed ${speedDetail(station.submode)}` : "Choose a callsign from traffic or stations";
+  updateLogQsoButton(station);
   const items=state.selectedCall ? conversationItems() : [];
   dom.chat.innerHTML=items.length ? items.map(item=>{
+    if(item.direction==="system")return `<div class="chat-row system"><div class="chat-system">${esc(item.text)}</div></div>`;
     const resend=item.direction==="outgoing"&&item.status==="interrupted"
       ? `<button type="button" class="chat-resend" data-resend-text="${esc(item.sourceText||item.text)}">↻ resend</button>` : "";
     return `<div class="chat-row ${item.direction}"><article class="chat-bubble" data-message-status="${esc(item.status)}"><header><strong>${item.direction==="incoming"?esc(state.selectedCall):esc(currentJs8().myCall)}</strong><time>${esc(item.time)}</time></header><div class="chat-message">${item.direction==="outgoing"?renderOutgoingText(item):esc(item.text)}</div><footer>${esc(item.status)}${resend}</footer></article></div>`;
   }).join("") : '<div class="chat-empty">No messages in this session.</div>';
   dom.chat.scrollTop=dom.chat.scrollHeight;
+}
+
+// ---- QRPLog "Log QSO" from the TX session -----------------------------------
+// The QRPLog is browser-local IndexedDB (contestLogDb) shared across same-origin
+// pages, so this page logs straight into the log the /log tab has marked active.
+async function refreshActiveLog() {
+  if(!window.LogDB)return;
+  try {
+    const id=await window.LogDB.getSetting("activeLogId",null);
+    state.activeLog=id ? await window.LogDB.getLog(id) : null;
+  } catch(_error) { state.activeLog=null; }
+  renderConversation();
+}
+
+// Scan decoded messages newest→oldest for the SNR the selected station last
+// reported about us (a directed message FROM them TO our call). Returns "" when
+// they never sent one — that half of the pair is optional per the design.
+function reportedSnrForCall(call) {
+  const my=currentJs8().myCall;
+  if(!call || !my)return "";
+  const messages=state.activity.messages || [];
+  for(let index=messages.length-1;index>=0;index-=1){
+    const message=messages[index];
+    if(!Array.isArray(message.kinds) || !message.kinds.includes("directed"))continue;
+    const callsigns=message.callsigns || [];
+    if(!sameCall(callsigns[0],call) || !sameCall(callsigns[1],my))continue;
+    const match=/\bSNR\s*([+-]?\d+)/i.exec(message.text || "");
+    if(match)return formatJs8Snr(Number(match[1]));
+  }
+  return "";
+}
+
+function updateLogQsoButton(station) {
+  const button=dom.logQso;
+  if(!button)return;
+  const call=state.selectedCall, log=state.activeLog;
+  button.textContent="LOG QSO";
+  if(!window.LogDB){button.disabled=true;button.title="Log storage unavailable";return;}
+  if(!call){button.disabled=true;button.title="Select a station to log";return;}
+  if(!log){button.disabled=true;button.title="Open or create a log in the QRPLog tab first";return;}
+  if(state.loggedCalls.has(`${log.id}|${call}`)){
+    button.disabled=true;button.textContent="LOGGED ✓";
+    button.title=`${call} already logged to ${log.contestName||log.id}`;return;
+  }
+  button.disabled=false;
+  button.title=`Log ${call} to ${log.contestName||log.id}`;
+}
+
+function pushSystemMessage(call, text) {
+  if(!call)return;
+  if(!state.conversations[call])state.conversations[call]=[];
+  state.conversations[call].push({direction:"system",time:new Date().toISOString().slice(11,19),text,status:"info"});
+  renderConversation();
+  persistSession();
+}
+
+async function handleLogQso() {
+  const call=state.selectedCall, log=state.activeLog;
+  if(!call || !log || !window.LogDB)return;
+  const key=`${log.id}|${call}`;
+  if(state.loggedCalls.has(key))return;
+  dom.logQso.disabled=true; // guard against a double click while the write runs
+  const station=state.activity.calls.find(item=>item.call===call);
+  const rstSent=station ? formatJs8Snr(station.snr) : "";
+  const rstReceived=reportedSnrForCall(call);
+  const frequencyHz=Number(state.radio.frequency)||0;
+  try {
+    const saved=await window.LogDB.commitQso({
+      logId:log.id, call, rstSent, rstReceived,
+      frequencyHz, frequencyDisplay:formatFrequency(frequencyHz),
+      mode:"JS8", trx:state.radio.trx1Label||"IC-705",
+      grid:(station && station.grid) || "",
+      bandClass:frequencyHz>49_000_000 ? "VHF_PLUS" : "HF",
+      source:"js8-tx-session",
+    });
+    state.loggedCalls.add(key);
+    pushSystemMessage(call,`QSO logged → ${log.contestName||log.id} #${saved.qsoNumber} · rst ${rstSent||"—"} / rcv ${rstReceived||"—"}`);
+    refreshActiveLog();
+  } catch(error) {
+    pushSystemMessage(call,`Log failed: ${error.message||error}`);
+  }
 }
 
 function renderDiagnostics() {
@@ -2056,6 +2140,8 @@ function bind() {
   // audio and the decoder are warm again.
   dom.chat.addEventListener("click",event=>{const button=event.target.closest("[data-resend-text]");if(!button)return;dom.message.value=button.dataset.resendText;renderControls();persistSession();dom.message.focus({preventScroll:true});const end=dom.message.value.length;dom.message.setSelectionRange(end,end);});
   dom.abort.addEventListener("click",()=>activeEncoder&&activeEncoder.abort());
+  dom.logQso.addEventListener("click",handleLogQso);
+  window.addEventListener("focus",refreshActiveLog);
   document.querySelectorAll("details[data-section]").forEach(details=>details.addEventListener("toggle",()=>{settings.ui.disclosures[details.dataset.section]=details.open;persistSettings(false);}));
   dom.stationMapSection.addEventListener("toggle",()=>{if(dom.stationMapSection.open)renderStationMap(state.activity.calls||[]);});
   window.addEventListener("resize",resizeWaterfall);
@@ -2076,6 +2162,7 @@ async function init() {
   renderStartup(); selectMode(state.activeMode); resizeWaterfall(); renderActivity(); renderDiagnostics();
   if(sessionRestored){renderConversation();if(state.selectedCall)dom.reply.open=true;}
   restoreFileTransfers();
+  refreshActiveLog();
   setInterval(()=>{dom.utcClock.textContent=`UTC ${new Date().toISOString().slice(11,19)}`;},250);
   renderRhythm(); setInterval(renderRhythm,100);
   pollRadio(); setInterval(pollRadio,500);
