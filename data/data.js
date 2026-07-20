@@ -116,6 +116,7 @@ const dom = {
   traffic:$("traffic"), trafficSummary:$("trafficSummary"), stationRows:$("stationRows"),
   trafficSection:document.querySelector('[data-section="traffic"]'),
   trafficFilter:document.querySelector(".traffic-filter"),
+  trafficClear:document.querySelector("[data-traffic-clear]"),
   stationsSection:document.querySelector('[data-section="stations"]'),
   stationMapSection:document.querySelector('[data-section="stations-map"]'),
   stationMap:$("stationMap"), stationMapSummary:$("stationMapSummary"),
@@ -160,6 +161,141 @@ let audioSource = null, activeDecoder = null, activeEncoder = null, txTick = nul
 let radioPollInFlight = false;
 let frequencyMenuKey = "";
 const decoderActivitySeen = {messages:new Set(), frames:new Set(), calls:new Map()};
+
+// ---- Session snapshot: survive a round-trip to QRPLog / SETUP ----------------
+// The header tabs are full-page navigations, so leaving /data tears down the
+// whole JS8 runtime (decoder worker, audio WebSocket, in-memory activity). We
+// snapshot the operator-visible session into sessionStorage on the way out and
+// rebuild it on return, so received messages, conversations and the compose
+// draft survive. Audio and live decoding are deliberately not restored (they
+// cannot resume mid-slot); a divider in the traffic list marks the pause. The
+// key is versioned and any corrupt/stale snapshot is discarded, never fatal.
+const SESSION_SNAPSHOT_KEY = "js8lan.session.v1";
+const SESSION_MAX_BUCKETS = 20;
+const SESSION_MAX_CONVERSATION = 200;
+const TX_LIVE_STATUSES = ["queued","transmitting","draining"];
+let sessionPersistTimer = null;
+let sessionRestored = false; // a snapshot was rebuilt on this page load
+
+function sessionStore() { try { return globalThis.sessionStorage; } catch (_error) { return null; } }
+
+// A transmission in progress when the operator left cannot resume mid-frame, so
+// it is recorded as interrupted with a one-click resend offer instead.
+function snapshotOutgoing(item) {
+  const copy = {...item};
+  if (TX_LIVE_STATUSES.includes(copy.status)) { copy.status = "interrupted"; copy.activeFraction = 0; copy.resend = true; }
+  return copy;
+}
+
+function buildSessionSnapshot() {
+  const buckets = (state.activitySessions || []).slice(-SESSION_MAX_BUCKETS).map(session => ({
+    frequencyHz: session.frequencyHz,
+    messages: (session.activity.messages || []).slice(-200).map(item => ({...item})),
+    calls: (session.activity.calls || []).map(item => ({...item}))
+  }));
+  const conversations = {};
+  for (const [call, items] of Object.entries(state.conversations || {})) {
+    if (!Array.isArray(items) || !items.length) continue;
+    conversations[call] = items.slice(-SESSION_MAX_CONVERSATION)
+      .map(item => item.direction === "outgoing" ? snapshotOutgoing(item) : {...item});
+  }
+  return {
+    version: 1, savedAtMs: Date.now(),
+    activityFrequency: state.activityFrequency || 0,
+    buckets, conversations,
+    selectedCall: state.selectedCall || "",
+    trafficFilter: state.trafficFilter || "all",
+    stationSort: {...state.stationSort},
+    draft: (dom.message && dom.message.value) || "",
+    lastOutgoing: state.lastOutgoing ? snapshotOutgoing(state.lastOutgoing) : null
+  };
+}
+
+function writeSessionSnapshot() {
+  const store = sessionStore(); if (!store) return;
+  try {
+    store.setItem(SESSION_SNAPSHOT_KEY, JSON.stringify(buildSessionSnapshot()));
+  } catch (_error) {
+    // Quota or serialization failure must never break the running page. Retry
+    // once keeping only the most recent frequency buckets, then give up quietly.
+    try {
+      const trimmed = buildSessionSnapshot();
+      trimmed.buckets = trimmed.buckets.slice(-3);
+      store.setItem(SESSION_SNAPSHOT_KEY, JSON.stringify(trimmed));
+    } catch (_retryError) { /* running page stays intact */ }
+  }
+}
+
+function persistSession() {
+  if (TEST_MODE || sessionPersistTimer) return;
+  sessionPersistTimer = setTimeout(() => { sessionPersistTimer = null; writeSessionSnapshot(); }, 500);
+}
+
+function flushSession() {
+  if (sessionPersistTimer) { clearTimeout(sessionPersistTimer); sessionPersistTimer = null; }
+  writeSessionSnapshot();
+}
+
+function discardSession() {
+  const store = sessionStore(); if (!store) return;
+  try { store.removeItem(SESSION_SNAPSHOT_KEY); } catch (_error) { /* ignore */ }
+}
+
+// Rebuild the global dedup structures from restored activity so a live decode
+// that repeats a restored slot is skipped instead of duplicated. ownCall
+// attention is intentionally not restored; it is re-derived from current myCall.
+function rebuildDecoderSeen() {
+  decoderActivitySeen.messages.clear();
+  decoderActivitySeen.frames.clear();
+  decoderActivitySeen.calls.clear();
+  for (const session of state.activitySessions || []) {
+    for (const message of session.activity.messages || []) decoderActivitySeen.messages.add(activityMessageKey(message));
+    for (const call of session.activity.calls || []) decoderActivitySeen.calls.set(call.call, activityCallSignature(call));
+  }
+}
+
+function restoreSession() {
+  const store = sessionStore(); if (!store) return false;
+  let raw = null;
+  try { raw = store.getItem(SESSION_SNAPSHOT_KEY); } catch (_error) { return false; }
+  if (!raw) return false;
+  let snapshot = null;
+  try { snapshot = JSON.parse(raw); } catch (_error) { discardSession(); return false; }
+  if (!snapshot || snapshot.version !== 1 || !Array.isArray(snapshot.buckets)) { discardSession(); return false; }
+  try {
+    const buckets = [];
+    for (const bucket of snapshot.buckets) {
+      if (!bucket || typeof bucket.frequencyHz !== "number") continue;
+      const messages = (Array.isArray(bucket.messages) ? bucket.messages : []).map(item => ({...item, restored: true}));
+      const calls = (Array.isArray(bucket.calls) ? bucket.calls : []).map(item => ({...item}));
+      buckets.push({frequencyHz: bucket.frequencyHz, activity: {messages, calls, timing: [], frames: [], channels: []}});
+    }
+    if (!buckets.length) { discardSession(); return false; }
+    state.activitySessions = buckets;
+    if (snapshot.conversations && typeof snapshot.conversations === "object") {
+      const conversations = {};
+      for (const [call, items] of Object.entries(snapshot.conversations))
+        if (Array.isArray(items)) conversations[call] = items.map(item => ({...item}));
+      state.conversations = conversations;
+    }
+    if (typeof snapshot.selectedCall === "string") state.selectedCall = snapshot.selectedCall;
+    if (typeof snapshot.trafficFilter === "string") state.trafficFilter = snapshot.trafficFilter;
+    if (snapshot.stationSort && typeof snapshot.stationSort.key === "string")
+      state.stationSort = {key: snapshot.stationSort.key, direction: snapshot.stationSort.direction === "asc" ? "asc" : "desc"};
+    if (snapshot.lastOutgoing && typeof snapshot.lastOutgoing === "object") state.lastOutgoing = {...snapshot.lastOutgoing};
+    // Select the bucket for the restored frequency now so history is visible
+    // immediately, before pollRadio confirms the live frequency.
+    const frequency = Number(snapshot.activityFrequency) || 0;
+    if (frequency > 0) {
+      const session = activitySessionFor(frequency, false);
+      if (session) { state.activityFrequency = session.frequencyHz; state.activity = session.activity; }
+    }
+    if (dom.message && typeof snapshot.draft === "string") dom.message.value = snapshot.draft;
+    rebuildDecoderSeen();
+    sessionRestored = true;
+    return true;
+  } catch (_error) { discardSession(); return false; }
+}
 
 function esc(value) {
   return String(value == null ? "" : value).replace(/[&<>\"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"})[c]);
@@ -258,6 +394,7 @@ function applyDecoderActivity(snapshot) {
   activity.timing=(snapshot.timing || []).map(item=>({...item}));
   activity.channels=(snapshot.channels || []).map(item=>({...item}));
   state.activity=activity;
+  persistSession();
 }
 function selectedMode() {
   const speed = currentJs8().speed;
@@ -650,7 +787,10 @@ function renderHeader() {
 }
 
 function renderStartup() {
-  const pending=!state.startup.ready;
+  // When a session was restored, drop the blocking full-screen gate so the
+  // rebuilt history is visible immediately; the modem then warms up behind the
+  // inline modem-state line instead of hiding everything.
+  const pending=!state.startup.ready && !sessionRestored;
   document.body.classList.toggle("startup-pending",pending);
   dom.startup.hidden=!pending;
   const progress=Math.max(0,Math.min(100,state.startup.progress));
@@ -885,12 +1025,14 @@ function chooseCall(call) {
   persistSettings(false); renderActivity(); renderControls();
   dom.reply.open=true;
   dom.message.focus({preventScroll:true});
+  persistSession();
 }
 
 function clearRecipient() {
   state.selectedCall="";
   renderActivity(); renderControls();
   dom.recipient.focus({preventScroll:true});
+  persistSession();
 }
 
 // You can't work yourself: refuse your own callsign as recipient, revert the field to the
@@ -951,7 +1093,7 @@ function openSectionsForNewOwnCall(messages,calls) {
   state.ownCallAttention={call:own,messages:messageKeys,stations:stationKeys};
 }
 
-const TRAFFIC_WINDOWS={"30m":30*60*1000, "2h":2*60*60*1000};
+const TRAFFIC_WINDOWS={"5m":5*60*1000};
 function messageTimeMs(message){return Number(message.lastSlotUtcMs || message.firstSlotUtcMs || 0);}
 // Recent-traffic filter: one active mode at a time. Time windows are rolling (recomputed
 // each render against Date.now()); MYCALL keeps only frames mentioning the operator's call.
@@ -973,21 +1115,39 @@ function renderTrafficFilterButtons(own){
   }
 }
 
+// CLEAR empties the recent-traffic history for the current frequency session only. Mutated in
+// place so state.activity and the stored session keep sharing one array; the dedup set is left
+// intact so cleared frames don't reappear while new decodes keep flowing in.
+function clearRecentTraffic(){
+  const messages=state.activity.messages;
+  if(Array.isArray(messages))messages.length=0;
+  renderActivity();
+}
+
 function renderActivity() {
   const messages=state.activity.messages || [], calls=state.activity.calls || [];
   const own=currentJs8().myCall;
   renderTrafficFilterButtons(own);
+  dom.trafficClear.disabled=messages.length===0;
   const filtered=filterTraffic(messages,own);
   dom.trafficSummary.textContent=filtered.length===messages.length
     ? `${messages.length} message${messages.length===1?"":"s"}`
     : `${filtered.length} / ${messages.length} messages`;
   dom.stationSummary.textContent=`${calls.length} active`;
   const recent=[...filtered].sort((a,b)=>Number(b.lastSlotUtcMs||b.firstSlotUtcMs||0)-Number(a.lastSlotUtcMs||a.firstSlotUtcMs||0)).slice(0,100);
+  let dividerShown=false;
   dom.traffic.innerHTML=recent.length ? recent.map(message => {
+    // Traffic is newest-first, so live decodes sit above restored history. One
+    // divider (relocated on every restore) marks where decoding was paused.
+    let divider="";
+    if(!dividerShown && message.restored){
+      divider='<div class="restore-divider" role="separator">session restored · live decoding was paused while away</div>';
+      dividerShown=true;
+    }
     const call=callOf(message), when=new Date(message.lastSlotUtcMs || message.firstSlotUtcMs || 0).toISOString().slice(11,19);
     const operational=Array.isArray(message.kinds) && !message.kinds.includes("data");
     const ownCall=sameCall(call,currentJs8().myCall);
-    return `<article class="message${operational?" operational":""}"><span class="message-meta"><span>${when}</span><span>${MODE_TO_SPEED[message.submode]||"?"}</span><span>${Math.round(message.offsetHz)} Hz</span></span><strong data-call="${esc(call)}"${ownCall?' class="own-callsign" data-own-call="true"':""}>${esc(call || "JS8")}</strong><span class="message-text">${ownCallText(message.text,currentJs8().myCall)}</span></article>`;
+    return divider+`<article class="message${operational?" operational":""}"><span class="message-meta"><span>${when}</span><span>${MODE_TO_SPEED[message.submode]||"?"}</span><span>${Math.round(message.offsetHz)} Hz</span></span><strong data-call="${esc(call)}"${ownCall?' class="own-callsign" data-own-call="true"':""}>${esc(call || "JS8")}</strong><span class="message-text">${ownCallText(message.text,currentJs8().myCall)}</span></article>`;
   }).join("") : '<div class="empty-row">Waiting for JS8 activity…</div>';
   dom.stationRows.innerHTML=sortedStations(calls).map(item=>{
     const direction=stationDirection(item);
@@ -1095,7 +1255,11 @@ function renderConversation() {
   const station=state.activity.calls.find(item=>item.call===state.selectedCall);
   dom.sessionMeta.textContent=station ? `${signed(station.snr)} dB · ${Math.round(station.offsetHz)} Hz · speed ${speedDetail(station.submode)}` : "Choose a callsign from traffic or stations";
   const items=state.selectedCall ? conversationItems() : [];
-  dom.chat.innerHTML=items.length ? items.map(item=>`<div class="chat-row ${item.direction}"><article class="chat-bubble" data-message-status="${esc(item.status)}"><header><strong>${item.direction==="incoming"?esc(state.selectedCall):esc(currentJs8().myCall)}</strong><time>${esc(item.time)}</time></header><div class="chat-message">${item.direction==="outgoing"?renderOutgoingText(item):esc(item.text)}</div><footer>${esc(item.status)}</footer></article></div>`).join("") : '<div class="chat-empty">No messages in this session.</div>';
+  dom.chat.innerHTML=items.length ? items.map(item=>{
+    const resend=item.direction==="outgoing"&&item.status==="interrupted"
+      ? `<button type="button" class="chat-resend" data-resend-text="${esc(item.sourceText||item.text)}">↻ resend</button>` : "";
+    return `<div class="chat-row ${item.direction}"><article class="chat-bubble" data-message-status="${esc(item.status)}"><header><strong>${item.direction==="incoming"?esc(state.selectedCall):esc(currentJs8().myCall)}</strong><time>${esc(item.time)}</time></header><div class="chat-message">${item.direction==="outgoing"?renderOutgoingText(item):esc(item.text)}</div><footer>${esc(item.status)}${resend}</footer></article></div>`;
+  }).join("") : '<div class="chat-empty">No messages in this session.</div>';
   dom.chat.scrollTop=dom.chat.scrollHeight;
 }
 
@@ -1642,6 +1806,7 @@ function queueOutgoing(messageText, conversationCall="") {
   state.lastOutgoing=item;
   renderConversation();
   renderTxPayload();
+  persistSession();
   return item;
 }
 
@@ -1654,6 +1819,7 @@ function failOutgoing(item,error) {
   if(state.activeOutgoing===item)state.activeOutgoing=null;
   renderControls();
   renderConversation();
+  persistSession();
 }
 
 function startTx(text) {
@@ -1669,6 +1835,7 @@ function startTx(text) {
   activeEncoder.setToneOffset(js8.txOffsetHz).configure({myCall:js8.myCall,toCall:state.selectedCall,mode:selectedMode(),clockCorrectionMs:js8.clockCorrectionMs});
   const item=queueOutgoing(Js8Protocol.formatDirectedMessage({myCall:js8.myCall,
     toCall:state.selectedCall,text}),state.selectedCall);
+  item.sourceText=text; // raw operator text, replayed verbatim by a resend after an interrupt
   driveEncoder(activeEncoder.encode(text),error=>failOutgoing(item,error));
 }
 
@@ -1734,7 +1901,7 @@ function updateOutgoingTxProgress(txState) {
   item.activeFraction=["aborted","fault","completed"].includes(txState.status)?0:activeFraction;
   item.status=txState.status;
   const renderKey=`${item.status}|${item.sentChars}|${Math.round(item.activeFraction*20)}`;
-  if(renderKey!==item.txRenderKey){item.txRenderKey=renderKey;renderConversation();renderTxPayload();}
+  if(renderKey!==item.txRenderKey){item.txRenderKey=renderKey;renderConversation();renderTxPayload();persistSession();}
   if(["aborted","fault","completed"].includes(txState.status))state.activeOutgoing=null;
 }
 
@@ -1800,11 +1967,15 @@ async function checkLanConfiguration() {
 
 function setJs8Setting(key,value) { currentJs8()[key]=value; persistSettings(); }
 function confirmJs8Leave(event) {
-  if(!state.lanConfig.ready)return;
+  // Received data now survives the round-trip via the session snapshot, so a bare
+  // navigation is silent. Confirm only when a transmission is actively going out:
+  // leaving aborts the in-flight frame, which cannot resume mid-slot.
+  const outgoing=state.activeOutgoing;
+  if(!outgoing || !TX_LIVE_STATUSES.includes(outgoing.status))return;
   event.preventDefault();
   // Modern browsers intentionally replace custom text with their own warning,
   // but returnValue is still required to request the confirmation dialog.
-  event.returnValue="Leaving JS8LAN will discard received data.";
+  event.returnValue="A transmission is in progress and will be interrupted.";
   return event.returnValue;
 }
 function bind() {
@@ -1859,8 +2030,8 @@ function bind() {
   dom.binStop.addEventListener("click",stopFileTransfer);
   dom.binDownload.addEventListener("click",downloadReceivedFile);
   for (const container of [dom.traffic,dom.stationRows]) container.addEventListener("click",event=>{const node=event.target.closest("[data-call]");if(node)chooseCall(node.dataset.call);});
-  dom.trafficFilter.addEventListener("click",event=>{const button=event.target.closest("[data-traffic-filter]");if(!button||button.disabled)return;state.trafficFilter=button.dataset.trafficFilter;renderActivity();});
-  dom.stationHead.addEventListener("click",event=>{const button=event.target.closest("[data-station-sort]");if(!button)return;const key=button.dataset.stationSort;if(state.stationSort.key===key)state.stationSort.direction=state.stationSort.direction==="asc"?"desc":"asc";else state.stationSort={key,direction:"asc"};renderActivity();});
+  dom.trafficFilter.addEventListener("click",event=>{const clearButton=event.target.closest("[data-traffic-clear]");if(clearButton){if(!clearButton.disabled)clearRecentTraffic();return;}const button=event.target.closest("[data-traffic-filter]");if(!button||button.disabled)return;state.trafficFilter=button.dataset.trafficFilter;renderActivity();persistSession();});
+  dom.stationHead.addEventListener("click",event=>{const button=event.target.closest("[data-station-sort]");if(!button)return;const key=button.dataset.stationSort;if(state.stationSort.key===key)state.stationSort.direction=state.stationSort.direction==="asc"?"desc":"asc";else state.stationSort={key,direction:"asc"};renderActivity();persistSession();});
   dom.txSpeed.addEventListener("change",()=>setJs8Setting("speed",dom.txSpeed.value));
   dom.txOffset.addEventListener("change",()=>setJs8Setting("txOffsetHz",Math.max(RX_LOW,Math.min(RX_HIGH,Number(dom.txOffset.value)||1500))));
   dom.myCall.addEventListener("input",()=>{state.settingsDraft.myCall=dom.myCall.value;});
@@ -1878,14 +2049,18 @@ function bind() {
   dom.heartbeat.addEventListener("click",()=>{if(!dom.heartbeat.disabled)startHeartbeat();});
   dom.tune.addEventListener("click",()=>{if(!dom.tune.disabled)toggleTune();});
   dom.composer.addEventListener("submit",event=>{event.preventDefault();const text=dom.message.value.trim();if (!text || dom.send.disabled)return;dom.message.value="";renderControls();startTx(text);});
-  dom.message.addEventListener("input",renderControls);
+  dom.message.addEventListener("input",()=>{renderControls();persistSession();});
   dom.message.addEventListener("keydown",event=>{if(event.key!=="Enter" || event.isComposing)return;event.preventDefault();if(!dom.send.disabled)dom.composer.requestSubmit();});
+  // Resend a transmission that was interrupted by leaving mid-frame: restage the
+  // raw text in the composer (never auto-transmit) so the operator sends it when
+  // audio and the decoder are warm again.
+  dom.chat.addEventListener("click",event=>{const button=event.target.closest("[data-resend-text]");if(!button)return;dom.message.value=button.dataset.resendText;renderControls();persistSession();dom.message.focus({preventScroll:true});const end=dom.message.value.length;dom.message.setSelectionRange(end,end);});
   dom.abort.addEventListener("click",()=>activeEncoder&&activeEncoder.abort());
   document.querySelectorAll("details[data-section]").forEach(details=>details.addEventListener("toggle",()=>{settings.ui.disclosures[details.dataset.section]=details.open;persistSettings(false);}));
   dom.stationMapSection.addEventListener("toggle",()=>{if(dom.stationMapSection.open)renderStationMap(state.activity.calls||[]);});
   window.addEventListener("resize",resizeWaterfall);
   window.addEventListener("beforeunload",confirmJs8Leave);
-  window.addEventListener("pagehide",()=>{if(activeEncoder)activeEncoder.abort();stopAudio();});
+  window.addEventListener("pagehide",()=>{flushSession();if(activeEncoder)activeEncoder.abort();stopAudio();});
   document.addEventListener("visibilitychange",()=>{if(document.hidden&&activeEncoder)activeEncoder.abort();});
   addEventListener("keydown",event=>{if(event.key==="Escape"){if(activeEncoder)activeEncoder.abort();dom.frequencyMenu.hidden=true;closeMessagePresets();}});
 }
@@ -1897,7 +2072,9 @@ async function init() {
   for (const details of document.querySelectorAll("details[data-section]"))
     if (Object.prototype.hasOwnProperty.call(settings.ui.disclosures,details.dataset.section)) details.open=settings.ui.disclosures[details.dataset.section];
   dom.storageState.textContent=loaded.label;
+  if(!TEST_MODE)restoreSession(); // tests drive restore explicitly through __dataTest
   renderStartup(); selectMode(state.activeMode); resizeWaterfall(); renderActivity(); renderDiagnostics();
+  if(sessionRestored){renderConversation();if(state.selectedCall)dom.reply.open=true;}
   restoreFileTransfers();
   setInterval(()=>{dom.utcClock.textContent=`UTC ${new Date().toISOString().slice(11,19)}`;},250);
   renderRhythm(); setInterval(renderRhythm,100);
@@ -1914,7 +2091,10 @@ async function init() {
     spectrumState(){return {agcLow,agcHigh,agcReady,rows:spectrumRows,fill:spectrumFill};},
     selectedCall(){return state.selectedCall;},
     fileProtocol(){return {prepared:binState.prepared,active:binState.active,lastProtocol:binState.lastProtocol};},
-    receiveFileMessage(item){return handleFileActivityMessage(item);}
+    receiveFileMessage(item){return handleFileActivityMessage(item);},
+    snapshotBuild(){return buildSessionSnapshot();},
+    snapshotWrite(){writeSessionSnapshot();},
+    snapshotRestore(){const ok=restoreSession();renderStartup();renderActivity();renderConversation();return ok;}
   };
 }
 

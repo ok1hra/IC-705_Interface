@@ -277,6 +277,15 @@ audio LAN UDP) — nižší priorita (UDP blokuje vzácně). Ověřit na další
 Vedlejší efekt: rychlejší smyčka by měla odstranit i `TX prebuffer missed slot`
 na page-loadu (#5).
 
+**Ověřeno na zařízení (5 h provozu):** žádné `LOOP| slow`, žádné `loop stall`,
+retransmit jen `resent=1/4` ojediněle, žádný drop, TX čistě prošel (#5 potvrzeno).
+Jediný zbytek = periodický `CAT probe timeout → reopening → restored` cyklus:
+CI-V telemetrie periodicky ~2–3 s nedorazí pod audio zátěží (kontence audio+CI-V
+na jedné WiFi lince, převážně radio-side), recovery to pokaždé srovná, session
+stabilní. Není to funkční problém — proto ten CAT reopen/restored log **přesunut
+za `Debug`** (CLI toggle `D`), aby default konzole zůstala čistá. `Debug` je v
+`icomLanClient.h` přes `#ifdef ARDUINO extern bool Debug` (host testy = quiet).
+
 ## Regresní pokrytí
 
 `prototype/js8-core-prototype/firmware/icom_lan_client_health_smoke.cpp` ověřuje:

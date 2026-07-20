@@ -160,7 +160,7 @@ f.onload=()=>{
         sendHidden:d.querySelector('#sendButton').hidden===true&&d.querySelector('#sendHint').textContent.trim()==='Enter sends',
         js8Nav:d.querySelector('a[href="/data"]')?.textContent.trim()==='JS8LAN'&&d.querySelector('a[href="/data"]')?.title==='Web Client for JS8Call',
         pageFooter:d.querySelector('.js8-page-footer a[href^="https://github.com/"]')?.textContent.trim()==='GitHub'&&d.querySelector('.js8-page-footer a[href="/THIRD-PARTY-NOTICES.txt"]')?.textContent.trim()==='Licenses',
-        leaveWarning:(()=>{const event=new f.contentWindow.Event('beforeunload',{cancelable:true});return f.contentWindow.dispatchEvent(event)===false&&event.defaultPrevented;})(),
+        idleNoLeaveWarning:(()=>{const event=new f.contentWindow.Event('beforeunload',{cancelable:true});return f.contentWindow.dispatchEvent(event)!==false&&!event.defaultPrevented;})(),
         helpButton:d.querySelector('#trxHelpButton')?.textContent.trim()==='?',
         helpSteps:d.querySelectorAll('#trxHelpDialog .trx-setup-steps > li').length===8&&d.querySelector('#trxHelpDialog').textContent.includes('DATA MOD')&&d.querySelector('#trxHelpDialog').textContent.includes('WLAN'),
         helpAudioPath:[...d.querySelectorAll('#trxHelpDialog code')].some(node=>{const text=node.textContent;return text.startsWith('MENU')&&text.includes('SET')&&text.includes('Connectors')&&text.includes('MOD Input')&&text.endsWith('WLAN MOD Level');}),
@@ -172,6 +172,22 @@ f.onload=()=>{
         directedCommandFrame:(()=>{const frames=f.contentWindow.Js8Protocol.buildReplyFrames({myCall:'OK1HRA',toCall:'K0OG',text:'SNR -12'}),decoded=f.contentWindow.Js8Protocol.decodeFrame({...frames[0],submode:0,offsetHz:1500,slotUtcMs:0});return frames.length===1&&frames[0].raw==='TBx2Q-uJkbaJ'&&frames[0].messageText==='OK1HRA: K0OG SNR -12'&&decoded.command===' SNR'&&decoded.number==='-12';})(),
         heartbeatProtocolFrame:(()=>{const frames=f.contentWindow.Js8Protocol.buildHeartbeatFrames({myCall:'OK1HRA',grid:'JO70AA'}),decoded=f.contentWindow.Js8Protocol.decodeFrame({...frames[0],submode:0,offsetHz:1500,slotUtcMs:0});return frames.length===1&&frames[0].raw==='31-QkpgqOT6W'&&frames[0].messageText==='OK1HRA: @HB JO70'&&decoded.command==='HEARTBEAT'&&decoded.text==='OK1HRA: @HB JO70 ';})()
       };
+      // Session snapshot round-trip on the real persist/restore path (the ?test
+      // build only skips the automatic hooks, not the functions): keep a draft,
+      // write to sessionStorage, restore into state and confirm the frequency
+      // buckets, messages and draft return with the paused divider rendered.
+      d.querySelector('#messageInput').value='DRAFT KEEP';
+      const preSnap=f.contentWindow.__dataTest.snapshotBuild();
+      checks.snapshotBuildScope=Array.isArray(preSnap.buckets)&&preSnap.buckets.length>=2&&preSnap.draft==='DRAFT KEEP'&&preSnap.buckets.some(bucket=>bucket.messages.length>0);
+      f.contentWindow.__dataTest.snapshotWrite();
+      const stored=(()=>{try{return JSON.parse(f.contentWindow.sessionStorage.getItem('js8lan.session.v1'));}catch(_error){return null;}})();
+      checks.snapshotStored=stored?.version===1&&stored.draft==='DRAFT KEEP'&&stored.buckets.length===preSnap.buckets.length;
+      d.querySelector('#messageInput').value='';
+      const restoreResult=f.contentWindow.__dataTest.snapshotRestore();
+      checks.snapshotRestored=restoreResult===true&&f.contentWindow.__dataTest.activityCounts().messages>0&&d.querySelector('#messageInput').value==='DRAFT KEEP';
+      checks.snapshotDivider=d.querySelectorAll('#traffic .restore-divider').length===1;
+      f.contentWindow.sessionStorage.removeItem('js8lan.session.v1');
+      d.querySelector('#messageInput').value='';
       const sd=setupFrame.contentDocument,radioSection=sd.querySelector('#radioSection'),lanWarning=sd.querySelector('#trx1LanWarning');
       const gd=lanGateFrame.contentDocument,lanGate=gd.querySelector('#lanRequired');
       checks.lanRequiredGate=gd.body.classList.contains('lan-required-only')&&!lanGate.hidden&&!gd.querySelector('.brand')&&getComputedStyle(gd.querySelector('.radio-bar')).display==='none'&&getComputedStyle(gd.querySelector('#js8Interface')).display==='none'&&lanGate.querySelector('h1')?.textContent.trim()==='JS8Call requires TRX1 over LAN'&&lanGate.textContent.includes('not available with a Bluetooth or serial/CAT connection')&&lanGate.textContent.includes('Other Icom transceivers')&&!!lanGate.querySelector('a[href="/setup#radioSection"]');
@@ -257,6 +273,7 @@ f.onload=()=>{
       checks.enterSends=enterEvent.defaultPrevented&&d.querySelector('#messageInput').value==='';
       const fullLongTxText='OK1HRA: K0OG '+longTxText;
       checks.txQueuedVisual=d.querySelector('.chat-row.outgoing:last-child .tx-copy-pending')?.textContent===fullLongTxText&&d.querySelector('#txPayload')?.textContent.includes(fullLongTxText);
+      checks.leaveWarningDuringTx=(()=>{const event=new f.contentWindow.Event('beforeunload',{cancelable:true});return f.contentWindow.dispatchEvent(event)===false&&event.defaultPrevented;})();
       let tries=0,sawPartialTx=false,sawPausedTx=false;
       const poll=setInterval(()=>{
         const summary=d.querySelector('#txSummary').textContent,completed=summary.toLowerCase().includes('completed');

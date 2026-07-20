@@ -26,6 +26,14 @@ extern void lanCivFrameHandler(const uint8_t *frame, size_t len);
 // UDP datagram, codec = AUDIO_RX_CODEC below). Used by the DATA-page waterfall.
 extern void lanAudioHandler(const uint8_t *data, size_t len, uint16_t sequence);
 
+// Verbose LAN load-noise logging (CAT reopen churn etc.), toggled by the CLI 'D'
+// command. Off by default; host smoke tests link a quiet constant instead.
+#ifdef ARDUINO
+extern bool Debug;
+#else
+static const bool Debug = false;
+#endif
+
 class IcomLanClient {
 public:
   enum State {
@@ -236,7 +244,7 @@ public:
           civGotData = false;
           civRequestPending = false;
           civNextOpen = now;
-          Serial.println("LAN | CAT probe timeout, reopening CI-V stream");
+          if (Debug) Serial.println("LAN | CAT probe timeout, reopening CI-V stream");
         }
         if (civRecovering && now - civRecoveryStartedMs >= 6000) {
           Serial.println("LAN | CAT recovery failed, reconnecting session");
@@ -918,7 +926,7 @@ private:
         i = e + 1;
       }
       if (gotValidRadioFrame) {
-        if (civRecovering) Serial.println("LAN | CAT replies restored");
+        if (civRecovering && Debug) Serial.println("LAN | CAT replies restored");
         civRecovering = false;
         civRecoveryStartedMs = 0;
         civGotData = true;
