@@ -168,12 +168,12 @@
                   <span class="help-tip" data-tip="Name shown when pairing via Bluetooth. Max 20 characters (letters, digits, space, - _). Change requires reboot.">?</span>
                 </div>
               </label>
-              <label class="checkbox-row">
-                <input type="checkbox" name="cwIpOnConnect">
-                Announce WiFi IP via CW on first BT connect
-                <span class="help-tip" data-tip="Sends the ESP32 IP address in Morse code after the first Bluetooth connection — useful when DHCP assigns an unknown address.">?</span>
-              </label>
             </div>
+            <label class="checkbox-row">
+              <input type="checkbox" name="cwIpOnConnect">
+              Announce WiFi IP via CW on first connect
+              <span class="help-tip" data-tip="Plays this interface's IP address in Morse code after the first connection to TRX1 — useful when DHCP assigns an unknown address. Works over both LAN and Bluetooth. Sidetone only: break-in is forced off, so the radio never transmits. Mode, filter, BK-IN and AF/RF gain are restored afterwards.">?</span>
+            </label>
 
             <div class="setup-trx-divider"></div>
             <div class="setup-trx-box">TRX2</div>

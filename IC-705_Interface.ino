@@ -72,7 +72,7 @@
   + postponed MQTT
   + BT name to configure
   + detect HW rev 02
-  + after connect WiFi, send assigned IP address with CW on TRX (BT and LAN; snapshots+restores mode/BK-IN/AF/RF gain)
+  + after connect WiFi, play assigned IP address in CW on TRX as sidetone only (BT and LAN; BK-IN forced off so it never transmits; snapshots+restores mode/BK-IN/AF/RF gain)
   + send ? in serial terminal, answer interface status
   + add AP mode - status LED signal AP mode by slowly turning on and off (fade in / fade out)
   + add setup http web form on port 80
@@ -3060,10 +3060,12 @@ static void cwAnnounceService(unsigned long ms){
   }
 }
 
-// Announce the interface's WiFi IP in CW on the radio. Transport-agnostic: works
-// over BT and LAN because catWriteFrame() routes to whichever link is up. It keys
-// the transmitter (BK-IN), so it snapshots every setting it touches (mode+filter,
-// BK-IN, AF gain, RF gain) up front and restores them all when finished.
+// Announce the interface's WiFi IP in CW on the radio, as sidetone only: BK-IN is
+// forced OFF so the keyer never keys the transmitter — nothing goes on air and no
+// interference is caused. RF gain is dropped to minimum so band noise doesn't mask
+// the tone. Transport-agnostic: works over BT and LAN because catWriteFrame()
+// routes to whichever link is up. Snapshots every setting it touches (mode+filter+
+// DATA, BK-IN, AF gain, RF gain) up front and restores them all when finished.
 void announceIpViaCw(){
   if (radio_address == 0x00) return;
   uint8_t frame[16];
@@ -3086,26 +3088,32 @@ void announceIpViaCw(){
                 (unsigned)savedModeId, (int)savedData, (unsigned)savedFilter,
                 (unsigned)savedAf, (unsigned)savedRf, (unsigned)savedBk);
 
-  // 2. Set up a clean, audible CW announcement: CW/FIL3, semi BK-IN (so it keys),
-  //    AF up to an audible level, RF gain to max.
+  // 2. Set up a sidetone-only announcement: CW/FIL3, BK-IN OFF so the keyer never
+  //    keys the transmitter (nothing goes on air, no interference), RF gain to
+  //    minimum so band noise is muted, AF up so the sidetone is clearly audible.
   { uint8_t p[] = {0x00, 0x03, 0x00, 0x03}; n = buildSimpleCatFrame(0x26, p, sizeof(p), frame, sizeof(frame)); catWriteFrame(frame, n, false); } // CW, non-data, FIL3
   { uint8_t lv[2]; encodeCivLevel(CW_ANNOUNCE_AF_GAIN, lv); uint8_t p[] = {0x01, lv[0], lv[1]}; n = buildSimpleCatFrame(0x14, p, sizeof(p), frame, sizeof(frame)); catWriteFrame(frame, n, false); } // AF ~40%
-  { uint8_t lv[2]; encodeCivLevel(255, lv);                 uint8_t p[] = {0x02, lv[0], lv[1]}; n = buildSimpleCatFrame(0x14, p, sizeof(p), frame, sizeof(frame)); catWriteFrame(frame, n, false); } // RF max
-  { uint8_t p[] = {0x47, 0x01}; n = buildSimpleCatFrame(0x16, p, sizeof(p), frame, sizeof(frame)); catWriteFrame(frame, n, false); } // BK-IN semi
+  { uint8_t lv[2]; encodeCivLevel(0, lv);                   uint8_t p[] = {0x02, lv[0], lv[1]}; n = buildSimpleCatFrame(0x14, p, sizeof(p), frame, sizeof(frame)); catWriteFrame(frame, n, false); } // RF gain min -> mute band noise
+  { uint8_t p[] = {0x47, 0x00}; n = buildSimpleCatFrame(0x16, p, sizeof(p), frame, sizeof(frame)); catWriteFrame(frame, n, false); } // BK-IN OFF -> never transmits
   cwAnnounceService(300);
 
-  // 3. Key the IP.
+  // 3. Play the IP (sidetone only — BK-IN is off, so this never goes on air).
   String ipStr = "IP " + WiFi.localIP().toString();
   ipStr.toCharArray(CwMsg, sizeof(CwMsg));
   setModesText("CW"); // sendCW() routes CAT-CW only when the mode text is "CW"
   sendCW();
   cwAnnounceService(CW_ANNOUNCE_KEY_MS); // wait for the keyer to finish before touching the radio again
 
-  // 4. Restore everything, in reverse order. AF/RF are only restored when the
-  //    snapshot read a real value: a missed read leaves saved==0, and writing 0
-  //    back would mute the radio — safer to keep the audible level we just set.
+  // 4. Restore everything, in reverse order. saved==0 means the snapshot read never
+  //    landed (LAN doesn't poll these), so fall back rather than leaving the forced
+  //    announce level in place permanently:
+  //      RF -> max, because we forced it to 0 and leaving it there deafens the RX
+  //            (nobody operates at RF gain 0, so 0 really does mean "read failed")
+  //      AF -> keep the audible level, because writing 0 back would mute the radio
+  //    BK-IN needs no fallback: default 0 == OFF == what we just set, so a missed
+  //    read simply leaves TX disabled, which is the safe direction.
   { uint8_t p[] = {0x47, savedBk}; n = buildSimpleCatFrame(0x16, p, sizeof(p), frame, sizeof(frame)); catWriteFrame(frame, n, false); } // BK-IN
-  if (savedRf > 0) { uint8_t lv[2]; encodeCivLevel(savedRf, lv); uint8_t p[] = {0x02, lv[0], lv[1]}; n = buildSimpleCatFrame(0x14, p, sizeof(p), frame, sizeof(frame)); catWriteFrame(frame, n, false); } // RF gain
+  { uint8_t lv[2]; encodeCivLevel(savedRf > 0 ? savedRf : 255, lv); uint8_t p[] = {0x02, lv[0], lv[1]}; n = buildSimpleCatFrame(0x14, p, sizeof(p), frame, sizeof(frame)); catWriteFrame(frame, n, false); } // RF gain
   if (savedAf > 0) { uint8_t lv[2]; encodeCivLevel(savedAf, lv); uint8_t p[] = {0x01, lv[0], lv[1]}; n = buildSimpleCatFrame(0x14, p, sizeof(p), frame, sizeof(frame)); catWriteFrame(frame, n, false); } // AF gain
   { uint8_t p[] = {0x00, savedModeId, (uint8_t)(savedData ? 0x01 : 0x00), savedFilter}; n = buildSimpleCatFrame(0x26, p, sizeof(p), frame, sizeof(frame)); catWriteFrame(frame, n, false); } // mode+data+filter
   cwAnnounceService(300);
