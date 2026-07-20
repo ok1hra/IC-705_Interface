@@ -979,14 +979,21 @@ function renderBinControls() {
 
 function renderControls() {
   const js8=currentJs8(), mode=selectedMode();
-  dom.recipient.value=state.selectedCall; dom.txSpeed.value=js8.speed;
+  // Never clobber a field the operator is actively editing: renderControls runs on
+  // the 500 ms radio poll, so an unguarded assignment wipes each keystroke (same
+  // focus guard as binRecipient). recipient commits via chooseCall on change.
+  if(document.activeElement!==dom.recipient)dom.recipient.value=state.selectedCall;
+  if(document.activeElement!==dom.txSpeed)dom.txSpeed.value=js8.speed;
   dom.txSpeedResolved.textContent=js8.speed==="AUTO" ? `→ ${speedDetail(mode)}` : `${MODE_PERIOD_SECONDS[mode]} s`;
-  dom.txOffset.value=js8.txOffsetHz; dom.spectrumSummary.textContent=`RX ${RX_LOW}–${RX_HIGH} Hz · TX ${js8.txOffsetHz} Hz · ${speedDetail(mode)}`;
-  dom.myCall.value=state.settingsDraft.myCall===null?js8.myCall:state.settingsDraft.myCall;
-  dom.myGrid.value=state.settingsDraft.grid===null?js8.grid:state.settingsDraft.grid;
+  if(document.activeElement!==dom.txOffset)dom.txOffset.value=js8.txOffsetHz;
+  dom.spectrumSummary.textContent=`RX ${RX_LOW}–${RX_HIGH} Hz · TX ${js8.txOffsetHz} Hz · ${speedDetail(mode)}`;
+  if(document.activeElement!==dom.myCall)dom.myCall.value=state.settingsDraft.myCall===null?js8.myCall:state.settingsDraft.myCall;
+  if(document.activeElement!==dom.myGrid)dom.myGrid.value=state.settingsDraft.grid===null?js8.grid:state.settingsDraft.grid;
   dom.followSpeed.checked=js8.followSpeed;
-  dom.clockCorrection.value=js8.clockCorrectionMs; dom.autoTiming.checked=js8.autoTiming;
-  dom.txGain.value=state.settingsDraft.txGain===null?js8.txGain:state.settingsDraft.txGain; dom.txSafety.checked=js8.txSafetyAccepted;
+  if(document.activeElement!==dom.clockCorrection)dom.clockCorrection.value=js8.clockCorrectionMs;
+  dom.autoTiming.checked=js8.autoTiming;
+  if(document.activeElement!==dom.txGain)dom.txGain.value=state.settingsDraft.txGain===null?js8.txGain:state.settingsDraft.txGain;
+  dom.txSafety.checked=js8.txSafetyAccepted;
   dom.settingsSummary.textContent=`${js8.myCall} · ${js8.grid} · ${js8.speed}`;
   const busy=!["idle","completed","aborted","fault"].includes(state.txStatus);
   const txBlocks=txBlockReasons(!cqType(dom.message.value)), heartbeatBlocks=txBlockReasons(false), tuneBlocks=txBlockReasons(false);

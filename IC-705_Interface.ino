@@ -72,7 +72,7 @@
   + postponed MQTT
   + BT name to configure
   + detect HW rev 02
-  + after connect WiFi, send assigned IP address with CW on TRX
+  + after connect WiFi, send assigned IP address with CW on TRX (BT and LAN; snapshots+restores mode/BK-IN/AF/RF gain)
   + send ? in serial terminal, answer interface status
   + add AP mode - status LED signal AP mode by slowly turning on and off (fade in / fade out)
   + add setup http web form on port 80
@@ -100,7 +100,7 @@ int BaudRate        = 9600;
 // const char* BTname  = "IC705-interface";
 String BT_NAME;  // loaded from EEPROM; default IC705-XXXXXX from MAC
 bool Debug          = false;
-bool cwIpOnConnect  = true;       // announce WiFi IP via CW on first BT connect
+bool cwIpOnConnect  = true;       // announce WiFi IP via CW on first radio connect (BT or LAN)
 volatile bool cwIpSendPending = false;
 
 #define LOOP_WARN_MS 200
@@ -539,6 +539,9 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   uint8_t statePreampMode = 0;  // 0=OFF, 1=AMP, 2=ATT
   uint8_t stateAttOn = 0;       // internal: tracks ATT separately for combine logic
   uint8_t stateVoxMode = 0;
+  uint8_t stateRfGain = 0;      // 0x14 0x02 RF gain, needed to snapshot/restore around CW IP announce
+  uint8_t stateModeId = 0x03;   // numeric operating-mode id (0x03=CW), for exact mode restore
+  bool    stateDataMode = false;// DATA sub-mode flag, so USB-D/etc. restore correctly
   float stateSupplyVolts = 0.0f;
   float stateSwr = 1.0f;
   uint32_t stateSmeterRaw = 0;
@@ -3028,6 +3031,89 @@ void handleBtEvents(){
   }
 }
 
+// CW IP announcement: values applied during the announce and restored afterward.
+static const uint8_t       CW_ANNOUNCE_AF_GAIN = 102;    // ~40% of 255, audible without blasting
+static const unsigned long CW_ANNOUNCE_KEY_MS  = 12000;  // max time to let the keyer finish
+
+// Encode a 0..255 level into the IC-705's 2-byte BCD level format (e.g. 255 -> 02 55).
+static inline void encodeCivLevel(uint16_t value, uint8_t out[2]){
+  if (value > 255) value = 255;
+  out[0] = (uint8_t)(value / 100);                              // hundreds (0..2)
+  out[1] = (uint8_t)((((value / 10) % 10) << 4) | (value % 10));// tens|units BCD
+}
+
+// Blocking wait that keeps the active transport, web and TrxNet serviced. Unlike
+// ServiceBackgroundTasks it also pumps lanClient, so a multi-second CW keying wait
+// doesn't starve the LAN control channel (which would drop the radio session).
+static void cwAnnounceService(unsigned long ms){
+  unsigned long start = millis();
+  while (millis() - start < ms) {
+    if (lanMode) lanClient.loop();
+    else         processCatMessages();
+    if (trxNetEnabled) net.loop();
+    if (APmode) dnsServer.processNextRequest();
+    webServer.handleClient();
+    #if defined(WDT)
+      esp_task_wdt_reset();
+    #endif
+    delay(5);
+  }
+}
+
+// Announce the interface's WiFi IP in CW on the radio. Transport-agnostic: works
+// over BT and LAN because catWriteFrame() routes to whichever link is up. It keys
+// the transmitter (BK-IN), so it snapshots every setting it touches (mode+filter,
+// BK-IN, AF gain, RF gain) up front and restores them all when finished.
+void announceIpViaCw(){
+  if (radio_address == 0x00) return;
+  uint8_t frame[16];
+  size_t  n;
+
+  // 1. Read back the settings we're about to change, so we can restore them.
+  { uint8_t p[] = {0x00}; n = buildSimpleCatFrame(0x26, p, sizeof(p), frame, sizeof(frame)); catWriteFrame(frame, n, false); } // mode+data+filter
+  { uint8_t p[] = {0x01}; n = buildSimpleCatFrame(0x14, p, sizeof(p), frame, sizeof(frame)); catWriteFrame(frame, n, false); } // AF gain
+  { uint8_t p[] = {0x02}; n = buildSimpleCatFrame(0x14, p, sizeof(p), frame, sizeof(frame)); catWriteFrame(frame, n, false); } // RF gain
+  { uint8_t p[] = {0x47}; n = buildSimpleCatFrame(0x16, p, sizeof(p), frame, sizeof(frame)); catWriteFrame(frame, n, false); } // BK-IN
+  cwAnnounceService(700); // let the replies land in the state globals
+
+  const uint8_t savedModeId = stateModeId;
+  const bool    savedData   = stateDataMode;
+  const uint8_t savedFilter = stateFilter;
+  const uint8_t savedAf     = stateAfGain;
+  const uint8_t savedRf     = stateRfGain;
+  const uint8_t savedBk     = stateVoxMode;
+  Serial.printf(" CW | announce IP, saved mode=0x%02X data=%d fil=%u af=%u rf=%u bk=%u\n",
+                (unsigned)savedModeId, (int)savedData, (unsigned)savedFilter,
+                (unsigned)savedAf, (unsigned)savedRf, (unsigned)savedBk);
+
+  // 2. Set up a clean, audible CW announcement: CW/FIL3, semi BK-IN (so it keys),
+  //    AF up to an audible level, RF gain to max.
+  { uint8_t p[] = {0x00, 0x03, 0x00, 0x03}; n = buildSimpleCatFrame(0x26, p, sizeof(p), frame, sizeof(frame)); catWriteFrame(frame, n, false); } // CW, non-data, FIL3
+  { uint8_t lv[2]; encodeCivLevel(CW_ANNOUNCE_AF_GAIN, lv); uint8_t p[] = {0x01, lv[0], lv[1]}; n = buildSimpleCatFrame(0x14, p, sizeof(p), frame, sizeof(frame)); catWriteFrame(frame, n, false); } // AF ~40%
+  { uint8_t lv[2]; encodeCivLevel(255, lv);                 uint8_t p[] = {0x02, lv[0], lv[1]}; n = buildSimpleCatFrame(0x14, p, sizeof(p), frame, sizeof(frame)); catWriteFrame(frame, n, false); } // RF max
+  { uint8_t p[] = {0x47, 0x01}; n = buildSimpleCatFrame(0x16, p, sizeof(p), frame, sizeof(frame)); catWriteFrame(frame, n, false); } // BK-IN semi
+  cwAnnounceService(300);
+
+  // 3. Key the IP.
+  String ipStr = "IP " + WiFi.localIP().toString();
+  ipStr.toCharArray(CwMsg, sizeof(CwMsg));
+  setModesText("CW"); // sendCW() routes CAT-CW only when the mode text is "CW"
+  sendCW();
+  cwAnnounceService(CW_ANNOUNCE_KEY_MS); // wait for the keyer to finish before touching the radio again
+
+  // 4. Restore everything, in reverse order. AF/RF are only restored when the
+  //    snapshot read a real value: a missed read leaves saved==0, and writing 0
+  //    back would mute the radio — safer to keep the audible level we just set.
+  { uint8_t p[] = {0x47, savedBk}; n = buildSimpleCatFrame(0x16, p, sizeof(p), frame, sizeof(frame)); catWriteFrame(frame, n, false); } // BK-IN
+  if (savedRf > 0) { uint8_t lv[2]; encodeCivLevel(savedRf, lv); uint8_t p[] = {0x02, lv[0], lv[1]}; n = buildSimpleCatFrame(0x14, p, sizeof(p), frame, sizeof(frame)); catWriteFrame(frame, n, false); } // RF gain
+  if (savedAf > 0) { uint8_t lv[2]; encodeCivLevel(savedAf, lv); uint8_t p[] = {0x01, lv[0], lv[1]}; n = buildSimpleCatFrame(0x14, p, sizeof(p), frame, sizeof(frame)); catWriteFrame(frame, n, false); } // AF gain
+  { uint8_t p[] = {0x00, savedModeId, (uint8_t)(savedData ? 0x01 : 0x00), savedFilter}; n = buildSimpleCatFrame(0x26, p, sizeof(p), frame, sizeof(frame)); catWriteFrame(frame, n, false); } // mode+data+filter
+  cwAnnounceService(300);
+  applyModeState(savedModeId, savedData); // restore local display/state immediately
+  stateFilter = savedFilter;
+  Serial.println(" CW | announce IP done, settings restored");
+}
+
 // BT CAT poll cadence. Every frame keeps the SPP link out of sniff mode and the
 // coex arbiter then starves WiFi (TCP stalls → AP drops us), so idle cadence is
 // slow. The CAT page requests /state?fast=1, which holds the fast cadence while
@@ -3068,16 +3154,7 @@ void pollRadio(){
   if (cwIpSendPending && radio_address != 0x00) {
     cwIpSendPending = false;
     TrxSetupDone = true;
-    ServiceBackgroundTasks(800);
-    uint8_t modeFrame[10];
-    size_t modeFrameLen = buildSetModeFrame(0x03, 0x03, modeFrame, sizeof(modeFrame)); // CW, FIL3
-    catWriteFrame(modeFrame, modeFrameLen, false);
-    ServiceBackgroundTasks(400);
-    String ipStr = "IP " + WiFi.localIP().toString();
-    ipStr.toCharArray(CwMsg, sizeof(CwMsg));
-    setModesText("CW");
-    sendCW();
-    ServiceBackgroundTasks(10000); // wait for radio to finish keying
+    announceIpViaCw(); // snapshots mode/filter/BK-IN/AF/RF, keys the IP, restores them
   }
 
   if (!wifiOutage && radio_address != 0x00 && millis() - auxPollTimer > (fastCat ? AUX_POLL_FAST_MS : AUX_POLL_MS)) {
@@ -3262,6 +3339,13 @@ void lanClientLoop(){
       statusPower = 1;
       digitalWrite(PowerOnPin, HIGH);
       Serial.println(" PWR| ON (LAN)");
+      if (cwIpOnConnect) cwIpSendPending = true; // arm CW IP announce on first link-up
+    }
+    // Announce the IP once the radio address is known (learned from the first
+    // decoded frame). Same feature/flag as the BT path; snapshots + restores state.
+    if (cwIpSendPending && radio_address != 0x00) {
+      cwIpSendPending = false;
+      announceIpViaCw();
     }
     // frequency/mode/meters are written directly by lanCivFrameHandler (shared
     // parser). Here we only propagate a frequency change to TrxNet + band decoder.
@@ -3691,6 +3775,7 @@ void processCivBuffer(uint8_t len) {
     if (cmd == 0x14 && plLen >= 2) {
       uint32_t raw = decodeCivBcdBytes(pl + 1, plLen - 1);
       if (pl[0] == 0x01) stateAfGain = (uint8_t)raw;
+      else if (pl[0] == 0x02) stateRfGain = (uint8_t)raw;
       else if (pl[0] == 0x0C) stateKeySpeed = (uint8_t)raw;
       else if (pl[0] == 0x0A) stateRfPower = (uint8_t)raw;
     }
@@ -3911,6 +3996,8 @@ bool applyModeState(uint8_t modeId, bool dataMode){
     case 0x17: base = "DV"; break;
     default: setModesText("UNK"); return false;
   }
+  stateModeId = modeId;      // remember numeric id + data flag for exact restore
+  stateDataMode = dataMode;
   char displayMode[sizeof(modes)];
   snprintf(displayMode, sizeof(displayMode), dataMode ? "%s-D" : "%s", base);
   setModesText(displayMode);
