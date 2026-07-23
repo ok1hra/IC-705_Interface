@@ -573,6 +573,51 @@
                                       text: frame.raw, callsigns: []})};
   }
 
+  // Commands that append a 3-char CRC to their payload (Varicode 5,9,10,11,12,
+  // 13,24). The token strings, since RX works from decoded command strings.
+  const CHECKSUM_COMMAND_STRINGS = new Set(
+    [5, 9, 10, 11, 12, 13, 24].map(index => COMMANDS[index]));
+
+  // Extract the clean payload from a fully assembled directed message and, for
+  // checksummed commands, verify + strip the trailing CRC. This is the RX
+  // counterpart of the ` ${checksum16(remaining)}` the encoder appends.
+  function assembledDirectedPayload(directed, fullText) {
+    if (!directed) return {payload: "", checksumOk: true};
+    const header = `${directed.from}: ${directed.to}${directed.command}`;
+    let after = fullText.startsWith(header) ? fullText.slice(header.length) : fullText;
+    after = after.replace(/^\s+/, "").trimEnd();
+    if (!CHECKSUM_COMMAND_STRINGS.has(directed.command) || !after)
+      return {payload: after, checksumOk: true};
+    const match = after.match(/^([\s\S]*) ([0-9A-Z+\-./?]{3})$/);
+    if (!match) return {payload: after, checksumOk: false};
+    return {payload: match[1], checksumOk: checksum16(match[1]) === match[2]};
+  }
+
+  // Maps a decoded directed command + assembled payload onto the command the
+  // inbox/relay engines expect. The wire uses base tokens (" MSG", " QUERY",
+  // ">") with the specifics in the payload: "MSG TO:..." is command MSG with a
+  // "TO:" payload, "QUERY MSG 5" is command QUERY with an "MSG 5" payload, etc.
+  // Returns {kind:"relay"|"inbox", command?, text} or null when the command has
+  // no text-bearing engine (single-frame queries go through the auto-reply path).
+  function normalizeAssembledCommand(command, payload) {
+    const c = String(command || "").trim().toUpperCase();
+    const p = String(payload || "").trim();
+    if (c === ">") return {kind: "relay", text: p};
+    if (c === "MSG") return /^TO:/i.test(p)
+      ? {kind: "inbox", command: "MSG TO:", text: p}
+      : {kind: "inbox", command: "MSG", text: p};
+    if (c === "MSG TO:") return {kind: "inbox", command: "MSG TO:", text: p};
+    if (c === "QUERY CALL") return {kind: "inbox", command: "QUERY CALL", text: p};
+    if (c === "QUERY MSGS" || c === "QUERY MSGS?")
+      return {kind: "inbox", command: "QUERY MSGS", text: ""};
+    if (c === "QUERY") {
+      if (/^MSGS\b/i.test(p)) return {kind: "inbox", command: "QUERY MSGS", text: ""};
+      if (/^MSG\b/i.test(p)) return {kind: "inbox", command: "QUERY MSG", text: p.replace(/^MSG\s*/i, "")};
+      if (/^CALL\b/i.test(p)) return {kind: "inbox", command: "QUERY CALL", text: p.replace(/^CALL\s*/i, "")};
+    }
+    return null;
+  }
+
   class ActivityStore {
     constructor(dictionary = null) {
       this.dictionary = dictionary;
@@ -609,7 +654,11 @@
       if (!channel || (frame.frameType & 1))
         channel = {key: channelKey, text: "", raw: [], kinds: [], firstSlotUtcMs: frame.slotUtcMs,
                    lastSlotUtcMs: frame.slotUtcMs, submode: frame.submode,
-                   offsetHz: frame.offsetHz, callsigns: []};
+                   offsetHz: frame.offsetHz, callsigns: [], directed: null};
+      // The first frame carries the structured {from,to,command}; keep it so the
+      // completed message can yield a clean, checksum-verified payload.
+      if (!channel.directed && decoded.kind === "directed")
+        channel.directed = {from: decoded.from, to: decoded.to, command: decoded.command};
       channel.text += decoded.text;
       channel.raw.push(frame.raw);
       channel.kinds.push(decoded.kind);
@@ -626,7 +675,9 @@
       }
       const emitted = [{type: "protocol-frame", frame: decoded}];
       if (frame.frameType & 2) {
-        const message = {...channel, text: channel.text.trimEnd()};
+        const text = channel.text.trimEnd();
+        const {payload, checksumOk} = assembledDirectedPayload(channel.directed, text);
+        const message = {...channel, text, payload, checksumOk};
         this.messages.push(message);
         if (this.messages.length > 200) this.messages.shift();
         emitted.push({type: "message", message});
@@ -644,7 +695,7 @@
   }
 
   return {ActivityStore, FRAME, JscDictionary, buildCqFrames, buildHeartbeatFrames, buildReplyFrames,
-          checksum16, formatDirectedMessage,
+          checksum16, formatDirectedMessage, normalizeAssembledCommand,
           buildTxFrames, decodeFrame,
           pack72, unpack72};
 });

@@ -49,7 +49,7 @@ function (Transport, Timebase) {
       this._running = true;
       this._session = new this.SessionImpl({url:this.url,
         WebSocketImpl:this.WebSocketImpl, reconnectMs:this.reconnectMs,
-        now:this.monotonicNow})
+        now:this.monotonicNow, wallNow:this.wallNow})
         .onSamples((samples, rate, metadata) =>
           this._receiveSamples(samples, rate, metadata))
         .onStatus(status => this._receiveStatus(status));

@@ -4,16 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>JS8Call</title>
-  <link rel="stylesheet" href="/cat.css?v=20260719d">
-  <link rel="stylesheet" href="/data.css?v=20260719d">
+  <link rel="stylesheet" href="/data.css?v=20260724a">
 </head>
 <body class="startup-pending lan-config-checking">
   <header class="site-topbar">
     <nav class="tabs" aria-label="Primary">
       <a class="tab" href="/log">QRPLog</a><a class="tab" href="/dxc.html">DXC</a>
       <a class="tab tab-active" href="/data" title="Web Client for JS8Call">JS8LAN</a><a class="tab" href="/setup">SETUP</a>
-      <a class="tab" href="/datasync">LOGSYNC</a><a class="tab bd-nav" href="/bd" hidden>BD</a>
-      <a class="tab tab-cat-muted" href="/">CAT</a>
+      <a class="tab" href="/datasync">LOGSYNC</a>
       <span id="topbarFw" class="topbar-fw"></span>
     </nav>
   </header>
@@ -160,6 +158,18 @@
       </div>
     </section>
 
+    <section id="sessionBusy" class="lan-required session-busy" hidden role="alert">
+      <div class="lan-required-icon" aria-hidden="true">!</div>
+      <div>
+        <h1>JS8LAN is already open elsewhere</h1>
+        <p>One radio, one operator: JS8LAN drives the transceiver over a single audio link, so only one page can run it at a time. Close the other page, or take the session over here.</p>
+        <p id="sessionBusyWhere" class="session-busy-where"></p>
+        <p>This page will unlock by itself as soon as the other one is closed.</p>
+        <button id="sessionTakeover" class="lan-required-action" type="button">TAKE THE SESSION OVER HERE</button>
+        <small id="sessionBusyDetail"></small>
+      </div>
+    </section>
+
     <section class="modem-menu" hidden aria-hidden="true">
       <label>Modem <select id="modeSelect"></select></label>
       <span id="modemState" class="modem-state">Loading…</span>
@@ -204,7 +214,7 @@
         <div id="txPayload" class="tx-payload" hidden></div>
         <section id="chatSession">
           <div class="keyboard-session">
-            <header><div><strong id="sessionCall">No station selected</strong><small id="sessionMeta">Choose a callsign from traffic or stations</small></div><span class="session-actions"><button id="logQsoButton" class="log-qso" type="button" disabled title="Select a station to log">LOG QSO</button><button id="abortButton" class="abort" type="button" hidden>ABORT</button></span></header>
+            <header><div><strong id="sessionCall">No station selected</strong><small id="sessionMeta">Choose a callsign from traffic or stations</small></div><span class="session-actions"><button id="logQsoButton" class="log-qso" type="button" disabled title="Select a station to log">LOG QSO</button><span id="txQueueState" class="tx-queue" hidden></span><button id="abortButton" class="abort" type="button" hidden>ABORT</button></span></header>
             <div id="chatThread" class="chat-thread"><div class="chat-empty">No messages in this session.</div></div>
           </div>
           <form id="composer" class="composer">
@@ -214,10 +224,18 @@
               <button type="button" role="menuitem" data-message-preset="snr"><strong>SNR ±nn</strong><small>Reply with received SNR</small></button>
               <button type="button" role="menuitem" data-message-preset="snr-query"><strong>SNR?</strong><small>Request a signal report</small></button>
               <button type="button" role="menuitem" data-message-preset="copy-query"><strong>HW CPY?</strong><small>Ask how you are copied</small></button>
+              <button type="button" role="menuitem" data-message-preset="qsl-query"><strong>QSL?</strong><small>Did you receive it?</small></button>
+              <button type="button" role="menuitem" data-message-preset="grid-query"><strong>GRID?</strong><small>Request grid locator</small></button>
+              <button type="button" role="menuitem" data-message-preset="info-query"><strong>INFO?</strong><small>Request station info</small></button>
+              <button type="button" role="menuitem" data-message-preset="status-query"><strong>STATUS?</strong><small>Request status message</small></button>
               <button type="button" role="menuitem" data-message-preset="rr"><strong>RR</strong><small>Roger, received</small></button>
               <button type="button" role="menuitem" data-message-preset="fb"><strong>FB</strong><small>Fine business</small></button>
               <button type="button" role="menuitem" data-message-preset="qsl"><strong>QSL</strong><small>Confirm reception</small></button>
               <button type="button" role="menuitem" data-message-preset="again"><strong>AGN?</strong><small>Request repeat</small></button>
+              <button type="button" role="menuitem" data-message-preset="yes"><strong>YES</strong><small>Confirm</small></button>
+              <button type="button" role="menuitem" data-message-preset="no"><strong>NO</strong><small>Negative confirm</small></button>
+              <button type="button" role="menuitem" data-message-preset="tu"><strong>TU</strong><small>Thank you</small></button>
+              <button type="button" role="menuitem" data-message-preset="dit-dit"><strong>DIT DIT</strong><small>End of contact</small></button>
               <button type="button" role="menuitem" data-message-preset="73"><strong>73</strong><small>Best regards</small></button>
               <button type="button" role="menuitem" data-message-preset="sk"><strong>SK</strong><small>End contact</small></button>
             </span></span>
@@ -274,6 +292,7 @@
         <summary><span>Stations</span><span id="stationSummary" class="summary-status">0 active</span></summary>
         <div class="table-scroll"><table class="traffic-table"><thead><tr>
           <th><button type="button" data-station-sort="call">Call <span class="sort-arrow"></span></button></th>
+          <th><button type="button" data-station-sort="country" title="DXCC entity from the callsign prefix" aria-label="DXCC entity">DXCC <span class="sort-arrow"></span></button></th>
           <th><button type="button" data-station-sort="snr">SNR <span class="sort-arrow"></span></button></th>
           <th><button type="button" data-station-sort="offsetHz">Hz <span class="sort-arrow"></span></button></th>
           <th><button type="button" data-station-sort="submode">Speed <span class="sort-arrow"></span></button></th>
@@ -282,13 +301,24 @@
         </tr></thead><tbody id="stationRows"></tbody></table></div>
       </details>
 
+      <details class="compact-section" data-section="inbox">
+        <summary><span>Inbox</span><span id="inboxSummary" class="summary-status">empty</span></summary>
+        <div class="inbox-actions">
+          <button type="button" id="inboxQueryMsgs" disabled title="Ask the selected station for stored messages">QUERY MSGS</button>
+          <button type="button" id="inboxRefresh">Refresh</button>
+        </div>
+        <div class="table-scroll"><table class="traffic-table"><thead><tr>
+          <th>ID</th><th>From</th><th>To</th><th>Message</th><th></th>
+        </tr></thead><tbody id="inboxRows"></tbody></table></div>
+      </details>
+
       <details class="compact-section" data-section="stations-map">
         <summary><span>Stations map</span><span id="stationMapSummary" class="summary-status">0 on map</span></summary>
         <div id="stationMap" class="station-map"></div>
       </details>
 
       <details class="compact-section" data-section="settings">
-        <summary><span>Modem settings</span><span id="settingsSummary" class="summary-status"></span></summary>
+        <summary><span>SETTINGS</span><span id="settingsSummary" class="summary-status"></span><span id="settingsFlags" class="summary-flags" aria-label="Active functions"></span></summary>
         <div class="settings">
           <label>My callsign <input id="myCall" maxlength="12" autocomplete="off"></label>
           <label>My grid <input id="myGrid" maxlength="6" autocomplete="off"></label>
@@ -298,6 +328,15 @@
           <label>Auto timing <input id="autoTiming" type="checkbox"></label>
           <label>TX audio gain <input id="txGain" type="number" min="0.1" max="0.8" step="0.05"></label>
           <label class="safety-setting">Enable radio TX <input id="txSafety" type="checkbox"><small>I will use safe RF power and a suitable load/antenna.</small></label>
+          <label>INFO answer <input id="infoText" maxlength="40" autocomplete="off" placeholder="50W VERT"></label>
+          <label>STATUS answer <input id="statusText" maxlength="40" autocomplete="off" placeholder="MONITORING"></label>
+          <label class="safety-setting">Answer queries automatically <input id="autoReply" type="checkbox"><small>Replies to SNR?, GRID?, INFO?, STATUS?, HEARING? and AGN?. Off: the answer is placed in the message box for you to send.</small></label>
+          <label>Unattended for <select id="armHours"></select><small id="autoState">disarmed</small></label>
+          <label>Repeat CQ <select id="cqRepeat"></select><small id="cqState">off</small></label>
+          <label>My groups <input id="groups" maxlength="80" autocomplete="off" placeholder="@ARESGA @EMCOMM"><small>@ALLCALL and @HB are always joined.</small></label>
+          <label class="safety-setting">Send heartbeats <input id="hbEnabled" type="checkbox"><small>Announces the station to the @HB network. Slow, Normal and Fast only; a random offset in 500–1000 Hz.</small></label>
+          <label>Heartbeat every <select id="hbMinutes"></select><small id="hbState">off</small></label>
+          <label class="safety-setting">Acknowledge heartbeats <input id="hbAck" type="checkbox"><small>Replies HEARTBEAT SNR to stations you hear, at most once per 55 minutes each.</small></label>
           <div class="settings-storage"><span id="storageState"></span><button id="resetSettings" type="button">Restore defaults</button></div>
         </div>
       </details>
@@ -318,6 +357,13 @@
   <script src="/js8-email.js?v=20260719d"></script>
   <script src="/js8-file-transfer.js?v=20260719d"></script>
   <script src="/js8-presets.js?v=20260719d"></script>
+  <script src="/js8-scheduler.js?v=20260719d"></script>
+  <script src="/js8-inbox.js?v=20260723a"></script>
+  <script src="/js8-relay.js?v=20260723a"></script>
+  <script src="/js8-heartbeat.js?v=20260723a"></script>
+  <script src="/js8-txqueue.js?v=20260719d"></script>
+  <script src="/js8-restrictions.js?v=20260719d"></script>
+  <script src="/js8-autoreply.js?v=20260723a"></script>
   <script src="/js8-protocol.js?v=20260719d"></script>
   <script src="/js8-timebase.js?v=20260719d"></script>
   <script src="/js8-aud1.js?v=20260719d"></script>
@@ -327,6 +373,6 @@
   <script src="/js8-adapter.js?v=20260719d"></script>
   <script src="/dxcc.js?v=20260719d"></script>
   <script src="/log-db.js?v=20260720a"></script>
-  <script src="/data.js?v=20260720b"></script>
+  <script src="/data.js?v=20260724a"></script>
 </body>
 </html>

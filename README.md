@@ -9,19 +9,14 @@
 - logbook import/export function
 - network synchronization between web browsers in local network - same database on multiple devices (phone, tablet, pc)
 - integrated DX cluster client and band map
-- web CAT interface
 - option to backup settings or entire logbook database
 - self-healing WiFi — escalating recovery (targeted reconnect → radio reset → automatic restart), designed around ESP32 Bluetooth/WiFi coexistence limits
 - red OFFLINE warning in the web page top bar when the browser loses connection to the interface
-- adaptive Bluetooth polling — fast refresh while the CAT page is open, low BT traffic otherwise (less interference with WiFi)
-
-<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/docs/CAT.png" height="700">
+- adaptive Bluetooth polling — fast refresh for live web clients, low BT traffic otherwise (less interference with WiFi)
 
 <img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/docs/LOG.png" height="400"><img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/docs/DXC.png" height="400">
 
 <img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/docs/SETUP.png" height="300"><img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/docs/LOGSYNC.png" height="300">
-
-<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/docs/BD.png" height="700">
 
 ## Hardware required
 - ICOM IC-705

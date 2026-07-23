@@ -124,19 +124,19 @@
       encode(text, options = {}) {
         const request = {...this._context, ...options, text,
           toneHz:Number.isFinite(Number(options.toneHz)) ? Number(options.toneHz) : this.toneHz};
-        const state = this._controller.queue(request, Date.now());
+        const state = this._controller.queue(request);
         this._notify(state);
-        return this._controller.prepare(Date.now());
+        return this._controller.prepare();
       }
 
-      tick(nowUtcMs = Date.now()) {
+      tick(nowUtcMs = this._controller.wallNow()) {
         const state = this._controller.tick(nowUtcMs);
         this._notify(state);
         return state;
       }
 
-      abort() { const state = this._controller.abort("operator", Date.now()); this._notify(state); }
-      disconnect() { const state = this._controller.disconnect(Date.now()); this._notify(state); }
+      abort() { const state = this._controller.abort("operator"); this._notify(state); }
+      disconnect() { const state = this._controller.disconnect(); this._notify(state); }
       _notify(state) {
         if (this._onStatus) this._onStatus(state);
         if (this._onEvent) this._onEvent({type:"tx", state});

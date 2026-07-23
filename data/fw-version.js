@@ -9,7 +9,6 @@
   var wifiRssi  = null;
   var el        = null;
   var offline   = false;
-  var bdSupported = null;
   var failCount = 0;
   var OFFLINE_AFTER = 2;      // consecutive failed polls before warning
   var FETCH_TIMEOUT = 4000;   // ms; hung request counts as a failed poll
@@ -27,16 +26,7 @@
         'padding:1px 7px;border-radius:4px;animation:espOfflineBlink 1s step-end infinite;}' +
       '@keyframes espOfflineBlink{50%{opacity:0.45;}}' +
       '.topbar-fw-sep{color:inherit;margin:0 7px;}';
-    s.textContent +=
-      '.tab.tab-cat-muted{opacity:.55;}' +
-      '.tab.tab-cat-muted:hover{opacity:.82;}';
     document.head.appendChild(s);
-  }
-
-  function renderHardwareNavigation() {
-    document.querySelectorAll('.bd-nav').forEach(function (link) {
-      link.hidden = bdSupported !== true;
-    });
   }
 
   function render() {
@@ -120,10 +110,6 @@
           var n = Number(d.wifiRssi);
           wifiRssi = Number.isFinite(n) ? n : null;
         }
-        if (d && d.bdSupported !== undefined) {
-          bdSupported = d.bdSupported === true;
-          renderHardwareNavigation();
-        }
         render();
       })
       .catch(function () {
@@ -154,8 +140,6 @@
     el = document.getElementById('topbarFw');
     if (!el) return;
     injectStyles();
-    renderHardwareNavigation();
-
     var dataRev = el.getAttribute('data-rev');
     if (dataRev) {
       localRev = String(dataRev);

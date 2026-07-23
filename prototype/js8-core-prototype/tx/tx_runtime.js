@@ -131,9 +131,14 @@
   }
 
   class TxController {
+    // `wallNow` is the single UTC source for every entry point below. Slot
+    // planning, pacing and the `clientUtcMs` the firmware validates against must
+    // all come from it -- mixing it with a bare Date.now() shifts them apart by
+    // the clock correction and the firmware then rejects tx.prepare.
     constructor({buildFrames, encoder, sink, streamId = 0x4a533854,
                  clockCorrectionMs = 0, leadMs = 800, prebufferMs = 1000,
                  maxCatchupPackets = 25,
+                 wallNow = () => Date.now(),
                  monotonicNow = () => (typeof performance !== "undefined" ? performance.now() : Date.now())}) {
       this.buildFrames = buildFrames;
       this.encoder = encoder;
@@ -143,6 +148,7 @@
       this.leadMs = leadMs;
       this.prebufferMs = prebufferMs;
       this.maxCatchupPackets = maxCatchupPackets;
+      this.wallNow = wallNow;
       this.monotonicNow = monotonicNow;
       this.nextTxId = 1;
       this.reset();
@@ -164,7 +170,7 @@
       this.transitions.push({status, atUtcMs, detail});
     }
 
-    queue(request, nowUtcMs = Date.now()) {
+    queue(request, nowUtcMs = this.wallNow()) {
       if (!["idle", "completed", "aborted", "fault"].includes(this.status))
         throw new Error("TX queue is busy");
       if (!MODES[request.mode] || request.toneHz < 500 || request.toneHz > 2700)
@@ -180,7 +186,7 @@
       return this.snapshot();
     }
 
-    prepare(nowUtcMs = Date.now()) {
+    prepare(nowUtcMs = this.wallNow()) {
       if (this.status !== "queued") throw new Error("TX is not queued");
       const pending = this.prepareCurrent(nowUtcMs);
       return pending && typeof pending.then === "function"
@@ -222,7 +228,7 @@
       this.transition("waiting-slot", nowUtcMs, `slot ${this.nextSlotUtcMs}`);
     }
 
-    tick(nowUtcMs = Date.now()) {
+    tick(nowUtcMs = this.wallNow()) {
       this.currentUtcMs = nowUtcMs;
       try {
         if (this.status === "waiting-slot" && nowUtcMs >= this.prebufferStartUtcMs) {
@@ -278,7 +284,7 @@
       }
     }
 
-    abort(reason = "operator", nowUtcMs = Date.now()) {
+    abort(reason = "operator", nowUtcMs = this.wallNow()) {
       this.currentUtcMs = nowUtcMs;
       if (!["idle", "completed", "aborted"].includes(this.status))
         this.sink.abort(this.txId, reason);
@@ -287,7 +293,7 @@
       return this.snapshot();
     }
 
-    disconnect(nowUtcMs = Date.now()) {
+    disconnect(nowUtcMs = this.wallNow()) {
       return this.abort("websocket lost", nowUtcMs);
     }
 

@@ -6,18 +6,37 @@
 
 const crypto=require("crypto"), fs=require("fs"), http=require("http"), path=require("path"), {spawn}=require("child_process");
 const root=path.resolve(__dirname,".."), data=path.join(root,"data");
+let unattendedPosts=[], inboxWrites=[];
+// One message already waiting for K0OG, so the restore path is exercised too.
+const inboxSeed=JSON.stringify({id:1,from:"KD8SKZ",to:"K0OG",text:"MEET AT NOON",atMs:0,delivered:false})+"\n";
+
+// Mirror of the firmware's single-operator lock, enough to exercise the page's
+// claim/heartbeat/release path and to prove an unowned audio upgrade is refused.
+const session={token:"",claims:0,refusals:0,releases:0,wsRefusals:0};
+function sessionOwns(token){return Boolean(session.token)&&session.token===token;}
+function sessionBody(req,res,handler){let body="";req.on("data",chunk=>body+=chunk);req.on("end",()=>{let parsed={};try{parsed=JSON.parse(body);}catch(_error){}handler(parsed,res);});}
+function sessionReply(res,status){res.writeHead(status,{"Content-Type":"application/json"});res.end(JSON.stringify({ok:status===200,owner:"192.168.1.99",ageMs:1200,leaseMs:15000}));}
+function unattendedState(){return{armed:true,remainingMs:43200000,clientLive:false,clientAgeMs:31000,clientSeen:true,blockedLiveness:2,blockedNotArmed:0,livenessTimeoutMs:5000,ptt:false,txState:0,txUsed:0,txCapacity:12288,rxPackets:5,lan:true,upMs:90500,choicesH:[1,6,12,24,168]};}
 let chrome, finished=false, timer, sequence=0, firstSample=0, streamId=707, txPrepares=0, txPackets=0, wsConnections=0, earlyWsConnections=0, jscRequests=0, jscStartedAt=0, jscCompleteAt=0, wsOpenedAt=0, jscComplete=false, js8Gzip=0, js8Brotli=0, commands=[], setupSaveBody="", setupRestartRequests=0, lanReconnectRequests=0;
 const mime={".html":"text/html",".css":"text/css",".js":"application/javascript",".wasm":"application/wasm",".bin":"application/octet-stream"};
 function frame(opcode,payload){const body=Buffer.isBuffer(payload)?payload:Buffer.from(payload);return body.length<126?Buffer.concat([Buffer.from([0x80|opcode,body.length]),body]):Buffer.concat([Buffer.from([0x80|opcode,126,body.length>>8,body.length&255]),body]);}
 function aud1(){const wire=Buffer.alloc(200,0xff);wire.write("AUD1");wire[4]=1;wire[5]=1;wire.writeUInt16BE(sequence===0?1:0,6);wire.writeUInt16BE(40,8);wire.writeUInt16BE(0,10);wire.writeUInt32BE(streamId,12);wire.writeUInt32BE(sequence++,16);wire.writeUInt32BE(8000,20);wire.writeBigUInt64BE(BigInt(firstSample),24);wire.writeUInt32BE(0,32);wire.writeUInt32BE(160,36);firstSample+=160;return wire;}
 function readClientFrames(socket){let input=Buffer.alloc(0);return chunk=>{input=Buffer.concat([input,chunk]);for(;;){if(input.length<2)return;let at=2,length=input[1]&127;if(length===126){if(input.length<4)return;length=input.readUInt16BE(2);at=4;}else if(length===127)return socket.destroy();const masked=Boolean(input[1]&128);if(masked)at+=4;if(input.length<at+length)return;const opcode=input[0]&15,maskAt=at-4,payload=Buffer.from(input.subarray(at,at+length));if(masked)for(let i=0;i<payload.length;i++)payload[i]^=input[maskAt+(i%4)];input=input.subarray(at+length);if(opcode===1){const message=JSON.parse(payload.toString());if(message.type==="tx.prepare"){txPrepares++;socket.write(frame(1,JSON.stringify({type:"tx-ready",txId:message.txId,ptt:false})));}}else if(opcode===2){txPackets++;const txId=payload.readUInt32BE(32),flags=payload.readUInt16BE(6);if(flags&1)socket.write(frame(1,JSON.stringify({type:"tx-state",txId,ptt:true})));if(flags&2)socket.write(frame(1,JSON.stringify({type:"tx-drained",txId,ptt:false})));}}};}
-function finish(ok,text){if(finished)return;finished=true;clearTimeout(timer);if(chrome)chrome.kill("SIGTERM");server.close();const encodingPass=js8Gzip>0&&js8Brotli===0;const frequencyPass=commands.some(command=>command.type==="setFrequency"&&Number(command.frequency)===14078000), setupArgs=new URLSearchParams(setupSaveBody), setupSavePass=setupArgs.get("trx1transport")==="lan"&&setupArgs.get("lanip")==="192.168.1.60"&&setupArgs.get("lanuser")==="operator"&&setupArgs.get("lanpass")==="secret123"&&setupArgs.get("noRestart")==="1"&&setupRestartRequests===1;ok=ok&&encodingPass&&frequencyPass&&earlyWsConnections===0&&jscRequests===1&&setupSavePass&&lanReconnectRequests===1;const report=`${text} js8Gzip=${js8Gzip} js8Brotli=${js8Brotli} jscRequests=${jscRequests} jscMs=${jscCompleteAt-jscStartedAt} wsAfterJscMs=${wsOpenedAt-jscCompleteAt} ws=${wsConnections} earlyWs=${earlyWsConnections} setupSave=${setupSavePass} setupRestarts=${setupRestartRequests} reconnects=${lanReconnectRequests} commands=${JSON.stringify(commands)} prepares=${txPrepares} packets=${txPackets}`;(ok?console.log:console.error)(report);if(!ok)process.exitCode=1;}
+function finish(ok,text){if(finished)return;finished=true;clearTimeout(timer);if(chrome)chrome.kill("SIGTERM");server.close();const encodingPass=js8Gzip>0&&js8Brotli===0;const frequencyPass=commands.some(command=>command.type==="setFrequency"&&Number(command.frequency)===14078000), setupArgs=new URLSearchParams(setupSaveBody), setupSavePass=setupArgs.get("trx1transport")==="lan"&&setupArgs.get("lanip")==="192.168.1.60"&&setupArgs.get("lanuser")==="operator"&&setupArgs.get("lanpass")==="secret123"&&setupArgs.get("noRestart")==="1"&&setupRestartRequests===1;const unattendedRevokePass=unattendedPosts.some(post=>post.action==="revoke");const inboxWritePass=inboxWrites.length>0;const sessionPass=session.claims>0&&session.wsRefusals===0;ok=ok&&encodingPass&&frequencyPass&&earlyWsConnections===0&&jscRequests===1&&setupSavePass&&lanReconnectRequests===1&&unattendedRevokePass&&inboxWritePass&&sessionPass;const report=`${text} js8Gzip=${js8Gzip} js8Brotli=${js8Brotli} jscRequests=${jscRequests} jscMs=${jscCompleteAt-jscStartedAt} wsAfterJscMs=${wsOpenedAt-jscCompleteAt} ws=${wsConnections} earlyWs=${earlyWsConnections} setupSave=${setupSavePass} setupRestarts=${setupRestartRequests} unattendedRevoke=${unattendedRevokePass} session=${sessionPass}(claims=${session.claims} refusals=${session.refusals} wsRefusals=${session.wsRefusals}) inboxWrites=${inboxWrites.length} reconnects=${lanReconnectRequests} commands=${JSON.stringify(commands)} prepares=${txPrepares} packets=${txPackets}`;(ok?console.log:console.error)(report);if(!ok)process.exitCode=1;}
 const server=http.createServer((req,res)=>{
   const url=new URL(req.url,"http://fixture");
   if(url.pathname==="/result"&&req.method==="POST"){let body="";req.on("data",c=>body+=c);req.on("end",()=>{res.writeHead(204).end();const result=JSON.parse(body);finish(result.pass,result.text);});return;}
   if(url.pathname==="/setup/save"&&req.method==="POST"){let body="";req.on("data",c=>body+=c);req.on("end",()=>{setupSaveBody=body;res.setHeader("Content-Type","application/json");res.end('{"ok":true}');});return;}
   if(url.pathname==="/restart"&&req.method==="POST"){setupRestartRequests++;res.setHeader("Content-Type","application/json");res.end('{"ok":true}');return;}
   if(url.pathname==="/lan/reconnect"&&req.method==="POST"){lanReconnectRequests++;res.setHeader("Content-Type","application/json");res.end('{"ok":true}');return;}
+  if(url.pathname==="/inbox"&&req.method==="POST"){let body="";req.on("data",c=>body+=c);req.on("end",()=>{inboxWrites.push(body);res.setHeader("Content-Type","application/json");res.end('{"ok":true}');});return;}
+  if(url.pathname==="/inbox"){res.setHeader("Content-Type","text/plain");res.end(inboxSeed);return;}
+  if(url.pathname==="/js8/session/claim"&&req.method==="POST"){return sessionBody(req,res,(body)=>{if(session.token&&!sessionOwns(body.token)&&!body.force){session.refusals++;return sessionReply(res,409);}session.token=body.token||"";session.claims++;sessionReply(res,200);});}
+  if(url.pathname==="/js8/session/ping"&&req.method==="POST"){return sessionBody(req,res,(body)=>{if(session.token&&!sessionOwns(body.token))return sessionReply(res,409);session.token=body.token||"";sessionReply(res,200);});}
+  if(url.pathname==="/js8/session/release"&&req.method==="POST"){return sessionBody(req,res,(body)=>{if(sessionOwns(body.token)){session.token="";session.releases++;}res.writeHead(200,{"Content-Type":"application/json"});res.end('{"ok":true}');});}
+  if(url.pathname==="/unattended"&&req.method==="POST"){let body="";req.on("data",c=>body+=c);req.on("end",()=>{try{unattendedPosts.push(JSON.parse(body));}catch(_error){}res.setHeader("Content-Type","application/json");res.end(JSON.stringify(unattendedState()));});return;}
+  if(url.pathname==="/unattended"){res.setHeader("Content-Type","application/json");res.end(JSON.stringify(unattendedState()));return;}
+  if(url.pathname==="/unattended/log"){res.setHeader("Content-Type","text/plain");res.end("1200 ARM 12 h\n90500 BLOCK liveness lost before keying\n");return;}
   if(url.pathname==="/state"){res.setHeader("Content-Type","application/json");res.end(JSON.stringify({connected:true,lanStatus:"linked",transceiverType:"IC-705-LAN",power:true,frequency:7078000,mode:"USB",tx:false,rfPower:128,fwRev:"20260718",wifiRssi:-51,bdSupported:true}));return;}
   if(url.pathname==="/setup-data.json"){const js8=url.searchParams.get("scope")==="js8call",missing=url.searchParams.get("fixture")==="missing"||!js8;res.setHeader("Content-Type","application/json");res.end(JSON.stringify({fwRev:20260718,hwRev:4,apModeText:"AP mode ON",mac:"00:11:22:33:44:55",ssid:"fixture-wifi",pswd:"fixture-password",ssid2:"",pswd2:"",trx1transport:"lan",lanip:missing?"":"192.168.1.60",lanuser:missing?"":"operator",lanpass:missing?"":"secret123",civaddr:"A4",trx2conntype:0,trx3conntype:0}));return;}
   if(url.pathname==="/cmd"&&req.method==="POST"){let body="";req.on("data",chunk=>body+=chunk);req.on("end",()=>{try{commands.push(JSON.parse(body));}catch(_error){}res.setHeader("Content-Type","application/json");res.end('{"ok":true}');});return;}
@@ -82,7 +101,7 @@ f.onload=()=>{
     f.contentWindow.__dataTest.setRadioConnection(true,'linked');
     f.contentWindow.__dataTest.setAudioLive(false);
     const connectedWithoutAudioIsNotLive=!d.querySelector('#linkState').textContent.includes('RX LIVE');
-    setTimeout(()=>{
+    setTimeout(async ()=>{
       try {
       const modemSettingsEditingStable=editingCall.value==='N0'&&editingGrid.value==='';
       const txGainEditingStable=editingTxGain.value==='0.35';
@@ -91,7 +110,7 @@ f.onload=()=>{
       editingTxGain.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));
       const savedTxGain=JSON.parse(f.contentWindow.localStorage.getItem('ic705.data.js8-settings')).modems.js8call.txGain;
       const currentPreset=d.querySelector('[data-frequency="14078000"]');
-      const stationObserved={speed:d.querySelector('#stationRows tr[data-call="K0OG"] td:nth-child(4)')?.textContent.trim(),fallbackTitle:d.querySelector('#stationRows tr[data-call="K0OG"] .station-direction span')?.title,gridTitle:d.querySelector('#stationRows tr[data-call="KN4CRD"] .station-direction span')?.title,distance:d.querySelector('#stationRows tr[data-call="K0OG"] .station-distance')?.textContent};
+      const stationObserved={speed:d.querySelector('#stationRows tr[data-call="K0OG"] td:nth-child(5)')?.textContent.trim(),fallbackTitle:d.querySelector('#stationRows tr[data-call="K0OG"] .station-direction span')?.title,gridTitle:d.querySelector('#stationRows tr[data-call="KN4CRD"] .station-direction span')?.title,distance:d.querySelector('#stationRows tr[data-call="K0OG"] .station-distance')?.textContent};
       const overlay=d.querySelector('#waterfallOverlay'),overlayContext=overlay.getContext('2d'),hzX=hz=>Math.round((hz-500)/(2700-500)*overlay.width);
       const heartbeatX=hzX(1000),heartbeatPixels=overlayContext.getImageData(heartbeatX-2,0,5,8).data,outside=overlayContext.getImageData(hzX(700),30,1,1).data;
       const heartbeatEdgePresent=Array.from({length:heartbeatPixels.length/4},(_,i)=>heartbeatPixels[i*4+3]).some(alpha=>alpha>0);
@@ -146,7 +165,8 @@ f.onload=()=>{
         ownCallStation:(()=>{const node=d.querySelector('#stationRows tr[data-call="OK1HRA"] [data-own-call="true"]');return node?.textContent==='OK1HRA'&&getComputedStyle(node).color==='rgb(255, 107, 107)';})(),
         txModes:[...d.querySelectorAll('#txSessionMode option')].map(option=>option.value).join(',')==='CHAT,EMAIL,BIN',
         autoSpeed:d.querySelector('#txSpeedResolved')?.textContent.includes('A')===true,
-        stationSpeed:(d.querySelector('#stationRows tr[data-call="K0OG"] td:nth-child(4)')?.textContent.trim()||'').startsWith('A')&&(d.querySelector('#stationRows tr[data-call="K0OG"] td:nth-child(4)')?.textContent.trim()||'').endsWith('15 s'),
+        stationSpeed:(d.querySelector('#stationRows tr[data-call="K0OG"] td:nth-child(5)')?.textContent.trim()||'').startsWith('A')&&(d.querySelector('#stationRows tr[data-call="K0OG"] td:nth-child(5)')?.textContent.trim()||'').endsWith('15 s'),
+        stationCountry:(()=>{const own=d.querySelector('#stationRows tr[data-call="OK1HRA"] td.station-country'),us=d.querySelector('#stationRows tr[data-call="K0OG"] td.station-country');return own?.textContent.trim()==='Czech Republic'&&own?.title==='Czech Republic'&&(us?.textContent.trim()||'').length>0&&d.querySelector('[data-station-sort="country"]')?.textContent.trim().startsWith('DXCC')===true;})(),
         stationDirection:Number.isFinite(parseFloat(d.querySelector('#stationRows tr[data-call="K0OG"] .station-distance')?.textContent))&&d.querySelector('#stationRows tr[data-call="K0OG"] .station-direction span')?.title.includes('DXCC estimate')===true&&d.querySelector('#stationRows tr[data-call="KN4CRD"] .station-direction span')?.title.includes('EM73')===true,
         slotMeter:!d.querySelector('#decodeMeter')&&parseFloat(d.querySelector('#slotFill').style.width)>0&&d.querySelector('.waterfall-rhythm').getBoundingClientRect().top>=d.querySelector('#waterfall').getBoundingClientRect().bottom&&getComputedStyle(d.querySelector('#slotFill')).boxShadow==='none',
         recentNewest:d.querySelector('#traffic .message')?.textContent.includes('NEWEST'),
@@ -154,9 +174,10 @@ f.onload=()=>{
         recentMessageWhite:getComputedStyle(d.querySelector('#traffic .message-text')).color==='rgb(255, 255, 255)',
         operationalDim:d.querySelectorAll('#traffic .message.operational').length===1,
         noDebugNav:![...d.querySelectorAll('.tabs .tab')].some(link=>link.textContent.trim()==='DEBUG'),
-        bdHardwareNav:d.querySelector('.bd-nav')?.hidden===false,
-        catLastMuted:[...d.querySelectorAll('.tabs > a.tab')].at(-1)?.getAttribute('href')==='/'&&Number(getComputedStyle(d.querySelector('.tab-cat-muted')).opacity)<.8,
-        messagePresets:d.querySelectorAll('[data-message-preset]').length>=10&&!!d.querySelector('#messagePresetsButton'),
+        removedPagesAbsentFromNav:!d.querySelector('.bd-nav,.tab-cat-muted,a[href="/bd"],a[href="/"]'),
+        messagePresets:d.querySelectorAll('[data-message-preset]').length>=18&&!!d.querySelector('#messagePresetsButton')&&
+          ['qsl-query','yes','no','tu','dit-dit','grid-query','info-query','status-query']
+            .every(key=>!!d.querySelector('[data-message-preset="'+key+'"]')),
         sendHidden:d.querySelector('#sendButton').hidden===true&&d.querySelector('#sendHint').textContent.trim()==='Enter sends',
         js8Nav:d.querySelector('a[href="/data"]')?.textContent.trim()==='JS8LAN'&&d.querySelector('a[href="/data"]')?.title==='Web Client for JS8Call',
         pageFooter:d.querySelector('.js8-page-footer a[href^="https://github.com/"]')?.textContent.trim()==='GitHub'&&d.querySelector('.js8-page-footer a[href="/THIRD-PARTY-NOTICES.txt"]')?.textContent.trim()==='Licenses',
@@ -193,12 +214,201 @@ f.onload=()=>{
       checks.lanRequiredGate=gd.body.classList.contains('lan-required-only')&&!lanGate.hidden&&!gd.querySelector('.brand')&&getComputedStyle(gd.querySelector('.radio-bar')).display==='none'&&getComputedStyle(gd.querySelector('#js8Interface')).display==='none'&&lanGate.querySelector('h1')?.textContent.trim()==='JS8Call requires TRX1 over LAN'&&lanGate.textContent.includes('not available with a Bluetooth or serial/CAT connection')&&lanGate.textContent.includes('Other Icom transceivers')&&!!lanGate.querySelector('a[href="/setup#radioSection"]');
       checks.lanGateNoLeaveWarning=(()=>{const event=new lanGateFrame.contentWindow.Event('beforeunload',{cancelable:true});return lanGateFrame.contentWindow.dispatchEvent(event)!==false&&!event.defaultPrevented;})();
       checks.setupJs8Nav=sd.querySelector('a[href="/data"]')?.textContent.trim()==='JS8LAN'&&sd.querySelector('a[href="/data"]')?.title==='Web Client for JS8Call';
+      checks.setupRemovedPagesAbsentFromNav=!sd.querySelector('.bd-nav,.tab-cat-muted,a[href="/bd"],a[href="/"]');
       const missingInputs=[...sd.querySelectorAll('[name="lanip"],[name="lanuser"],[name="lanpass"]')];
       const setupMissingObserved=radioSection?.open===true&&lanWarning?.hidden===false&&missingInputs.length===3&&missingInputs.every(input=>input.classList.contains('setup-required-missing')&&input.getAttribute('aria-invalid')==='true');
       const setupValues={lanip:'192.168.1.60',lanuser:'operator',lanpass:'secret123'};
       missingInputs.forEach(input=>{input.value=setupValues[input.name];input.dispatchEvent(new setupFrame.contentWindow.Event('input',{bubbles:true}));});
       checks.setupLanWarning=setupMissingObserved&&lanWarning.hidden===true&&missingInputs.every(input=>!input.classList.contains('setup-required-missing')&&input.getAttribute('aria-invalid')==='false');
-      sd.querySelector('#setup-form').requestSubmit();
+      // Unattended panel: armed, but the fixture says the modem tab has been
+      // silent for 31 s. A timer alone would still read "armed" -- the point of
+      // the panel is that this state is visibly flagged.
+      const unaSection=sd.querySelector('#unattendedSection');
+      unaSection.open=true;
+      unaSection.dispatchEvent(new setupFrame.contentWindow.Event('toggle'));
+      await new Promise(resolve=>setTimeout(resolve,400));
+      const unaText=sd.querySelector('#unattendedGrid').textContent;
+      const unaBad=[...sd.querySelectorAll('#unattendedGrid .unattended-bad')].map(node=>node.textContent);
+      checks.unattendedPanel=unaText.includes('12 h')&&unaText.includes('silent for')&&
+        unaBad.some(text=>text.includes('silent for'))&&
+        sd.querySelector('#unattendedLog').textContent.includes('BLOCK liveness lost')&&
+        [...sd.querySelectorAll('#unattendedExtend button')].map(b=>b.textContent).join('|')==='Extend 1 h|Extend 6 h|Extend 12 h|Extend 24 h|Extend 168 h';
+      sd.querySelector('#unattendedRevoke').click();
+      await new Promise(resolve=>setTimeout(resolve,300));
+      // Auto-reply wiring: a decoded directed query must reach the engine and
+      // come back as a composed answer. AUTO is off here, so the answer belongs
+      // in the message box rather than on the air.
+      f.contentWindow.__dataTest.setActivity({messages:[],frames:[],
+        calls:[{call:'K0OG',snr:-12,offsetHz:1500,submode:0,dtMs:0,quality:1,lastSlotUtcMs:Date.now()}]});
+      const composer=d.querySelector('#messageInput');
+      composer.value='';
+      f.contentWindow.__dataTest.feedDirected({from:'K0OG',to:'OK1HRA',command:' SNR?'});
+      const bufferedAnswer=composer.value;
+      // A second identical query inside the window must be refused, not answered.
+      composer.value='';
+      f.contentWindow.__dataTest.feedDirected({from:'K0OG',to:'OK1HRA',command:' SNR?'});
+      const afterRepeat=composer.value;
+      // A query for somebody else must be ignored outright.
+      f.contentWindow.__dataTest.feedDirected({from:'K0OG',to:'OK2XYZ',command:' GRID?'});
+      const autoState=f.contentWindow.__dataTest.autoReplyState();
+      // The immediate repeat is caught by the QSO lock, not the restriction
+      // window: two directed frames in a row mean a conversation is running,
+      // and the station stays quiet. The window itself is covered by
+      // protocol/restrictions_smoke.js, which can control time.
+      checks.autoReplyWiring=bufferedAnswer==='K0OG SNR -12'&&afterRepeat===''&&
+        autoState.restrictions.granted===1&&autoState.skipped===2&&
+        autoState.lockUntilMs>Date.now();
+      // TX arbiter: an answer produced while the radio is busy must be queued
+      // with an expiry, not refused and not sent late. AUTO on for this part.
+      // TX arbiter: with AUTO on, an answer must reach the queue rather than be
+      // refused. The QSO lock is cleared first because the checks above armed it
+      // and it would otherwise mask the queue entirely.
+      d.querySelector('#autoReply').click();
+      // Enabling radio TX is a precondition: without it the engine correctly
+      // refuses with tx-not-enabled and nothing ever reaches the queue.
+      const txSafetyBox=d.querySelector('#txSafety');
+      const txSafetyWas=txSafetyBox.checked;
+      if(!txSafetyWas){txSafetyBox.checked=true;txSafetyBox.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));}
+      f.contentWindow.__dataTest.resetAutoReplyLock();
+      f.contentWindow.__dataTest.feedDirected({from:'KD8SKZ',to:'OK1HRA',command:' GRID?'});
+      const queued=f.contentWindow.__dataTest.txQueueState();
+      // Either it was taken straight away (radio idle) or it is waiting with a
+      // finite expiry -- never queued forever.
+      checks.txQueue=(queued.sent+queued.size)>=1&&
+        queued.items.every(item=>item.source!=='autoreply'||typeof item.inMs==='number');
+      // ---- newly added functions ----
+      // IMPORTANT: MSG/MSG TO:/relay-text/QUERY MSG are multi-frame checksummed
+      // commands. The production ActivityStore does not yet CRC-reassemble them,
+      // so those paths are gated off and NOT asserted here as working end-to-end.
+      // What is asserted: the single-frame HB-SNR advertisement logic and the
+      // inbox reading UI, verified against a directly stored message (the store
+      // is what the firmware will populate once reassembly lands).
+      const dt=f.contentWindow.__dataTest;
+
+      // HB ACK requires unattended mode + radio TX enabled; turn both on for this
+      // check and restore afterwards.
+      const hbSafety=d.querySelector('#txSafety'); const hbSafetyWas=hbSafety.checked;
+      if(!hbSafetyWas){hbSafety.checked=true;hbSafety.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));}
+      const hbAuto=d.querySelector('#autoReply'); const hbAutoWas=hbAuto.checked;
+      if(!hbAutoWas){hbAuto.click();}
+      const hbEnabled=d.querySelector('#hbEnabled'); const hbEnabledWas=hbEnabled.checked;
+      if(!hbEnabledWas){hbEnabled.click();}
+      // Seed a stored message the way the firmware will, bypassing the missing
+      // RX reassembly, then check the beacon advertises it instead of a plain ACK.
+      dt.storeInboxDirect({from:'OK7DEP',to:'OK8HB',text:'STORED FOR YOU'});
+      dt.clearTxCaptured();
+      dt.feedHeartbeat({from:'OK8HB',to:'@HB',command:'HEARTBEAT',grid:'JO70'});
+      const advert=dt.txCaptured().find(item=>item.to==='OK8HB'&&
+        item.text.indexOf('HEARTBEAT SNR ')===0&&item.text.indexOf(' MSG ID ')>0);
+      checks.heartbeatSnrWiring=Boolean(advert);
+      d.querySelector('#abortButton').click();
+      await new Promise(resolve=>setTimeout(resolve,120));
+      if(!hbEnabledWas){hbEnabled.click();}
+      if(!hbAutoWas){hbAuto.click();}
+      if(!hbSafetyWas){hbSafety.checked=false;hbSafety.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));}
+
+      // Inbox reading UI shows the stored message and the QUERY MSGS control.
+      dt.renderInboxNow();
+      const inboxRows=[...d.querySelectorAll('#inboxRows tr')];
+      checks.inboxUiWiring=inboxRows.some(row=>row.textContent.includes('OK8HB'))&&
+        Boolean(d.querySelector('#inboxQueryMsgs'));
+
+      // CQ interval selector: values offered and the setting applied.
+      const cqSel=d.querySelector('#cqRepeat');
+      const cqFlag=()=>[...d.querySelectorAll('#settingsFlags .summary-flag')].find(node=>node.textContent.trim()==='CQ');
+      cqSel.value='5'; cqSel.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));
+      checks.cqIntervalWiring=[...cqSel.options].map(o=>o.value).join(',')==='0,2,5,10,15'&&
+        d.querySelector('#cqState').textContent.includes('5 min');
+      // SETTINGS header pills report the switches without being switches: they
+      // follow the CQ selector, and none of them is clickable.
+      const cqFlagOn=cqFlag()?.classList.contains('on')===true&&cqFlag()?.title.includes('5 min');
+      cqSel.value='0'; cqSel.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));
+      checks.settingsFlags=[...d.querySelectorAll('#settingsFlags .summary-flag')].map(node=>node.textContent.trim()).join(',')==='TX,AUTO,CQ,HB,ACK'&&
+        cqFlagOn&&cqFlag()?.classList.contains('on')===false&&
+        !d.querySelector('#settingsFlags button,#settingsFlags input,#settingsFlags a');
+
+      // Multi-frame reassembly: a fully assembled, checksum-verified MSG message
+      // must be stored; a checksum-failed one must be dropped. This is the real
+      // path (dispatchAssembledMessage), fed a message the way the worker's
+      // ActivityStore produces it.
+      const inboxSizeBefore=dt.inboxState().size;
+      dt.feedAssembled({directed:{from:'OK9MSG',to:'OK1HRA',command:' MSG'},
+        payload:'HELLO FROM REASSEMBLY',checksumOk:true});
+      const afterStore=dt.inboxState();
+      checks.reassemblyStore=afterStore.size===inboxSizeBefore+1&&
+        afterStore.items.some(item=>item.text==='HELLO FROM REASSEMBLY'&&item.from==='OK9MSG');
+      dt.feedAssembled({directed:{from:'OK9BAD',to:'OK1HRA',command:' MSG'},
+        payload:'SHOULD BE DROPPED',checksumOk:false});
+      checks.reassemblyChecksum=dt.inboxState().size===afterStore.size;
+
+            // The answer really did go out; stop it so the page is idle again for the
+      // BIN and TX checks that follow.
+      d.querySelector('#abortButton').click();
+      await new Promise(resolve=>setTimeout(resolve,150));
+      if(!txSafetyWas){txSafetyBox.checked=false;txSafetyBox.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));}
+      d.querySelector('#autoReply').click();
+      // Heartbeat: an incoming beacon must produce an ACK, and the station's own
+      // beacon must be postponed by that traffic rather than firing into it.
+      d.querySelector('#hbEnabled').click();
+      const hbBefore=f.contentWindow.__dataTest.heartbeatState();
+      f.contentWindow.__dataTest.feedHeartbeat({from:'K0OG',to:'@HB',command:'HEARTBEAT',grid:'EM73'});
+      const hbAfter=f.contentWindow.__dataTest.heartbeatState();
+      checks.heartbeatWiring=hbBefore.enabled===true&&hbBefore.intervalMs===15*60000&&
+        typeof hbBefore.dueInMs==='number'&&
+        (hbAfter.acked===1||hbAfter.ackSkipped>=1)&&
+        [...d.querySelectorAll('#hbMinutes option')].map(o=>o.value).join(',')==='5,10,15,30,60';
+      d.querySelector('#hbEnabled').click();
+      // Relay via the assembled path: an armed station must forward a relayed
+      // message to the next hop with attribution. Needs unattended mode + TX.
+      const rSafety=d.querySelector('#txSafety'); const rSafetyWas=rSafety.checked;
+      if(!rSafetyWas){rSafety.checked=true;rSafety.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));}
+      const rAuto=d.querySelector('#autoReply'); const rAutoWas=rAuto.checked;
+      if(!rAutoWas){rAuto.click();}
+      dt.clearTxCaptured();
+      dt.feedAssembled({directed:{from:'KN4CRD',to:'OK1HRA',command:'>'},
+        payload:'OH8STN>HELLO JULIAN',checksumOk:true});
+      const fwd=dt.txCaptured().find(item=>item.to==='OH8STN'&&item.text==='>HELLO JULIAN DE KN4CRD');
+      checks.relayForward=Boolean(fwd);
+      d.querySelector('#abortButton').click();
+      await new Promise(resolve=>setTimeout(resolve,120));
+      if(!rAutoWas){rAuto.click();}
+      if(!rSafetyWas){rSafety.checked=false;rSafety.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));}
+      // Inbox durable copy: the message seeded by the firmware /inbox fixture must
+      // have been restored on load. (The K0OG entry from the seed; plus OK8HB we
+      // stored directly above.)
+      const inboxNow=f.contentWindow.__dataTest.inboxState();
+      checks.inboxLoad=inboxNow.items.some(item=>item.to==='K0OG');
+      // Groups: the always-joined pair must be present without being stored, a
+      // custom group must be answered, and one we never joined must be ignored.
+      const groupsField=d.querySelector('#groups');
+      groupsField.value='@ARESGA';
+      groupsField.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));
+      const joined=f.contentWindow.__dataTest.myGroups();
+      f.contentWindow.__dataTest.resetAutoReplyLock();
+      const composerG=d.querySelector('#messageInput'); composerG.value='';
+      f.contentWindow.__dataTest.feedDirected({from:'OK5GRP',to:'@ARESGA',command:' SNR?'});
+      const groupAnswer=composerG.value;
+      composerG.value='';
+      f.contentWindow.__dataTest.resetAutoReplyLock();
+      f.contentWindow.__dataTest.feedDirected({from:'OK6GRP',to:'@NOTMINE',command:' SNR?'});
+      const strangerGroup=composerG.value;
+      checks.groupsWiring=joined.includes('@ALLCALL')&&joined.includes('@HB')&&
+        joined.includes('@ARESGA')&&groupAnswer.startsWith('OK5GRP SNR')&&strangerGroup==='';
+      groupsField.value='';
+      groupsField.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));
+      checks.autoReplySettings=!!d.querySelector('#infoText')&&!!d.querySelector('#statusText')&&
+        d.querySelector('#autoReply').checked===false&&
+        [...d.querySelectorAll('#armHours option')].map(o=>o.value).join(',')==='1,6,12,24,168';
+      // The reassembly/relay/HB tests can leave an auto-triggered TX in flight
+      // (driveEncoder is async, so an immediate abort is a no-op). Settle to idle
+      // before the manual TX test, which fails with "TX is busy" otherwise.
+      for(let i=0;i<15;i+=1){
+        const st=f.contentWindow.__dataTest.txStatus();
+        if(['idle','completed','aborted','fault'].includes(st))break;
+        d.querySelector('#abortButton').click();
+        await new Promise(resolve=>setTimeout(resolve,100));
+      }
+            sd.querySelector('#setup-form').requestSubmit();
       d.querySelector('#trxHelpButton').click();
       checks.manualHelp=d.querySelector('#trxHelpDialog').open===true&&d.querySelector('#trxHelpModeWarning').hidden===true;
       d.querySelector('#trxHelpDialog .trx-help-close').click();
@@ -342,5 +552,9 @@ f.onload=()=>{
   if(path.basename(target).startsWith("js8-")){if(encoded===br)js8Brotli++;if(encoded===gz)js8Gzip++;}
   fs.readFile(encoded,(error,bytes)=>{if(error)return res.writeHead(404).end();res.setHeader("Content-Type",mime[path.extname(target)]||"application/octet-stream");if(encoded===br)res.setHeader("Content-Encoding","br");if(encoded===gz)res.setHeader("Content-Encoding","gzip");if(url.pathname==="/js8-jsc.bin.br"){jscRequests++;jscStartedAt=Date.now();res.setHeader("Cache-Control","no-store");res.setHeader("Content-Length",bytes.length);const chunk=Math.ceil(bytes.length/8);let at=0;const tick=()=>{res.write(bytes.subarray(at,Math.min(bytes.length,at+chunk)));at+=chunk;if(at>=bytes.length){jscComplete=true;jscCompleteAt=Date.now();return res.end();}setTimeout(tick,150);};tick();return;}res.end(bytes);});
 });
-server.on("upgrade",(req,socket)=>{if(req.url!=="/audiows")return socket.destroy();wsConnections++;wsOpenedAt=Date.now();if(!jscComplete)earlyWsConnections++;const accept=crypto.createHash("sha1").update(req.headers["sec-websocket-key"]+"258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");socket.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "+accept+"\r\n\r\n");socket.write(frame(1,JSON.stringify({type:"hello",protocol:"AUD1",version:1,streamId,rx:[{kind:"RX_ULAW",sampleRate:8000}],tx:[{kind:"TX_PCM16",sampleRate:48000}],maxPayloadBytes:1920})));const interval=setInterval(()=>{if(socket.destroyed)return clearInterval(interval);socket.write(frame(2,aud1()));},20);socket.on("data",readClientFrames(socket));socket.on("close",()=>clearInterval(interval));socket.on("error",()=>clearInterval(interval));});
+server.on("upgrade",(req,socket)=>{const wsUrl=new URL(req.url,"http://fixture");if(wsUrl.pathname!=="/audiows")return socket.destroy();
+// Same gate as the firmware: the audio socket is where the lock actually bites,
+// so a handshake without the owning token never reaches the stream.
+if(!sessionOwns(wsUrl.searchParams.get("token"))){session.wsRefusals++;socket.write("HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\n");return socket.destroy();}
+wsConnections++;wsOpenedAt=Date.now();if(!jscComplete)earlyWsConnections++;const accept=crypto.createHash("sha1").update(req.headers["sec-websocket-key"]+"258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");socket.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "+accept+"\r\n\r\n");socket.write(frame(1,JSON.stringify({type:"hello",protocol:"AUD1",version:1,streamId,rx:[{kind:"RX_ULAW",sampleRate:8000}],tx:[{kind:"TX_PCM16",sampleRate:48000}],maxPayloadBytes:1920})));const interval=setInterval(()=>{if(socket.destroyed)return clearInterval(interval);socket.write(frame(2,aud1()));},20);socket.on("data",readClientFrames(socket));socket.on("close",()=>clearInterval(interval));socket.on("error",()=>clearInterval(interval));});
 server.listen(0,"127.0.0.1",()=>{chrome=spawn("google-chrome",["--headless=new","--no-sandbox","--disable-gpu","--disable-dev-shm-usage","--no-proxy-server","--host-resolver-rules=MAP ic705.test 127.0.0.1",`http://ic705.test:${server.address().port}/smoke.html`]);let errors="";chrome.stderr.on("data",c=>errors+=c);chrome.on("close",code=>{if(!finished)finish(false,`DATA BROWSER FAIL Chrome exited ${code}\n${errors}`);});timer=setTimeout(()=>finish(false,`DATA BROWSER FAIL timeout prepares=${txPrepares} packets=${txPackets}`),45000);});

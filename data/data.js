@@ -124,9 +124,17 @@ const dom = {
   stationSummary:$("stationSummary"), myCall:$("myCall"), myGrid:$("myGrid"),
   followSpeed:$("followSpeed"), clockCorrection:$("clockCorrection"), autoTiming:$("autoTiming"),
   txGain:$("txGain"), txSafety:$("txSafety"), storageState:$("storageState"),
-  resetSettings:$("resetSettings"), settingsSummary:$("settingsSummary"),
+  txQueueState:$("txQueueState"),
+  hbEnabled:$("hbEnabled"), hbMinutes:$("hbMinutes"), hbAck:$("hbAck"), hbState:$("hbState"),
+  groups:$("groups"), cqRepeat:$("cqRepeat"), cqState:$("cqState"),
+  infoText:$("infoText"), statusText:$("statusText"), autoReply:$("autoReply"),
+  inboxRows:$("inboxRows"), inboxSummary:$("inboxSummary"), inboxQueryMsgs:$("inboxQueryMsgs"), inboxRefresh:$("inboxRefresh"),
+  armHours:$("armHours"), autoState:$("autoState"),
+  resetSettings:$("resetSettings"), settingsSummary:$("settingsSummary"), settingsFlags:$("settingsFlags"),
   diagnosticSummary:$("diagnosticSummary"), diagnostics:$("diagnostics"),
   lanRequired:$("lanRequired"), lanRequiredDetail:$("lanRequiredDetail"),
+  sessionBusy:$("sessionBusy"), sessionBusyWhere:$("sessionBusyWhere"),
+  sessionBusyDetail:$("sessionBusyDetail"), sessionTakeover:$("sessionTakeover"),
   startup:$("startupLoader"), startupProgress:$("startupProgress"),
   startupPercent:$("startupPercent"), startupLabel:$("startupLabel"),
   startupDetail:$("startupDetail"), startupRetry:$("startupRetry")
@@ -134,6 +142,83 @@ const dom = {
 
 const loaded = Js8Settings.load(localStorage);
 let settings = loaded.settings;
+
+// One clock and one scheduler for the whole page. Everything time-driven
+// registers with `scheduler`; the master interval below is the ONLY
+// setTimeout/setInterval in this file. Keeping it that way is what makes
+// background operation (L3) a swap of `js8Clock.now` plus a different tick
+// source, instead of another rewrite of the TX path.
+const js8Clock = {now: () => Date.now()};
+// Scheduler anomalies (coalesced backlogs, a task that threw) must never be
+// silent -- they are the first symptom when timing misbehaves.
+const scheduler = new Js8Scheduler.Js8Scheduler({wallNow: () => js8Clock.now(),
+  onEvent: event => console.warn("[js8-scheduler]", event.type, event)});
+const TICK_IDLE_MS = 100, TICK_TX_MS = 20;
+
+// Auto-reply decision layer. Both are pure; they never transmit. Every refusal
+// carries a reason and is logged, so the station never goes quiet unexplained.
+const restrictions = new Js8Restrictions.Js8Restrictions({
+  onEvent: event => console.warn("[js8-restrictions]", event.type, event)});
+// The firmware holds the durable copy (decision 10); this store is the working
+// mirror. Loaded once at start, written back whenever it changes, so mail
+// survives a reload and is readable from /inbox on any device.
+const inboxStore = new Js8Inbox.MemoryStore();
+let inboxSyncPending = false;
+function syncInbox() {
+  if (inboxSyncPending) return;
+  inboxSyncPending = true;
+  const body = inboxStore.all().map(item => JSON.stringify(item)).join("\n");
+  fetch("/inbox", {method: "POST", headers: {"Content-Type": "text/plain"}, body})
+    .then(response => { if (!response.ok) throw new Error(String(response.status)); })
+    .catch(error => console.warn("[js8-inbox] firmware did not store:", error.message))
+    .finally(() => { inboxSyncPending = false; });
+}
+function loadInbox() {
+  fetch("/inbox", {cache: "no-store"})
+    .then(response => response.ok ? response.text() : Promise.reject(new Error(String(response.status))))
+    .then(text => {
+      let restored = 0;
+      for (const line of text.split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const item = JSON.parse(line);
+          inboxStore.items.push(item);
+          inboxStore.nextId = Math.max(inboxStore.nextId, Number(item.id) + 1);
+          restored += 1;
+        } catch (_error) { /* one bad line must not lose the rest */ }
+      }
+      if (restored) console.info("[js8-inbox] restored", restored, "messages from firmware");
+      renderInbox();
+    })
+    .catch(error => console.warn("[js8-inbox] could not load:", error.message));
+}
+const inbox = new Js8Inbox.Js8Inbox({store: inboxStore,
+  onEvent: event => { console.info("[js8-inbox]", event.type, event.id || "",
+    event.reason || "", event.detail || ""); syncInbox(); }});
+const relay = new Js8Relay.Js8Relay({
+  onEvent: event => console.info("[js8-relay]", event.type,
+    event.to || "", event.reason || "", event.detail || event.text || "")});
+const heartbeat = new Js8Heartbeat.Js8Heartbeat({restrictions,
+  onEvent: event => console.info("[js8-heartbeat]", event.type, event.to || "", event.detail || "")});
+const txCaptured = [];
+const txQueue = new Js8TxQueue.Js8TxQueue({
+  onEvent: event => {
+    if (event.type === "queued") txCaptured.push({source: event.source, to: event.to, text: event.text});
+    console.info("[js8-txqueue]", event.type, event.source || "",
+      event.to || "", event.detail || "");
+  }});
+const autoReply = new Js8AutoReply.Js8AutoReply({restrictions,
+  onEvent: event => {
+    if (event.type === "skip") console.info("[js8-autoreply] skip:", event.reason, event.detail || "");
+    else console.info("[js8-autoreply]", event.type, event.to, event.text);
+  }});
+let masterTimer = null, masterPeriodMs = 0;
+function setMasterTick(periodMs) {
+  if (masterTimer && masterPeriodMs === periodMs) return;
+  if (masterTimer) clearInterval(masterTimer);
+  masterPeriodMs = periodMs;
+  masterTimer = setInterval(() => scheduler.tick(), periodMs);
+}
 const emailState = {gateways:Js8Email.load(localStorage),selectedId:"",editingId:"",
   pendingDraft:null,activeOutgoing:null,status:"Draft is not stored in message history."};
 if(emailState.gateways.length)emailState.selectedId=emailState.gateways[0].id;
@@ -158,7 +243,7 @@ const state = {
   settingsDraft:{myCall:null,grid:null,txGain:null}, reconnectPending:false,
   activeLog:null, loggedCalls:new Set(),
 };
-let audioSource = null, activeDecoder = null, activeEncoder = null, txTick = null;
+let audioSource = null, activeDecoder = null, activeEncoder = null;
 let radioPollInFlight = false;
 let frequencyMenuKey = "";
 const decoderActivitySeen = {messages:new Set(), frames:new Set(), calls:new Map()};
@@ -372,6 +457,7 @@ function applyDecoderActivity(snapshot) {
     if(decoderActivitySeen.messages.has(key))continue;
     decoderActivitySeen.messages.add(key);
     activity.messages.push({...item});
+    if(!item.restored) dispatchAssembledMessage(item);
     Promise.resolve(handleFileActivityMessage(item)).catch(error=>{
       binState.storageError=error.message; renderControls();
     });
@@ -411,6 +497,24 @@ function persistSettings(label = true) {
   settings = saved.settings;
   if (label) dom.storageState.textContent = saved.label;
   applySettingsToRuntime();
+}
+
+function applyHeartbeatSettings() {
+  const js8 = currentJs8();
+  heartbeat.configure({enabled: js8.hb === true, ackEnabled: js8.hbAck !== false,
+    intervalMs: (Number(js8.hbMinutes) || 15) * 60000}, js8Clock.now());
+  renderHeartbeatState();
+}
+
+// Says when the next beacon is due, so a postponed heartbeat does not look like
+// a broken one.
+function renderHeartbeatState() {
+  if (!dom.hbState) return;
+  const dueInMs = heartbeat.dueInMs(js8Clock.now());
+  if (dueInMs === null) { dom.hbState.textContent = "off"; return; }
+  if (!currentJs8().auto) { dom.hbState.textContent = "waiting for unattended mode"; return; }
+  dom.hbState.textContent = dueInMs <= 0 ? "due now"
+    : `next in ${Math.max(1, Math.round(dueInMs / 60000))} min`;
 }
 
 function applySettingsToRuntime() {
@@ -483,7 +587,7 @@ const adapter = createJs8ModemAdapter({
     ? [{raw:"",frameType:0,role:"tune",durationSeconds:TEST_MODE?2:10}]
     : Js8Protocol.buildTxFrames(request),
     encoder:modulateFrame, sink:sinkProxy, clockCorrectionMs:currentJs8().clockCorrectionMs,
-    prebufferMs:1000, maxCatchupPackets:25}) // Tolerate a 500 ms mobile-browser pause before the TX slot.
+    prebufferMs:1000, maxCatchupPackets:25, wallNow:() => js8Clock.now()}) // Tolerate a 500 ms mobile-browser pause before the TX slot.
 });
 registerModem(adapter.id, adapter.definition);
 
@@ -498,7 +602,7 @@ function populateModes() {
 }
 
 function closeActiveModem() {
-  if (txTick) { clearInterval(txTick); txTick = null; }
+  stopTxTicking();
   if (activeEncoder && activeEncoder.disconnect) activeEncoder.disconnect();
   if (activeDecoder && activeDecoder.close) activeDecoder.close();
   activeDecoder = null; activeEncoder = null;
@@ -557,6 +661,7 @@ function handleDecoderEvent(event) {
     const decoded = state.activity.frames.find(item => item.raw === event.frame.raw && item.slotUtcMs === event.frame.slotUtcMs);
     const call = decoded && decoded.callsigns ? decoded.callsigns[0] : "";
     try { audioSource.observeDecode(event.frame, call); } catch (_error) {}
+    if (decoded) handleDecodedFrame(decoded);
   }
   renderStartup();
   if (activityChanged) renderActivity();
@@ -571,7 +676,7 @@ function handleEncoderEvent(event) {
   const running = !["idle","completed","aborted","fault"].includes(state.txStatus);
   state.tuneActive=running && Boolean(event.state.frames?.some(frame=>frame.role==="tune"));
   dom.abort.hidden = !running;
-  if (!running && txTick) { clearInterval(txTick); txTick = null; }
+  if (!running) { stopTxTicking(); queueMicrotask(()=>{drainTxQueue();renderTxQueue();}); }
   renderControls();
   if(!running&&binState.txCurrent&&["completed","aborted","fault"].includes(state.txStatus))
     queueMicrotask(()=>finishFileProtocolTx(state.txStatus));
@@ -581,14 +686,17 @@ function handleEncoderEvent(event) {
 
 function audioUrl() {
   const scheme = location.protocol === "https:" ? "wss" : "ws";
-  return `${scheme}://${location.hostname}:${AUDIO_WS_PORT}/audiows`;
+  // The session token goes in the query because a WebSocket handshake cannot
+  // carry custom headers; the firmware refuses the upgrade unless it owns.
+  return `${scheme}://${location.hostname}:${AUDIO_WS_PORT}/audiows?token=${encodeURIComponent(sessionToken())}`;
 }
 
 function ensureAudio() {
   const lan = state.radio.connected && state.radio.transceiverType === "IC-705-LAN";
   if (!lan || state.decoderStatus !== "ready") { stopAudio(); return; }
   if (audioSource) return;
-  audioSource = new Js8WsAudioSource.WsAudioSource(AUDIO_RATE, {url:audioUrl()})
+  audioSource = new Js8WsAudioSource.WsAudioSource(AUDIO_RATE,
+    {url:audioUrl(), wallNow:() => js8Clock.now()})
     .onSamples(onSamples).onStatus(onAudioStatus).onEpoch(() => renderDiagnostics());
   audioSource.configure({clockCorrectionMs:currentJs8().clockCorrectionMs, autoTiming:currentJs8().autoTiming});
   audioSource.start();
@@ -977,6 +1085,29 @@ function renderBinControls() {
   dom.binDownload.hidden=!(record.direction==="rx"&&record.state==="complete"&&record.fileBytes);
 }
 
+// Signal-only pills in the SETTINGS header. Only switches with an on-air
+// consequence are listed, so a closed panel still answers "what will this
+// station do by itself?". Reading a setting is all they do -- switching one
+// stays inside the section, which is why these are spans and not buttons.
+const SETTINGS_FLAGS=[
+  {key:"TX",   label:"Radio TX",                on:js8=>js8.txSafetyAccepted===true},
+  {key:"AUTO", label:"Automatic query answers", on:js8=>js8.auto===true},
+  {key:"CQ",   label:"Repeated CQ",             on:js8=>Number(js8.cqRepeatMin)>0,
+    detail:js8=>`every ${Number(js8.cqRepeatMin)} min`},
+  {key:"HB",   label:"Heartbeat transmission",  on:js8=>js8.hb===true,
+    detail:js8=>`every ${Number(js8.hbMinutes)} min`},
+  {key:"ACK",  label:"Heartbeat acknowledgements", on:js8=>js8.hbAck!==false}
+];
+
+function renderSettingsFlags(js8) {
+  if(!dom.settingsFlags)return;
+  dom.settingsFlags.innerHTML=SETTINGS_FLAGS.map(flag=>{
+    const on=flag.on(js8)===true;
+    const detail=on && flag.detail ? ` · ${flag.detail(js8)}` : "";
+    return `<span class="summary-flag${on?" on":""}" title="${esc(flag.label)}: ${on?"on":"off"}${esc(detail)}">${flag.key}</span>`;
+  }).join("");
+}
+
 function renderControls() {
   const js8=currentJs8(), mode=selectedMode();
   // Never clobber a field the operator is actively editing: renderControls runs on
@@ -994,7 +1125,26 @@ function renderControls() {
   dom.autoTiming.checked=js8.autoTiming;
   if(document.activeElement!==dom.txGain)dom.txGain.value=state.settingsDraft.txGain===null?js8.txGain:state.settingsDraft.txGain;
   dom.txSafety.checked=js8.txSafetyAccepted;
+  if(document.activeElement!==dom.infoText)dom.infoText.value=js8.infoText;
+  if(document.activeElement!==dom.statusText)dom.statusText.value=js8.statusText;
+  dom.autoReply.checked=js8.auto===true;
+  if(!dom.armHours.options.length)
+    dom.armHours.innerHTML=Js8Settings.ARM_HOURS.map(h=>`<option value="${h}">${h} h</option>`).join("");
+  dom.armHours.value=String(js8.armHours);
+  if(document.activeElement!==dom.groups)dom.groups.value=(js8.groups||[]).join(" ");
+  if(!dom.cqRepeat.options.length)
+    dom.cqRepeat.innerHTML=Js8Settings.CQ_REPEAT_MIN.map(m=>`<option value="${m}">${m?m+" min":"off"}</option>`).join("");
+  dom.cqRepeat.value=String(js8.cqRepeatMin||0);
+  renderCqState();
+  dom.hbEnabled.checked=js8.hb===true;
+  dom.hbAck.checked=js8.hbAck!==false;
+  if(!dom.hbMinutes.options.length)
+    dom.hbMinutes.innerHTML=Js8Settings.HB_MINUTES.map(m=>`<option value="${m}">${m} min</option>`).join("");
+  dom.hbMinutes.value=String(js8.hbMinutes);
+  renderAutoState();
+  renderHeartbeatState();
   dom.settingsSummary.textContent=`${js8.myCall} · ${js8.grid} · ${js8.speed}`;
+  renderSettingsFlags(js8);
   const busy=!["idle","completed","aborted","fault"].includes(state.txStatus);
   const txBlocks=txBlockReasons(!cqType(dom.message.value)), heartbeatBlocks=txBlockReasons(false), tuneBlocks=txBlockReasons(false);
   if(state.txSessionMode!=="CHAT")txBlocks.push(`${state.txSessionMode} uses its own form`);
@@ -1063,9 +1213,32 @@ function stationDirection(station) {
   return {...DXCC.calculateQrbAzimuth(own.lat,own.lon,remote.lat,remote.lon),source};
 }
 
+// DXCC entity name for the stations table, from the same prefix table the QRPLog
+// page uses (dxcc.js is loaded by both). Memoised because every render and every
+// sort comparison asks for it again, and a callsign never changes entity.
+const countryByCall=new Map();
+function stationCountry(station) {
+  const call=station && station.call;
+  if(!call || !self.DXCC)return "";
+  let country=countryByCall.get(call);
+  if(country===undefined){
+    country=DXCC.lookupDxcc(call)?.country || "";
+    countryByCall.set(call,country);
+  }
+  return country;
+}
+
 function sortedStations(calls) {
   const {key,direction}=state.stationSort, factor=direction==="asc" ? 1 : -1;
   return [...calls].sort((a,b)=>{
+    if(key==="country"){
+      // Unresolved prefixes sink to the bottom in both directions -- an empty
+      // cell sorted between two entities reads as a lookup bug.
+      const av=stationCountry(a), bv=stationCountry(b);
+      if(!av && !bv)return String(a.call).localeCompare(String(b.call));
+      if(!av)return 1; if(!bv)return -1;
+      return av.localeCompare(bv)*factor || String(a.call).localeCompare(String(b.call));
+    }
     if(key==="distance"){
       const av=stationDirection(a)?.qrbKm, bv=stationDirection(b)?.qrbKm;
       if(av==null && bv==null)return String(a.call).localeCompare(String(b.call));
@@ -1133,6 +1306,7 @@ function clearRecentTraffic(){
 }
 
 function renderActivity() {
+  const bannedCalls = new Map(restrictions.activeBans(js8Clock.now()).map(ban => [ban.call, ban]));
   const messages=state.activity.messages || [], calls=state.activity.calls || [];
   const own=currentJs8().myCall;
   renderTrafficFilterButtons(own);
@@ -1161,7 +1335,12 @@ function renderActivity() {
     const direction=stationDirection(item);
     const directionHtml=direction ? `<span title="${esc(direction.source)} · ${direction.qrbKm} km · ${direction.azimuthDeg}°"><span class="station-bearing" style="transform:rotate(${direction.azimuthDeg}deg)">↑</span><span class="station-distance">${(direction.qrbKm/1000).toFixed(1)}</span></span>` : "—";
     const ownCall=sameCall(item.call,currentJs8().myCall);
-    return `<tr data-call="${esc(item.call)}" class="${item.call===state.selectedCall?"selected":""}"><td class="call${ownCall?" own-callsign":""}"${ownCall?' data-own-call="true"':""}>${esc(item.call)}</td><td>${signed(item.snr)}</td><td>${Math.round(item.offsetHz)}</td><td>${speedDetail(item.submode)}</td><td class="station-direction">${directionHtml}</td><td>${age(item.lastSlotUtcMs)}</td></tr>`;
+    // A station we are currently refusing to answer must say so, otherwise the
+    // operator sees silence with no explanation (decision 13).
+    const ban=bannedCalls.get(item.call);
+    const banMark=ban?`<span class="station-ban" title="Auto replies paused ${Math.ceil(ban.remainingMs/60000)} min (level ${ban.level})">&#9208;</span>`:"";
+    const country=stationCountry(item);
+    return `<tr data-call="${esc(item.call)}" class="${item.call===state.selectedCall?"selected":""}${ban?" station-restricted":""}"><td class="call${ownCall?" own-callsign":""}"${ownCall?' data-own-call="true"':""}>${esc(item.call)}${banMark}</td><td class="station-country"${country?` title="${esc(country)}"`:""}>${esc(country||"—")}</td><td>${signed(item.snr)}</td><td>${Math.round(item.offsetHz)}</td><td>${speedDetail(item.submode)}</td><td class="station-direction">${directionHtml}</td><td>${age(item.lastSlotUtcMs)}</td></tr>`;
   }).join("");
   openSectionsForNewOwnCall(recent,calls);
   renderStationSort();
@@ -1508,7 +1687,7 @@ function encodedTransferBlock(record,sequence) {
 }
 
 function clearTransferTimer() {
-  if(binState.responseTimer)clearTimeout(binState.responseTimer);
+  scheduler.cancel("binResponse");
   binState.responseTimer=null;
 }
 
@@ -1561,7 +1740,9 @@ function transferTimeoutMs(record,kind) {
 
 function armTransferTimeout(record,kind) {
   clearTransferTimer();
-  binState.responseTimer=setTimeout(()=>handleTransferTimeout(record,kind),transferTimeoutMs(record,kind));
+  binState.responseTimer="binResponse";
+  scheduler.after("binResponse",transferTimeoutMs(record,kind),()=>{
+    binState.responseTimer=null;handleTransferTimeout(record,kind);});
 }
 
 function handleTransferTimeout(record,kind) {
@@ -1878,11 +2059,354 @@ async function ensureUsbDataMode() {
   catch (_error) {}
 }
 
+// Arming lives in the firmware so it survives a reload and can be revoked from
+// any device on the network; this only mirrors the operator's switch to it.
+let autoStateText = "disarmed";
+function renderAutoState() {
+  if (dom.autoState) dom.autoState.textContent = autoStateText;
+}
+function armUnattended(action) {
+  const hours = Number(currentJs8().armHours) || 1;
+  fetch("/unattended", {method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({action, hours})})
+    .then(response => response.ok ? response.json() : Promise.reject(new Error(String(response.status))))
+    .then(state => {
+      autoStateText = state.armed
+        ? `armed, ${Math.max(1, Math.round(state.remainingMs / 60000))} min left`
+        : "disarmed";
+      console.info("[js8-unattended]", action, autoStateText);
+      renderAutoState();
+    })
+    .catch(error => {
+      // The switch stays where the operator put it; the firmware is the one that
+      // did not confirm, and saying so is better than silently reverting.
+      autoStateText = `firmware did not confirm (${error.message})`;
+      console.warn("[js8-unattended]", action, "failed:", error.message);
+      renderAutoState();
+    });
+}
+
+// Routes a decoded frame to whichever engine owns it. Any traffic at all pushes
+// our own beacon back, because a heartbeat landing in the middle of somebody's
+// conversation is exactly what upstream warns against.
+function handleDecodedFrame(decoded) {
+  if (!decoded) return;
+  const now = js8Clock.now();
+  if (decoded.kind === "directed" || decoded.kind === "heartbeat" || decoded.kind === "cq")
+    heartbeat.noteBandActivity(now);
+  if (decoded.kind === "directed") noteCqReply(decoded);
+  if (decoded.kind === "heartbeat") { handleHeartbeatFrame(decoded, now); return; }
+  // Single-frame queries (SNR?/GRID?/...) are answered here per frame. MSG, MSG
+  // TO:, QUERY MSG/CALL and relay carry a multi-frame payload and are dispatched
+  // from the assembled, checksum-verified message instead (dispatchAssembledMessage).
+  handleDirectedFrame(decoded);
+}
+
+// Text-bearing commands, dispatched once the whole message is assembled and its
+// checksum verified. This is where store-and-forward and relay actually act on
+// real traffic -- the per-frame path only ever sees the header.
+function dispatchAssembledMessage(message) {
+  if (!message || !message.directed) return;
+  const js8 = currentJs8();
+  if (!js8.myCall) return;
+  if (message.checksumOk === false) {
+    console.info("[js8-reassembly] checksum failed, dropping", message.directed.command);
+    return;
+  }
+  const norm = Js8Protocol.normalizeAssembledCommand(message.directed.command, message.payload);
+  if (!norm) return; // single-frame query, already handled per frame
+  const now = js8Clock.now();
+  if (norm.kind === "relay") handleRelayAssembled(message.directed, norm.text, now);
+  else if (norm.kind === "inbox") handleInboxAssembled(message.directed, norm, now);
+}
+
+// Everything we answer to besides our own callsign. The always-joined pair is
+// added here rather than stored, so a saved profile can never drop it.
+function myGroups() {
+  return [...Js8Settings.ALWAYS_GROUPS, ...(currentJs8().groups || [])];
+}
+
+// The inbox is durable and read from any device; the operator needs to see what
+// the station is holding and be able to pull mail from another station manually.
+function renderInbox() {
+  if (!dom.inboxRows) return;
+  const items = inbox.snapshot().items;
+  const undelivered = items.filter(item => !item.delivered);
+  dom.inboxSummary.textContent = undelivered.length
+    ? `${undelivered.length} stored` : "empty";
+  dom.inboxRows.innerHTML = items.length
+    ? items.map(item => `<tr class="${item.delivered ? "inbox-delivered" : ""}">` +
+        `<td>${item.id}</td><td>${esc(item.from)}</td><td>${esc(item.to)}</td>` +
+        `<td class="inbox-text">${esc(item.text)}</td>` +
+        `<td>${item.delivered ? "sent" : "held"}</td></tr>`).join("")
+    : '<tr><td colspan="5" class="inbox-empty">No stored messages.</td></tr>';
+  if (dom.inboxQueryMsgs)
+    dom.inboxQueryMsgs.disabled = !state.selectedCall || !currentJs8().txSafetyAccepted || !activeEncoder;
+}
+
+// Ask the selected station whether it holds mail for us. Its answer
+// (YES MSG ID <id> or NO) comes back through the normal decode path.
+// Repeat CQ on an interval until somebody replies. Purely operator-driven and
+// independent of unattended mode: calling CQ is not answering queries.
+let lastCqMs = 0;
+function renderCqState() {
+  if (!dom.cqState) return;
+  const min = Number(currentJs8().cqRepeatMin) || 0;
+  dom.cqState.textContent = min ? `every ${min} min` : "off";
+}
+function checkCqRepeat() {
+  const js8 = currentJs8();
+  const min = Number(js8.cqRepeatMin) || 0;
+  if (!min || !js8.txSafetyAccepted || !activeEncoder) return;
+  if (!["idle", "completed", "aborted", "fault"].includes(state.txStatus)) return;
+  const now = js8Clock.now();
+  if (now - lastCqMs < min * 60000) return;
+  lastCqMs = now;
+  startTx("CQ CQ CQ");
+}
+// A directed message to us means somebody answered; stop calling into a QSO.
+function noteCqReply(decoded) {
+  if (decoded && decoded.to === currentJs8().myCall) lastCqMs = js8Clock.now();
+}
+
+function queryStoredMessages() {
+  if (!state.selectedCall || !currentJs8().txSafetyAccepted || !activeEncoder) return;
+  txQueue.push({source: "operator", text: "QUERY MSGS", to: state.selectedCall,
+    nowMs: js8Clock.now(), meta: {command: "QUERY MSGS"}});
+  drainTxQueue(); renderTxQueue();
+}
+
+// Multi-frame checksummed commands (MSG, MSG TO:, QUERY MSG/CALL, relay) are
+// dispatched from the assembled message once the ActivityStore has verified the
+// CRC (dispatchAssembledMessage); the per-frame path only handles single-frame
+// queries.
+
+// Store-and-forward. Accepting mail costs no airtime and works while disarmed;
+// handing somebody else's message over is transmitting for a third party and
+// needs unattended mode, exactly like a relay hop.
+function handleInboxAssembled(directed, norm, now) {
+  const js8 = currentJs8();
+  if (!js8.myCall) return;
+  const heard = (state.activity.calls || []).filter(item => item && item.call);
+  const outcome = inbox.handle(
+    {from: directed.from, to: directed.to, command: norm.command,
+     text: norm.text, complete: true},
+    {nowMs: now, myCall: js8.myCall, armed: js8.auto === true, hearing: heard});
+
+  if (outcome.action === "skip") {
+    if (outcome.nack && js8.txSafetyAccepted && activeEncoder) {
+      txQueue.push({source: "inbox", text: outcome.nack.text, to: outcome.nack.to,
+        nowMs: now, meta: {command: "NACK"}});
+      drainTxQueue(); renderTxQueue();
+    }
+    return;
+  }
+  syncInbox();
+  const send = outcome.ack || (outcome.action === "reply" || outcome.action === "deliver"
+    ? {to: outcome.to, text: outcome.text} : null);
+  if (!send) return;
+  if (!js8.txSafetyAccepted || !activeEncoder) {
+    console.info("[js8-inbox] cannot answer: tx-not-enabled");
+    return;
+  }
+  txQueue.push({source: "inbox", text: send.text, to: send.to, nowMs: now,
+    meta: {command: norm.command, inboxDeliveryId: outcome.deliveryId || null}});
+  drainTxQueue(); renderTxQueue();
+}
+
+// Relay is the only path where we transmit text somebody else wrote, so every
+// forward is logged and every refusal names the limit it hit.
+function handleRelayAssembled(directed, relayText, now) {
+  const js8 = currentJs8();
+  if (!js8.myCall) return;
+  const outcome = relay.handle(
+    {from: directed.from, to: directed.to, text: relayText, complete: true},
+    {nowMs: now, myCall: js8.myCall, armed: js8.auto === true});
+
+  if (outcome.action === "deliver") {
+    // If the relayed payload is itself a directed command, act on it and answer
+    // the originator, rather than only filing the text.
+    const relayed = parseRelayedCommand(outcome.text, directed.from);
+    if (relayed) { handleDecodedFrame(relayed); return; }
+    // Mail for us arrives regardless of unattended mode; only the ACK needs a
+    // working transmitter.
+    appendRelayMessage(directed.from, outcome.text);
+    if (js8.txSafetyAccepted && activeEncoder && outcome.ack) {
+      txQueue.push({source: "relay", text: outcome.ack.text, to: outcome.ack.to,
+        nowMs: now, meta: {command: "ACK"}});
+      drainTxQueue(); renderTxQueue();
+    }
+    return;
+  }
+  if (outcome.action !== "forward") return;
+  if (!js8.txSafetyAccepted || !activeEncoder) {
+    console.info("[js8-relay] cannot forward: tx-not-enabled");
+    return;
+  }
+  txQueue.push({source: "relay", text: outcome.text, to: outcome.to,
+    nowMs: now, meta: {command: ">", origin: outcome.origin}});
+  drainTxQueue(); renderTxQueue();
+}
+
+// A relayed message may carry a directed command for us, e.g. the chain
+// "OK1HRA>SNR?" delivers "SNR? DE K0OG". Recognise a leading command token and
+// turn it back into a directed frame addressed to us from the true originator
+// (the DE callsign), so the normal engines answer it via the relay reply.
+const RELAYED_COMMANDS = [" SNR?", " GRID?", " INFO?", " STATUS?", " HEARING?",
+  " AGN?", " MSG", " MSG TO:", " QUERY MSGS", " QUERY MSG", " QUERY CALL"];
+function parseRelayedCommand(text, fallbackFrom) {
+  const clean = String(text || "").trim();
+  const deMatch = /\bDE\s+([A-Z0-9/]+)\s*$/i.exec(clean);
+  const origin = deMatch ? deMatch[1].toUpperCase() : fallbackFrom;
+  const body = deMatch ? clean.slice(0, deMatch.index).trim() : clean;
+  for (const command of RELAYED_COMMANDS) {
+    const token = command.trim();
+    if (body === token || body.startsWith(token + " ")) {
+      return {kind: "directed", from: origin, to: currentJs8().myCall,
+        command, text: body.slice(token.length).trim(), viaRelay: true};
+    }
+  }
+  return null;
+}
+
+// A relayed message that reached its destination belongs in the conversation,
+// not only in the console.
+function appendRelayMessage(from, text) {
+  const item = {direction: "incoming", time: new Date().toISOString().slice(11, 19),
+    text: `${from}: ${text}`, status: "relayed"};
+  if (!state.conversations[from]) state.conversations[from] = [];
+  state.conversations[from].push(item);
+  renderConversation();
+  persistSession();
+}
+
+// "HB ACK" is the behaviour name; the compatible wire command is HEARTBEAT SNR.
+// It is gated by the same restriction engine as everything else, with the long
+// 55 minute window upstream uses for exactly this.
+function handleHeartbeatFrame(decoded, now) {
+  const js8 = currentJs8();
+  if (!js8.myCall) return;
+  const station = state.activity.calls.find(item => item.call === decoded.from);
+  const outcome = heartbeat.handleHeartbeat(
+    {from: decoded.from, snr: station ? station.snr : 0},
+    {nowMs: now, myCall: js8.myCall, armed: js8.auto === true,
+     submode: selectedMode(),
+     messageBusy: Boolean((state.activity.channels || []).length),
+     // If we are holding mail for this station, the beacon advertises it.
+     pendingMsgId: call => { const waiting = inbox.pending(call); return waiting.length ? waiting[0].id : null; }});
+  if (outcome.action !== "ack") {
+    console.info("[js8-heartbeat] no ack:", outcome.reason, outcome.detail || "", decoded.from);
+    return;
+  }
+  if (!js8.txSafetyAccepted || !activeEncoder) return;
+  txQueue.push({source: "autoreply", text: outcome.text, to: outcome.to,
+    nowMs: now, submode: selectedMode(), meta: {command: "HEARTBEAT"}});
+  drainTxQueue(); renderTxQueue();
+}
+
+// Fires when the beacon is due. Nothing is queued: a heartbeat that could not go
+// out now is simply rescheduled, so beacons never stack up.
+function checkHeartbeat() {
+  const js8 = currentJs8();
+  const verdict = heartbeat.evaluate({nowMs: js8Clock.now(), submode: selectedMode(),
+    txBusy: !["idle", "completed", "aborted", "fault"].includes(state.txStatus),
+    armed: js8.auto === true, myCall: js8.myCall});
+  if (!verdict.send) return;
+  if (!js8.txSafetyAccepted || !activeEncoder) return;
+  heartbeat.noteSent(js8Clock.now());
+  startHeartbeat(verdict.offsetHz);
+}
+
+// Feeds decoded directed frames to the auto-reply engine. Any directed frame --
+// ours or not -- arms the QSO lock, so the station does not talk over a
+// conversation already in progress.
+function handleDirectedFrame(decoded) {
+  if (!decoded || decoded.kind !== "directed") return;
+  const now = js8Clock.now();
+  const js8 = currentJs8();
+  if (!js8.myCall) { autoReply.noteDirectedFrame(now); return; }
+  const station = state.activity.calls.find(item => item.call === decoded.from);
+  const heard = (state.activity.calls || [])
+    .filter(item => item.call && item.call !== js8.myCall)
+    .sort((a, b) => (b.lastSlotUtcMs || 0) - (a.lastSlotUtcMs || 0))
+    .map(item => item.call);
+
+  const outcome = autoReply.handle(
+    {from: decoded.from, to: decoded.to, command: decoded.command,
+     snr: station ? station.snr : 0, complete: true},
+    {nowMs: now, myCall: js8.myCall, groups: myGroups(), selectedCall: state.selectedCall,
+     auto: js8.auto === true, grid: js8.grid, infoText: js8.infoText,
+     statusText: js8.statusText, hearing: heard});
+  autoReply.noteDirectedFrame(now);
+
+  if (outcome.action === "buffer") {
+    // AUTO off: hand the answer to the operator instead of transmitting it.
+    dom.message.value = `${outcome.to} ${outcome.text}`;
+    renderControls(); persistSession();
+    return;
+  }
+  if (outcome.action !== "reply") return;
+
+  if (!js8.txSafetyAccepted || !activeEncoder) {
+    console.info("[js8-autoreply] skip: tx-not-enabled", outcome.to, outcome.command);
+    return;
+  }
+  // Queue rather than transmit directly: the radio may be mid-transfer. The
+  // entry carries the current submode so it expires after two of its periods —
+  // an SNR report that waited out a ten minute file transfer is worthless.
+  txQueue.push({source: "autoreply", text: outcome.text,
+    to: outcome.to, nowMs: now, submode: selectedMode(),
+    meta: {command: outcome.command}});
+  drainTxQueue();
+  renderTxQueue();
+}
+
+// Sends the highest-priority entry that is still worth sending. Called when a
+// transmission finishes and on a slow tick, so expiries are noticed (and logged)
+// even while the station is idle.
+// Shows what is waiting and why it has not gone out yet. A queue that silently
+// holds an answer looks identical to a station that decided not to answer, and
+// decision 13 does not allow that ambiguity.
+function renderTxQueue() {
+  if (!dom.txQueueState) return;
+  const now = js8Clock.now();
+  const snapshot = txQueue.snapshot(now);
+  if (!snapshot.size) { dom.txQueueState.hidden = true; return; }
+  const busy = !["idle", "completed", "aborted", "fault"].includes(state.txStatus);
+  const next = snapshot.items[0];
+  const expiry = next.inMs === null ? "" :
+    ` · drops in ${Math.max(0, Math.round(next.inMs / 1000))} s`;
+  dom.txQueueState.textContent =
+    `${snapshot.size} queued · ${busy ? "waiting for TX to finish" : "sending next"}${expiry}`;
+  dom.txQueueState.title = snapshot.items
+    .map(item => `${item.source}${item.to ? ` → ${item.to}` : ""}: ${item.text}`).join("\n");
+  dom.txQueueState.hidden = false;
+}
+
+function drainTxQueue() {
+  const now = js8Clock.now();
+  if (!activeEncoder || !currentJs8().txSafetyAccepted) { txQueue.prune(now); return; }
+  if (!["idle", "completed", "aborted", "fault"].includes(state.txStatus)) {
+    txQueue.prune(now);
+    return;
+  }
+  const item = txQueue.take(now);
+  if (!item) return;
+  if (item.to) autoReply.noteSent(item.to, item.text);
+  if (item.to) startTxTo(item.to, item.text, item.meta);
+  else startTx(item.text);
+}
+
+function stopTxTicking() {
+  scheduler.cancel("tx");
+  setMasterTick(TICK_IDLE_MS);
+}
+
 function driveEncoder(prepared, onError) {
   Promise.resolve(prepared).then(()=>{
-    if (txTick) clearInterval(txTick);
-    txTick=setInterval(()=>activeEncoder.tick(Date.now()),20);
-    activeEncoder.tick(Date.now());
+    scheduler.every("tx", TICK_TX_MS, now=>activeEncoder.tick(now), {startDelayMs:0});
+    setMasterTick(TICK_TX_MS);
+    activeEncoder.tick(js8Clock.now());
   }).catch(onError);
 }
 
@@ -1913,7 +2437,13 @@ function failOutgoing(item,error) {
   persistSession();
 }
 
-function startTx(text) {
+function startTx(text) { startTxTo(state.selectedCall, text); }
+
+// Explicit recipient. An automatic answer goes to whoever asked, which is not
+// necessarily the station the operator happens to have selected -- addressing it
+// to the selection would send the reply to the wrong station, or fail outright
+// when nothing is selected.
+function startTxTo(toCall, text, txMeta = null) {
   const js8=currentJs8();
   const cq=cqType(text);
   if(cq){
@@ -1923,15 +2453,18 @@ function startTx(text) {
     driveEncoder(activeEncoder.encode("",{kind:"cq",cq,grid:js8.grid,toneHz:js8.txOffsetHz}),error=>failOutgoing(item,error));
     return;
   }
-  activeEncoder.setToneOffset(js8.txOffsetHz).configure({myCall:js8.myCall,toCall:state.selectedCall,mode:selectedMode(),clockCorrectionMs:js8.clockCorrectionMs});
+  activeEncoder.setToneOffset(js8.txOffsetHz).configure({myCall:js8.myCall,toCall,mode:selectedMode(),clockCorrectionMs:js8.clockCorrectionMs});
   const item=queueOutgoing(Js8Protocol.formatDirectedMessage({myCall:js8.myCall,
-    toCall:state.selectedCall,text}),state.selectedCall);
+    toCall,text}),toCall);
   item.sourceText=text; // raw operator text, replayed verbatim by a resend after an interrupt
+  item.txMeta=txMeta;
   driveEncoder(activeEncoder.encode(text),error=>failOutgoing(item,error));
 }
 
-function startHeartbeat() {
-  const js8=currentJs8(), tone=js8.txOffsetHz;
+function startHeartbeat(offsetHz) {
+  // Automatic beacons pick a random offset in the narrow HB band; the manual
+  // button keeps using the operator's own TX offset.
+  const js8=currentJs8(), tone=Number.isFinite(offsetHz)?offsetHz:js8.txOffsetHz;
   const preview=Js8Protocol.buildHeartbeatFrames({myCall:js8.myCall,grid:js8.grid});
   const item=queueOutgoing(preview[0].messageText);
   activeEncoder.setToneOffset(tone).configure({myCall:js8.myCall,toCall:"",mode:selectedMode(),clockCorrectionMs:js8.clockCorrectionMs});
@@ -1955,8 +2488,12 @@ function closeMessagePresets() {
 
 function messagePresetValue(key) {
   const station=state.activity.calls.find(item=>item.call===state.selectedCall);
+  // Group C of docs/js8call-komunikacni-funkce.md: the short phrases that fit a
+  // single directed frame with a standard callsign.
   return ({cq:"CQ CQ CQ",snr:station?`SNR ${formatJs8Snr(station.snr)}`:"",
     "snr-query":"SNR?","copy-query":"HW CPY?",rr:"RR",fb:"FB",qsl:"QSL",
+    "qsl-query":"QSL?",yes:"YES",no:"NO",tu:"TU","dit-dit":"DIT DIT",
+    "grid-query":"GRID?","info-query":"INFO?","status-query":"STATUS?",
     again:"AGN?","73":"73",sk:"SK"})[key] || "";
 }
 
@@ -1987,7 +2524,14 @@ function updateOutgoingTxProgress(txState) {
   }else if(frame&&frameEnd>frameStart&&txState.status==="draining"){
     sent=Math.max(sent,frameEnd);
   }
-  if(txState.status==="completed")sent=item.text.length;
+  if(txState.status==="completed"){
+    sent=item.text.length;
+    const deliveryId=item.txMeta&&item.txMeta.inboxDeliveryId;
+    if(deliveryId){
+      item.txMeta.inboxDeliveryId=null; // completion may be reported more than once
+      if(inbox.confirmDelivered(deliveryId)){renderInbox();syncInbox();}
+    }
+  }
   item.sentChars=Math.max(0,Math.min(item.text.length,sent));
   item.activeFraction=["aborted","fault","completed"].includes(txState.status)?0:activeFraction;
   item.status=txState.status;
@@ -2052,6 +2596,176 @@ async function checkLanConfiguration() {
   dom.lanRequired.hidden=ready;
   dom.lanRequiredDetail.textContent=detail;
   return ready;
+}
+
+// ---- Single-operator lock ---------------------------------------------------
+// JS8LAN drives one radio through one AUD1 socket, so a second page open
+// anywhere on the network is never a working configuration: the firmware hands
+// the audio socket to whoever connected last, which used to mute the first
+// operator without telling either of them. The ESP32 now owns a lease and this
+// is its projection -- claim before the runtime starts, refresh while it lives,
+// hand it back on the way out.
+//
+// The lease is what answers the other-computer and other-browser cases. It
+// cannot answer a duplicated tab: browsers copy sessionStorage into the copy, so
+// both tabs present the same token and the firmware rightly considers both the
+// same session. A BroadcastChannel probe catches that one locally, before a
+// token is ever sent, and doubles as an instant answer for a plain second tab.
+const SESSION_TOKEN_KEY = "js8lan.session.token.v1";
+const SESSION_PING_MS = 5000, SESSION_RETRY_MS = 3000, SESSION_PROBE_MS = 250;
+let sessionTokenCache = null, sessionHeld = false, sessionRetryTimer = null;
+let sessionSince = 0;                       // when this page took the lock
+let sessionLocalHolder = null;              // {id, since} of a live holder in this browser
+
+// crypto.randomUUID() needs a secure context and the radio is plain http on a
+// LAN address, so the token is built from getRandomValues, which is not gated.
+// Hex only: the firmware validates the alphabet before echoing it into JSON.
+function makeSessionToken() {
+  const bytes = new Uint8Array(16);
+  if (globalThis.crypto && crypto.getRandomValues) crypto.getRandomValues(bytes);
+  else for (let index = 0; index < bytes.length; index++) bytes[index] = Math.floor(Math.random()*256);
+  return Array.from(bytes, byte => byte.toString(16).padStart(2,"0")).join("");
+}
+
+// Per tab, and deliberately in sessionStorage rather than localStorage: the
+// header tabs are full-page navigations, so the token has to survive the trip to
+// SETUP and back, while a genuinely new tab must get a new one.
+function sessionToken() {
+  if (sessionTokenCache) return sessionTokenCache;
+  const store = sessionStore();
+  let token = store && store.getItem(SESSION_TOKEN_KEY);
+  if (!token) { token = makeSessionToken(); if (store) { try { store.setItem(SESSION_TOKEN_KEY,token); } catch (_error) { /* private mode */ } } }
+  sessionTokenCache = token;
+  return token;
+}
+
+const pageId = makeSessionToken();
+const sessionChannel = (() => { try { return new BroadcastChannel("js8lan.session"); } catch (_error) { return null; } })();
+if (sessionChannel) sessionChannel.onmessage = event => {
+  const message = event.data || {};
+  if (message.id === pageId) return;
+  if (message.type === "probe" && sessionHeld) sessionChannel.postMessage({type:"held", id:pageId, since:sessionSince});
+  if (message.type === "held") sessionLocalHolder = {id:message.id, since:Number(message.since)||0};
+  // A page that just closed frees the lock now, not at the next poll tick.
+  if (message.type === "released" && !sessionHeld) scheduleSessionRetry(200);
+  // Takeover across the network is the firmware's job, but a duplicated tab
+  // shares the token, so the server would grant both. This is how the operator
+  // gets the radio away from the other tab.
+  if (message.type === "evict" && sessionHeld) yieldSession({lost:true});
+};
+
+function probeLocalHolder() {
+  if (!sessionChannel) return Promise.resolve(null);
+  sessionLocalHolder = null;
+  sessionChannel.postMessage({type:"probe", id:pageId});
+  return new Promise(resolve => setTimeout(() => resolve(sessionLocalHolder), SESSION_PROBE_MS));
+}
+
+// Whoever took the lock first keeps it, so a page opened later always steps
+// aside; the id only breaks the tie when two pages start in the same
+// millisecond, which is what stops a pair of duplicates reloading at each other
+// forever.
+function localHolderOutranks(holder) {
+  if (!holder) return false;
+  if (holder.since !== sessionSince) return holder.since < sessionSince;
+  return holder.id < pageId;
+}
+
+// Only an explicit 409 is a refusal. A firmware without the lock, or a fetch
+// that simply failed, must never leave the operator staring at a panel it has
+// no way to dismiss.
+async function sessionPost(path, extra) {
+  try {
+    const response = await fetch(path, {method:"POST", cache:"no-store",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({token:sessionToken(), ...extra})});
+    if (response.status !== 409) return {granted:true};
+    const info = await response.json().catch(() => ({}));
+    return {granted:false, owner:info.owner||"", ageMs:Number(info.ageMs)||0};
+  } catch (_error) { return {granted:true}; }
+}
+
+function markSessionHeld() {
+  sessionHeld = true;
+  sessionSince = Date.now();
+  if (sessionRetryTimer) { clearTimeout(sessionRetryTimer); sessionRetryTimer = null; }
+  document.body.classList.remove("session-busy-only");
+  dom.sessionBusy.hidden = true;
+}
+
+// Stop driving the radio, then show the panel. Used whenever the lock is lost
+// after the runtime already started, which the local probe can do 250 ms in.
+function yieldSession(info) {
+  if (activeEncoder) activeEncoder.abort();
+  stopAudio();
+  showSessionBusy(info);
+}
+
+function showSessionBusy(info) {
+  sessionHeld = false;
+  document.body.classList.add("session-busy-only");
+  dom.sessionBusy.hidden = false;
+  dom.sessionBusyWhere.textContent = info.local ? "Open in another tab of this browser."
+    : info.owner ? `Open on ${info.owner}.` : "Open on another device.";
+  dom.sessionBusyDetail.textContent = info.lost
+    ? "Another page took the session over."
+    : info.ageMs ? `Last seen ${(info.ageMs/1000).toFixed(0)} s ago.` : "";
+  scheduleSessionRetry(SESSION_RETRY_MS);
+}
+
+function scheduleSessionRetry(delayMs) {
+  if (sessionRetryTimer) clearTimeout(sessionRetryTimer);
+  sessionRetryTimer = setTimeout(retrySession, delayMs);
+}
+
+// Nothing was ever started while locked out, so a reload is both the simplest
+// and the most honest way back in: it runs the whole startup path once, from a
+// clean slate, exactly as if the page had just been opened.
+async function retrySession() {
+  sessionRetryTimer = null;
+  // The local probe stays on this path: a duplicated tab shares the token, so
+  // the firmware would happily grant the claim and the reload would come
+  // straight back here.
+  if (await probeLocalHolder()) { scheduleSessionRetry(SESSION_RETRY_MS); return; }
+  const claim = await sessionPost("/js8/session/claim", {force:false});
+  if (claim.granted) location.reload();
+  else showSessionBusy(claim);
+}
+
+async function acquireJs8Session(force = false) {
+  if (force && sessionChannel) sessionChannel.postMessage({type:"evict", id:pageId});
+  const claim = await sessionPost("/js8/session/claim", {force});
+  if (!claim.granted) { showSessionBusy(claim); return false; }
+  markSessionHeld();
+  // The duplicate-tab probe deliberately does not block startup: waiting on a
+  // 250 ms broadcast round trip before the first paint would tax every ordinary
+  // page load to catch a rare one. Audio needs about a second of decoder warm-up
+  // to start, so a late yield still lands before anything reaches the radio.
+  if (!force) probeLocalHolder().then(holder => {
+    // No release here: a duplicate shares the token, so handing it back would
+    // cancel the original page's lease instead of this page's.
+    if (localHolderOutranks(holder)) yieldSession({local:true});
+  });
+  return true;
+}
+
+// Losing the lease means another page is now driving the radio.
+async function pingJs8Session() {
+  if (!sessionHeld) return;
+  const ping = await sessionPost("/js8/session/ping", {});
+  if (!ping.granted) yieldSession({...ping, lost:true});
+}
+
+function releaseJs8Session() {
+  if (!sessionHeld) return;
+  sessionHeld = false;
+  if (sessionChannel) sessionChannel.postMessage({type:"released", id:pageId});
+  const body = JSON.stringify({token:sessionToken()});
+  // sendBeacon survives the unload a fetch would be cancelled in.
+  try {
+    if (navigator.sendBeacon && navigator.sendBeacon("/js8/session/release", new Blob([body],{type:"application/json"}))) return;
+  } catch (_error) { /* fall through */ }
+  try { fetch("/js8/session/release",{method:"POST",headers:{"Content-Type":"application/json"},body,keepalive:true}); } catch (_error) { /* leaving anyway */ }
 }
 
 // ---- bindings ---------------------------------------------------------------
@@ -2133,6 +2847,20 @@ function bind() {
   dom.followSpeed.addEventListener("change",()=>setJs8Setting("followSpeed",dom.followSpeed.checked));
   dom.clockCorrection.addEventListener("change",()=>setJs8Setting("clockCorrectionMs",Number(dom.clockCorrection.value)||0));
   dom.autoTiming.addEventListener("change",()=>setJs8Setting("autoTiming",dom.autoTiming.checked));
+  dom.infoText.addEventListener("change",()=>setJs8Setting("infoText",dom.infoText.value));
+  dom.statusText.addEventListener("change",()=>setJs8Setting("statusText",dom.statusText.value));
+  dom.armHours.addEventListener("change",()=>{setJs8Setting("armHours",Number(dom.armHours.value)||1);if(currentJs8().auto)armUnattended("extend");});
+  dom.groups.addEventListener("change",()=>setJs8Setting("groups",dom.groups.value.split(/[\s,]+/).filter(Boolean)));
+  dom.inboxRefresh.addEventListener("click",()=>{loadInbox();renderInbox();});
+  dom.inboxQueryMsgs.addEventListener("click",queryStoredMessages);
+  dom.cqRepeat.addEventListener("change",()=>{setJs8Setting("cqRepeatMin",Number(dom.cqRepeat.value)||0);renderCqState();});
+  dom.hbEnabled.addEventListener("change",()=>{setJs8Setting("hb",dom.hbEnabled.checked);applyHeartbeatSettings();});
+  dom.hbAck.addEventListener("change",()=>{setJs8Setting("hbAck",dom.hbAck.checked);applyHeartbeatSettings();});
+  dom.hbMinutes.addEventListener("change",()=>{setJs8Setting("hbMinutes",Number(dom.hbMinutes.value)||15);applyHeartbeatSettings();});
+  dom.autoReply.addEventListener("change",()=>{
+    setJs8Setting("auto",dom.autoReply.checked);
+    armUnattended(dom.autoReply.checked?"arm":"revoke");
+  });
   dom.txGain.addEventListener("change",()=>{const value=state.settingsDraft.txGain===null?dom.txGain.value:state.settingsDraft.txGain;state.settingsDraft.txGain=null;setJs8Setting("txGain",Number(value)||.25);});
   dom.txSafety.addEventListener("change",()=>setJs8Setting("txSafetyAccepted",dom.txSafety.checked));
   dom.resetSettings.addEventListener("click",()=>{const reset=Js8Settings.reset(localStorage);settings=reset.settings;state.settingsDraft={myCall:null,grid:null,txGain:null};state.activeMode=settings.activeModem;dom.storageState.textContent=reset.label;applySettingsToRuntime();renderActivity();renderControls();});
@@ -2153,14 +2881,19 @@ function bind() {
   dom.stationMapSection.addEventListener("toggle",()=>{if(dom.stationMapSection.open)renderStationMap(state.activity.calls||[]);});
   window.addEventListener("resize",resizeWaterfall);
   window.addEventListener("beforeunload",confirmJs8Leave);
-  window.addEventListener("pagehide",()=>{flushSession();if(activeEncoder)activeEncoder.abort();stopAudio();});
+  dom.sessionTakeover.addEventListener("click",()=>{dom.sessionTakeover.disabled=true;acquireJs8Session(true).then(won=>{if(won)location.reload();else dom.sessionTakeover.disabled=false;});});
+  window.addEventListener("pagehide",()=>{flushSession();if(activeEncoder)activeEncoder.abort();stopAudio();releaseJs8Session();});
   document.addEventListener("visibilitychange",()=>{if(document.hidden&&activeEncoder)activeEncoder.abort();});
   addEventListener("keydown",event=>{if(event.key==="Escape"){if(activeEncoder)activeEncoder.abort();dom.frequencyMenu.hidden=true;closeMessagePresets();}});
 }
 
 async function init() {
   if(!await checkLanConfiguration())return;
-  populateModes(); bind(); loadTxModule();
+  // The takeover button lives inside the lock-out panel, so bindings come first
+  // and the gate second -- otherwise a locked-out page has no way back in.
+  bind();
+  if(!await acquireJs8Session())return;
+  populateModes(); loadTxModule();
   if(!hasSeenTrxHelp())openTrxHelp("first");
   for (const details of document.querySelectorAll("details[data-section]"))
     if (Object.prototype.hasOwnProperty.call(settings.ui.disclosures,details.dataset.section)) details.open=settings.ui.disclosures[details.dataset.section];
@@ -2170,9 +2903,17 @@ async function init() {
   if(sessionRestored){renderConversation();if(state.selectedCall)dom.reply.open=true;}
   restoreFileTransfers();
   refreshActiveLog();
-  setInterval(()=>{dom.utcClock.textContent=`UTC ${new Date().toISOString().slice(11,19)}`;},250);
-  renderRhythm(); setInterval(renderRhythm,100);
-  pollRadio(); setInterval(pollRadio,500);
+  scheduler.every("sessionPing",SESSION_PING_MS,pingJs8Session);
+  scheduler.every("utcClock",250,()=>{dom.utcClock.textContent=`UTC ${new Date().toISOString().slice(11,19)}`;});
+  renderRhythm(); scheduler.every("rhythm",100,renderRhythm);
+  pollRadio(); scheduler.every("pollRadio",500,pollRadio);
+  scheduler.every("txQueue",1000,()=>{drainTxQueue();renderTxQueue();});
+  scheduler.every("heartbeat",5000,()=>{checkHeartbeat();renderHeartbeatState();});
+  scheduler.every("cqRepeat",5000,checkCqRepeat);
+  applyHeartbeatSettings();
+  loadInbox();
+  renderInbox();
+  setMasterTick(TICK_IDLE_MS);
   if (TEST_MODE) self.__dataTest={
     setActivity(activity){state.testActivityLocked=true;applyDecoderActivity(activity);renderActivity();},
     setRadioFrequency(frequency){state.radio.frequency=Number(frequency)||0;if(selectActivityFrequency(state.radio.frequency))renderActivity();renderHeader();renderControls();},
@@ -2184,6 +2925,24 @@ async function init() {
     feedSpectrum(samples){ingestSpectrum(samples);},
     spectrumState(){return {agcLow,agcHigh,agcReady,rows:spectrumRows,fill:spectrumFill};},
     selectedCall(){return state.selectedCall;},
+    feedDirected(frame){handleDirectedFrame({kind:"directed",...frame});},
+    txQueueState(){return txQueue.snapshot(js8Clock.now());},
+    heartbeatState(){return heartbeat.snapshot(js8Clock.now());},
+    relayState(){return relay.snapshot(js8Clock.now());},
+    inboxState(){return inbox.snapshot();},
+    myGroups(){return myGroups();},
+    feedInbox(frame){handleDecodedFrame({kind:"directed",...frame});},
+    feedAssembled(message){dispatchAssembledMessage(message);},
+    txStatus(){return state.txStatus;},
+    feedRelay(frame){handleDecodedFrame({kind:"directed",command:">",...frame});},
+    feedHeartbeat(frame){handleDecodedFrame({kind:"heartbeat",...frame});},
+    resetAutoReplyLock(){autoReply.lastDirectedFrameMs=0;},
+    txCaptured(){return txCaptured.slice();},
+    clearTxCaptured(){txCaptured.length=0;},
+    renderInboxNow(){renderInbox();},
+    storeInboxDirect(rec){inboxStore.add({from:rec.from,to:rec.to,text:rec.text,atMs:0,delivered:false});renderInbox();},
+    autoReplyState(){return {...autoReply.snapshot(),
+      restrictions:restrictions.snapshot(js8Clock.now())};},
     fileProtocol(){return {prepared:binState.prepared,active:binState.active,lastProtocol:binState.lastProtocol};},
     receiveFileMessage(item){return handleFileActivityMessage(item);},
     snapshotBuild(){return buildSessionSnapshot();},

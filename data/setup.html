@@ -14,8 +14,6 @@
       <a class="tab" href="/data" title="Web Client for JS8Call">JS8LAN</a>
       <a class="tab tab-active" href="/setup">SETUP</a>
       <a class="tab" href="/datasync">LOGSYNC</a>
-      <a class="tab bd-nav" href="/bd" hidden>BD</a>
-      <a class="tab tab-cat-muted" href="/">CAT</a>
       <span id="topbarFw" class="topbar-fw" data-rev=""></span>
     </nav>
   </header>
@@ -296,100 +294,17 @@
           </div>
         </details>
 
-        <details class="setup-section">
-          <summary class="setup-section-title">CAT page CW memories <span class="setup-local-badge">littlefs</span></summary>
+        <details class="setup-section" id="unattendedSection">
+          <summary class="setup-section-title">Remote management of JS8 unattended operation <span class="setup-local-badge">live</span></summary>
           <div class="setup-section-body">
-            <label>CW memory 1
-              <div class="input-with-tip">
-                <input type="text" id="cwmem1" name="cwmem1" form="setup-form" maxlength="30" value="">
-                <span class="help-tip" data-tip="Plain CW/RTTY text keyed when memory key 1 is activated. Mode determines keying method (CW via CI-V, RTTY via FSK GPIO). Max 30 characters.">?</span>
-              </div>
-            </label>
-            <label>CW memory 2
-              <div class="input-with-tip">
-                <input type="text" id="cwmem2" name="cwmem2" form="setup-form" maxlength="30" value="">
-                <span class="help-tip" data-tip="Plain CW/RTTY text keyed when memory key 2 is activated. Max 30 characters.">?</span>
-              </div>
-            </label>
-            <label>CW memory 3
-              <div class="input-with-tip">
-                <input type="text" id="cwmem3" name="cwmem3" form="setup-form" maxlength="30" value="">
-                <span class="help-tip" data-tip="Plain CW/RTTY text keyed when memory key 3 is activated. Max 30 characters.">?</span>
-              </div>
-            </label>
-            <label>CW memory 4
-              <div class="input-with-tip">
-                <input type="text" id="cwmem4" name="cwmem4" form="setup-form" maxlength="30" value="">
-                <span class="help-tip" data-tip="Plain CW/RTTY text keyed when memory key 4 is activated. Max 30 characters.">?</span>
-              </div>
-            </label>
-          </div>
-        </details>
-
-        <details class="setup-section">
-          <summary class="setup-section-title">CAT page frequency memories <span class="setup-local-badge">littlefs</span></summary>
-          <div class="setup-section-body">
-            <p class="footnote">Use compact format like <code>14074000 USB</code> or <code>144174000 FM</code>.</p>
-            <label>Memory 1
-              <div class="input-with-tip">
-                <input type="text" id="freqmem1" name="freqmem1" form="setup-form" maxlength="20" value="">
-                <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM). Selectable from the CAT page.">?</span>
-              </div>
-            </label>
-            <label>Memory 2
-              <div class="input-with-tip">
-                <input type="text" id="freqmem2" name="freqmem2" form="setup-form" maxlength="20" value="">
-                <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
-              </div>
-            </label>
-            <label>Memory 3
-              <div class="input-with-tip">
-                <input type="text" id="freqmem3" name="freqmem3" form="setup-form" maxlength="20" value="">
-                <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
-              </div>
-            </label>
-            <label>Memory 4
-              <div class="input-with-tip">
-                <input type="text" id="freqmem4" name="freqmem4" form="setup-form" maxlength="20" value="">
-                <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
-              </div>
-            </label>
-            <label>Memory 5
-              <div class="input-with-tip">
-                <input type="text" id="freqmem5" name="freqmem5" form="setup-form" maxlength="20" value="">
-                <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
-              </div>
-            </label>
-            <label>Memory 6
-              <div class="input-with-tip">
-                <input type="text" id="freqmem6" name="freqmem6" form="setup-form" maxlength="20" value="">
-                <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
-              </div>
-            </label>
-            <label>Memory 7
-              <div class="input-with-tip">
-                <input type="text" id="freqmem7" name="freqmem7" form="setup-form" maxlength="20" value="">
-                <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
-              </div>
-            </label>
-            <label>Memory 8
-              <div class="input-with-tip">
-                <input type="text" id="freqmem8" name="freqmem8" form="setup-form" maxlength="20" value="">
-                <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
-              </div>
-            </label>
-            <label>Memory 9
-              <div class="input-with-tip">
-                <input type="text" id="freqmem9" name="freqmem9" form="setup-form" maxlength="20" value="">
-                <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
-              </div>
-            </label>
-            <label>Memory 10
-              <div class="input-with-tip">
-                <input type="text" id="freqmem10" name="freqmem10" form="setup-form" maxlength="20" value="">
-                <span class="help-tip" data-tip="Frequency in Hz followed by mode (e.g. 14074000 USB or 144174000 FM).">?</span>
-              </div>
-            </label>
+            <p class="setup-hint">Remotely configure and monitor JS8 unattended operation from any device on the network. The modem tab must stay open and visible on the station computer; this page only arms, monitors and stops the function.</p>
+            <dl class="unattended-grid" id="unattendedGrid"></dl>
+            <div class="unattended-actions">
+              <button type="button" id="unattendedRevoke">Revoke now</button>
+              <span id="unattendedExtend"></span>
+            </div>
+            <p class="setup-hint">Recent events (newest last)</p>
+            <pre id="unattendedLog" class="unattended-log">…</pre>
           </div>
         </details>
 
@@ -422,6 +337,15 @@
       margin-left: 8px;
       vertical-align: middle;
     }
+
+    .unattended-grid{display:grid;grid-template-columns:auto 1fr;gap:.25rem .75rem;margin:.5rem 0}
+    .unattended-grid dt{opacity:.75}
+    .unattended-grid dd{margin:0;font-variant-numeric:tabular-nums}
+    .unattended-bad{color:#c62828;font-weight:600}
+    .unattended-actions{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin:.5rem 0}
+    .unattended-log{max-height:12rem;overflow:auto;font-size:.8rem;line-height:1.35;
+      background:rgba(127,127,127,.12);padding:.5rem;border-radius:4px;white-space:pre-wrap}
+    @media (prefers-color-scheme: dark){ .unattended-bad{color:#ff6b6b} }
   </style>
 
   <script>
@@ -510,9 +434,6 @@
         }
         setValue('cwIpOnConnect', data.cwIpOnConnect);
         setValue('manualModeForPhone', data.manualModeForPhone);
-        for (var i = 1; i <= 4; i++) setValue('cwmem' + i, data['cwmem' + i]);
-        for (var j = 1; j <= 10; j++) setValue('freqmem' + j, data['freqmem' + j]);
-
         // TrxNet ID: auto-fill from IP last octet if factory default, else use saved value
         var trxnetInput = document.getElementById('trxnetidInput');
         if (trxnetInput) {
@@ -856,6 +777,96 @@
           });
       });
     }());
-  </script>
+
+      // ── Unattended operation panel ────────────────────────────────────────
+      // Decision 8: a timer alone would read "armed" over a dead modem tab, so
+      // this shows what the firmware actually observes. Anything suspicious is
+      // marked so the operator does not have to know the thresholds.
+      (function () {
+        var grid = document.getElementById('unattendedGrid');
+        if (!grid) return;
+        var extendBox = document.getElementById('unattendedExtend');
+        var logBox = document.getElementById('unattendedLog');
+
+        function duration(ms) {
+          var s = Math.max(0, Math.round(ms / 1000));
+          if (s < 60) return s + ' s';
+          var m = Math.floor(s / 60);
+          if (m < 60) return m + ' min';
+          var h = Math.floor(m / 60);
+          return h + ' h ' + (m % 60) + ' min';
+        }
+        function row(label, text, bad) {
+          var dt = document.createElement('dt'); dt.textContent = label;
+          var dd = document.createElement('dd'); dd.textContent = text;
+          if (bad) dd.className = 'unattended-bad';
+          grid.appendChild(dt); grid.appendChild(dd);
+        }
+        function post(action, hours) {
+          fetch('/unattended', {method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({action: action, hours: hours || 0})})
+            .then(refresh).catch(function () {});
+        }
+
+        function render(state) {
+          grid.textContent = '';
+          var stale = state.clientSeen && state.clientAgeMs > state.livenessTimeoutMs;
+          // The decisive pair: "armed" says what the operator asked for,
+          // "modem tab" says whether anything is still able to act on it.
+          row('Armed', state.armed ? 'yes, ' + duration(state.remainingMs) + ' left' : 'no',
+              !state.armed);
+          row('Modem tab', !state.clientSeen ? 'never connected'
+                : (stale ? 'silent for ' + duration(state.clientAgeMs)
+                         : 'alive, ' + state.clientAgeMs + ' ms ago'),
+              !state.clientSeen || stale);
+          row('PTT', state.ptt ? 'KEYED' : 'off', state.ptt);
+          row('TX buffer', state.txUsed + ' / ' + state.txCapacity + ' B', false);
+          row('RX audio packets', String(state.rxPackets), state.rxPackets === 0);
+          row('LAN / CI-V', state.lan ? 'connected' : 'disconnected', !state.lan);
+          row('Refused transmissions',
+              state.blockedLiveness + ' liveness, ' + state.blockedNotArmed + ' disarmed',
+              (state.blockedLiveness + state.blockedNotArmed) > 0);
+          row('Firmware uptime', duration(state.upMs), false);
+
+          extendBox.textContent = '';
+          (state.choicesH || []).forEach(function (h) {
+            var b = document.createElement('button');
+            b.type = 'button';
+            b.textContent = (state.armed ? 'Extend ' : 'Arm ') + h + ' h';
+            b.addEventListener('click', function () {
+              post(state.armed ? 'extend' : 'arm', h);
+            });
+            extendBox.appendChild(b);
+          });
+        }
+
+        function refresh() {
+          fetch('/unattended', {cache: 'no-store'})
+            .then(function (r) { return r.json(); })
+            .then(render)
+            .catch(function () { grid.textContent = 'Status unavailable.'; });
+          fetch('/unattended/log', {cache: 'no-store'})
+            .then(function (r) { return r.text(); })
+            .then(function (text) {
+              logBox.textContent = text.trim() ? text.trim() : 'No events recorded.';
+              logBox.scrollTop = logBox.scrollHeight;
+            })
+            .catch(function () {});
+        }
+
+        document.getElementById('unattendedRevoke')
+          .addEventListener('click', function () { post('revoke'); });
+        document.getElementById('unattendedSection')
+          .addEventListener('toggle', function (event) {
+            if (event.target.open) refresh();
+          });
+        refresh();
+        setInterval(function () {
+          if (document.getElementById('unattendedSection').open) refresh();
+        }, 3000);
+      })();
+
+    </script>
 </body>
 </html>

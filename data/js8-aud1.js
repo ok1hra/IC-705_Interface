@@ -33,10 +33,15 @@
   }
 
   class Aud1WebSocketSession {
+    // `now` is monotonic (transport delay); `wallNow` is the UTC source the
+    // firmware compares against. It must be the same clock the TX controller
+    // used for `slotUtcMs`, because the firmware validates
+    // `slotUtcMs - clientUtcMs` against a 100..35000 ms window.
     constructor({url, WebSocketImpl, reconnectMs = 1000, readyTimeoutMs = 3000,
-                 now = () => performance.now()}) {
+                 now = () => performance.now(), wallNow = () => Date.now()}) {
       this.url = url; this.WebSocketImpl = WebSocketImpl;
       this.reconnectMs = reconnectMs; this.readyTimeoutMs = readyTimeoutMs; this.now = now;
+      this.wallNow = wallNow;
       this.socket = null; this.running = false; this.hello = null; this.ptt = false;
       this.sampleCallback = null; this.statusCallback = null; this.packetCallback = null;
       this.pendingPrepare = new Map(); this.drained = new Set(); this.activeTxId = 0;
@@ -149,7 +154,7 @@
       this.sendControl({type:"tx.prepare", txId, sampleRate:48000,
         samples:metadata.samples, packets:metadata.packets, mode:metadata.mode,
         toneHz:metadata.toneHz, slotUtcMs:metadata.slotUtcMs,
-        clientUtcMs:Date.now(),
+        clientUtcMs:this.wallNow(),
         prebufferSamples:metadata.prebufferSamples, packetMs:metadata.packetMs});
       return new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {

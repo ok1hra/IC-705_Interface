@@ -18,7 +18,6 @@
   let contestDb = null;
   let pc        = null;
   let dc        = null;
-  let scanStream = null;
   let scanRaf    = null;
   let sessionId  = null;
   let phase      = 'idle';
@@ -289,67 +288,12 @@
 
   // ── Compression ──────────────────────────────────────────────────────────────
 
-  function compress(text) {
-    return Promise.resolve(
-      btoa(unescape(encodeURIComponent(text)))
-        .replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'')
-    );
-  }
 
-  function decompress(b64url) {
-    return Promise.resolve(
-      decodeURIComponent(escape(atob(b64url.replace(/-/g,'+').replace(/_/g,'/'))))
-    );
-  }
 
-  // ── QR display ───────────────────────────────────────────────────────────────
 
-  function showQR(containerId, text) {
-    const el = document.getElementById(containerId);
-    el.innerHTML = '';
-    if (typeof QRCode !== 'undefined') {
-      try { new QRCode(el, { text, width: 256, height: 256, correctLevel: QRCode.CorrectLevel.L }); return; }
-      catch (_) {}
-    }
-    el.innerHTML = '<p class="ds-qr-note">QR library not loaded. Use copy/paste below.</p>';
-  }
 
-  // ── QR scanning (BarcodeDetector API) ────────────────────────────────────────
 
-  async function startScan(videoId, wrapId, onResult) {
-    const video = document.getElementById(videoId);
-    const wrap  = document.getElementById(wrapId);
 
-    if (!('BarcodeDetector' in window)) {
-      log('BarcodeDetector not supported in this browser — use paste fallback.');
-      return;
-    }
-
-    try {
-      scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-      video.srcObject = scanStream;
-      await video.play();
-      wrap.classList.remove('ds-hidden');
-      const detector = new BarcodeDetector({ formats: ['qr_code'] });
-      async function tick() {
-        if (video.readyState === video.HAVE_ENOUGH_DATA) {
-          try {
-            const codes = await detector.detect(video);
-            if (codes.length > 0) { stopScan(); wrap.classList.add('ds-hidden'); onResult(codes[0].rawValue); return; }
-          } catch (_) {}
-        }
-        scanRaf = requestAnimationFrame(tick);
-      }
-      scanRaf = requestAnimationFrame(tick);
-    } catch (err) {
-      log('Camera unavailable: ' + err.message + '. Use paste fallback.');
-    }
-  }
-
-  function stopScan() {
-    if (scanRaf)    { cancelAnimationFrame(scanRaf); scanRaf = null; }
-    if (scanStream) { scanStream.getTracks().forEach(t => t.stop()); scanStream = null; }
-  }
 
   // ── WebRTC ───────────────────────────────────────────────────────────────────
 
@@ -840,7 +784,6 @@
   function resetPairing() {
     if (pc) { try { pc.close(); } catch (_) {} pc = null; dc = null; }
     stopPoll();
-    stopScan();
     showPhase('phaseIdle');
     ['qrAnswerSection', 'scanAnswerWrap', 'scanOfferWrap'].forEach(id => {
       const node = document.getElementById(id);

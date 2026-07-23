@@ -80,6 +80,9 @@
   + optional reset after diconnect
   + add Debug to CLI
 
+  
+  FYI https://github.com/Rhizomatica/mercury
+
 //--------------------------------------------------------------------*/
 
 String SSID         = "";
@@ -104,7 +107,7 @@ bool cwIpOnConnect  = true;       // announce WiFi IP via CW on first radio conn
 volatile bool cwIpSendPending = false;
 
 #define LOOP_WARN_MS 200
-#define REV 20260720
+#define REV 20260723
 #define WIFI
 #define UDP_TO_FSK
 #define WDT         // watchdog timer
@@ -354,7 +357,10 @@ char CwMsg[37] = "";
 #include <TrxNet.h>
 #include "icomLanClient.h"      // LAN CI-V transport (alternative to BT)
 #include "aud1_tx_state.h"      // shared TX-state predicates used by native regression tests
+#include "unattended_guard.h"   // shared liveness/arming rules used by native regression tests
+#include "unattended_events.h"  // shared event-log formatting used by native regression tests
 #include "aud1_ws_parser.h"     // incremental, non-blocking browser WebSocket framing
+#include "js8_session.h"        // single-operator lock for the JS8LAN page
 IcomLanClient lanClient;
 bool    lanMode = true;         // true when transceiverType == "IC-705-LAN" (LAN is the default)
 String  lanRadioIp = "";        // radio IP for LAN mode
@@ -424,6 +430,20 @@ int incomingByte = 0;   // for incoming serial data
   uint64_t aud1TxExpectedSample = 0, aud1TxTotalSamples = 0, aud1TxConsumedUlaw = 0;
   bool aud1TxLastSeen = false;
   Aud1WsParser aud1WsParser;
+  UnattendedGuard unattendedGuard;
+  Js8Session js8Session;                   // which browser currently owns JS8LAN
+  static const char* UNATTENDED_LOG_PATH = "/unattended.log";
+  // Store-and-forward mail. Decision 10 keeps it here rather than in the tab so
+  // it survives a reload, a different computer and a cleared browser cache, and
+  // can be read from a phone. 64 messages x ~120 chars fits well inside the
+  // 256 KiB runtime reserve the deployment gate keeps free.
+  static const char* INBOX_PATH = "/inbox.jsonl";
+  static const size_t INBOX_MAX_BYTES = 24576;
+  bool lanLinkWasUp = false;               // LAN link-up edge for the PTT safety un-key
+  uint32_t aud1TxLevelNextMs = 0;          // B3: periodic TX buffer level while streaming
+  // Survives a WDT/panic reset (not power loss) so a reset that happened with
+  // the radio keyed is reportable instead of silent.
+  RTC_NOINIT_ATTR uint32_t rtcPttWasKeyed;
   static const size_t AUD1_WS_RX_BYTE_BUDGET = 32768; // yield even when browser continuously streams
   static const uint32_t AUD1_WS_SLOT_BACKLOG_GRACE_MS = 100;
   String DxcHost = "";
@@ -586,7 +606,6 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   void handlePostCmd(void);
   void handleSet(void);
   void renderSetupPage(void);
-  void renderIndexPage(void);
   void resetSetupMessages(void);
   String setupTemplateProcessor(const String &key);
   void setupWebServer(void);
@@ -628,10 +647,23 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   void audioFlush(void);
   void audioPttOn(void);
   void audioPttOff(void);
+  void audioPttSafetyOnLink(void);
+  void unattendedLogEvent(uint8_t type, const String& detail);
+  void handleUnattendedGet(void);
+  void handleUnattendedPost(void);
+  void handleUnattendedLog(void);
+  void js8SessionRespond(Js8SessionResult result, const String& token);
+  String js8SessionRequestToken(void);
+  void handleJs8SessionGet(void);
+  void handleJs8SessionClaim(void);
+  void handleJs8SessionPing(void);
+  void handleJs8SessionRelease(void);
+  void handleInboxGet(void);
+  void handleInboxPost(void);
   void aud1TxAbort(const String& reason, bool notify = true);
   void aud1TxTick(bool deferPrebufferMiss = false);
   void AudioDisconnectWs(void);
-  bool AudioHandleWsUpgrade(WiFiClient& webClient, const String& request);
+  bool AudioHandleWsUpgrade(WiFiClient& webClient, const String& request, const String& token);
   void AudioHandleWsClient(void);
   void audioHandleRawClient(void);
 #endif
@@ -1381,12 +1413,6 @@ bool sendTemplatedHtml(const char *path){
 
 void renderSetupPage(){
   handleFileFromSPIFFS("/setup.html");
-}
-
-void renderIndexPage(){
-  if (!sendTemplatedHtml("/index.html")) {
-    return;
-  }
 }
 
 void handleSetupData(){
@@ -2340,6 +2366,15 @@ void setupWebServer(void){
   const char *requestHeaders[] = {"Accept-Encoding"};
   webServer.collectHeaders(requestHeaders, 1);
   webServer.on("/state", HTTP_GET, handleGetState);
+  webServer.on("/unattended", HTTP_GET, handleUnattendedGet);
+  webServer.on("/unattended", HTTP_POST, handleUnattendedPost);
+  webServer.on("/unattended/log", HTTP_GET, handleUnattendedLog);
+  webServer.on("/js8/session",         HTTP_GET,  handleJs8SessionGet);
+  webServer.on("/js8/session/claim",   HTTP_POST, handleJs8SessionClaim);
+  webServer.on("/js8/session/ping",    HTTP_POST, handleJs8SessionPing);
+  webServer.on("/js8/session/release", HTTP_POST, handleJs8SessionRelease);
+  webServer.on("/inbox", HTTP_GET, handleInboxGet);
+  webServer.on("/inbox", HTTP_POST, handleInboxPost);
   webServer.on("/cmd", HTTP_POST, handlePostCmd);
   webServer.on("/lan/reconnect", HTTP_POST, [](){
     webServer.sendHeader("Connection", "close");
@@ -2362,9 +2397,10 @@ void setupWebServer(void){
 
   webServer.on("/", HTTP_GET, [](){
     // A fresh device starts in configuration AP mode.  Opening its bare IP
-    // must lead directly to Setup even when the normal UI is present in LittleFS.
-    if (APmode || !LittleFS.exists("/index.html")) { renderSetupPage(); return; }
-    renderIndexPage();
+    // must lead directly to Setup. In station mode JS8LAN is the home page.
+    if (APmode) { renderSetupPage(); return; }
+    webServer.sendHeader("Location", "/data", true);
+    webServer.send(302, "text/plain", "");
   });
 
   webServer.on("/setup/save", HTTP_POST, [](){
@@ -2388,7 +2424,6 @@ void setupWebServer(void){
     delay(500);
     ESP.restart();
   });
-  webServer.on("/ws-cat",   HTTP_GET,  [](){ handleFileFromSPIFFS("/ws-cat.html"); });
   webServer.on("/log",      HTTP_GET,  [](){ handleFileFromSPIFFS("/log.html"); });
   webServer.on("/datasync", HTTP_GET,  [](){ handleFileFromSPIFFS("/datasync.html"); });
   webServer.on("/data",     HTTP_GET,  [](){ handleFileFromSPIFFS("/data.html"); });
@@ -2412,21 +2447,7 @@ void setupWebServer(void){
   webServer.on("/pairing/reject", HTTP_OPTIONS, handlePairingOptions);
   webServer.on("/pairing/reject", HTTP_POST,    handlePairingReject);
 
-  // Band Decoder
-  webServer.on("/bd", HTTP_GET, [](){
-    webServer.sendHeader("Connection", "close");
-    webServer.client().setNoDelay(true);
-    if (!bdEnabled) {
-      webServer.send(200, "text/html",
-        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-        "<title>Band Decoder</title>"
-        "<link rel='stylesheet' href='/app.css'></head>"
-        "<body><p style='margin:2em;font-family:sans-serif'>"
-        "Band Decoder is available from RemoteQTH interface HW rev 04.</p></body></html>");
-      return;
-    }
-    handleFileFromSPIFFS("/bd.html");
-  });
+  // Band Decoder hardware API remains available to external controllers.
   webServer.on("/api/bd-config", HTTP_GET, [](){
     webServer.sendHeader("Connection", "close");
     webServer.client().setNoDelay(true);
@@ -2530,6 +2551,10 @@ void wsClearSplitProbe(void){
 //-------------------------------------------------------------------------------------------------------
 
 void setup(){
+  // RTC_NOINIT survives a watchdog/panic reset but is garbage after power-on.
+  // Anything other than the two values we ever write means "unknown", and the
+  // safety un-key on link-up runs regardless -- this only guards the log line.
+  if(rtcPttWasKeyed != 0 && rtcPttWasKeyed != 1) rtcPttWasKeyed = 0;
 
   wsOut = (uint8_t*)malloc(WS_OUT_SIZE);   // outgoing browser-audio WS ring (heap, not .bss)
 
@@ -3337,8 +3362,15 @@ void lanClientLoop(){
     }
   }
   lanClient.loop();
+  if (!lanClient.connected()) lanLinkWasUp = false;   // re-arm the safety un-key
+  // Arming lapses by itself so a forgotten tab cannot transmit for weeks;
+  // unattendedExpire() fires once so the log does not repeat every loop.
+  if (unattendedExpire(unattendedGuard, millis()))
+    unattendedLogEvent(UEV_EXPIRE, "arming window elapsed");
 
   if (lanClient.connected()) {
+    // Edge, not level: the unconditional safety TX OFF fires once per link-up.
+    if (!lanLinkWasUp) { lanLinkWasUp = true; audioPttSafetyOnLink(); }
     lanBackoff = 3000;   // healthy link resets the reconnect backoff
     // (re)start RX audio if the DATA page is open but the audio channel isn't up
     // yet — covers WS-connected-before-LAN and LAN-reconnect-while-page-open.
@@ -5604,6 +5636,222 @@ void audioFlush(){
   audioTxLen = 0;
 }
 
+
+
+// ── Inbox storage ────────────────────────────────────────────────────────────
+// The browser owns the protocol decisions; this is only the durable copy. It is
+// written whole rather than incrementally: at this size a rewrite costs one
+// flash page more than an append and removes every partial-write failure mode.
+void handleInboxGet(){
+  if(!LittleFS.exists(INBOX_PATH)){ webServer.send(200, "text/plain", ""); return; }
+  File f = LittleFS.open(INBOX_PATH, FILE_READ);
+  if(!f){ webServer.send(500, "text/plain", "inbox unavailable"); return; }
+  webServer.sendHeader("Cache-Control", "no-store");
+  webServer.streamFile(f, "text/plain");
+  f.close();
+}
+
+void handleInboxPost(){
+  String body = webServer.hasArg("plain") ? webServer.arg("plain") : String();
+  if(body.length() > INBOX_MAX_BYTES){
+    webServer.send(413, "application/json", "{\"error\":\"inbox too large\"}");
+    unattendedLogEvent(UEV_BLOCK, "inbox write refused: too large");
+    return;
+  }
+  File f = LittleFS.open(INBOX_PATH, "w");
+  if(!f){ webServer.send(500, "application/json", "{\"error\":\"write failed\"}"); return; }
+  f.print(body);
+  f.close();
+  Serial.print("INBOX | stored "); Serial.print(body.length()); Serial.println(" B");
+  webServer.send(200, "application/json", "{\"ok\":true}");
+}
+
+// ── Unattended operation: event log, status and remote control ───────────────
+// Decision 13: no silent suppression. Every refusal, ban and expiry leaves a
+// trace that survives a page reload and is readable from any device, because a
+// restriction that fires at 03:00 has to be explainable at 09:00.
+void unattendedLogEvent(uint8_t type, const String& detail){
+  char line[UNATTENDED_EVENT_LINE_MAX];
+  size_t len = unattendedFormatEvent(line, sizeof(line), millis(), type, detail.c_str());
+  if(len == 0) return;
+  Serial.print("UNA | "); Serial.print(line);
+
+  uint32_t existing = 0;
+  if(LittleFS.exists(UNATTENDED_LOG_PATH)){
+    File probe = LittleFS.open(UNATTENDED_LOG_PATH, FILE_READ);
+    if(probe){ existing = probe.size(); probe.close(); }
+  }
+  if(unattendedLogNeedsRotate(existing, len)){
+    // Keep the newest part; start at the next line boundary so the first
+    // retained entry is a whole event and not a fragment.
+    File src = LittleFS.open(UNATTENDED_LOG_PATH, FILE_READ);
+    String kept;
+    if(src){
+      src.seek(unattendedLogRotateFrom(existing));
+      kept = src.readString();
+      src.close();
+      int nl = kept.indexOf('\n');
+      if(nl >= 0) kept.remove(0, nl + 1);
+    }
+    File dst = LittleFS.open(UNATTENDED_LOG_PATH, "w");
+    if(dst){ dst.print(kept); dst.close(); }
+  }
+  File out = LittleFS.open(UNATTENDED_LOG_PATH, FILE_APPEND);
+  if(!out) return;
+  out.print(line);
+  out.close();
+}
+
+// ── JS8LAN single-operator lock ───────────────────────────────────────────────
+// One reply shape for every verb so the page can render the panel from whatever
+// came back, including the 409 that locked it out. `self` is what the caller
+// actually asks about; `owner` is only ever an address to show a human.
+void js8SessionRespond(Js8SessionResult result, const String& token){
+  uint32_t now = millis();
+  bool self = js8SessionOwns(js8Session, now, token.c_str());
+  bool live = js8SessionLive(js8Session, now);
+  String json = "{\"ok\":" + String(result == JS8_SESSION_BUSY || result == JS8_SESSION_BAD_TOKEN ? "false" : "true");
+  json += ",\"state\":\""; json += js8SessionResultName(result); json += "\"";
+  json += ",\"self\":" + String(self ? "true" : "false");
+  json += ",\"held\":" + String(live ? "true" : "false");
+  json += ",\"owner\":\""; json += live ? IPAddress(js8Session.ownerIpV4).toString() : String(); json += "\"";
+  json += ",\"ageMs\":" + String((unsigned long)(live ? js8SessionAgeMs(js8Session, now) : 0));
+  json += ",\"leaseMs\":" + String((unsigned long)JS8_SESSION_LEASE_MS);
+  json += ",\"takeovers\":" + String((unsigned long)js8Session.takeovers);
+  json += ",\"refusals\":" + String((unsigned long)js8Session.refusals);
+  json += "}";
+  webServer.sendHeader("Cache-Control", "no-store");
+  int status = result == JS8_SESSION_BUSY      ? 409
+             : result == JS8_SESSION_BAD_TOKEN ? 400
+                                               : 200;
+  webServer.send(status, "application/json", json);
+}
+
+String js8SessionRequestToken(){
+  String body = webServer.hasArg("plain") ? webServer.arg("plain") : String();
+  String token = extractJsonString(body, "token");
+  if(token.length() == 0) token = webServer.arg("token");   // beacon fallback
+  return token;
+}
+
+// Readable without claiming anything, so a locked-out page can poll and the
+// SETUP diagnostics can show who holds the radio.
+void handleJs8SessionGet(){
+  js8SessionRespond(js8SessionLive(js8Session, millis()) ? JS8_SESSION_BUSY : JS8_SESSION_GRANTED, String());
+}
+
+void handleJs8SessionClaim(){
+  String body  = webServer.hasArg("plain") ? webServer.arg("plain") : String();
+  String token = js8SessionRequestToken();
+  bool   force = extractJsonString(body, "force") == "true";
+  IPAddress ip = webServer.client().remoteIP();
+  char previous[JS8_SESSION_TOKEN_MAX + 1];
+  strncpy(previous, js8Session.token, sizeof(previous));
+  Js8SessionResult result = js8SessionClaim(js8Session, millis(), token.c_str(), uint32_t(ip), force);
+  // Every change of owner drops the audio socket. Leaving it open would let the
+  // losing page keep streaming into a radio it no longer owns, and it is what
+  // lets the rest of the firmware treat an open socket as proof of ownership.
+  if(strcmp(previous, js8Session.token) != 0 && AudioWsClient.connected())
+    AudioDisconnectWs();
+  if(result != JS8_SESSION_RENEWED){
+    Serial.print("JS8 | session "); Serial.print(js8SessionResultName(result));
+    Serial.print(" from "); Serial.println(ip.toString());
+  }
+  js8SessionRespond(result, token);
+}
+
+void handleJs8SessionPing(){
+  String token = js8SessionRequestToken();
+  char previous[JS8_SESSION_TOKEN_MAX + 1];
+  strncpy(previous, js8Session.token, sizeof(previous));
+  Js8SessionResult result = js8SessionHeartbeat(js8Session, millis(), token.c_str(),
+                                                uint32_t(webServer.client().remoteIP()));
+  if(strcmp(previous, js8Session.token) != 0 && AudioWsClient.connected())
+    AudioDisconnectWs();
+  js8SessionRespond(result, token);
+}
+
+void handleJs8SessionRelease(){
+  String token = js8SessionRequestToken();
+  bool released = js8SessionRelease(js8Session, token.c_str());
+  if(released && AudioWsClient.connected()) AudioDisconnectWs();
+  webServer.sendHeader("Cache-Control", "no-store");
+  webServer.send(200, "application/json",
+                 String("{\"ok\":true,\"released\":") + (released ? "true" : "false") + "}");
+}
+
+// Everything the remote panel needs to tell "alive and working" from "alive but
+// stuck": a frozen decoder still looks healthy if you only watch liveness.
+void handleUnattendedGet(){
+  uint32_t now = millis();
+  bool live = unattendedLivenessFresh(unattendedGuard, now);
+  String json = "{\"armed\":" + String(unattendedArmActive(unattendedGuard, now) ? "true" : "false");
+  json += ",\"remainingMs\":" + String((unsigned long)unattendedRemainingMs(unattendedGuard, now));
+  json += ",\"clientLive\":" + String(live ? "true" : "false");
+  json += ",\"clientAgeMs\":" + String(unattendedGuard.clientSeen
+            ? (unsigned long)(now - unattendedGuard.lastClientMs) : 0UL);
+  json += ",\"clientSeen\":" + String(unattendedGuard.clientSeen ? "true" : "false");
+  json += ",\"blockedLiveness\":" + String((unsigned long)unattendedGuard.blockedLiveness);
+  json += ",\"blockedNotArmed\":" + String((unsigned long)unattendedGuard.blockedNotArmed);
+  json += ",\"livenessTimeoutMs\":" + String((unsigned long)unattendedGuard.livenessTimeoutMs);
+  json += ",\"ptt\":" + String(audioTxKeyed ? "true" : "false");
+  json += ",\"txState\":" + String((int)aud1TxState);
+  json += ",\"txUsed\":" + String((unsigned long)aud1TxUsed);
+  json += ",\"txCapacity\":" + String((unsigned long)AUD1_TX_RING_SIZE);
+  json += ",\"rxPackets\":" + String((unsigned long)audioRxPackets);
+  json += ",\"lan\":" + String((lanMode && lanClient.connected()) ? "true" : "false");
+  json += ",\"upMs\":" + String((unsigned long)now);
+  json += ",\"choicesH\":[";
+  for(uint8_t i = 0; i < UNATTENDED_ARM_CHOICE_COUNT; i++){
+    if(i) json += ",";
+    json += String((unsigned long)UNATTENDED_ARM_CHOICES_H[i]);
+  }
+  json += "]}";
+  webServer.sendHeader("Cache-Control", "no-store");
+  webServer.send(200, "application/json", json);
+}
+
+void handleUnattendedLog(){
+  if(!LittleFS.exists(UNATTENDED_LOG_PATH)){
+    webServer.send(200, "text/plain", "");
+    return;
+  }
+  File f = LittleFS.open(UNATTENDED_LOG_PATH, FILE_READ);
+  if(!f){ webServer.send(500, "text/plain", "log unavailable"); return; }
+  webServer.sendHeader("Cache-Control", "no-store");
+  webServer.streamFile(f, "text/plain");
+  f.close();
+}
+
+// Arm, extend and revoke are all reachable from any device on the network --
+// that is the whole point of the firmware owning the state rather than the tab.
+void handleUnattendedPost(){
+  String body = webServer.hasArg("plain") ? webServer.arg("plain") : String();
+  String action = extractJsonString(body, "action");
+  uint32_t hours = (uint32_t)extractJsonString(body, "hours").toInt();
+
+  if(action == "revoke"){
+    unattendedRevoke(unattendedGuard);
+    unattendedLogEvent(UEV_REVOKE, "remote revoke");
+    handleUnattendedGet();
+    return;
+  }
+  if(action == "arm" || action == "extend"){
+    if(!unattendedIsArmChoiceH(hours)){
+      webServer.send(400, "application/json", "{\"error\":\"unsupported duration\"}");
+      return;
+    }
+    uint32_t ms = hours * 3600UL * 1000UL;
+    bool ok = action == "arm" ? unattendedArm(unattendedGuard, ms, millis())
+                              : unattendedExtend(unattendedGuard, ms, millis());
+    if(!ok){ webServer.send(400, "application/json", "{\"error\":\"arm rejected\"}"); return; }
+    unattendedLogEvent(action == "arm" ? UEV_ARM : UEV_EXTEND, String(hours) + " h");
+    handleUnattendedGet();
+    return;
+  }
+  webServer.send(400, "application/json", "{\"error\":\"unknown action\"}");
+}
+
 // ── M3 TX: key/un-key PTT via CI-V (LAN); dead-man safety un-keys on loss ──────
 void audioPttOn(){
   if(audioTxKeyed) { audioTxLastMs = millis(); return; }
@@ -5613,6 +5861,7 @@ void audioPttOn(){
   uint8_t rd[] = {0x1C, 0x00};               // read back -> "CIV | radio TX state" log
   lanClient.sendCommand(rd, 2);
   audioTxKeyed = ok; audioTxLastMs = millis();
+  if(ok) rtcPttWasKeyed = 1;   // cleared again only by a confirmed PTT OFF
   Serial.print("AUD | PTT ON (TX audio) sendCommand="); Serial.println(ok ? "ok" : "FAIL");
 }
 void audioPttOff(){
@@ -5620,7 +5869,31 @@ void audioPttOff(){
   audioTxKeyed = false;
   uint8_t f[] = {0x1C, 0x00, 0x00};          // TX OFF
   if(lanMode && lanClient.connected()) lanClient.sendCommand(f, 3);
+  rtcPttWasKeyed = 0;
   Serial.println("AUD | PTT OFF");
+}
+
+// PTT in LAN mode is a state held by the radio, so it outlives the ESP32.
+// A watchdog reset, panic or power cut while keyed leaves the IC-705
+// transmitting with nothing left that knows about it. Send TX OFF on every
+// link-up unconditionally -- never gated on what this boot believes it did.
+void audioPttSafetyOnLink(){
+  if(!lanMode || !lanClient.connected()){
+    Serial.println("AUD | SAFETY: skipped, LAN not connected");
+    return;
+  }
+  uint8_t f[] = {0x1C, 0x00, 0x00};
+  bool ok = lanClient.sendCommand(f, 3);
+  audioTxKeyed = false;
+  // Always log: without a radio on the bench this line is the only evidence the
+  // safety un-key ran at all, and its absence is itself the symptom to look for.
+  Serial.print("AUD | SAFETY: TX OFF on link-up sendCommand=");
+  Serial.print(ok ? "ok" : "FAIL");
+  Serial.print(" wasKeyedBeforeReset=");
+  Serial.println(rtcPttWasKeyed == 1 ? "yes" : "no");
+  if(rtcPttWasKeyed == 1)
+    unattendedLogEvent(UEV_PTT_SAFETY, String("reset while keyed; TX OFF ") + (ok ? "sent" : "FAILED"));
+  rtcPttWasKeyed = 0;
 }
 
 static void aud1TxResetState(Aud1TxState next = AUD1_TX_IDLE){
@@ -5628,6 +5901,7 @@ static void aud1TxResetState(Aud1TxState next = AUD1_TX_IDLE){
   aud1TxExpectedSequence=aud1TxExpectedPackets=aud1TxReceivedPackets=0;
   aud1TxExpectedSample=aud1TxTotalSamples=aud1TxConsumedUlaw=0;
   aud1TxTargetMs=aud1TxNextDrainMs=aud1TxDeadlineMs=aud1TxPrebufferSamples=0;
+  aud1TxLevelNextMs=0;
   aud1TxLastSeen=false;
 }
 
@@ -5639,7 +5913,10 @@ void aud1TxAbort(const String& reason, bool notify){
                   ",\"reason\":\"" + jsonEscape(reason) + "\",\"ptt\":false}";
     AudioSendText(json);
   }
-  if(reason.length()){ Serial.print("AUD1 | TX abort: "); Serial.println(reason); }
+  if(reason.length()){
+    Serial.print("AUD1 | TX abort: "); Serial.println(reason);
+    unattendedLogEvent(UEV_TX_ABORT, reason);
+  }
 }
 
 static bool aud1RingWrite(uint8_t value){
@@ -5665,6 +5942,17 @@ void aud1TxTick(bool deferPrebufferMiss){
       if(deferPrebufferMiss && (int32_t)(now - aud1TxTargetMs) <= (int32_t)AUD1_WS_SLOT_BACKLOG_GRACE_MS) return;
       aud1TxAbort("TX prebuffer missed slot"); return;
     }
+    // The slot may be up to 35 s after tx.prepare. Do not key the radio for a
+    // browser that has gone silent in the meantime, even though the ring still
+    // holds a full prebuffer from before it died.
+    if(!unattendedMayKey(unattendedGuard, now)){
+      Serial.print("AUD1 | refuse to key: frontend silent for ");
+      Serial.print(now - unattendedGuard.lastClientMs);
+      Serial.print(" ms (limit "); Serial.print(unattendedGuard.livenessTimeoutMs);
+      Serial.println(" ms), ring still held a full prebuffer");
+      unattendedLogEvent(UEV_BLOCK, "liveness lost before keying");
+      aud1TxAbort("frontend liveness lost before keying"); return;
+    }
     audioPttOn();
     if(!audioTxKeyed){ aud1TxAbort("PTT command failed"); return; }
     aud1TxState = AUD1_TX_STREAM; aud1TxNextDrainMs = now;
@@ -5672,6 +5960,14 @@ void aud1TxTick(bool deferPrebufferMiss){
   }
   if(aud1TxState != AUD1_TX_STREAM) return;
   if((int32_t)(now - aud1TxDeadlineMs) > 0){ aud1TxAbort("TX watchdog"); return; }
+  if((int32_t)(now - aud1TxLevelNextMs) >= 0){
+    aud1TxLevelNextMs = now + 200;   // ~5/s
+    AudioSendText("{\"type\":\"tx-level\",\"txId\":" + String(aud1TxId) +
+                  ",\"used\":" + String((unsigned long)aud1TxUsed) +
+                  ",\"capacity\":" + String((unsigned long)AUD1_TX_RING_SIZE) +
+                  ",\"consumed\":" + String((unsigned long long)aud1TxConsumedUlaw) +
+                  ",\"ptt\":true}");
+  }
   uint8_t packet[160]; int bursts = 0;
   while((int32_t)(now - aud1TxNextDrainMs) >= 0 && bursts++ < 3){
     uint64_t totalUlaw = (aud1TxTotalSamples + 5) / 6;
@@ -5757,6 +6053,20 @@ static void aud1HandleControl(const String& json){
   uint32_t prebuffer = (uint32_t)aud1JsonU64(json, "prebufferSamples");
   uint32_t sampleRate = (uint32_t)aud1JsonU64(json, "sampleRate");
   uint32_t packetMs = (uint32_t)aud1JsonU64(json, "packetMs");
+  // Refuse a transmission the browser itself marked unattended once arming has
+  // lapsed. Liveness is NOT tested here: this very frame just refreshed the
+  // dead-man, so the test could never fail. It is applied at keying time
+  // instead (aud1TxTick), which is where a browser can die between preparing a
+  // slot and the slot arriving.
+  bool wantsUnattended = extractJsonBool(json, "unattended", false);
+  UnattendedBlock block = unattendedEvaluate(unattendedGuard, millis(), wantsUnattended);
+  if(block != UNATTENDED_OK){
+    aud1TxId = txId;
+    unattendedLogEvent(UEV_BLOCK, unattendedBlockReason(block));
+    aud1TxAbort(String("blocked: ") + unattendedBlockReason(block));
+    return;
+  }
+
   int64_t delayMs = int64_t(slotUtcMs) - int64_t(clientUtcMs);
   if(txId == 0 || sampleRate != 48000 || packetMs != 20 || totalSamples == 0 ||
      packets == 0 || prebuffer == 0 || prebuffer > totalSamples ||
@@ -5818,7 +6128,7 @@ static bool aud1AcceptTxPacket(const uint8_t* wire, size_t length){
   return true;
 }
 
-bool AudioHandleWsUpgrade(WiFiClient& webClient, const String& request){
+bool AudioHandleWsUpgrade(WiFiClient& webClient, const String& request, const String& token){
   String secKey     = ExtractHttpHeader(request, "Sec-WebSocket-Key");
   String upgrade    = ExtractHttpHeader(request, "Upgrade");
   String connection = ExtractHttpHeader(request, "Connection");
@@ -5826,6 +6136,14 @@ bool AudioHandleWsUpgrade(WiFiClient& webClient, const String& request){
   connection.toLowerCase();
   if(secKey.length() == 0 || upgrade != "websocket" || connection.indexOf("upgrade") < 0){
     webClient.println(F("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n"));
+    return false;
+  }
+  // The hard half of the single-operator lock. The UI gate can be bypassed by
+  // opening the socket directly, so ownership is checked where the audio
+  // actually starts rather than only where the page decides to render.
+  if(!js8SessionOwns(js8Session, millis(), token.c_str())){
+    Serial.println("AUD1 | WS upgrade refused, session held elsewhere");
+    webClient.println(F("HTTP/1.1 409 Conflict\r\nConnection: close\r\n"));
     return false;
   }
   if(AudioWsClient.connected()) AudioDisconnectWs();
@@ -5886,6 +6204,12 @@ void AudioHandleWsClient(){
       uint8_t opcode = aud1WsParser.opcode();
       size_t length = aud1WsParser.payloadSize();
       uint8_t* payload = aud1WsParser.payload();
+      // Any frame proves the browser is alive; during a long transfer the TX
+      // audio packets alone (~50/s) keep the dead-man fresh. The same evidence
+      // renews the session lease, so a page busy with audio never loses the
+      // radio to a starved HTTP heartbeat.
+      unattendedNoteClient(unattendedGuard, millis());
+      js8SessionNoteTraffic(js8Session, millis());
       if(opcode == 0x8){ aud1WsParser.reset(); AudioDisconnectWs(); return; }
       if(opcode == 0x2){
         aud1AcceptTxPacket(payload, length);
@@ -5932,12 +6256,25 @@ void audioHandleRawClient(){
   int uriStart = request.indexOf(' ') + 1;
   int uriEnd   = request.indexOf(' ', uriStart);
   String uri   = request.substring(uriStart, uriEnd);
+  // The session token rides in the query string: a browser cannot set headers on
+  // a WebSocket handshake.
+  String token;
+  int queryAt = uri.indexOf('?');
+  if(queryAt >= 0){
+    String query = uri.substring(queryAt + 1);
+    uri = uri.substring(0, queryAt);
+    int keyAt = query.indexOf("token=");
+    if(keyAt >= 0){
+      int valueAt = keyAt + 6, endAt = query.indexOf('&', valueAt);
+      token = query.substring(valueAt, endAt < 0 ? query.length() : endAt);
+    }
+  }
   if(uri != "/audiows"){
     client.println(F("HTTP/1.1 404 Not Found\r\nConnection: close\r\n"));
     client.stop();
     return;
   }
-  if(!AudioHandleWsUpgrade(client, request)){
+  if(!AudioHandleWsUpgrade(client, request, token)){
     client.stop();
   }
   // on success, client is stored in AudioWsClient — do NOT stop it

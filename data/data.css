@@ -29,12 +29,30 @@ button { color: inherit; cursor: pointer; }
 .call { color: var(--cyan); font-weight: 800; letter-spacing: .04em; }
 
 .site-topbar { background:#0d1117; border-bottom:1px solid var(--line); }
-.site-topbar .tabs { min-height:36px; flex-wrap:wrap; }
+.site-topbar .tabs {
+  width:min(980px, calc(100vw - 24px)); min-height:36px; margin:0 auto;
+  display:flex; flex-wrap:wrap; gap:6px; padding:10px 0;
+}
+.site-topbar .tab {
+  padding:8px 12px; border:1px solid transparent; border-radius:999px;
+  color:var(--muted); font-weight:700; letter-spacing:.08em; text-decoration:none;
+}
+.site-topbar .tab-active {
+  border-color:#2c4f77; background:rgba(46,100,165,.22); color:var(--text);
+}
+.site-topbar .topbar-fw {
+  margin-left:auto; align-self:center; padding-right:4px; color:var(--muted);
+  font-size:13px; letter-spacing:.06em; white-space:nowrap;
+}
 .data-page { width:min(1180px, 100%); margin:0 auto; padding:8px 8px 52px; }
 .lan-config-checking .radio-bar,
 .lan-config-checking .data-page > :not(.lan-required),
 .lan-required-only .radio-bar,
 .lan-required-only .data-page > :not(.lan-required) { display:none; }
+/* The lock-out panel replaces the page outright: a half-rendered JS8LAN that
+   cannot key the radio is worse than an explanation. */
+.session-busy-only .radio-bar,
+.session-busy-only .data-page > :not(.session-busy) { display:none; }
 .lan-required[hidden] { display:none; }
 .lan-required {
   max-width:760px; margin:clamp(28px,8vh,90px) auto 24px; padding:clamp(20px,4vw,36px);
@@ -57,6 +75,9 @@ button { color: inherit; cursor: pointer; }
 }
 .lan-required-action:hover, .lan-required-action:focus-visible { background:#4a3016; color:#fff; }
 .lan-required small { display:block; min-height:1em; margin-top:10px; color:var(--red); }
+.session-busy-where { color:#f1e3d2 !important; font-weight:800; }
+.session-busy button.lan-required-action { cursor:pointer; font:inherit; font-weight:850; }
+.session-busy small { color:var(--muted); }
 .js8-page-footer {
   display:flex; justify-content:center; gap:9px; padding:0 10px 24px; color:#52655f; font-size:11px;
 }
@@ -201,6 +222,17 @@ button { color: inherit; cursor: pointer; }
 .compact-section[open] > summary::before, .state-dump[open] > summary::before { content: "−"; }
 .compact-section[open] > summary, .state-dump[open] > summary { border-bottom: 1px solid var(--line); }
 .summary-status { margin-left: auto; color: var(--muted); font-size: 11px; font-weight: 500; letter-spacing: 0; text-transform: none; }
+/* Signal-only state pills on the right edge of the SETTINGS header. They borrow
+   the recent-traffic filter look, but are never clickable: the section itself is
+   where a function is switched, here it is only reported. */
+.summary-flags { display: flex; flex-shrink: 0; gap: 4px; margin-left: 8px; }
+.summary-status + .summary-flags { margin-left: 8px; }
+.summary-flag {
+  padding: 2px 7px; border: 1px solid var(--line); border-radius: 999px;
+  color: var(--muted); font: 700 10px/1.4 ui-monospace, monospace;
+  letter-spacing: .04em; opacity: .5;
+}
+.summary-flag.on { color: var(--cyan); border-color: var(--cyan); background: #123029; opacity: 1; }
 .state-dump { color: var(--muted); }
 .state-dump pre { padding: 0 10px 10px; white-space: pre-wrap; font-size: 11px; }
 
@@ -401,6 +433,9 @@ button { color: inherit; cursor: pointer; }
 .traffic-table th button { padding:0; border:0; color:inherit; background:transparent; font-weight:inherit; white-space:nowrap; }
 .traffic-table th button:hover, .traffic-table th button.active { color:var(--cyan); }
 .sort-arrow { display:inline-block; min-width:10px; color:var(--amber); }
+/* DXCC entity resolved from the prefix (same lookup the QRPLog page uses). Long
+   entity names are clipped, the full name stays in the cell title. */
+.station-country { max-width:130px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); }
 .station-direction { white-space:nowrap; font-variant-numeric:tabular-nums; }
 .station-bearing { display:inline-block; margin-right:5px; color:#fff; font-size:16px; line-height:1; transform-origin:50% 50%; }
 .station-distance { color:var(--muted); }
@@ -479,6 +514,12 @@ button { color: inherit; cursor: pointer; }
   .composer .message-field { grid-column:2; }
   .send-hint { grid-column:2; }
   .summary-status { max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* The state pills must survive the narrow header; the call/grid/speed text is
+     the part that gives way, because the same values are inside the section. */
+  .summary-status:has(+ .summary-flags) { max-width: 30%; }
+  .summary-flags { gap: 3px; margin-left: 5px; }
+  .summary-flag { padding: 2px 4px; font-size: 9px; }
+  .station-country { max-width: 92px; }
   .settings label { grid-template-columns: 118px minmax(0, 1fr) auto; }
   .settings-storage { align-items: flex-start; }
   .keyboard-session > header div { display: block; }
@@ -514,3 +555,16 @@ button { color: inherit; cursor: pointer; }
   .message-meta { grid-column:1 / -1; }
   .message-text { min-width:0; }
 }
+
+/* A station whose auto replies are paused by the restriction engine. */
+.station-ban{margin-left:.35rem;opacity:.8;cursor:help}
+.station-restricted td.call{opacity:.7}
+
+/* What is waiting to transmit, and why it has not gone yet. */
+.tx-queue{font-size:.8rem;opacity:.85;margin-right:.5rem;cursor:help}
+
+/* Inbox reader. */
+.inbox-actions{display:flex;gap:.4rem;margin:.3rem 0}
+.inbox-text{max-width:16rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.inbox-delivered{opacity:.55}
+.inbox-empty{text-align:center;opacity:.6}

@@ -92,6 +92,18 @@ add_executable(js8-aud1-ws-parser-smoke
 target_include_directories(js8-aud1-ws-parser-smoke PRIVATE ${PROJECT_REPOSITORY})
 target_compile_options(js8-aud1-ws-parser-smoke PRIVATE -Wall -Wextra -Wpedantic)
 
+add_executable(js8-unattended-guard-smoke
+  firmware/unattended_guard_smoke.cpp
+)
+target_include_directories(js8-unattended-guard-smoke PRIVATE ${PROJECT_REPOSITORY})
+target_compile_options(js8-unattended-guard-smoke PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(js8-session-smoke
+  firmware/js8_session_smoke.cpp
+)
+target_include_directories(js8-session-smoke PRIVATE ${PROJECT_REPOSITORY})
+target_compile_options(js8-session-smoke PRIVATE -Wall -Wextra -Wpedantic)
+
 include(CheckIncludeFileCXX)
 check_include_file_cxx("boost/crc.hpp" JS8_PROTO_HAVE_BOOST_CRC)
 if(JS8_PROTO_HAVE_BOOST_CRC)

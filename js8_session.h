@@ -1,0 +1,166 @@
+#pragma once
+
+// Single-operator lock for the JS8LAN page: shared by the firmware sketch and
+// the native regression tests, so the rules are exercised without a radio.
+//
+// Why the firmware owns it. The page drives one radio through one AUD1
+// WebSocket, so two pages open at once is never a working configuration --
+// AudioHandleWsUpgrade already disconnects the previous client, which means a
+// second tab silently steals audio from the first and neither operator is told.
+// A browser-side lock (localStorage, BroadcastChannel) only ever sees tabs in
+// one browser; the second computer is exactly the case that has to be caught.
+// So the ESP32 keeps the authoritative record and the browser only renders it.
+//
+// Lease, not a flag. A crashed tab, a closed laptop lid or a dropped Wi-Fi link
+// cannot send a release, so ownership expires on its own: the holder refreshes
+// it while it lives, and JS8_SESSION_LEASE_MS after the last sign of life the
+// lock is free again. AUD1 traffic refreshes it too, so a page that is actually
+// running audio never depends on the HTTP heartbeat alone.
+//
+// Takeover is deliberate and always available. Refusing it would leave a
+// forgotten tab on another machine holding the radio with no remedy but a
+// power cycle, so a claim with force wins and the old holder learns it lost on
+// its next heartbeat.
+//
+// All deadlines use millis(); comparisons are wrap-safe via signed differences,
+// matching the rest of the sketch.
+
+#include <stdint.h>
+#include <string.h>
+
+// 15 s tolerates a Wi-Fi stall or a stop-the-world GC in the tab (heartbeat is
+// 5 s, so two may be lost) while still freeing a dead session quickly enough
+// that the operator moving to another machine does not think it is stuck.
+static const uint32_t JS8_SESSION_LEASE_MS = 15000;
+// 128 bits of getRandomValues as hex. The sketch links with single-digit bytes
+// of DRAM to spare, so this record is kept as narrow as the job allows: the
+// owner address is a packed v4 rather than a string, and the counters are 16-bit
+// because they exist to be read by a human, not to run up.
+static const uint8_t JS8_SESSION_TOKEN_MAX = 32;
+
+enum Js8SessionResult : uint8_t {
+  JS8_SESSION_GRANTED = 0,   // lock was free (or expired) and is now held
+  JS8_SESSION_RENEWED,       // caller already held it -- reload, page return
+  JS8_SESSION_TAKEOVER,      // forced away from a live holder
+  JS8_SESSION_BUSY,          // someone else holds a live lease
+  JS8_SESSION_BAD_TOKEN,     // malformed or missing token
+};
+
+struct Js8Session {
+  char     token[JS8_SESSION_TOKEN_MAX + 1] = {0};
+  uint32_t ownerIpV4 = 0;          // shown to the locked-out page, not trusted
+  uint32_t lastSeenMs = 0;         // millis() of the last claim/heartbeat
+  uint16_t takeovers = 0;          // counters feed the diagnostics panel
+  uint16_t refusals = 0;
+  bool     held = false;           // a token was installed (may have expired)
+};
+
+// Tokens are echoed into JSON and compared byte for byte, so anything outside
+// the UUID alphabet is rejected rather than escaped.
+inline bool js8SessionTokenValid(const char *token) {
+  if (!token) return false;
+  size_t length = strlen(token);
+  if (length < 8 || length > JS8_SESSION_TOKEN_MAX) return false;
+  for (size_t index = 0; index < length; ++index) {
+    const char c = token[index];
+    const bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+                    (c >= 'A' && c <= 'F') || c == '-';
+    if (!ok) return false;
+  }
+  return true;
+}
+
+inline bool js8SessionLive(const Js8Session &session, uint32_t nowMs) {
+  if (!session.held) return false;
+  return (int32_t)(nowMs - session.lastSeenMs) < (int32_t)JS8_SESSION_LEASE_MS;
+}
+
+inline bool js8SessionOwns(const Js8Session &session, uint32_t nowMs, const char *token) {
+  if (!js8SessionLive(session, nowMs) || !token) return false;
+  return strcmp(session.token, token) == 0;
+}
+
+inline uint32_t js8SessionAgeMs(const Js8Session &session, uint32_t nowMs) {
+  if (!session.held) return 0;
+  return (uint32_t)(nowMs - session.lastSeenMs);
+}
+
+inline void js8SessionClear(Js8Session &session) {
+  session.token[0] = 0;
+  session.ownerIpV4 = 0;
+  session.held = false;
+  session.lastSeenMs = 0;
+}
+
+inline void js8SessionInstall(Js8Session &session, uint32_t nowMs,
+                              const char *token, uint32_t ipV4) {
+  strncpy(session.token, token, JS8_SESSION_TOKEN_MAX);
+  session.token[JS8_SESSION_TOKEN_MAX] = 0;
+  session.ownerIpV4 = ipV4;
+  session.held = true;
+  session.lastSeenMs = nowMs;
+}
+
+inline Js8SessionResult js8SessionClaim(Js8Session &session, uint32_t nowMs,
+                                        const char *token, uint32_t ipV4, bool force) {
+  if (!js8SessionTokenValid(token)) return JS8_SESSION_BAD_TOKEN;
+  if (js8SessionOwns(session, nowMs, token)) {
+    session.lastSeenMs = nowMs;
+    return JS8_SESSION_RENEWED;
+  }
+  if (js8SessionLive(session, nowMs) && !force) {
+    session.refusals += 1;
+    return JS8_SESSION_BUSY;
+  }
+  const bool stolen = js8SessionLive(session, nowMs);
+  js8SessionInstall(session, nowMs, token, ipV4);
+  if (stolen) { session.takeovers += 1; return JS8_SESSION_TAKEOVER; }
+  return JS8_SESSION_GRANTED;
+}
+
+// The heartbeat doubles as a claim on a free lock. Without that, a release that
+// races ahead of the holder's own re-claim (same-tab navigation fires the
+// release beacon and the new page load in either order) would leave the tab
+// heartbeating into a lock nobody owns, and the next page to open would win the
+// radio out from under a live session.
+inline Js8SessionResult js8SessionHeartbeat(Js8Session &session, uint32_t nowMs,
+                                            const char *token, uint32_t ipV4) {
+  if (!js8SessionTokenValid(token)) return JS8_SESSION_BAD_TOKEN;
+  if (js8SessionOwns(session, nowMs, token)) {
+    session.lastSeenMs = nowMs;
+    return JS8_SESSION_RENEWED;
+  }
+  if (js8SessionLive(session, nowMs)) { session.refusals += 1; return JS8_SESSION_BUSY; }
+  js8SessionInstall(session, nowMs, token, ipV4);
+  return JS8_SESSION_GRANTED;
+}
+
+// Any AUD1 frame proves the holder is alive, so a page streaming audio keeps
+// the lease fresh even if its HTTP heartbeat is starved. No token is needed:
+// every change of owner closes the audio socket, so an open socket always
+// belongs to the current holder. An already-expired lease is never resurrected
+// -- that would let a half-open TCP connection from a dead browser hold the
+// radio indefinitely.
+inline void js8SessionNoteTraffic(Js8Session &session, uint32_t nowMs) {
+  if (js8SessionLive(session, nowMs)) session.lastSeenMs = nowMs;
+}
+
+// A release from a page that no longer owns the lock is a late beacon from a
+// session already taken over, and must not free the new holder's lease.
+inline bool js8SessionRelease(Js8Session &session, const char *token) {
+  if (!js8SessionTokenValid(token) || !session.held) return false;
+  if (strcmp(session.token, token) != 0) return false;
+  js8SessionClear(session);
+  return true;
+}
+
+inline const char *js8SessionResultName(Js8SessionResult result) {
+  switch (result) {
+    case JS8_SESSION_GRANTED:   return "granted";
+    case JS8_SESSION_RENEWED:   return "renewed";
+    case JS8_SESSION_TAKEOVER:  return "takeover";
+    case JS8_SESSION_BUSY:      return "busy";
+    case JS8_SESSION_BAD_TOKEN: return "bad-token";
+  }
+  return "unknown";
+}

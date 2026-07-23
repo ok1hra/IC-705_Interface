@@ -1327,13 +1327,6 @@ function updateTrxHeader() {
   if (hdr) hdr.textContent = app.trxLabels[app.activeTrx - 1] || 'TRX';
 }
 
-function updateCatTabVisibility() {
-  const trxIdx = app.activeTrx - 1;
-  const isOi3  = app.trxOi3[trxIdx] && trxIdx > 0;
-  const catTab = document.querySelector('.tabs a[href="/"]');
-  if (catTab) catTab.style.display = isOi3 ? 'none' : '';
-}
-
 trxButtons.forEach(btn => {
   btn.addEventListener('click', () => {
     app.activeTrx = Number(btn.dataset.trx);
@@ -1343,7 +1336,6 @@ trxButtons.forEach(btn => {
     app.connected = false;
     sbManualFreq.value = '';
     updateTrxHeader();
-    updateCatTabVisibility();
     renderStatusBar();
     renderConnStatus();
     try { _updateDxcBand(0, app.dxcConnected); } catch (_) {}
@@ -2295,7 +2287,6 @@ function init() {
       trxButtons.forEach((b, i) => b.classList.toggle('btn-trx-active', i === 0));
     }
     updateTrxHeader();
-    updateCatTabVisibility();
     renderConnStatus();
   }).catch(() => {});
 

@@ -1,16 +1,14 @@
 # IC-705 IP Interface — User Manual
 
-The IC-705 IP Interface connects an ICOM IC-705 to your local network via Bluetooth and exposes a browser-based control and logging UI. All pages are served at **`http://ic705.local`** (or the device IP address if mDNS is not available). The navigation bar at the top of every page links to:
+The IC-705 IP Interface connects an ICOM IC-705 to your local network and exposes browser-based JS8Call, logging and configuration tools. All pages are served at **`http://ic705.local`** (or the device IP address if mDNS is not available). In station mode the bare address redirects to JS8LAN; in AP mode it opens SETUP. The navigation bar links to:
 
 | Tab | URL | Purpose |
 |-----|-----|---------|
 | SETUP | `/setup` | Device configuration |
-| CAT | `/` | Radio control |
+| JS8LAN | `/data` | JS8Call-compatible browser modem |
 | QRPLog | `/log` | Contest logging |
 | DXC | `/dxc.html` | DX cluster client (opens as a separate window) |
 | LOGSYNC | `/datasync` | QSO database synchronisation and import/export |
-| BD | `/bd` | Band decoder – frequency to output mapping |
-| DEBUG | `/ws-cat` | Raw CI-V WebSocket stream |
 
 ---
 
@@ -109,14 +107,6 @@ Each of TRX2 and TRX3 has a **Label** (shown in the log UI) and a connection typ
 | Manual mode for Phone (SSB/FM) | When checked, pressing Enter on an SSB/FM QSO logs it immediately without sending any macro. |
 | Blocked DXCC list | One DXCC entity name per line (e.g. `Russia`, `Belarus`, `Kaliningrad`). Matching callsigns are highlighted red in the log journal. When Enter is pressed on a blocked call the call field is cleared and a ⛔ warning is shown for 5 seconds; in RUN mode the CQ macro is re-sent automatically. |
 
-### CAT page CW memories `spiffs`
-
-Four free-text slots (CW memory 1–4). The text is keyed when the corresponding memory button is pressed on the CAT page. Maximum 30 characters per slot. In CW mode the text is sent via the IC-705 CW keyer; in RTTY mode it is sent via FSK GPIO.
-
-### CAT page frequency memories `spiffs`
-
-Ten frequency memory slots selectable from the CAT page. Format: frequency in Hz followed by mode, e.g. `14074000 USB` or `144174000 FM`.
-
 ### Configuration backup and restore
 
 At the bottom of the SETUP page:
@@ -126,58 +116,7 @@ At the bottom of the SETUP page:
 
 ---
 
-## 2. CAT Page
-
-**`http://ic705.local/`**
-
-![CAT page](CAT.png)
-
-The main radio control view. All controls communicate with the IC-705 in real time over the Bluetooth CI-V connection.
-
-### Frequency and meters
-
-- **Frequency display** — current VFO frequency updated in real time. Click the **FREQ** input field below to type a frequency in Hz and press Enter to QSY.
-- **S meter / Power meter** — switches automatically between receive (S meter) and transmit (power/SWR). The secondary bar shows the **supply voltage**.
-- **MEM dropdown** — quick QSY to a saved frequency memory. Selects frequency and mode simultaneously.
-
-### MODE, RIT and tune controls
-
-- **MODE selector** — change the radio mode: LSB, USB, AM, CW, RTTY, FM, DV.
-- **RIT** — shows the current RIT offset. The **Clear** button zeroes it.
-- **Tune slider** — drag to tune up or down from the current frequency. The step size (1 Hz, 10 Hz, 100 Hz, 1 kHz) is selected from the dropdown next to the slider. The slider snaps back to centre on release.
-
-### Sliders
-
-| Slider | Controls |
-|--------|---------|
-| AF volume | Receiver audio volume (CI-V). |
-| KEY SPEED | CW keyer speed (CI-V). |
-| RF power | Transmit power output (CI-V). |
-
-### Buttons
-
-| Button | Function |
-|--------|---------|
-| P.AMP/ATT | Cycles through preamplifier / attenuator settings. |
-| VOX | Cycles through VOX states. |
-| FIL1/FIL2/FIL3 | Cycles through IF filter selections. |
-| PTT | Activates transmit (push to talk). |
-
-### CW text input
-
-Type any text in the **Send CW text** field and press Enter to key it immediately via the IC-705 CW keyer. The **Clear** button empties the field. The radio must be in CW or CW-R mode.
-
-### CW memory buttons
-
-Four buttons (CW 1–CW 4) send the pre-configured CW memory texts defined in SETUP. Content can be edited under **SETUP → CW memories**.
-
-### Status footer
-
-Displays CI-V address, WebSocket connection state, radio on/off state, and firmware version.
-
----
-
-## 3. QRPLog Page
+## 2. QRPLog Page
 
 **`http://ic705.local/log`**
 
@@ -308,7 +247,7 @@ Press the **?** button in the bottom bar to show this table at any time.
 
 ---
 
-## 4. DXC Page
+## 3. DXC Page
 
 **`http://ic705.local/dxc.html`** — opens as a separate popup window.
 
@@ -362,7 +301,7 @@ Type a DX cluster command (e.g. `sh/dx 20` or `set/filter`) in the command field
 
 ---
 
-## 5. LOGSYNC Page
+## 4. LOGSYNC Page
 
 **`http://ic705.local/datasync`**
 
@@ -441,50 +380,4 @@ The format is detected automatically. Click *Select log file…* and choose the 
 
 ---
 
-## 6. BD Page
-
-**`http://ic705.local/bd`**
-
-![Band Decoder page](BD.png)
-
-The Band Decoder page maps the current operating frequency to up to 16 binary outputs driven by a shift register (SPI: clock GPIO 15, latch GPIO 13, data GPIO 14). It is available on hardware revision 4 and above.
-
-### Frequency source
-
-The **Source** dropdown in the toolbar selects which transceiver's frequency is used to determine the active band. Only TRX entries whose label has been changed from the default are shown. Selecting a source starts real-time polling:
-
-| Source | Poll endpoint | Interval |
-|--------|---------------|----------|
-| TRX1 | `/state` | 1 s |
-| TRX2 / TRX3 | `/api/status` | 2 s |
-
-### Band table
-
-The table has **16 rows**, each representing one band segment. For each row you set:
-
-| Column | Description |
-|--------|-------------|
-| From (Hz) | Lower edge of the frequency range. |
-| To (Hz) | Upper edge of the frequency range. |
-| OUT 1–16 | Checkbox for each of the 16 shift-register outputs. Check the outputs that should be active when the radio is inside this band segment. |
-
-When the current frequency falls within a row's range, that row is highlighted and the corresponding outputs are driven high. Only one row is active at a time (first match wins).
-
-### Buttons
-
-| Button | Function |
-|--------|---------|
-| Save | Stores the current table and source selection to EEPROM. |
-| Defaults | Reloads the factory IARU band plan (160 m – 70 cm, 16 entries) and resets all outputs to unchecked. |
-
----
-
-## 7. DEBUG Page
-
-**`http://ic705.local/ws-cat`**
-
-Shows a raw WebSocket stream of all CI-V frames passing between the ESP32 and the IC-705. Intended for development and troubleshooting — use it to verify that the Bluetooth connection is active, frequency polling is working, and CI-V commands are being acknowledged.
-
----
-
-*Document updated 2026-05-22*
+*Document updated 2026-07-24*

@@ -184,4 +184,4 @@ Set **Device NET_ID** to `00` in the SETUP page and save. The firmware will not 
 | Band Decoder source TRX2/3 shows `0 Hz` | Wrong peer NET_ID configured | Check NET_ID on the keyer LCD; update TRX2/TRX3 NET_ID in SETUP |
 | TrxNet inactive after WiFi reconnect | `net.begin()` not re-called | Firmware handles this automatically; if not, power-cycle the device |
 | Device name shows `disabled` | NET_ID set to `00` | Set NET_ID to any non-zero value (e.g. `01`) in SETUP |
-| Remote `/s-hz` has no effect | Radio not connected via BT | Check Bluetooth connection status on the CAT page |
+| Remote `/s-hz` has no effect | Radio not connected via BT | Check the TRX1 connection status in JS8LAN or SETUP |
