@@ -139,6 +139,72 @@ button { color: inherit; cursor: pointer; }
 .frequency-preset strong { color: var(--cyan); }
 .frequency-preset span { color: var(--muted); font: 10px ui-monospace, monospace; white-space: nowrap; }
 
+/* Frequency timetable ------------------------------------------------------ */
+.freq-timetable {
+  height: 42px; display: flex; align-items: center; gap: 7px; padding: 3px 10px;
+  border: 1px solid #3d675e; border-radius: 5px; background: #081310; text-align: left;
+}
+.freq-timetable:hover, .freq-timetable[aria-expanded="true"] { border-color: var(--cyan); background: #10231f; }
+.freq-timetable small { display: block; color: var(--muted); font-size: 8px; font-weight: 800; letter-spacing: .12em; }
+.freq-timetable b { display: block; font: 800 14px/1.05 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .02em; color: var(--muted); }
+.freq-timetable.active { border-color: var(--green); background: #0c2018; }
+.freq-timetable.active b { color: var(--green); }
+.freq-timetable .chevron { color: var(--muted); }
+
+.freq-timetable-panel {
+  position: absolute; z-index: 80; top: calc(100% + 5px); left: 0; width: min(520px, calc(100vw - 16px));
+  padding: 10px; border: 1px solid #4b756c; border-radius: 7px; background: #0c1a18;
+  box-shadow: 0 16px 44px #000c;
+}
+.freq-timetable-panel.active { border-color: var(--green); }
+.freq-timetable-panel header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin: 0 2px 9px; }
+.freq-timetable-panel header strong { color: var(--cyan); }
+.freq-timetable-panel.active header strong { color: var(--green); }
+.freq-timetable-panel header small, .freq-timetable-panel footer { display: block; color: var(--muted); font-size: 10px; }
+.freq-timetable-panel footer { margin: 8px 2px 0; }
+.tt-actions { display: flex; gap: 6px; flex: none; }
+.tt-toggle, .tt-clear {
+  padding: 5px 12px; border: 1px solid var(--line); border-radius: 4px; background: #081310;
+  color: var(--muted); font-size: 11px; font-weight: 850; letter-spacing: .06em;
+}
+.tt-toggle:hover { border-color: var(--cyan); }
+.tt-toggle[aria-checked="true"] { border-color: var(--green); background: #0c2018; color: var(--green); box-shadow: 0 0 7px #5ad18a33; }
+.tt-clear:hover { border-color: var(--amber); color: var(--amber); }
+
+.tt-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px 12px; max-height: 46vh; overflow-y: auto; }
+.tt-row { display: grid; grid-template-columns: 24px 1fr 1fr; gap: 4px; align-items: center; }
+.tt-hour { color: var(--muted); font: 700 10px ui-monospace, monospace; }
+.tt-cell {
+  min-width: 0; padding: 4px 5px; border: 1px solid var(--line); border-radius: 4px;
+  background: #0a1512; color: var(--muted); font: 700 10px ui-monospace, monospace;
+  text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tt-cell:hover { border-color: var(--cyan); }
+.tt-cell.filled { border-color: #3d675e; background: #10231f; color: var(--cyan); }
+.tt-cell.now { outline: 2px solid var(--amber); outline-offset: -1px; }
+
+.tt-popover {
+  position: absolute; z-index: 90; width: min(300px, calc(100vw - 24px));
+  padding: 9px; border: 1px solid #4b756c; border-radius: 6px; background: #0e1c19;
+  box-shadow: 0 12px 32px #000d;
+}
+.tt-popover header { display: flex; align-items: baseline; justify-content: space-between; margin: 0 1px 7px; }
+.tt-popover header strong { color: var(--cyan); font-size: 12px; }
+.tt-popover header small { color: var(--muted); font-size: 10px; }
+.tt-bands { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+.tt-band {
+  padding: 5px 2px; border: 1px solid var(--line); border-radius: 4px; background: #081310;
+  color: var(--cyan); font: 700 10px ui-monospace, monospace; text-align: center;
+}
+.tt-band:hover { border-color: var(--cyan); background: #15332d; }
+.tt-band.current { border-color: var(--amber); }
+.tt-custom { display: flex; gap: 5px; margin-top: 7px; }
+.tt-custom input { flex: 1; min-width: 0; padding: 5px 6px; border: 1px solid var(--line); border-radius: 4px; background: #06100e; color: var(--text); font: 700 11px ui-monospace, monospace; }
+.tt-custom button { padding: 5px 9px; border: 1px solid var(--line); border-radius: 4px; background: #081310; color: var(--muted); font-size: 10px; font-weight: 800; }
+.tt-custom button:hover { border-color: var(--cyan); color: var(--cyan); }
+.tt-clear-slot { width: 100%; margin-top: 6px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 4px; background: #081310; color: var(--muted); font-size: 10px; font-weight: 800; }
+.tt-clear-slot:hover { border-color: var(--amber); color: var(--amber); }
+
 .trx-help-dialog {
   width:min(760px, calc(100vw - 18px)); max-height:calc(100vh - 18px); padding:0;
   border:1px solid #4b756c; border-radius:9px; background:#0b1715; color:var(--text);
@@ -251,8 +317,10 @@ button { color: inherit; cursor: pointer; }
 .tx-marker { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--amber); pointer-events: none; }
 .tx-marker::before { content: "TX"; position: absolute; top: 5px; left: 4px; color: var(--amber); font: 800 10px monospace; }
 
-.quick-controls { display: grid; grid-template-columns: 1fr 1fr 1fr auto auto; gap: 8px; padding: 8px 10px; }
+.quick-controls { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 8px; padding: 8px 10px; }
 .quick-controls label, .inline-status { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
+.tx-actions { display: flex; gap: 8px; min-width: 0; }
+.tx-actions .heartbeat, .tx-actions .tune { flex: 1 1 auto; }
 .inline-status b { color: var(--amber); }
 .heartbeat {
   min-width: 86px; padding: 5px 12px; border: 1px solid var(--cyan); border-radius: 5px;
@@ -342,7 +410,6 @@ button { color: inherit; cursor: pointer; }
 .email-session > header span { color:var(--muted); }
 .email-form { display:grid; grid-template-columns:140px minmax(0,1fr); align-items:start; gap:9px; }
 .email-form > label { display:contents; color:var(--muted); font-size:12px; }
-.email-form > label::before { content:attr(data-label); }
 .email-form input, .email-form select, .email-form textarea {
   width:100%; min-width:0; padding:8px; border:1px solid var(--line); border-radius:4px;
   background:#081310; color:var(--text);
@@ -515,6 +582,11 @@ button { color: inherit; cursor: pointer; }
   .frequency-presets { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .frequency-preset { display: block; padding: 7px; }
   .frequency-preset strong, .frequency-preset span { display: block; }
+  .tt-control { flex: 1; min-width: 0; }
+  .freq-timetable { width: 100%; height: 41px; padding-inline: 7px; }
+  .freq-timetable-panel { position: fixed; top: 51px; left: 5px; right: 5px; width: auto; }
+  .freq-timetable-panel header { flex-direction: column; }
+  .tt-grid { grid-template-columns: 1fr; }
   .modem-menu { gap: 6px; padding-inline: 7px; }
   .modem-menu label { grid-template-columns: auto minmax(0, 1fr); flex: 1; }
   .modem-state { max-width: 105px; text-align: right; line-height: 1.15; }

@@ -193,6 +193,24 @@ f.onload=()=>{
         directedCommandFrame:(()=>{const frames=f.contentWindow.Js8Protocol.buildReplyFrames({myCall:'OK1HRA',toCall:'K0OG',text:'SNR -12'}),decoded=f.contentWindow.Js8Protocol.decodeFrame({...frames[0],submode:0,offsetHz:1500,slotUtcMs:0});return frames.length===1&&frames[0].raw==='TBx2Q-uJkbaJ'&&frames[0].messageText==='OK1HRA: K0OG SNR -12'&&decoded.command===' SNR'&&decoded.number==='-12';})(),
         heartbeatProtocolFrame:(()=>{const frames=f.contentWindow.Js8Protocol.buildHeartbeatFrames({myCall:'OK1HRA',grid:'JO70AA'}),decoded=f.contentWindow.Js8Protocol.decodeFrame({...frames[0],submode:0,offsetHz:1500,slotUtcMs:0});return frames.length===1&&frames[0].raw==='31-QkpgqOT6W'&&frames[0].messageText==='OK1HRA: @HB JO70'&&decoded.command==='HEARTBEAT'&&decoded.text==='OK1HRA: @HB JO70 ';})()
       };
+      // Frequency timetable: activation applies the current filled slot; a due
+      // change is held back during TX and lands once it clears; an empty current
+      // slot never catches up. ttRuntime is probed synchronously, then reset so
+      // no pending frequency or schedule leaks into the checks that follow.
+      (function(){
+        const T=f.contentWindow.__dataTest, idx=T.ttSlotNow(), other=(idx+1)%48;
+        T.setRadioConnection(true); T.setRadioTx(false);
+        T.ttReset(); T.ttSet(idx,7078000,'40 m'); T.ttEnable(true);
+        checks.timetableActivationApplies=T.ttRuntime().appliedHz===7078000;
+        const btn=T.ttButton(); checks.timetableButtonActive=btn.active&&btn.text==='40 m';
+        T.ttReset(); T.setRadioTx(true); T.ttSet(idx,14078000,'20 m'); T.ttEnable(true); T.ttTick();
+        checks.timetableTxDefers=T.ttRuntime().appliedHz===null;
+        T.setRadioTx(false); T.ttTick();
+        checks.timetableTxResumes=T.ttRuntime().appliedHz===14078000;
+        T.ttReset(); T.setRadioTx(false); T.ttSet(other,7078000,'40 m'); T.ttEnable(true); T.ttTick();
+        checks.timetableNoCatchup=T.ttRuntime().appliedHz===null;
+        T.ttReset(); T.setRadioTx(false);
+      })();
       // Session snapshot round-trip on the real persist/restore path (the ?test
       // build only skips the automatic hooks, not the functions): keep a draft,
       // write to sessionStorage, restore into state and confirm the frequency

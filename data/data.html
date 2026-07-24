@@ -24,6 +24,23 @@
       </button>
       <section id="frequencyMenu" class="frequency-menu" hidden aria-label="JS8 dial frequencies"></section>
     </div>
+    <div class="trx-control tt-control">
+      <button id="freqTimetableButton" class="freq-timetable" type="button" aria-expanded="false" aria-controls="freqTimetablePanel" title="Frequency timetable">
+        <span><small>TIMETABLE</small><b id="freqTimetableValue">OFF</b></span><span class="chevron">▾</span>
+      </button>
+      <section id="freqTimetablePanel" class="freq-timetable-panel" hidden aria-label="Frequency timetable">
+        <header>
+          <div><strong>Frequency timetable</strong><small>Tune the TRX on a 24-hour UTC schedule · 30-min steps</small></div>
+          <div class="tt-actions">
+            <button id="freqTimetableEnable" class="tt-toggle" type="button" role="switch" aria-checked="false">OFF</button>
+            <button id="freqTimetableClear" class="tt-clear" type="button">Clear</button>
+          </div>
+        </header>
+        <div id="freqTimetableGrid" class="tt-grid"></div>
+        <div id="freqTimetablePopover" class="tt-popover" hidden></div>
+        <footer>Empty slots leave the radio unchanged. Frequency never changes during transmit.</footer>
+      </section>
+    </div>
     <span id="trxMode" class="trx-mode">---</span>
     <span id="linkState" class="live">● OFFLINE</span>
     <button id="trxReconnect" class="trx-reconnect" type="button" hidden>Reconnect</button>
@@ -200,8 +217,10 @@
           <label>TX speed <select id="txSpeed"><option>AUTO</option><option>A</option><option>B</option><option>C</option><option>E</option><option>I</option></select><small id="txSpeedResolved">A · 15 s</small></label>
           <label>TX offset <input id="txOffset" type="number" min="500" max="2700" step="1"><span>Hz</span></label>
           <span class="inline-status">Audio <b id="audioLevel">-- dBFS</b></span>
-          <button id="heartbeatButton" class="heartbeat" type="button" disabled>HB <small id="heartbeatOffset">1500 Hz</small></button>
-          <button id="tuneButton" class="tune" type="button" disabled><span id="tuneLabel">TUNE</span><small id="tuneOffset">1500 Hz</small></button>
+          <div class="tx-actions">
+            <button id="heartbeatButton" class="heartbeat" type="button" disabled>HB <small id="heartbeatOffset">1500 Hz</small></button>
+            <button id="tuneButton" class="tune" type="button" disabled><span id="tuneLabel">TUNE</span><small id="tuneOffset">1500 Hz</small></button>
+          </div>
         </div>
       </details>
 
@@ -283,6 +302,7 @@
           <button type="button" data-traffic-filter="5m" aria-pressed="false">5 min</button>
           <button type="button" data-traffic-filter="all" aria-pressed="true">ALL</button>
           <button type="button" data-traffic-filter="mycall" aria-pressed="false">MYCALL</button>
+          <button type="button" data-traffic-filter="tx" aria-pressed="false" title="Only own transmissions that went on air">TX</button>
           <button type="button" data-traffic-clear class="traffic-clear" disabled>CLEAR</button>
         </div>
         <div id="traffic" class="messages"><div class="empty-row">Waiting for JS8 activity…</div></div>

@@ -65,6 +65,10 @@ const dom = {
   trxHelpButton:$("trxHelpButton"), trxHelpDialog:$("trxHelpDialog"),
   trxHelpModeWarning:$("trxHelpModeWarning"),
   frequencyMenu:$("frequencyMenu"), linkState:$("linkState"), operatorState:$("operatorState"),
+  freqTimetableButton:$("freqTimetableButton"), freqTimetableValue:$("freqTimetableValue"),
+  freqTimetablePanel:$("freqTimetablePanel"), freqTimetableEnable:$("freqTimetableEnable"),
+  freqTimetableClear:$("freqTimetableClear"), freqTimetableGrid:$("freqTimetableGrid"),
+  freqTimetablePopover:$("freqTimetablePopover"),
   trxReconnect:$("trxReconnect"),
   utcClock:$("utcClock"), timingState:$("timingState"), modeSelect:$("modeSelect"),
   modemState:$("modemState"), js8:$("js8Interface"),
@@ -242,7 +246,7 @@ const state = {
   activeOutgoing:null, lastOutgoing:null, outgoingLog:[],
   blockedDxccList:[],
   settingsDraft:{myCall:null,grid:null,txGain:null}, reconnectPending:false,
-  activeLog:null, loggedCalls:new Set(),
+  js8Log:null, loggedCalls:new Set(), autoLogInFlight:new Set(),
 };
 let audioSource = null, activeDecoder = null, activeEncoder = null;
 let radioPollInFlight = false;
@@ -672,6 +676,8 @@ function handleDecoderEvent(event) {
   }
   renderStartup();
   if (activityChanged) renderActivity();
+  // A new decode may complete the both-directions SNR exchange for some station.
+  if (activityChanged || event.type === "frame") maybeAutoLogQsos();
   if (["loading","status","error"].includes(event.type)) renderControls();
   if (["status","error"].includes(event.type)) renderDiagnostics();
 }
@@ -857,6 +863,143 @@ function renderFrequencyMenu() {
   frequencyMenuKey=String(selected);
 }
 
+// ---- frequency timetable ----------------------------------------------------
+// A sparse 24-hour UTC schedule of 48 half-hour slots that tunes the TRX at slot
+// boundaries. It runs on the page-wide scheduler and stores itself in
+// Js8Settings. Empty slots leave the radio alone (no catch-up); a due change is
+// held back while transmitting or disconnected and lands once the radio is free.
+const ttRuntime = {appliedSlotIndex:null, appliedHz:null, appliedBand:null, shownSlotIndex:-1, editSlot:null};
+
+function timetable() { return settings.freqTimetable || (settings.freqTimetable={enabled:false, slots:{}}); }
+function slotIndexNow() { const d=new Date(); return d.getUTCHours()*2 + (d.getUTCMinutes()>=30 ? 1 : 0); }
+function slotLabel(index) { return `${String(Math.floor(index/2)).padStart(2,"0")}:${index%2 ? "30" : "00"}`; }
+function slotText(slot) { return slot ? (slot.band || Js8TrxPresets.formatFrequency(slot.hz)) : ""; }
+// Edits mutate settings.freqTimetable in place; persistSettings re-normalizes and
+// writes it. label:false leaves the storage banner untouched.
+function persistTimetable() { persistSettings(false); }
+
+function timetableDisplay() {
+  const tt=timetable();
+  if (!tt.enabled) return {text:"OFF", active:false};
+  const current=tt.slots[slotIndexNow()];
+  if (current) return {text:slotText(current), active:true};
+  if (ttRuntime.appliedHz) return {text:ttRuntime.appliedBand || Js8TrxPresets.formatFrequency(ttRuntime.appliedHz), active:true};
+  return {text:"ON", active:true};
+}
+
+function renderTimetableButton() {
+  const view=timetableDisplay();
+  dom.freqTimetableValue.textContent=view.text;
+  dom.freqTimetableButton.classList.toggle("active",view.active);
+  dom.freqTimetablePanel.classList.toggle("active",view.active);
+  dom.freqTimetableEnable.textContent=timetable().enabled ? "ON" : "OFF";
+  dom.freqTimetableEnable.setAttribute("aria-checked",String(timetable().enabled));
+}
+
+function renderTimetableGrid() {
+  const tt=timetable(), nowIndex=slotIndexNow();
+  let html="";
+  for (let hour=0; hour<24; hour++) {
+    html+=`<div class="tt-row"><span class="tt-hour">${String(hour).padStart(2,"0")}</span>`
+      + [hour*2, hour*2+1].map(index => {
+          const slot=tt.slots[index];
+          return `<button class="tt-cell${slot?" filled":""}${index===nowIndex?" now":""}" type="button" data-slot="${index}" title="${slotLabel(index)} UTC">${slotText(slot)||"·"}</button>`;
+        }).join("")
+      + `</div>`;
+  }
+  dom.freqTimetableGrid.innerHTML=html;
+  ttRuntime.shownSlotIndex=nowIndex;
+}
+
+function openTimetablePopover(index, cell) {
+  ttRuntime.editSlot=index;
+  const tt=timetable(), slot=tt.slots[index], currentHz=slot?slot.hz:null;
+  const bands=Js8TrxPresets.PRESETS.map(p =>
+    `<button class="tt-band${p.frequencyHz===currentHz?" current":""}" type="button" data-band-hz="${p.frequencyHz}" data-band="${p.band}">${p.band}</button>`).join("");
+  const pop=dom.freqTimetablePopover;
+  pop.innerHTML=`<header><strong>${slotLabel(index)} UTC</strong><small>band or custom kHz</small></header>`
+    + `<div class="tt-bands">${bands}</div>`
+    + `<div class="tt-custom"><input id="ttCustom" type="number" inputmode="decimal" step="0.1" placeholder="e.g. 14074" aria-label="Custom frequency in kHz"><button type="button" data-tt-custom>Set kHz</button></div>`
+    + `<button class="tt-clear-slot" type="button" data-tt-clear-slot>Clear slot</button>`;
+  pop.hidden=false;
+  const panelBox=dom.freqTimetablePanel.getBoundingClientRect(), cellBox=cell.getBoundingClientRect();
+  const left=Math.max(6, Math.min(cellBox.left-panelBox.left, dom.freqTimetablePanel.clientWidth-pop.offsetWidth-6));
+  pop.style.left=`${left}px`;
+  pop.style.top=`${cellBox.bottom-panelBox.top+4}px`;
+  const input=pop.querySelector("#ttCustom");
+  if (input && slot && !slot.band) input.value=String(currentHz/1000);
+}
+
+function closeTimetablePopover() {
+  ttRuntime.editSlot=null;
+  dom.freqTimetablePopover.hidden=true;
+  dom.freqTimetablePopover.innerHTML="";
+}
+
+function applyTimetableEdit() {
+  persistTimetable();
+  renderTimetableGrid();
+  renderTimetableButton();
+  reconcileTimetable();
+}
+
+function setTimetableSlot(index, hz, band) {
+  if (index===null || !Number.isFinite(hz)) return;
+  timetable().slots[index]=band ? {hz, band} : {hz};
+  applyTimetableEdit();
+}
+
+function clearTimetableSlot(index) {
+  if (index===null) return;
+  delete timetable().slots[index];
+  applyTimetableEdit();
+}
+
+function clearTimetable() {
+  if (!Object.keys(timetable().slots).length) return;
+  if (typeof confirm==="function" && !confirm("Clear the entire frequency timetable?")) return;
+  timetable().slots={};
+  applyTimetableEdit();
+}
+
+function setTimetableEnabled(enabled) {
+  timetable().enabled=enabled;
+  // Re-evaluate from scratch: on enable this re-applies the current slot when it
+  // is filled; on disable it stops holding any applied marker.
+  ttRuntime.appliedSlotIndex=null; ttRuntime.appliedHz=null; ttRuntime.appliedBand=null;
+  persistTimetable();
+  renderTimetableButton();
+  reconcileTimetable();
+}
+
+// The single heartbeat of the schedule. Reruns on a slow tick (every ~5 s) and
+// after any edit, so it also serves as the "retry once TX clears" mechanism.
+function reconcileTimetable() {
+  const tt=timetable(), index=slotIndexNow();
+  if (index!==ttRuntime.shownSlotIndex && !dom.freqTimetablePanel.hidden) renderTimetableGrid();
+  if (!tt.enabled) {
+    ttRuntime.appliedSlotIndex=null; ttRuntime.appliedHz=null; ttRuntime.appliedBand=null;
+    renderTimetableButton();
+    return;
+  }
+  const slot=tt.slots[index];
+  if (!slot) {
+    // Empty current slot: never search backwards. Mark it seen so a later move
+    // into a filled slot registers as a fresh change.
+    ttRuntime.appliedSlotIndex=index;
+    renderTimetableButton();
+    return;
+  }
+  if (index===ttRuntime.appliedSlotIndex && slot.hz===ttRuntime.appliedHz) {
+    renderTimetableButton();
+    return;
+  }
+  if (radioTransmitting() || !state.radio.connected) { renderTimetableButton(); return; }
+  ttRuntime.appliedSlotIndex=index; ttRuntime.appliedHz=slot.hz; ttRuntime.appliedBand=slot.band||null;
+  renderTimetableButton();
+  requestFrequency(slot.hz).catch(()=>{});
+}
+
 function hasSeenTrxHelp() {
   try { return localStorage.getItem(TRX_HELP_SEEN_KEY) === "1"; }
   catch (_error) { return false; }
@@ -900,6 +1043,7 @@ function renderHeader() {
   const tb=audioSource ? audioSource.state().timebase : null;
   dom.timingState.textContent=tb ? `${tb.clock.status} · ${signed(tb.correction.totalMs)} ms` : "clock unchecked";
   if (frequencyMenuKey !== String(state.pendingFrequency || state.radio.frequency)) renderFrequencyMenu();
+  renderTimetableButton();
 }
 
 function renderStartup() {
@@ -1312,10 +1456,12 @@ function openSectionsForNewOwnCall(messages,calls) {
 const TRAFFIC_WINDOWS={"5m":5*60*1000};
 function messageTimeMs(message){return Number(message.lastSlotUtcMs || message.firstSlotUtcMs || 0);}
 // Recent-traffic filter: one active mode at a time. Time windows are rolling (recomputed
-// each render against Date.now()); MYCALL keeps only frames mentioning the operator's call.
+// each render against Date.now()); MYCALL keeps only frames mentioning the operator's call;
+// TX keeps only own transmissions that actually went on air (the red tx-emitted rows).
 function filterTraffic(messages,own){
   const filter=state.trafficFilter;
   if(filter==="mycall")return own ? messages.filter(message=>messageMentionsCall(message,own)) : messages;
+  if(filter==="tx")return messages.filter(message=>message.outgoing && message.emitted);
   const windowMs=TRAFFIC_WINDOWS[filter];
   if(!windowMs)return messages;
   const cutoff=Date.now()-windowMs;
@@ -1561,15 +1707,75 @@ function renderConversation() {
   dom.chat.scrollTop=dom.chat.scrollHeight;
 }
 
-// ---- QRPLog "Log QSO" from the TX session -----------------------------------
-// The QRPLog is browser-local IndexedDB (contestLogDb) shared across same-origin
-// pages, so this page logs straight into the log the /log tab has marked active.
-async function refreshActiveLog() {
+// ---- JS8CALL log: auto/manual "Log QSO" from the TX session -----------------
+// JS8LAN owns a dedicated, permanent log named JS8CALL and always writes into it,
+// independent of whichever log the QRPLog tab has marked active. A QSO is logged
+// automatically the moment an SNR was exchanged in BOTH directions (we sent one
+// and they sent one), or manually at any time before that. Dedup is per band, so
+// the same station can be logged again on a different band but not twice on one.
+const JS8_LOG_NAME="JS8CALL";
+
+// Amateur band from a dial frequency (mirrors freqToBand in log.js). "" = unknown.
+function bandOf(hz) {
+  const f=Number(hz)||0;
+  if(f>=1800000&&f<=2000000)return"160m";
+  if(f>=3500000&&f<=4000000)return"80m";
+  if(f>=5351500&&f<=5366500)return"60m";
+  if(f>=7000000&&f<=7300000)return"40m";
+  if(f>=10100000&&f<=10150000)return"30m";
+  if(f>=14000000&&f<=14350000)return"20m";
+  if(f>=18068000&&f<=18168000)return"17m";
+  if(f>=21000000&&f<=21450000)return"15m";
+  if(f>=24890000&&f<=24990000)return"12m";
+  if(f>=28000000&&f<=29700000)return"10m";
+  if(f>=50000000&&f<=54000000)return"6m";
+  if(f>=70000000&&f<=71000000)return"4m";
+  if(f>=144000000&&f<=148000000)return"2m";
+  if(f>=222000000&&f<=225000000)return"1.25m";
+  if(f>=420000000&&f<=450000000)return"70cm";
+  if(f>=902000000&&f<=928000000)return"33cm";
+  return"";
+}
+
+// In-memory dedup key: one QSO per callsign per band.
+function loggedKey(call, band) { return `${String(call||"").toUpperCase()}|${band||"?"}`; }
+
+// The newest JS8CALL log, or null. Identity is the contest name, not the date in
+// the id, so the log created on day one keeps receiving QSOs forever.
+async function findJs8Log() {
+  const logs=await window.LogDB.getLogs();
+  return (logs||[]).filter(item=>item && item.contestName===JS8_LOG_NAME)
+    .sort((a,b)=>String(b.createdAtUtc||"").localeCompare(String(a.createdAtUtc||"")))[0] || null;
+}
+
+// Resolve the JS8CALL log, creating it on first use (id becomes YYYY-MM-DD-JS8CALL).
+// Creation does NOT touch activeLogId — JS8LAN stays independent of the QRPLog tab.
+async function ensureJs8Log() {
+  if(state.js8Log)return state.js8Log;
+  let log=await findJs8Log();
+  if(!log){
+    const js8=currentJs8();
+    log=await window.LogDB.createLog({contestName:JS8_LOG_NAME,
+      stationCall:js8.myCall||"", myLocator:js8.grid||"", defaultExchange:"", startQsoNumber:1});
+  }
+  state.js8Log=log;
+  return log;
+}
+
+// Load the JS8CALL log and rebuild the per-band logged set from its real content,
+// so the button state is correct even after a reload. Never creates the log.
+async function refreshJs8Log() {
   if(!window.LogDB)return;
   try {
-    const id=await window.LogDB.getSetting("activeLogId",null);
-    state.activeLog=id ? await window.LogDB.getLog(id) : null;
-  } catch(_error) { state.activeLog=null; }
+    state.js8Log=await findJs8Log();
+    const logged=new Set();
+    if(state.js8Log){
+      const qsos=await window.LogDB.getQsosForLog(state.js8Log.id);
+      for(const qso of qsos||[]) if(qso && !qso.deleted && qso.call)
+        logged.add(loggedKey(qso.call, bandOf(qso.frequencyHz)));
+    }
+    state.loggedCalls=logged;
+  } catch(_error) { state.js8Log=null; }
   renderConversation();
 }
 
@@ -1591,20 +1797,40 @@ function reportedSnrForCall(call) {
   return "";
 }
 
+// Scan our own outgoing messages to a call newest→oldest for the SNR we last sent
+// them (an HB ack "HEARTBEAT SNR xx" or an answer "SNR xx"). Faulted/interrupted
+// transmissions never reached the air, so they do not count as a sent SNR.
+function sentSnrForCall(call) {
+  const items=state.conversations[call] || [];
+  for(let index=items.length-1;index>=0;index-=1){
+    const item=items[index];
+    if(item.direction!=="outgoing")continue;
+    if(item.status==="fault" || item.status==="interrupted")continue;
+    const match=/\bSNR\s*([+-]?\d+)/i.exec(item.sourceText || item.text || "");
+    if(match)return formatJs8Snr(Number(match[1]));
+  }
+  return "";
+}
+
 function updateLogQsoButton(station) {
   const button=dom.logQso;
   if(!button)return;
-  const call=state.selectedCall, log=state.activeLog;
-  button.textContent="LOG QSO";
-  if(!window.LogDB){button.disabled=true;button.title="Log storage unavailable";return;}
-  if(!call){button.disabled=true;button.title="Select a station to log";return;}
-  if(!log){button.disabled=true;button.title="Open or create a log in the QRPLog tab first";return;}
-  if(state.loggedCalls.has(`${log.id}|${call}`)){
-    button.disabled=true;button.textContent="LOGGED ✓";
-    button.title=`${call} already logged to ${log.contestName||log.id}`;return;
+  const call=state.selectedCall;
+  if(!window.LogDB){button.dataset.action="log";button.disabled=true;button.textContent="LOG QSO";button.title="Log storage unavailable";return;}
+  const band=bandOf(state.radio.frequency);
+  const loggedHere=Boolean(call) && state.loggedCalls.has(loggedKey(call,band));
+  // VIEW LOG: the selected station is already logged on this band, or nothing is
+  // selected but a JS8CALL log already exists to open.
+  if(loggedHere || (!call && state.js8Log)){
+    button.dataset.action="view";button.disabled=false;button.textContent="VIEW LOG";
+    button.title=loggedHere ? `${call} logged on ${band||"this band"} → ${JS8_LOG_NAME} (open log)` : `Open ${JS8_LOG_NAME} log`;
+    return;
   }
+  // LOG QSO: manual logging is always available once a station is selected.
+  button.dataset.action="log";button.textContent="LOG QSO";
+  if(!call){button.disabled=true;button.title="Select a station to log";return;}
   button.disabled=false;
-  button.title=`Log ${call} to ${log.contestName||log.id}`;
+  button.title=`Log ${call} to ${JS8_LOG_NAME}`;
 }
 
 function pushSystemMessage(call, text) {
@@ -1615,31 +1841,79 @@ function pushSystemMessage(call, text) {
   persistSession();
 }
 
-async function handleLogQso() {
-  const call=state.selectedCall, log=state.activeLog;
-  if(!call || !log || !window.LogDB)return;
-  const key=`${log.id}|${call}`;
-  if(state.loggedCalls.has(key))return;
-  dom.logQso.disabled=true; // guard against a double click while the write runs
-  const station=state.activity.calls.find(item=>item.call===call);
-  const rstSent=station ? formatJs8Snr(station.snr) : "";
-  const rstReceived=reportedSnrForCall(call);
+// Write one QSO for `call` into the JS8CALL log. Deduped per band against both the
+// in-memory set and the log's real content, and guarded against concurrent writes.
+// Shared by the manual button and the automatic both-SNR trigger.
+async function logQsoFor(call, {manual=false}={}) {
+  if(!call || !window.LogDB)return;
   const frequencyHz=Number(state.radio.frequency)||0;
+  const band=bandOf(frequencyHz);
+  const key=loggedKey(call,band);
+  if(state.loggedCalls.has(key) || state.autoLogInFlight.has(key))return;
+  state.autoLogInFlight.add(key);
   try {
+    const log=await ensureJs8Log();
+    // Persistent per-band dedup: survives reloads and writes from other pages.
+    const dupes=await window.LogDB.findDupes(log.id, call);
+    if((dupes||[]).some(qso=>qso && !qso.deleted && bandOf(qso.frequencyHz)===band)){
+      state.loggedCalls.add(key); renderConversation(); return;
+    }
+    const station=state.activity.calls.find(item=>item.call===call);
+    const rstSent=sentSnrForCall(call);
+    const rstReceived=reportedSnrForCall(call);
     const saved=await window.LogDB.commitQso({
       logId:log.id, call, rstSent, rstReceived,
       frequencyHz, frequencyDisplay:formatFrequency(frequencyHz),
       mode:"JS8", trx:state.radio.trx1Label||"IC-705",
       grid:(station && station.grid) || "",
       bandClass:frequencyHz>49_000_000 ? "VHF_PLUS" : "HF",
-      source:"js8-tx-session",
+      source:manual ? "js8-tx-session" : "js8-auto",
     });
     state.loggedCalls.add(key);
-    pushSystemMessage(call,`QSO logged → ${log.contestName||log.id} #${saved.qsoNumber} · rst ${rstSent||"—"} / rcv ${rstReceived||"—"}`);
-    refreshActiveLog();
+    pushSystemMessage(call,`QSO logged → ${JS8_LOG_NAME} #${saved.qsoNumber} · ${band||"?"} · rst ${rstSent||"—"} / rcv ${rstReceived||"—"}${manual?"":" (auto)"}`);
+    renderConversation();
   } catch(error) {
     pushSystemMessage(call,`Log failed: ${error.message||error}`);
+  } finally {
+    state.autoLogInFlight.delete(key);
   }
+}
+
+// Global auto-log sweep: every station that has exchanged an SNR in BOTH directions
+// gets logged, selected or not, so unattended QSOs are logged too. Cheap guards keep
+// it off the database once a call+band is already logged.
+function maybeAutoLogQsos() {
+  if(!window.LogDB)return;
+  const my=currentJs8().myCall;
+  if(!my)return;
+  const band=bandOf(state.radio.frequency);
+  const candidates=new Set();
+  for(const call of Object.keys(state.conversations||{}))candidates.add(call);
+  for(const item of state.activity.calls||[]) if(item && item.call)candidates.add(item.call);
+  for(const call of candidates){
+    if(!call || sameCall(call,my))continue;
+    const key=loggedKey(call,band);
+    if(state.loggedCalls.has(key) || state.autoLogInFlight.has(key))continue;
+    if(blockedCountryForCall(call))continue;
+    if(sentSnrForCall(call) && reportedSnrForCall(call))logQsoFor(call,{manual:false});
+  }
+}
+
+async function handleLogQso() {
+  const call=state.selectedCall;
+  if(!call || !window.LogDB)return;
+  dom.logQso.disabled=true; // guard against a double click while the write runs
+  await logQsoFor(call,{manual:true});
+  renderConversation();
+}
+
+// VIEW LOG: steer the QRPLog tab to the JS8CALL log, then open it in a new window.
+async function openJs8Log() {
+  try {
+    const log=state.js8Log || await findJs8Log();
+    if(log)await window.LogDB.setSetting("activeLogId", log.id);
+  } catch(_error) {}
+  window.open("/log","_blank");
 }
 
 function renderDiagnostics() {
@@ -2576,6 +2850,8 @@ function queueOutgoing(messageText, conversationCall="") {
   renderTxPayload();
   renderActivity();
   persistSession();
+  // Sending our half of an SNR exchange may complete a QSO worth auto-logging.
+  if(conversationCall)maybeAutoLogQsos();
   return item;
 }
 
@@ -2963,6 +3239,18 @@ function bind() {
   dom.trxHelpDialog.addEventListener("click",event=>{if(event.target===dom.trxHelpDialog)dom.trxHelpDialog.close();});
   dom.trxFrequency.addEventListener("click",()=>{const open=dom.frequencyMenu.hidden;dom.frequencyMenu.hidden=!open;dom.trxFrequency.setAttribute("aria-expanded",String(open));});
   dom.frequencyMenu.addEventListener("click",event=>{const button=event.target.closest("[data-frequency]");if(button)requestFrequency(Number(button.dataset.frequency)).catch(()=>{});});
+  dom.freqTimetableButton.addEventListener("click",()=>{const open=dom.freqTimetablePanel.hidden;dom.freqTimetablePanel.hidden=!open;dom.freqTimetableButton.setAttribute("aria-expanded",String(open));if(open){renderTimetableGrid();renderTimetableButton();}else closeTimetablePopover();});
+  dom.freqTimetableEnable.addEventListener("click",()=>setTimetableEnabled(!timetable().enabled));
+  dom.freqTimetableClear.addEventListener("click",clearTimetable);
+  dom.freqTimetableGrid.addEventListener("click",event=>{const cell=event.target.closest("[data-slot]");if(!cell)return;const index=Number(cell.dataset.slot);if(ttRuntime.editSlot===index){closeTimetablePopover();return;}openTimetablePopover(index,cell);});
+  dom.freqTimetablePopover.addEventListener("click",event=>{
+    const band=event.target.closest("[data-band-hz]");
+    if(band){setTimetableSlot(ttRuntime.editSlot,Number(band.dataset.bandHz),band.dataset.band);closeTimetablePopover();return;}
+    if(event.target.closest("[data-tt-custom]")){const input=dom.freqTimetablePopover.querySelector("#ttCustom");const hz=Math.round((Number(input&&input.value)||0)*1000);if(hz>=Js8Settings.TIMETABLE_MIN_HZ&&hz<=Js8Settings.TIMETABLE_MAX_HZ){setTimetableSlot(ttRuntime.editSlot,hz,null);closeTimetablePopover();}else if(input)input.focus();return;}
+    if(event.target.closest("[data-tt-clear-slot]")){clearTimetableSlot(ttRuntime.editSlot);closeTimetablePopover();return;}
+  });
+  dom.freqTimetablePopover.addEventListener("keydown",event=>{if(event.key!=="Enter"||event.target.id!=="ttCustom")return;event.preventDefault();const hz=Math.round((Number(event.target.value)||0)*1000);if(hz>=Js8Settings.TIMETABLE_MIN_HZ&&hz<=Js8Settings.TIMETABLE_MAX_HZ){setTimetableSlot(ttRuntime.editSlot,hz,null);closeTimetablePopover();}});
+  document.addEventListener("click",event=>{if(dom.freqTimetablePopover.hidden)return;if(event.target.closest(".tt-popover")||event.target.closest("[data-slot]"))return;closeTimetablePopover();});
   dom.waterfall.addEventListener("click",event=>{const rect=dom.waterfall.getBoundingClientRect();setJs8Setting("txOffsetHz",Math.round(RX_LOW+(event.clientX-rect.left)/rect.width*(RX_HIGH-RX_LOW)));activeEncoder&&activeEncoder.setToneOffset(currentJs8().txOffsetHz);});
   dom.recipient.addEventListener("change",()=>chooseCall(dom.recipient.value.toUpperCase().replace(/[^A-Z0-9/]/g,"")));
   dom.recipientClear.addEventListener("click",clearRecipient);
@@ -3036,7 +3324,7 @@ function bind() {
   });
   dom.txGain.addEventListener("change",()=>{const value=state.settingsDraft.txGain===null?dom.txGain.value:state.settingsDraft.txGain;state.settingsDraft.txGain=null;setJs8Setting("txGain",Number(value)||.25);});
   dom.txSafety.addEventListener("change",()=>setJs8Setting("txSafetyAccepted",dom.txSafety.checked));
-  dom.resetSettings.addEventListener("click",()=>{const reset=Js8Settings.reset(localStorage);settings=reset.settings;state.settingsDraft={myCall:null,grid:null,txGain:null};state.activeMode=settings.activeModem;dom.storageState.textContent=reset.label;applySettingsToRuntime();renderActivity();renderControls();});
+  dom.resetSettings.addEventListener("click",()=>{const reset=Js8Settings.reset(localStorage);settings=reset.settings;state.settingsDraft={myCall:null,grid:null,txGain:null};state.activeMode=settings.activeModem;dom.storageState.textContent=reset.label;applySettingsToRuntime();renderActivity();renderControls();closeTimetablePopover();if(!dom.freqTimetablePanel.hidden)renderTimetableGrid();reconcileTimetable();});
   dom.startupRetry.addEventListener("click",()=>location.reload());
   dom.heartbeat.addEventListener("click",()=>{if(!dom.heartbeat.disabled)startHeartbeat();});
   dom.tune.addEventListener("click",()=>{if(!dom.tune.disabled)toggleTune();});
@@ -3048,8 +3336,8 @@ function bind() {
   // audio and the decoder are warm again.
   dom.chat.addEventListener("click",event=>{const button=event.target.closest("[data-resend-text]");if(!button)return;dom.message.value=button.dataset.resendText;renderControls();persistSession();dom.message.focus({preventScroll:true});const end=dom.message.value.length;dom.message.setSelectionRange(end,end);});
   dom.abort.addEventListener("click",()=>activeEncoder&&activeEncoder.abort());
-  dom.logQso.addEventListener("click",handleLogQso);
-  window.addEventListener("focus",refreshActiveLog);
+  dom.logQso.addEventListener("click",()=>{ if(dom.logQso.dataset.action==="view")openJs8Log(); else handleLogQso(); });
+  window.addEventListener("focus",refreshJs8Log);
   document.querySelectorAll("details[data-section]").forEach(details=>details.addEventListener("toggle",()=>{settings.ui.disclosures[details.dataset.section]=details.open;persistSettings(false);}));
   dom.stationMapSection.addEventListener("toggle",()=>{if(dom.stationMapSection.open)renderStationMap(state.activity.calls||[]);});
   window.addEventListener("resize",resizeWaterfall);
@@ -3057,7 +3345,7 @@ function bind() {
   dom.sessionTakeover.addEventListener("click",()=>{dom.sessionTakeover.disabled=true;acquireJs8Session(true).then(won=>{if(won)location.reload();else dom.sessionTakeover.disabled=false;});});
   window.addEventListener("pagehide",()=>{flushSession();if(activeEncoder)activeEncoder.abort();stopAudio();releaseJs8Session();});
   document.addEventListener("visibilitychange",()=>{if(document.hidden&&activeEncoder)activeEncoder.abort();});
-  addEventListener("keydown",event=>{if(event.key==="Escape"){if(activeEncoder)activeEncoder.abort();dom.frequencyMenu.hidden=true;closeMessagePresets();}});
+  addEventListener("keydown",event=>{if(event.key==="Escape"){if(activeEncoder)activeEncoder.abort();dom.frequencyMenu.hidden=true;closeMessagePresets();closeTimetablePopover();dom.freqTimetablePanel.hidden=true;dom.freqTimetableButton.setAttribute("aria-expanded","false");}});
 }
 
 async function init() {
@@ -3075,7 +3363,7 @@ async function init() {
   renderStartup(); selectMode(state.activeMode); resizeWaterfall(); renderActivity(); renderDiagnostics();
   if(sessionRestored){renderConversation();if(state.selectedCall)dom.reply.open=true;}
   restoreFileTransfers();
-  refreshActiveLog();
+  refreshJs8Log();
   scheduler.every("sessionPing",SESSION_PING_MS,pingJs8Session);
   scheduler.every("utcClock",250,()=>{dom.utcClock.textContent=`UTC ${new Date().toISOString().slice(11,19)}`;});
   renderRhythm(); scheduler.every("rhythm",100,renderRhythm);
@@ -3083,6 +3371,7 @@ async function init() {
   scheduler.every("txQueue",1000,()=>{drainTxQueue();renderTxQueue();});
   scheduler.every("heartbeat",5000,()=>{checkHeartbeat();renderHeartbeatState();});
   scheduler.every("cqRepeat",5000,checkCqRepeat);
+  renderTimetableButton(); scheduler.every("freqTimetable",5000,reconcileTimetable); reconcileTimetable();
   applyHeartbeatSettings();
   loadInbox();
   renderInbox();
@@ -3095,6 +3384,13 @@ async function init() {
     activityCounts(){return {messages:state.activity.messages.length,calls:state.activity.calls.length};},
     setRadioMode(mode){state.radio.mode=mode;renderHeader();},
     setRadioTx(tx){state.radio.tx=Boolean(tx);renderHeader();},
+    ttSlotNow(){return slotIndexNow();},
+    ttSet(index,hz,band){setTimetableSlot(Number(index),Number(hz),band||null);},
+    ttEnable(on){setTimetableEnabled(Boolean(on));},
+    ttTick(){reconcileTimetable();},
+    ttRuntime(){return {appliedSlotIndex:ttRuntime.appliedSlotIndex,appliedHz:ttRuntime.appliedHz,appliedBand:ttRuntime.appliedBand};},
+    ttButton(){return {text:dom.freqTimetableValue.textContent,active:dom.freqTimetableButton.classList.contains("active")};},
+    ttReset(){const tt=timetable();tt.slots={};tt.enabled=false;ttRuntime.appliedSlotIndex=null;ttRuntime.appliedHz=null;ttRuntime.appliedBand=null;state.pendingFrequency=null;persistTimetable();renderTimetableButton();renderHeader();},
     feedSpectrum(samples){ingestSpectrum(samples);},
     spectrumState(){return {agcLow,agcHigh,agcReady,rows:spectrumRows,fill:spectrumFill};},
     selectedCall(){return state.selectedCall;},
@@ -3120,7 +3416,18 @@ async function init() {
     receiveFileMessage(item){return handleFileActivityMessage(item);},
     snapshotBuild(){return buildSessionSnapshot();},
     snapshotWrite(){writeSessionSnapshot();},
-    snapshotRestore(){const ok=restoreSession();renderStartup();renderActivity();renderConversation();return ok;}
+    snapshotRestore(){const ok=restoreSession();renderStartup();renderActivity();renderConversation();return ok;},
+    // JS8CALL log affordances (TEST_MODE only) — drive the auto/manual logging path.
+    setMyCall(call){setJs8Setting("myCall",String(call||"").toUpperCase());renderActivity();renderConversation();},
+    selectCallForLog(call){state.selectedCall=String(call||"").toUpperCase();renderConversation();},
+    pushMessage(msg){state.activity.messages.push(msg);},
+    pushOutgoing(call,text,status){const c=String(call||"").toUpperCase();(state.conversations[c]||(state.conversations[c]=[])).push({direction:"outgoing",time:"00:00:00",text,sourceText:text,status:status||"completed"});},
+    autoLogSweep(){maybeAutoLogQsos();},
+    logQsoManual(call){state.selectedCall=String(call||"").toUpperCase();return logQsoFor(state.selectedCall,{manual:true});},
+    refreshJs8LogNow(){return refreshJs8Log();},
+    js8LogState(){return {log:state.js8Log?{id:state.js8Log.id,contestName:state.js8Log.contestName}:null,logged:[...state.loggedCalls],inFlight:[...state.autoLogInFlight]};},
+    logButton(){return {text:dom.logQso.textContent,action:dom.logQso.dataset.action||"",disabled:dom.logQso.disabled,title:dom.logQso.title};},
+    async logQsos(){const log=await findJs8Log();return log?await window.LogDB.getQsosForLog(log.id):[];}
   };
 }
 

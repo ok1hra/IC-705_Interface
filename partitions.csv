@@ -1,0 +1,9 @@
+# Name,   Type, SubType, Offset,   Size,     Flags
+# Custom layout for the IC-705 interface (4 MB flash, No OTA).
+# Bluetooth removed -> firmware ~0.96 MB, so app0 is shrunk from 2 MB to 1.375 MB
+# (still ~480 kB headroom) and the reclaimed space plus the dropped coredump
+# partition are handed to the LittleFS "spiffs" partition for web assets.
+nvs,      data, nvs,     0x9000,   0x5000,
+otadata,  data, ota,     0xe000,   0x2000,
+app0,     app,  ota_0,   0x10000,  0x160000,
+spiffs,   data, spiffs,  0x170000, 0x290000,

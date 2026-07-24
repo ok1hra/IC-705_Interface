@@ -6,7 +6,12 @@
   else root.Js8Settings = value;
 })(typeof globalThis !== "undefined" ? globalThis : self, function () {
   const STORAGE_KEY = "ic705.data.js8-settings";
-  const SCHEMA_VERSION = 7;
+  const SCHEMA_VERSION = 8;
+  // Frequency timetable: 48 half-hour UTC slots (index 0 = 00:00, 47 = 23:30).
+  // Global to the station (one radio), independent of the active modem.
+  const TIMETABLE_SLOTS = 48;
+  const TIMETABLE_MIN_HZ = 1000;
+  const TIMETABLE_MAX_HZ = 470000000;
   const MODEMS = ["js8call", "rtty45", "psk31", "ft8", "ft4", "cw"];
   const SPEEDS = ["AUTO", "A", "B", "C", "E", "I"];
   const DISCLOSURES = ["spectrum", "reply", "traffic", "stations", "inbox",
@@ -38,7 +43,28 @@
         auto:false, armHours:1, infoText:"", statusText:"",
         hb:false, hbAck:true, hbMinutes:15, groups:[], cqRepeatMin:0}},
       ui: {disclosures: {spectrum: true, reply: true, traffic: false,
-        stations: false, inbox: false, settings: false, timing: false}}};
+        stations: false, inbox: false, settings: false, timing: false}},
+      // Sparse schedule: only the slots the operator filled are stored. `enabled`
+      // is the ON/OFF switch that lets the browser apply changes on slot bounds.
+      freqTimetable: {enabled: false, slots: {}}};
+  }
+
+  // Keeps only well-formed, in-range slots. Each value is {hz, band?} -- `band`
+  // is a short display label (present for presets, absent for custom entries).
+  function normalizeTimetable(input) {
+    const source = input && typeof input === "object" ? input : {};
+    const rawSlots = source.slots && typeof source.slots === "object" ? source.slots : {};
+    const slots = {};
+    for (let index = 0; index < TIMETABLE_SLOTS; index++) {
+      const value = rawSlots[index] ?? rawSlots[String(index)];
+      if (!value || typeof value !== "object") continue;
+      const hz = Math.round(Number(value.hz));
+      if (!Number.isFinite(hz) || hz < TIMETABLE_MIN_HZ || hz > TIMETABLE_MAX_HZ) continue;
+      const band = typeof value.band === "string" && value.band.trim()
+        ? value.band.trim().slice(0, 8) : null;
+      slots[index] = band ? {hz, band} : {hz};
+    }
+    return {enabled: source.enabled === true, slots};
   }
 
   function normalize(input) {
@@ -85,7 +111,8 @@
               .filter(g => GROUP_RE.test(g) && !ALWAYS_GROUPS.includes(g)))].slice(0, 8)
           : [],
         cqRepeatMin:CQ_REPEAT_MIN.includes(Number(js8.cqRepeatMin)) ? Number(js8.cqRepeatMin) : 0}},
-      ui: {disclosures}};
+      ui: {disclosures},
+      freqTimetable: normalizeTimetable(source.freqTimetable)};
   }
 
   function migrate(input) {
@@ -111,6 +138,8 @@
       return {settings:normalize(input), status:"migrated-v5"};
     if (input.schemaVersion === 6)
       return {settings:normalize(input), status:"migrated-v6"};
+    if (input.schemaVersion === 7)
+      return {settings:normalize(input), status:"migrated-v7"};
     if (Number(input.schemaVersion) > SCHEMA_VERSION)
       return {settings: defaults(), status: "unsupported-future"};
     return {settings: defaults(), status: "invalid"};
@@ -125,6 +154,7 @@
       "migrated-v4": "Migrated from schema v4",
       "migrated-v5": "Migrated from schema v5",
       "migrated-v6": "Migrated from schema v6",
+      "migrated-v7": "Migrated from schema v7",
       corrupt: "Invalid saved data · defaults used",
       invalid: "Invalid saved data · defaults used",
       "unsupported-future": "Newer schema ignored",
@@ -171,6 +201,7 @@
     return {settings: defaults(), status: "reset", label: label("reset")};
   }
 
-  return {STORAGE_KEY, SCHEMA_VERSION, ARM_HOURS, HB_MINUTES, CQ_REPEAT_MIN, ALWAYS_GROUPS, defaults, normalize, migrate, load,
-    save, reset, clone};
+  return {STORAGE_KEY, SCHEMA_VERSION, ARM_HOURS, HB_MINUTES, CQ_REPEAT_MIN, ALWAYS_GROUPS,
+    TIMETABLE_SLOTS, TIMETABLE_MIN_HZ, TIMETABLE_MAX_HZ, normalizeTimetable,
+    defaults, normalize, migrate, load, save, reset, clone};
 });
