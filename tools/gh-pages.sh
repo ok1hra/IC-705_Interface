@@ -10,8 +10,9 @@ DATA_DIR="${ROOT_DIR}/data"
 SKETCH_FILE="${ROOT_DIR}/IC-705_Interface.ino"
 GZIP_ASSETS_SCRIPT="${ROOT_DIR}/tools/gzip-assets.sh"
 
-# no_ota partition scheme (No OTA — 2MB APP / 2MB SPIFFS)
-PARTITIONS_CSV_NAME="no_ota"
+# Custom sketch-local partition layout (No OTA — 1.375MB APP / 2.56MB SPIFFS,
+# coredump dropped). Located via SKETCH_PARTITIONS_CSV below, not the core tree.
+PARTITIONS_CSV_NAME="custom"
 # IMPORTANT: DIO, not QIO. These IC-705 interface boards ship a Zbit (0x5e) clone
 # flash chip whose QIO reads are unreliable — a QIO bootloader makes the ROM loader
 # read garbage after the first segment and the board never boots. DIO 80 MHz is
@@ -21,13 +22,13 @@ FLASH_MODE="dio"
 FLASH_FREQ="80m"
 FLASH_SIZE="4MB"
 
-# Offsets from no_ota.csv
+# Offsets from partitions.csv (sketch-local custom layout)
 BOOTLOADER_OFFSET=0x1000
 PARTITIONS_OFFSET=0x8000
 BOOT_APP0_OFFSET=0xe000
 APP_OFFSET=0x10000
-SPIFFS_OFFSET=0x210000
-SPIFFS_SIZE_DEC=$((0x1E0000))   # 1966080; exact no_ota.csv partition size
+SPIFFS_OFFSET=0x170000
+SPIFFS_SIZE_DEC=$((0x290000))   # 2686976; exact partitions.csv spiffs size
 
 ESP32_CORE_ROOT="${ESP32_CORE_ROOT:-}"
 BOOTLOADER_BIN="${BOOTLOADER_BIN:-}"
@@ -230,7 +231,13 @@ echo "==> Firmware REV: $FW_REV"
 # Locate partition CSV
 # ---------------------------------------------------------------------------
 
-PARTITIONS_CSV="${ESP32_CORE_ROOT}/tools/partitions/${PARTITIONS_CSV_NAME}.csv"
+# Sketch-local custom layout takes precedence (matches the ESP32 core prebuild
+# hook and tools/upload-firmware-spiffs.sh); fall back to the core tree otherwise.
+if [[ -f "${ROOT_DIR}/partitions.csv" ]]; then
+  PARTITIONS_CSV="${ROOT_DIR}/partitions.csv"
+else
+  PARTITIONS_CSV="${ESP32_CORE_ROOT}/tools/partitions/${PARTITIONS_CSV_NAME}.csv"
+fi
 if [[ ! -f "$PARTITIONS_CSV" ]]; then
   echo "ERROR: Partition CSV not found: $PARTITIONS_CSV" >&2
   exit 1
@@ -586,7 +593,7 @@ touch "${OUTPUT_DIR}/.nojekyll"
 echo ""
 echo "==> Build complete: ${OUTPUT_DIR}"
 echo "    Firmware REV : ${FW_REV}"
-echo "    Partitions   : ${PARTITIONS_CSV_NAME} (no OTA — 2MB APP / 2MB SPIFFS)"
+echo "    Partitions   : ${PARTITIONS_CSV_NAME} (no OTA — 1.375MB APP / 2.56MB SPIFFS)"
   echo "    Flash mode   : ${FLASH_MODE} ${FLASH_FREQ} (DIO required — Zbit clone flash)"
 if [[ -n "$SPIFFS_BIN" ]]; then
   echo "    LittleFS     : included"

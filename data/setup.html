@@ -14,6 +14,7 @@
       <a class="tab" href="/data" title="Web Client for JS8Call">JS8LAN</a>
       <a class="tab tab-active" href="/setup">SETUP</a>
       <a class="tab" href="/datasync">LOGSYNC</a>
+      <a class="tab bd-nav" href="/bd" hidden>BD</a>
       <span id="topbarFw" class="topbar-fw" data-rev=""></span>
     </nav>
   </header>
@@ -131,10 +132,9 @@
             <label>Connection
               <div class="input-with-tip">
                 <select name="trx1transport" id="trx1transport" class="setup-baud-select">
-                  <option value="lan">LAN &#8212; recommended</option>
-                  <option value="bluetooth">Bluetooth &#8212; not recommended</option>
+                  <option value="lan">LAN &#8212; WiFi / RS-BA1</option>
                 </select>
-                <span class="help-tip" data-tip="How the interface reaches the primary radio. LAN (WiFi / RS-BA1) has no WiFi/Bluetooth coexistence problems — recommended. Bluetooth is kept for compatibility only.">?</span>
+                <span class="help-tip" data-tip="How the interface reaches the primary radio. LAN (WiFi / RS-BA1) is the supported connection to the IC-705.">?</span>
               </div>
             </label>
             <label>CI-V address
@@ -159,18 +159,10 @@
               </label>
               <small class="setup-hint">Enable on the radio: IC-705 <code>MENU → SET → WLAN SET → Remote Settings → Network Control ON</code> and set Network User1 ID/password.</small>
             </div>
-            <div id="trx1BtFields">
-              <label>Bluetooth device name
-                <div class="input-with-tip">
-                  <input type="text" name="btname" maxlength="20" pattern="[a-zA-Z0-9 _-]+" title="Only letters, digits, space, hyphen and underscore" value="">
-                  <span class="help-tip" data-tip="Name shown when pairing via Bluetooth. Max 20 characters (letters, digits, space, - _). Change requires reboot.">?</span>
-                </div>
-              </label>
-            </div>
             <label class="checkbox-row">
               <input type="checkbox" name="cwIpOnConnect">
               Announce WiFi IP via CW on first connect
-              <span class="help-tip" data-tip="Plays this interface's IP address in Morse code after the first connection to TRX1 — useful when DHCP assigns an unknown address. Works over both LAN and Bluetooth. Sidetone only: break-in is forced off, so the radio never transmits. Mode, filter, BK-IN and AF/RF gain are restored afterwards.">?</span>
+              <span class="help-tip" data-tip="Plays this interface's IP address in Morse code after the first connection to TRX1 — useful when DHCP assigns an unknown address. Sidetone only: break-in is forced off, so the radio never transmits. Mode, filter, BK-IN and AF/RF gain are restored afterwards.">?</span>
             </label>
 
             <div class="setup-trx-divider"></div>
@@ -266,7 +258,7 @@
       <div class="setup-form spiffs-form">
 
         <details class="setup-section" id="logSettingsSection">
-          <summary class="setup-section-title">LOG settings <span class="setup-local-badge">littlefs</span></summary>
+          <summary class="setup-section-title">LOG &amp; JS8LAN settings <span class="setup-local-badge">littlefs</span></summary>
           <div class="setup-section-body">
             <label>RST default SSB/FM
               <div class="input-with-tip">
@@ -288,7 +280,7 @@
             <label>Blocked DXCC list (one per line)
               <div class="input-with-tip input-with-tip-top">
                 <textarea id="ls_blockedDxcc" name="blockedDxcc" form="setup-form" rows="3" placeholder="Russia&#10;Belarus&#10;Kaliningrad"></textarea>
-                <span class="help-tip" data-tip="DXCC entity names to flag as blocked (one per line, e.g. Russia). Matching callsigns are highlighted in red in the log journal.">?</span>
+                <span class="help-tip" data-tip="DXCC entity names to block (one per line, e.g. Russia). In the QRPLog journal matching callsigns are highlighted red; in JS8LAN they are hidden from stations, traffic and inbox, automatic functions never answer them, and manual TX to them is refused.">?</span>
               </div>
             </label>
           </div>
@@ -381,20 +373,16 @@
         [
           'ssid', 'pswd', 'ssid2', 'pswd2', 'trxnetport', 'trxnetprio',
           'baud', 'trx1label', 'trx1transport', 'civaddr', 'lanip', 'lanuser', 'lanpass',
-          'btname', 'trx2label',
+          'trx2label',
           'trx2netid', 'trx2civaddr', 'trx3label', 'trx3netid', 'trx3civaddr',
           'dxchost', 'dxcport',
           'dxccall', 'dxclocator', 'rstSsb', 'rstCwRtty', 'blockedDxcc'
         ].forEach(function (name) { setValue(name, data[name]); });
 
-        // TRX1 transport: show LAN or Bluetooth fields per the selected connection
+        // TRX1 transport: only LAN is supported; keep the LAN fields visible.
         function refreshTrx1Transport() {
-          var sel = document.getElementById('trx1transport');
-          var isLan = sel && sel.value === 'lan';
           var lanBox = document.getElementById('trx1LanFields');
-          var btBox = document.getElementById('trx1BtFields');
-          if (lanBox) lanBox.style.display = isLan ? '' : 'none';
-          if (btBox) btBox.style.display = isLan ? 'none' : '';
+          if (lanBox) lanBox.style.display = '';
         }
         function refreshTrx1LanWarning() {
           var sel = document.getElementById('trx1transport');

@@ -239,7 +239,8 @@ const state = {
   help:{incompatibleActive:false},
   lanConfig:{checked:false, ready:false, detail:""},
   ownCallAttention:{call:"", messages:new Set(), stations:new Set()},
-  activeOutgoing:null, lastOutgoing:null,
+  activeOutgoing:null, lastOutgoing:null, outgoingLog:[],
+  blockedDxccList:[],
   settingsDraft:{myCall:null,grid:null,txGain:null}, reconnectPending:false,
   activeLog:null, loggedCalls:new Set(),
 };
@@ -293,7 +294,11 @@ function buildSessionSnapshot() {
     trafficFilter: state.trafficFilter || "all",
     stationSort: {...state.stationSort},
     draft: (dom.message && dom.message.value) || "",
-    lastOutgoing: state.lastOutgoing ? snapshotOutgoing(state.lastOutgoing) : null
+    lastOutgoing: state.lastOutgoing ? snapshotOutgoing(state.lastOutgoing) : null,
+    // Own-TX feed history: mid-flight sends become "interrupted" (grey) on the way
+    // out, so a restored feed never claims something went on air that a reload cut off.
+    outgoingLog: (state.outgoingLog || []).slice(-OUTGOING_LOG_MAX)
+      .map(item => ({...snapshotOutgoing(item), restored: true}))
   };
 }
 
@@ -369,6 +374,8 @@ function restoreSession() {
     if (snapshot.stationSort && typeof snapshot.stationSort.key === "string")
       state.stationSort = {key: snapshot.stationSort.key, direction: snapshot.stationSort.direction === "asc" ? "asc" : "desc"};
     if (snapshot.lastOutgoing && typeof snapshot.lastOutgoing === "object") state.lastOutgoing = {...snapshot.lastOutgoing};
+    if (Array.isArray(snapshot.outgoingLog))
+      state.outgoingLog = snapshot.outgoingLog.map(item => ({...item, restored: true}));
     // Select the bucket for the restored frequency now so history is visible
     // immediately, before pollRadio confirms the live frequency.
     const frequency = Number(snapshot.activityFrequency) || 0;
@@ -924,6 +931,10 @@ function txBlockReasons(needsRecipient,allowFileTransfer=false) {
   if(state.decoderStatus!=="ready")reasons.push("decoder is loading");
   if(!mediaLocked)reasons.push("audio timebase is not locked");
   if(needsRecipient && !state.selectedCall)reasons.push("select a recipient");
+  if(needsRecipient && state.selectedCall){
+    const blockedCountry=blockedCountryForCall(state.selectedCall);
+    if(blockedCountry)reasons.push(`${state.selectedCall} is blocked (${blockedCountry})`);
+  }
   if(!js8.myCall)reasons.push("set My callsign");
   if(!js8.txSafetyAccepted)reasons.push("confirm Enable radio TX");
   if(!allowFileTransfer&&binState.active&&!terminalTransferState(binState.active.state))reasons.push("a file-transfer session is active");
@@ -980,6 +991,8 @@ function renderEmailControls() {
   dom.emailError.textContent=touched?result.error:"";
   const blocks=txBlockReasons(false);
   if(!result.draft)blocks.push(result.error);
+  const gatewayCountry=result.gateway&&blockedCountryForCall(result.gateway.target);
+  if(gatewayCountry)blocks.push(`gateway ${result.gateway.target} is blocked (${gatewayCountry})`);
   dom.emailSend.disabled=blocks.filter(Boolean).length>0;
   dom.emailSend.title=blocks.filter(Boolean).join("; ");
   const outgoing=emailState.activeOutgoing;
@@ -1050,6 +1063,8 @@ function renderBinControls() {
   if(binState.preparing)error="Preparing SHA-256 and blocks…";
   if(binState.storageError)error=binState.storageError;
   if(sameCall(binState.peerDraft,currentJs8().myCall))error="Nelze poslat soubor vlastní značce";
+  const binPeerCountry=blockedCountryForCall(binState.peerDraft);
+  if(binPeerCountry)error=`${binState.peerDraft} is blocked (${binPeerCountry})`;
   dom.binError.textContent=error;
   const blocks=txBlockReasons(false);
   if(error)blocks.push(error);
@@ -1228,6 +1243,26 @@ function stationCountry(station) {
   return country;
 }
 
+// Blocked DXCC: the same list the QRPLog "Blocked DXCC" setting drives (delivered
+// through /setup-data.json), now applied across JS8LAN. A callsign is blocked when
+// its DXCC entity name contains any blocked entry (case-insensitive substring, the
+// same match log.js uses). An unresolved callsign is NOT blocked — we never hide or
+// refuse on a guess. Group calls (@ALLCALL, @APRSIS) never resolve, so they pass.
+function blockedCountryForCall(call) {
+  if(!state.blockedDxccList.length || !self.DXCC || !call)return null;
+  if(String(call).startsWith("@"))return null;
+  const country=stationCountry({call});
+  if(!country)return null;
+  const lc=country.toLowerCase();
+  return state.blockedDxccList.some(entry=>lc.includes(entry))?country:null;
+}
+function isBlockedCall(call){return Boolean(blockedCountryForCall(call));}
+// A decoded message is hidden when any callsign it touches (sender or recipient)
+// is blocked.
+function messageInvolvesBlocked(message){
+  return (message.callsigns||[]).some(isBlockedCall);
+}
+
 function sortedStations(calls) {
   const {key,direction}=state.stationSort, factor=direction==="asc" ? 1 : -1;
   return [...calls].sort((a,b)=>{
@@ -1263,7 +1298,7 @@ function renderStationSort() {
 function openSectionsForNewOwnCall(messages,calls) {
   const own=currentJs8().myCall;
   const previous=state.ownCallAttention;
-  const messageKeys=new Set(messages.filter(item=>messageMentionsCall(item,own)).map(activityMessageKey));
+  const messageKeys=new Set(messages.filter(item=>!item.outgoing && messageMentionsCall(item,own)).map(activityMessageKey));
   const stationKeys=new Set(calls.filter(item=>sameCall(item.call,own))
     .map(item=>`${item.call}|${activityCallSignature(item)}`));
   const sameOperator=previous.call===own;
@@ -1302,15 +1337,39 @@ function renderTrafficFilterButtons(own){
 function clearRecentTraffic(){
   const messages=state.activity.messages;
   if(Array.isArray(messages))messages.length=0;
+  // CLEAR empties the whole feed, own TX included. The per-station chat thread and
+  // the in-flight transmission are untouched — this only wipes the traffic view.
+  state.outgoingLog.length=0;
   renderActivity();
+  persistSession();
+}
+
+// Own transmissions (manual and automatic) as recent-traffic feed items. Colour is
+// LOCAL transmit state only — JS8 has no delivery ACK: "completed" means the frames
+// went on air (rendered red, matching the radio's TX colour), anything else means a
+// link/TX failure kept them off air (rendered grey). Shaped like a decoded message
+// so the existing filters and sort apply unchanged.
+function outgoingTrafficItems(){
+  const own=currentJs8().myCall;
+  return state.outgoingLog.map(item=>({
+    outgoing:true, status:item.status, emitted:item.status==="completed",
+    to:item.to||"", text:item.text, lastSlotUtcMs:Number(item.utcMs)||0,
+    restored:Boolean(item.restored), callsigns:[own,item.to].filter(Boolean)}));
 }
 
 function renderActivity() {
   const bannedCalls = new Map(restrictions.activeBans(js8Clock.now()).map(ban => [ban.call, ban]));
-  const messages=state.activity.messages || [], calls=state.activity.calls || [];
+  // Blocked DXCC entities are hidden everywhere: heard traffic, the stations table
+  // (and the map, which derives from it below).
+  const heard=(state.activity.messages || []).filter(message=>!messageInvolvesBlocked(message));
+  const calls=(state.activity.calls || []).filter(item=>!isBlockedCall(item.call));
   const own=currentJs8().myCall;
+  const responders=respondingCalls();
   renderTrafficFilterButtons(own);
-  dom.trafficClear.disabled=messages.length===0;
+  dom.trafficClear.disabled=(state.activity.messages || []).length===0 && state.outgoingLog.length===0;
+  // Merge own TX into the feed so a returning operator sees what the station sent
+  // unattended, and by colour what actually went out versus what a failure dropped.
+  const messages=[...heard,...outgoingTrafficItems()];
   const filtered=filterTraffic(messages,own);
   dom.trafficSummary.textContent=filtered.length===messages.length
     ? `${messages.length} message${messages.length===1?"":"s"}`
@@ -1326,7 +1385,14 @@ function renderActivity() {
       divider='<div class="restore-divider" role="separator">session restored · live decoding was paused while away</div>';
       dividerShown=true;
     }
-    const call=callOf(message), when=new Date(message.lastSlotUtcMs || message.firstSlotUtcMs || 0).toISOString().slice(11,19);
+    const when=new Date(message.lastSlotUtcMs || message.firstSlotUtcMs || 0).toISOString().slice(11,19);
+    if(message.outgoing){
+      // Red = went on air (completed), grey = a failure kept it off air.
+      const cls=message.emitted?"tx-emitted":"tx-unsent";
+      const target=message.to?esc(message.to):"CQ/HB";
+      return divider+`<article class="message message-tx ${cls}" data-tx-status="${esc(message.status)}"><span class="message-meta"><span>${when}</span><span>TX</span><span>${esc(message.status)}</span></span><strong>${target}</strong><span class="message-text">${esc(message.text)}</span></article>`;
+    }
+    const call=callOf(message);
     const operational=Array.isArray(message.kinds) && !message.kinds.includes("data");
     const ownCall=sameCall(call,currentJs8().myCall);
     return divider+`<article class="message${operational?" operational":""}"><span class="message-meta"><span>${when}</span><span>${MODE_TO_SPEED[message.submode]||"?"}</span><span>${Math.round(message.offsetHz)} Hz</span></span><strong data-call="${esc(call)}"${ownCall?' class="own-callsign" data-own-call="true"':""}>${esc(call || "JS8")}</strong><span class="message-text">${ownCallText(message.text,currentJs8().myCall)}</span></article>`;
@@ -1335,30 +1401,58 @@ function renderActivity() {
     const direction=stationDirection(item);
     const directionHtml=direction ? `<span title="${esc(direction.source)} · ${direction.qrbKm} km · ${direction.azimuthDeg}°"><span class="station-bearing" style="transform:rotate(${direction.azimuthDeg}deg)">↑</span><span class="station-distance">${(direction.qrbKm/1000).toFixed(1)}</span></span>` : "—";
     const ownCall=sameCall(item.call,currentJs8().myCall);
+    // Red callsign + arrow when this station has reacted to us, mirroring its red dot on
+    // the map (Q7). Own call is never a responder, so the two never collide.
+    const reacted=!ownCall && stationReacted(responders,item.call);
     // A station we are currently refusing to answer must say so, otherwise the
     // operator sees silence with no explanation (decision 13).
     const ban=bannedCalls.get(item.call);
     const banMark=ban?`<span class="station-ban" title="Auto replies paused ${Math.ceil(ban.remainingMs/60000)} min (level ${ban.level})">&#9208;</span>`:"";
     const country=stationCountry(item);
-    return `<tr data-call="${esc(item.call)}" class="${item.call===state.selectedCall?"selected":""}${ban?" station-restricted":""}"><td class="call${ownCall?" own-callsign":""}"${ownCall?' data-own-call="true"':""}>${esc(item.call)}${banMark}</td><td class="station-country"${country?` title="${esc(country)}"`:""}>${esc(country||"—")}</td><td>${signed(item.snr)}</td><td>${Math.round(item.offsetHz)}</td><td>${speedDetail(item.submode)}</td><td class="station-direction">${directionHtml}</td><td>${age(item.lastSlotUtcMs)}</td></tr>`;
+    return `<tr data-call="${esc(item.call)}" class="${item.call===state.selectedCall?"selected":""}${ban?" station-restricted":""}"><td class="call${ownCall?" own-callsign":""}${reacted?" reacted":""}"${ownCall?' data-own-call="true"':""}${reacted?' title="Reacted to your transmission"':""}>${reacted?"← ":""}${esc(item.call)}${banMark}</td><td class="station-country"${country?` title="${esc(country)}"`:""}>${esc(country||"—")}</td><td>${signed(item.snr)}</td><td>${Math.round(item.offsetHz)}</td><td>${speedDetail(item.submode)}</td><td class="station-direction">${directionHtml}</td><td>${age(item.lastSlotUtcMs)}</td></tr>`;
   }).join("");
   openSectionsForNewOwnCall(recent,calls);
   renderStationSort();
-  renderStationMap(calls);
+  renderStationMap(calls,responders);
   renderConversation();
 }
 
+// Stations that have reacted to our transmissions: any received message whose callsigns
+// include our call -- directed TO us (HEARTBEAT SNR ack, CQ reply, SNR/GRID report, message
+// delivery, relay) or our call listed in a HEARING/relay body -- credited to the sender.
+// Derived fresh every render (no per-station state), so it survives reload and resets with
+// CLEAR, exactly like the traffic it is read from. Blocked entities are excluded like elsewhere.
+function respondingCalls() {
+  const own=currentJs8().myCall;
+  const responders=new Set();
+  if(!own) return responders;
+  for(const message of state.activity.messages || []){
+    if(message.outgoing || messageInvolvesBlocked(message) || !messageMentionsCall(message,own)) continue;
+    const sender=(message.directed && message.directed.from) || (message.callsigns || [])[0];
+    if(sender && !sameCall(sender,own)) responders.add(String(sender).toUpperCase());
+  }
+  return responders;
+}
+function stationReacted(responders,call){ return responders.has(String(call||"").toUpperCase()); }
+
 // STATIONS MAP: azimuthal-equidistant radar centred on my QTH. Dots are stations placed by
 // azimuth (0deg = N = up) and linear distance (furthest sits at the plotting edge). Summary
-// count is always refreshed; the SVG is only built while the disclosure is open.
-function renderStationMap(calls) {
+// count is always refreshed; the SVG is only built while the disclosure is open. Dots of
+// stations that reacted to us are drawn red (see respondingCalls).
+function renderStationMap(calls, responders) {
+  responders=responders || respondingCalls();
   const placed=[], noPos=[];
   for(const item of (calls||[])){
     const dir=stationDirection(item);
-    if(dir && Number.isFinite(dir.qrbKm) && Number.isFinite(dir.azimuthDeg)) placed.push({item,dir});
+    const reacted=stationReacted(responders,item.call);
+    if(dir && Number.isFinite(dir.qrbKm) && Number.isFinite(dir.azimuthDeg)) placed.push({item,dir,reacted});
     else noPos.push(item);
   }
-  dom.stationMapSummary.textContent=noPos.length ? `${placed.length} on map · ${noPos.length} no pos` : `${placed.length} on map`;
+  const reactedCount=(calls||[]).filter(item=>stationReacted(responders,item.call)).length;
+  const parts=[`${placed.length} on map`];
+  if(reactedCount) parts.push(`${reactedCount} reacted`);
+  if(noPos.length) parts.push(`${noPos.length} no pos`);
+  dom.stationMapSummary.textContent=parts.join(" · ");
   if(!dom.stationMapSection || !dom.stationMapSection.open) return;
   if(!self.DXCC || !DXCC.locatorToLatLon(currentJs8().grid)){
     dom.stationMap.innerHTML='<div class="empty-row">Set My grid to see the map.</div>'; return;
@@ -1370,15 +1464,15 @@ function renderStationMap(calls) {
 }
 
 const MAP={CX:150, CY:150, R_FRAME:132, R_PLOT:120, DOT:4, LABEL_R:143};
-function stationMapTip({item,dir}){
-  return `${item.call} · ${signed(item.snr)} dB · ${Math.round(dir.qrbKm)} km · ${dir.azimuthDeg}°`;
+function stationMapTip({item,dir,reacted}){
+  return `${reacted?"← ":""}${item.call} · ${signed(item.snr)} dB · ${Math.round(dir.qrbKm)} km · ${dir.azimuthDeg}°`;
 }
 function buildStationMapSvg(placed) {
   const {CX,CY,R_FRAME,R_PLOT,DOT,LABEL_R}=MAP;
   const maxKm=Math.max(...placed.map(p=>p.dir.qrbKm)) || 1;
-  const points=placed.map(({item,dir})=>{
+  const points=placed.map(({item,dir,reacted})=>{
     const r=(dir.qrbKm/maxKm)*R_PLOT, a=dir.azimuthDeg*Math.PI/180;
-    return {item,dir,x:CX+r*Math.sin(a),y:CY-r*Math.cos(a)};
+    return {item,dir,reacted,x:CX+r*Math.sin(a),y:CY-r*Math.cos(a)};
   });
   // Merge dots that would touch (centre-to-centre distance <= one diameter). Greedy single pass;
   // each cluster keeps the first member's position so a dot never drifts off its real bearing.
@@ -1399,14 +1493,25 @@ function buildStationMapSvg(placed) {
   const links=clusters.map(c=>`<line x1="${c.x.toFixed(1)}" y1="${c.y.toFixed(1)}" x2="${CX}" y2="${CY}" class="map-link"/>`).join("");
   const dots=clusters.map(c=>{
     const tip=esc(c.members.map(stationMapTip).join("\n"));
+    // A cluster is red if any of its merged members reacted to us (Q4): the alert
+    // that "someone here made contact" must win over the plain heard dots.
+    const reacted=c.members.some(m=>m.reacted);
     const badge=c.members.length>1 ? `<text x="${(c.x+6).toFixed(1)}" y="${(c.y-5).toFixed(1)}" class="map-badge">×${c.members.length}</text>` : "";
-    return `<g class="map-dot"><circle cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="${DOT}"><title>${tip}</title></circle>${badge}</g>`;
+    return `<g class="map-dot${reacted?" reacted":""}"><circle cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="${DOT}"><title>${tip}</title></circle>${badge}</g>`;
   }).join("");
   const center=`<circle cx="${CX}" cy="${CY}" r="5" class="map-center"><title>${esc(currentJs8().myCall||"My station")}</title></circle>`;
   return `<svg viewBox="0 0 300 300" class="station-map-svg" role="img" aria-label="Stations radar map">${frame}${links}${dots}${center}</svg>`;
 }
 
-function age(utcMs) { const seconds=Math.max(0,Math.round((Date.now()-Number(utcMs||0))/1000)); return seconds<60?`${seconds}s`:`${Math.floor(seconds/60)}m`; }
+function age(utcMs) {
+  const seconds=Math.max(0,Math.round((Date.now()-Number(utcMs||0))/1000));
+  if(seconds<60)return `${seconds}s`;
+  const minutes=Math.floor(seconds/60);
+  if(minutes<60)return `${minutes}m`;
+  // Larger ages read poorly as a raw minute count (e.g. "125m"); show them as
+  // elapsed h:mm instead.
+  return `${Math.floor(minutes/60)}:${String(minutes%60).padStart(2,"0")}`;
+}
 function messageBelongsToConversation(message) {
   const calls=message.callsigns||[];
   if(!sameCall(calls[0],state.selectedCall))return false;
@@ -1440,7 +1545,11 @@ function renderTxPayload() {
 function renderConversation() {
   dom.sessionCall.textContent=state.selectedCall || "No station selected";
   const station=state.activity.calls.find(item=>item.call===state.selectedCall);
-  dom.sessionMeta.textContent=station ? `${signed(station.snr)} dB · ${Math.round(station.offsetHz)} Hz · speed ${speedDetail(station.submode)}` : "Choose a callsign from traffic or stations";
+  const blockedCountry=blockedCountryForCall(state.selectedCall);
+  dom.sessionMeta.textContent=blockedCountry
+    ? `blocked · ${blockedCountry} — TX refused`
+    : station ? `${signed(station.snr)} dB · ${Math.round(station.offsetHz)} Hz · speed ${speedDetail(station.submode)}` : "Choose a callsign from traffic or stations";
+  dom.sessionMeta.classList.toggle("session-blocked",Boolean(blockedCountry));
   updateLogQsoButton(station);
   const items=state.selectedCall ? conversationItems() : [];
   dom.chat.innerHTML=items.length ? items.map(item=>{
@@ -2130,7 +2239,9 @@ function myGroups() {
 // the station is holding and be able to pull mail from another station manually.
 function renderInbox() {
   if (!dom.inboxRows) return;
-  const items = inbox.snapshot().items;
+  // Hide messages to/from a blocked DXCC entity, like everywhere else in JS8LAN.
+  const items = inbox.snapshot().items
+    .filter(item => !isBlockedCall(item.from) && !isBlockedCall(item.to));
   const undelivered = items.filter(item => !item.delivered);
   dom.inboxSummary.textContent = undelivered.length
     ? `${undelivered.length} stored` : "empty";
@@ -2219,6 +2330,10 @@ function handleInboxAssembled(directed, norm, now) {
 function handleRelayAssembled(directed, relayText, now) {
   const js8 = currentJs8();
   if (!js8.myCall) return;
+  if (isBlockedCall(directed.from)) {
+    console.info("[js8-relay] skip: blocked", directed.from);
+    return;
+  }
   const outcome = relay.handle(
     {from: directed.from, to: directed.to, text: relayText, complete: true},
     {nowMs: now, myCall: js8.myCall, armed: js8.auto === true});
@@ -2280,18 +2395,33 @@ function appendRelayMessage(from, text) {
   persistSession();
 }
 
+// A multi-frame channel is only closed when its final frame arrives; a lost last
+// frame (routine on HF) otherwise strands it in the reassembly map forever. Only
+// a channel still being fed -- one that advanced within the last couple of slots
+// -- means a message is genuinely arriving. Without this, one stranded partial
+// would latch messageBusy true and suppress every future HB ACK.
+const REASSEMBLY_ACTIVE_MS = 90000;   // longest HB slot (Slow, 30 s) plus margin
+function hasActiveReassembly(nowMs) {
+  return (state.activity.channels || []).some(channel =>
+    nowMs - Number(channel.lastSlotUtcMs || 0) < REASSEMBLY_ACTIVE_MS);
+}
+
 // "HB ACK" is the behaviour name; the compatible wire command is HEARTBEAT SNR.
 // It is gated by the same restriction engine as everything else, with the long
 // 55 minute window upstream uses for exactly this.
 function handleHeartbeatFrame(decoded, now) {
   const js8 = currentJs8();
   if (!js8.myCall) return;
+  if (isBlockedCall(decoded.from)) {
+    console.info("[js8-heartbeat] skip: blocked", decoded.from);
+    return;
+  }
   const station = state.activity.calls.find(item => item.call === decoded.from);
   const outcome = heartbeat.handleHeartbeat(
     {from: decoded.from, snr: station ? station.snr : 0},
     {nowMs: now, myCall: js8.myCall, armed: js8.auto === true,
      submode: selectedMode(),
-     messageBusy: Boolean((state.activity.channels || []).length),
+     messageBusy: hasActiveReassembly(now),
      // If we are holding mail for this station, the beacon advertises it.
      pendingMsgId: call => { const waiting = inbox.pending(call); return waiting.length ? waiting[0].id : null; }});
   if (outcome.action !== "ack") {
@@ -2313,8 +2443,11 @@ function checkHeartbeat() {
     armed: js8.auto === true, myCall: js8.myCall});
   if (!verdict.send) return;
   if (!js8.txSafetyAccepted || !activeEncoder) return;
+  // Mark it sent up front so a second checkHeartbeat tick cannot fire a duplicate
+  // beacon. If the TX then faults, updateOutgoingTxProgress calls heartbeat.noteFault
+  // to pull the retry back to the next quiet frame instead of a whole interval.
   heartbeat.noteSent(js8Clock.now());
-  startHeartbeat(verdict.offsetHz);
+  startHeartbeat(verdict.offsetHz, true);
 }
 
 // Feeds decoded directed frames to the auto-reply engine. Any directed frame --
@@ -2325,6 +2458,14 @@ function handleDirectedFrame(decoded) {
   const now = js8Clock.now();
   const js8 = currentJs8();
   if (!js8.myCall) { autoReply.noteDirectedFrame(now); return; }
+  // Never answer a blocked DXCC entity, even automatically. Still arm the QSO lock
+  // so we don't talk over the frequency, and log the reason (decision 13).
+  const blockedCountry = blockedCountryForCall(decoded.from);
+  if (blockedCountry) {
+    console.info("[js8-autoreply] skip: blocked", blockedCountry, decoded.from);
+    autoReply.noteDirectedFrame(now);
+    return;
+  }
   const station = state.activity.calls.find(item => item.call === decoded.from);
   const heard = (state.activity.calls || [])
     .filter(item => item.call && item.call !== js8.myCall)
@@ -2392,6 +2533,12 @@ function drainTxQueue() {
   }
   const item = txQueue.take(now);
   if (!item) return;
+  // Last line of defence: nothing addressed to a blocked entity leaves the queue,
+  // regardless of which decision layer enqueued it.
+  if (item.to && isBlockedCall(item.to)) {
+    console.info("[js8-txqueue] drop: blocked recipient", item.to);
+    return;
+  }
   if (item.to) autoReply.noteSent(item.to, item.text);
   if (item.to) startTxTo(item.to, item.text, item.meta);
   else startTx(item.text);
@@ -2410,17 +2557,24 @@ function driveEncoder(prepared, onError) {
   }).catch(onError);
 }
 
+const OUTGOING_LOG_MAX=200;
 function queueOutgoing(messageText, conversationCall="") {
   const item={direction:"outgoing",time:new Date().toISOString().slice(11,19),
+    utcMs:Date.now(),to:conversationCall,
     text:messageText,status:"queued",sentChars:0,activeFraction:0,txRenderKey:""};
   if(conversationCall){
     if(!state.conversations[conversationCall])state.conversations[conversationCall]=[];
     state.conversations[conversationCall].push(item);
   }
+  // Same object reference the conversation/chat thread holds, so status updates from
+  // updateOutgoingTxProgress flow straight through to the recent-traffic feed.
+  state.outgoingLog.push(item);
+  if(state.outgoingLog.length>OUTGOING_LOG_MAX)state.outgoingLog.shift();
   state.activeOutgoing=item;
   state.lastOutgoing=item;
   renderConversation();
   renderTxPayload();
+  renderActivity();
   persistSession();
   return item;
 }
@@ -2434,6 +2588,7 @@ function failOutgoing(item,error) {
   if(state.activeOutgoing===item)state.activeOutgoing=null;
   renderControls();
   renderConversation();
+  renderActivity();
   persistSession();
 }
 
@@ -2461,12 +2616,14 @@ function startTxTo(toCall, text, txMeta = null) {
   driveEncoder(activeEncoder.encode(text),error=>failOutgoing(item,error));
 }
 
-function startHeartbeat(offsetHz) {
+function startHeartbeat(offsetHz, auto=false) {
   // Automatic beacons pick a random offset in the narrow HB band; the manual
   // button keeps using the operator's own TX offset.
   const js8=currentJs8(), tone=Number.isFinite(offsetHz)?offsetHz:js8.txOffsetHz;
   const preview=Js8Protocol.buildHeartbeatFrames({myCall:js8.myCall,grid:js8.grid});
   const item=queueOutgoing(preview[0].messageText);
+  // Only the scheduled beacon auto-retries on a fault; a manual button press does not.
+  if(auto)item.txMeta={heartbeatAuto:true};
   activeEncoder.setToneOffset(tone).configure({myCall:js8.myCall,toCall:"",mode:selectedMode(),clockCorrectionMs:js8.clockCorrectionMs});
   driveEncoder(activeEncoder.encode("",{kind:"heartbeat",grid:js8.grid,toneHz:tone}),error=>failOutgoing(item,error));
 }
@@ -2536,7 +2693,19 @@ function updateOutgoingTxProgress(txState) {
   item.activeFraction=["aborted","fault","completed"].includes(txState.status)?0:activeFraction;
   item.status=txState.status;
   const renderKey=`${item.status}|${item.sentChars}|${Math.round(item.activeFraction*20)}`;
-  if(renderKey!==item.txRenderKey){item.txRenderKey=renderKey;renderConversation();renderTxPayload();persistSession();}
+  if(renderKey!==item.txRenderKey){
+    // The feed only shows status (colour), so redraw it on status transitions
+    // rather than every character of progress that redraws the chat thread.
+    const statusChanged=String(item.txRenderKey).split("|")[0]!==item.status;
+    item.txRenderKey=renderKey;
+    renderConversation();renderTxPayload();
+    if(statusChanged)renderActivity();
+    persistSession();
+  }
+  // A scheduled beacon that faulted never reached the air; retry it in the next
+  // quiet frame rather than leaving the station silent until the next interval.
+  if(txState.status==="fault" && item.txMeta && item.txMeta.heartbeatAuto)
+    heartbeat.noteFault(js8Clock.now());
   if(["aborted","fault","completed"].includes(txState.status))state.activeOutgoing=null;
 }
 
@@ -2577,6 +2746,10 @@ async function checkLanConfiguration() {
     const response=await fetch(`/setup-data.json?${query}`,{cache:"no-store"});
     if(!response.ok)throw new Error(`HTTP ${response.status}`);
     const config=await response.json();
+    // The same JSON carries the "Blocked DXCC" list; capture it so blocking
+    // applies from the moment the page is ready. It only changes on a reboot.
+    state.blockedDxccList=String(config.blockedDxcc||"").split("\n")
+      .map(entry=>entry.trim().toLowerCase()).filter(Boolean);
     const ip=String(config.lanip||"").trim();
     const user=String(config.lanuser||"").trim();
     const password=String(config.lanpass||"").trim();

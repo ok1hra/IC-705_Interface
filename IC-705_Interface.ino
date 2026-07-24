@@ -107,12 +107,12 @@ bool cwIpOnConnect  = true;       // announce WiFi IP via CW on first radio conn
 volatile bool cwIpSendPending = false;
 
 #define LOOP_WARN_MS 200
-#define REV 20260723
+#define REV 20260724
 #define WIFI
 #define UDP_TO_FSK
 #define WDT         // watchdog timer
 #define CIV_OUT     // send freq to CIV out with BaudRate
-#define BLUETOOTH   // BT
+// #define BLUETOOTH   // BT — removed: only LAN and TrxNet transports supported (saves ~680 kB flash)
 // #define RTLE     // not work now | credit OK2CQR https://github.com/ok2cqr/rtle/tree/master
 // #define RESET_AFTER_DISCONNECT  // enable reset after each disconnect + short CW msg
 
@@ -175,9 +175,13 @@ volatile bool cwIpSendPending = false;
 #if defined(BLUETOOTH)
   #include "BluetoothSerial.h"
   #include <esp_bt.h>
+#endif
   //#define DEBUG 1
   //#define MIRRORCAT 1
   //#define MIRRORCAT_SPEED 9600
+  // CI-V protocol constants and radio state below are shared by every transport
+  // (Bluetooth SPP and LAN both feed processCivBuffer), so they compile
+  // unconditionally. Only the BluetoothSerial object is Bluetooth-specific.
   #define BROADCAST_ADDRESS    0x00 //Broadcast address
   #define CONTROLLER_ADDRESS   0xE0 //Controller address
 
@@ -223,8 +227,11 @@ volatile bool cwIpSendPending = false;
   #define MODE_TYPE_DV    0x17
 
   char modes[12] = "OFF";
-  BluetoothSerial CAT;
+  // btClientConnected stays declared unconditionally: state/status JSON reads it
+  // even without Bluetooth (it simply remains false when BT is compiled out).
   volatile bool btClientConnected = false;
+#if defined(BLUETOOTH)
+  BluetoothSerial CAT;
 #endif
 
 short HardwareRev = 99;
@@ -433,6 +440,16 @@ int incomingByte = 0;   // for incoming serial data
   UnattendedGuard unattendedGuard;
   Js8Session js8Session;                   // which browser currently owns JS8LAN
   static const char* UNATTENDED_LOG_PATH = "/unattended.log";
+  // Deferred unattended-log ring. unattendedLogEvent() is called from the audio
+  // hot path (aud1TxAbort/aud1TxTick/aud1HandleControl); a synchronous LittleFS
+  // append+rotate there is a multi-100 ms flash stall that can miss the very next
+  // JS8 slot. Events are formatted into this RAM ring instead and flushed to flash
+  // only from loop() while no TX is imminent (unattendedLogFlush). Heap-allocated
+  // like wsOut; if malloc fails, unattendedLogEnqueue degrades to a sync write.
+  static const size_t UNA_LOG_QUEUE_SIZE = 2048;   // ~17 lines of <=120 B
+  uint8_t* unaLogQueue = nullptr;
+  size_t   unaLogHead = 0, unaLogTail = 0, unaLogLen = 0;
+  bool     unaLogOverflow = false;                 // oldest lines dropped since last flush
   // Store-and-forward mail. Decision 10 keeps it here rather than in the tab so
   // it survives a reload, a different computer and a cleared browser cache, and
   // can be read from a phone. 64 messages x ~120 chars fits well inside the
@@ -649,6 +666,9 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   void audioPttOff(void);
   void audioPttSafetyOnLink(void);
   void unattendedLogEvent(uint8_t type, const String& detail);
+  void unattendedLogEnqueue(const char* line, size_t n);
+  void unattendedLogFlush(void);
+  bool txCriticalNow(void);
   void handleUnattendedGet(void);
   void handleUnattendedPost(void);
   void handleUnattendedLog(void);
@@ -737,10 +757,11 @@ void loadMemoryConfig(void){
 
   if (file.available()) {
     String configuredType = trimMemoryValue(file.readStringUntil('\n'), 16);
-    if (configuredType == "IC-7610-CI-V" || configuredType == "IC-705-LAN") {
+    if (configuredType == "IC-7610-CI-V") {
       transceiverType = configuredType;
     } else {
-      transceiverType = "IC-705-BT";
+      // Bluetooth transport removed: any stored non-CIV value falls back to LAN.
+      transceiverType = "IC-705-LAN";
     }
   }
 
@@ -1453,12 +1474,11 @@ void handleSetupData(){
   j += ",\"trxnetprio\":\""; j += configJsonEscape(TRXNET_PRIO); j += "\"";
   j += ",\"baud\":\""; j += baudSelect; j += "\"";
   j += ",\"trx1label\":\""; j += configJsonEscape(g_lcTrx1Label); j += "\"";
-  j += ",\"trx1transport\":\""; j += (transceiverType == "IC-705-LAN") ? "lan" : "bluetooth"; j += "\"";
+  j += ",\"trx1transport\":\""; j += (transceiverType == "IC-7610-CI-V") ? "civ" : "lan"; j += "\"";
   j += ",\"civaddr\":\""; j += civHex; j += "\"";
   j += ",\"lanip\":\"";   j += configJsonEscape(lanRadioIp); j += "\"";
   j += ",\"lanuser\":\""; j += configJsonEscape(lanUser); j += "\"";
   j += ",\"lanpass\":\""; j += configJsonEscape(lanPass); j += "\"";
-  j += ",\"btname\":\""; j += configJsonEscape(BT_NAME); j += "\"";
   j += ",\"cwIpOnConnect\":"; j += cwIpOnConnect ? "true" : "false";
   j += ",\"trx2label\":\""; j += configJsonEscape(g_lcTrx2Label); j += "\"";
   j += ",\"trx2netid\":\""; j += trx2Hex; j += "\"";
@@ -1527,6 +1547,10 @@ void handleTrxNetPeers(){
 }
 
 void handleWebServerLoop(){
+  // Single chokepoint for every blocking port-80 handler (flash writes, file
+  // serving, EEPROM.commit): defer them out of the TX-critical window so a
+  // multi-100 ms stall cannot land on a JS8 slot boundary and miss the key.
+  if(txCriticalNow()) return;
   unsigned long start = millis();
   if (APmode) dnsServer.processNextRequest();   // captive portal
   webServer.handleClient();
@@ -1876,9 +1900,9 @@ void loadPrimaryRadioConfig(void) {
   if (!hasPrimaryRadioConfig()) return;
 
   uint8_t transport = EEPROM.read(PRIMARY_RADIO_TRANSPORT_ADDR);
-  if (transport == 1) transceiverType = "IC-705-LAN";
-  else if (transport == 3) transceiverType = "IC-7610-CI-V";
-  else transceiverType = "IC-705-BT";
+  // Bluetooth transport removed: stored transport 2 (BT) now falls back to LAN.
+  if (transport == 3) transceiverType = "IC-7610-CI-V";
+  else transceiverType = "IC-705-LAN";
 
   uint8_t civAddress = EEPROM.read(PRIMARY_RADIO_CIV_ADDR);
   configuredCivAddress = civAddress == 0xff ? CIV_ADDRESS_DEFAULT : civAddress;
@@ -1892,9 +1916,8 @@ void loadPrimaryRadioConfig(void) {
 }
 
 bool savePrimaryRadioConfig(void) {
-  uint8_t transport = 2;
-  if (transceiverType == "IC-705-LAN") transport = 1;
-  else if (transceiverType == "IC-7610-CI-V") transport = 3;
+  uint8_t transport = 1;  // default LAN (Bluetooth transport removed)
+  if (transceiverType == "IC-7610-CI-V") transport = 3;
 
   EEPROM.write(PRIMARY_RADIO_TRANSPORT_ADDR, transport);
   EEPROM.write(PRIMARY_RADIO_CIV_ADDR, configuredCivAddress);
@@ -2058,9 +2081,9 @@ void handleConfigUpload() {
 
 
   String trx = extractJsonString(body, "trxprofile");
+  // Bluetooth transport removed: only CI-V and LAN remain; anything else -> LAN.
   if (trx == "IC-7610-CI-V") transceiverType = trx;
-  else if (trx == "IC-705-LAN") transceiverType = trx;
-  else if (trx.length() > 0) transceiverType = "IC-705-BT";
+  else if (trx.length() > 0) transceiverType = "IC-705-LAN";
 
   if (body.indexOf("\"lanip\"") >= 0) {
     lanRadioIp = trimMemoryValue(extractJsonString(body, "lanip"), 15);
@@ -2428,6 +2451,22 @@ void setupWebServer(void){
   webServer.on("/datasync", HTTP_GET,  [](){ handleFileFromSPIFFS("/datasync.html"); });
   webServer.on("/data",     HTTP_GET,  [](){ handleFileFromSPIFFS("/data.html"); });
 
+  // Band Decoder web configuration (backend runs regardless; this restores the UI).
+  webServer.on("/bd", HTTP_GET, [](){
+    webServer.sendHeader("Connection", "close");
+    webServer.client().setNoDelay(true);
+    if (!bdEnabled) {
+      webServer.send(200, "text/html",
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<title>Band Decoder</title>"
+        "<link rel='stylesheet' href='/app.css'></head>"
+        "<body><p style='margin:2em;font-family:sans-serif'>"
+        "Band Decoder is available from RemoteQTH interface HW rev 04.</p></body></html>");
+      return;
+    }
+    handleFileFromSPIFFS("/bd.html");
+  });
+
   webServer.on("/dxcinfo", HTTP_GET, [](){
     webServer.sendHeader("Cache-Control", "no-cache");
     webServer.sendHeader("Connection", "close");
@@ -2557,6 +2596,7 @@ void setup(){
   if(rtcPttWasKeyed != 0 && rtcPttWasKeyed != 1) rtcPttWasKeyed = 0;
 
   wsOut = (uint8_t*)malloc(WS_OUT_SIZE);   // outgoing browser-audio WS ring (heap, not .bss)
+  unaLogQueue = (uint8_t*)malloc(UNA_LOG_QUEUE_SIZE);  // deferred unattended-log ring (heap; null -> sync fallback)
 
   if (!EEPROM.begin(EEPROM_SIZE)){
     Serial.begin(BaudRate);
@@ -2893,23 +2933,27 @@ void setup(){
 
     #if defined(BLUETOOTH)
       esp_bt_mem_release(ESP_BT_MODE_BLE);
-      if (lanMode) {
-        // LAN transport: never start the BT controller (no WiFi/BT coex at all)
-        IPAddress rip;
-        Serial.println("LAN | cfg ip=" + lanRadioIp + " user='" + lanUser +
-                       "' passlen=" + String(lanPass.length()));
-        if (!rip.fromString(lanRadioIp)) {
-          Serial.println("LAN | bad radio IP in config — LAN not started");
-        } else if (lanUser.length() == 0 || lanPass.length() == 0) {
-          Serial.println("LAN | empty user/pass in config — use CLI 'L' to set them");
-        } else {
-          lanClient.begin(rip, 50001, lanUser.c_str(), lanPass.c_str(), configuredCivAddress);
-          Serial.println("LAN | transport active (BT not started)");
-        }
-      } else {
-        configRadioBaud(0);
-      }
     #endif
+
+    if (lanMode) {
+      // LAN transport is independent of Bluetooth and must start even when the
+      // Bluetooth stack is compiled out.
+      IPAddress rip;
+      Serial.println("LAN | cfg ip=" + lanRadioIp + " user='" + lanUser +
+                     "' passlen=" + String(lanPass.length()));
+      if (!rip.fromString(lanRadioIp)) {
+        Serial.println("LAN | bad radio IP in config — LAN not started");
+      } else if (lanUser.length() == 0 || lanPass.length() == 0) {
+        Serial.println("LAN | empty user/pass in config — use CLI 'L' to set them");
+      } else {
+        lanClient.begin(rip, 50001, lanUser.c_str(), lanPass.c_str(), configuredCivAddress);
+        Serial.println("LAN | transport active (BT not started)");
+      }
+    } else {
+      #if defined(BLUETOOTH)
+        configRadioBaud(0);
+      #endif
+    }
 
     // TrxNet init — after WiFi is up; NET_ID 0x00 = disabled
     if (TRXNET_ID != 0x00) {
@@ -2984,6 +3028,9 @@ void loop(){
   _TIMED("dxcRaw",          dxcHandleRawClient())
   _TIMED("audioRaw",        audioHandleRawClient())
   _TIMED("audioWs",         AudioHandleWsClient())
+  // Persist queued unattended-log events to flash only when no slot key is near,
+  // so the append/rotate never stalls the loop across a JS8 slot boundary.
+  if(!txCriticalNow()) unattendedLogFlush();
 
   // TrxNet: process pending /s-hz command (set TRX1 VFO via CI-V)
   if (trxFreqPending) {
@@ -3858,6 +3905,7 @@ void lanCivFrameHandler(const uint8_t *frame, size_t len) {
 
 //-------------------------------------------------------------------------------------------------------
 // call back to get info about connection
+#if defined(BLUETOOTH)
 void callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param){
   (void)param;
   if (event == ESP_SPP_SRV_OPEN_EVT) {
@@ -3869,6 +3917,7 @@ void callback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param){
     btStateBroadcastPending = true;
   }
 }
+#endif
 //-------------------------------------------------------------------------------------------------------
 // void configRadioBaud(uint16_t  baudrate){
 //   #if defined(BLUETOOTH)
@@ -3938,37 +3987,35 @@ uint8_t readLine(void){
 }
 //-------------------------------------------------------------------------------------------------------
 void radioSetMode(uint8_t modeid, uint8_t modewidth){
-  #if defined(BLUETOOTH)
-    uint8_t req[] = {START_BYTE, START_BYTE, radio_address, CONTROLLER_ADDRESS, CMD_WRITE_MODE, modeid, modewidth, STOP_BYTE};
-    catWriteFrame(req, sizeof(req), true);
-  #endif
+  // catWriteFrame routes to lanClient for LAN, so this works on every transport.
+  uint8_t req[] = {START_BYTE, START_BYTE, radio_address, CONTROLLER_ADDRESS, CMD_WRITE_MODE, modeid, modewidth, STOP_BYTE};
+  catWriteFrame(req, sizeof(req), true);
 }
 //-------------------------------------------------------------------------------------------------------
 bool radioSetFrequency(uint32_t freqHz){
-  #if defined(BLUETOOTH)
-    bool linkUp = lanMode ? lanClient.connected() : btClientConnected;
-    if (!linkUp || radio_address == 0x00) {
-      return false;
-    }
+  // Remote set-VFO (TrxNet /s-hz, OI3). catWriteFrame routes to lanClient for LAN,
+  // so this must NOT be guarded by BLUETOOTH.
+  bool linkUp = lanMode ? lanClient.connected() : btClientConnected;
+  if (!linkUp || radio_address == 0x00) {
+    return false;
+  }
 
-    String strFreq = IntToTenString(freqHz);
-    String splitFreq[5];
-    SplitString(strFreq, splitFreq);
+  String strFreq = IntToTenString(freqHz);
+  String splitFreq[5];
+  SplitString(strFreq, splitFreq);
 
-    uint8_t req[] = {
-      START_BYTE, START_BYTE, radio_address, CONTROLLER_ADDRESS, CMD_WRITE_FREQ,
-      stringToByte(splitFreq[4]),
-      stringToByte(splitFreq[3]),
-      stringToByte(splitFreq[2]),
-      stringToByte(splitFreq[1]),
-      stringToByte(splitFreq[0]),
-      STOP_BYTE
-    };
+  uint8_t req[] = {
+    START_BYTE, START_BYTE, radio_address, CONTROLLER_ADDRESS, CMD_WRITE_FREQ,
+    stringToByte(splitFreq[4]),
+    stringToByte(splitFreq[3]),
+    stringToByte(splitFreq[2]),
+    stringToByte(splitFreq[1]),
+    stringToByte(splitFreq[0]),
+    STOP_BYTE
+  };
 
-    catWriteFrame(req, sizeof(req), true);
-    return true;
-  #endif
-  return false;
+  catWriteFrame(req, sizeof(req), true);
+  return true;
 }
 //-------------------------------------------------------------------------------------------------------
 void sendCatRequest(uint8_t requestCode){
@@ -3999,7 +4046,8 @@ bool searchRadio(){
   
 //-------------------------------------------------------------------------------------------------------
 void printFrequency(void){
-  #if defined(BLUETOOTH)
+  // CI-V BCD frequency decode — shared by BT and LAN (lanCivFrameHandler feeds the
+  // same read_buffer). Must NOT be guarded by BLUETOOTH or LAN loses its frequency.
       frequency = 0;
       //FE FE E0 42 03 <00 00 58 45 01> FD ic-820
       //FE FE 00 40 00 <00 60 06 14> FD ic-732
@@ -4008,7 +4056,6 @@ void printFrequency(void){
         frequency += (read_buffer[9 - i] >> 4) * decMulti[i * 2];
         frequency += (read_buffer[9 - i] & 0x0F) * decMulti[i * 2 + 1];
       }
-  #endif
 }
 //-------------------------------------------------------------------------------------------------------
 // void printMode(void){
@@ -4045,7 +4092,7 @@ bool applyModeState(uint8_t modeId, bool dataMode){
 }
 
 void printMode(void){
-  #if defined(BLUETOOTH)
+  // CI-V mode decode — shared by BT and LAN. Must NOT be guarded by BLUETOOTH.
     uint8_t modeId = read_buffer[5];
     if (!applyModeState(modeId, false)) {
       if (Debug == true) {
@@ -4062,7 +4109,6 @@ void printMode(void){
       Serial.print("CAT | mode=");
       Serial.println(modesSnapshot);
     }
-  #endif
 }
 //-------------------------------------------------------------------------------------------------------
 //-------------------------------------------------------------------------------------------------------
@@ -4786,18 +4832,8 @@ void runLanCivTest(){
     ESP.restart();
 
   } else if (act == 'b' || act == 'B') {
-    transceiverType = "IC-705-BT";
-    lanMode = false;
-    if (!savePrimaryRadioConfig()) {
-      Serial.println("LAN | save failed; reboot cancelled");
-      return;
-    }
-    if (!saveMemoryConfig()) {
-      Serial.println("LAN | warning: legacy memories.cfg copy was not updated");
-    }
-    Serial.println("LAN | reverting to Bluetooth. Rebooting...");
-    delay(1500);
-    ESP.restart();
+    // Bluetooth transport removed: this command is no longer supported.
+    Serial.println("LAN | Bluetooth transport removed; use LAN (S) or CI-V.");
 
   } else {
     Serial.println("LAN | aborted");
@@ -5101,10 +5137,13 @@ void handleSet() {
       Serial.println("New Baudrate "+String(BaudRate));
     }
 
-    // TRX1 transport: new setup field trx1transport (lan/bluetooth) is the
-    // authority; legacy trxprofile kept as fallback for older clients.
+    // TRX1 transport: new setup field trx1transport (lan/civ) is the authority;
+    // legacy trxprofile kept as fallback for older clients. Bluetooth removed:
+    // any non-CIV selection resolves to LAN.
     String trx1transport = trimMemoryValue(requestArg("trx1transport"), 12);
-    if (trx1transport == "lan") {
+    if (trx1transport == "civ" || trx1transport == "ci-v") {
+      transceiverType = "IC-7610-CI-V";
+    } else if (trx1transport == "lan") {
       transceiverType = "IC-705-LAN";
       String ip = trimMemoryValue(requestArg("lanip"), 15);
       String u  = trimMemoryValue(requestArg("lanuser"), 16);
@@ -5112,11 +5151,9 @@ void handleSet() {
       if (ip.length()) lanRadioIp = ip;
       if (u.length())  lanUser = u;
       if (pw.length()) lanPass = pw;   // blank = keep stored password
-    } else if (trx1transport == "bluetooth") {
-      transceiverType = "IC-705-BT";
     } else {
       String nextTransceiverType = trimMemoryValue(requestArg("trxprofile"), 16);
-      if (nextTransceiverType != "IC-7610-CI-V") nextTransceiverType = "IC-705-BT";
+      if (nextTransceiverType != "IC-7610-CI-V") nextTransceiverType = "IC-705-LAN";
       transceiverType = nextTransceiverType;
     }
     lanMode = (transceiverType == "IC-705-LAN");
@@ -5478,7 +5515,11 @@ void DxcHandleTelnetClient(){
 void DxcLoop(){
   DxcHandleWebSocketClient();
   if(!DxcWsClient.connected()){ DxcDisconnectTelnet(); return; }
-  if(!DxcTelnetClient.connected() && DxcConfigReady() && millis() >= DxcReconnectTimer) DxcConnectTelnet();
+  // DxcConnectTelnet() blocks on connect() (and possibly DNS) for up to ~1.5 s.
+  // Never start it while a slot key is imminent; an established connection keeps
+  // being read below.
+  if(!DxcTelnetClient.connected() && DxcConfigReady() && millis() >= DxcReconnectTimer &&
+     !txCriticalNow()) DxcConnectTelnet();
   DxcHandleTelnetClient();
 }
 
@@ -5670,18 +5711,20 @@ void handleInboxPost(){
 // Decision 13: no silent suppression. Every refusal, ban and expiry leaves a
 // trace that survives a page reload and is readable from any device, because a
 // restriction that fires at 03:00 has to be explainable at 09:00.
-void unattendedLogEvent(uint8_t type, const String& detail){
-  char line[UNATTENDED_EVENT_LINE_MAX];
-  size_t len = unattendedFormatEvent(line, sizeof(line), millis(), type, detail.c_str());
-  if(len == 0) return;
-  Serial.print("UNA | "); Serial.print(line);
 
+// The one place that touches flash: append `n1`(+`n2`) bytes, rotating first if the
+// file would exceed its cap. Runs only from unattendedLogFlush (off the TX-critical
+// window) or the malloc-failed sync fallback. Returns false if the append could not
+// open, so the caller keeps the bytes queued and retries next flush.
+static bool unattendedLogWriteToFlash(const uint8_t* data1, size_t n1,
+                                      const uint8_t* data2, size_t n2, bool overflow){
   uint32_t existing = 0;
   if(LittleFS.exists(UNATTENDED_LOG_PATH)){
     File probe = LittleFS.open(UNATTENDED_LOG_PATH, FILE_READ);
     if(probe){ existing = probe.size(); probe.close(); }
   }
-  if(unattendedLogNeedsRotate(existing, len)){
+  size_t add = n1 + n2 + (overflow ? 24 : 0);
+  if(unattendedLogNeedsRotate(existing, add)){
     // Keep the newest part; start at the next line boundary so the first
     // retained entry is a whole event and not a fragment.
     File src = LittleFS.open(UNATTENDED_LOG_PATH, FILE_READ);
@@ -5697,9 +5740,61 @@ void unattendedLogEvent(uint8_t type, const String& detail){
     if(dst){ dst.print(kept); dst.close(); }
   }
   File out = LittleFS.open(UNATTENDED_LOG_PATH, FILE_APPEND);
-  if(!out) return;
-  out.print(line);
+  if(!out) return false;
+  if(overflow) out.print("0 BLOCK log queue overflow\n");   // decision 13: never drop silently
+  if(data1 && n1) out.write(data1, n1);
+  if(data2 && n2) out.write(data2, n2);
   out.close();
+  return true;
+}
+
+// Append one formatted line to the RAM ring. On a full ring drop whole oldest
+// lines (never a fragment) and flag the overflow so the flush records it. Falls
+// back to a synchronous flash write only when the ring could not be allocated.
+void unattendedLogEnqueue(const char* line, size_t n){
+  if(!unaLogQueue){ unattendedLogWriteToFlash((const uint8_t*)line, n, nullptr, 0, false); return; }
+  if(n == 0 || n > UNA_LOG_QUEUE_SIZE) return;
+  while(UNA_LOG_QUEUE_SIZE - unaLogLen < n){
+    size_t dropped = 0;
+    while(unaLogLen > 0){
+      uint8_t c = unaLogQueue[unaLogHead];
+      unaLogHead = (unaLogHead + 1) % UNA_LOG_QUEUE_SIZE; unaLogLen--; dropped++;
+      if(c == '\n') break;
+    }
+    unaLogOverflow = true;
+    if(dropped == 0) break;   // ring smaller than one line; guarded by n check above
+  }
+  for(size_t i = 0; i < n; i++){
+    unaLogQueue[unaLogTail] = (uint8_t)line[i];
+    unaLogTail = (unaLogTail + 1) % UNA_LOG_QUEUE_SIZE;
+  }
+  unaLogLen += n;
+}
+
+// Drain the whole RAM ring to flash in one open/append. Called from loop() only
+// while !txCriticalNow(). No interrupt enqueues the log, so the ring is stable for
+// the duration of the write; on append failure the bytes stay queued for retry.
+void unattendedLogFlush(){
+  if(!unaLogQueue || unaLogLen == 0) return;
+  size_t n = unaLogLen;
+  size_t first = UNA_LOG_QUEUE_SIZE - unaLogHead;
+  if(first > n) first = n;
+  if(!unattendedLogWriteToFlash(unaLogQueue + unaLogHead, first,
+                                unaLogQueue, n - first, unaLogOverflow)) return;
+  unaLogHead = (unaLogHead + n) % UNA_LOG_QUEUE_SIZE;
+  unaLogLen -= n;
+  unaLogOverflow = false;
+}
+
+// trace that survives a page reload and is readable from any device, because a
+// restriction that fires at 03:00 has to be explainable at 09:00. Hot-path safe:
+// formats + serial-logs immediately, enqueues to RAM, and never touches flash here.
+void unattendedLogEvent(uint8_t type, const String& detail){
+  char line[UNATTENDED_EVENT_LINE_MAX];
+  size_t len = unattendedFormatEvent(line, sizeof(line), millis(), type, detail.c_str());
+  if(len == 0) return;
+  Serial.print("UNA | "); Serial.print(line);
+  unattendedLogEnqueue(line, len);
 }
 
 // ── JS8LAN single-operator lock ───────────────────────────────────────────────
@@ -5928,6 +6023,23 @@ static size_t aud1RingRead(uint8_t* output, size_t count){
   size_t read = 0;
   while(read < count && aud1TxUsed){ output[read++] = aud1TxRing[aud1TxRead]; aud1TxRead=(aud1TxRead+1)%AUD1_TX_RING_SIZE; aud1TxUsed--; }
   return read;
+}
+
+// True while a JS8 slot key is imminent: the whole prebuffer fill (PREBUFFER) and
+// the last stretch of the wait before the slot (READY within the guard lead). The
+// cooperative loop skips blocking best-effort work (port-80 handlers, DXC connect)
+// during this window so a flash/DNS/connect stall cannot push PTT past the slot.
+// Deliberately excludes STREAM (the ring absorbs stalls once keyed) and the long
+// early part of READY (excluding it would otherwise starve the UI for ~14 s).
+static const uint32_t TX_GUARD_LEAD_MS  = 1300;   // > prebufferMs, covers the fill
+static const uint32_t TX_GUARD_TRAIL_MS = 150;    // covers the key instant itself
+bool txCriticalNow(){
+  if(aud1TxState == AUD1_TX_PREBUFFER) return true;
+  if(aud1TxState == AUD1_TX_READY){
+    int32_t toSlot = (int32_t)(aud1TxTargetMs - millis());
+    return toSlot <= (int32_t)TX_GUARD_LEAD_MS && toSlot > -(int32_t)TX_GUARD_TRAIL_MS;
+  }
+  return false;
 }
 
 void aud1TxTick(bool deferPrebufferMiss){

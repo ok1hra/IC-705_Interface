@@ -80,7 +80,10 @@ fi
 }
 
 ESP32_HW_ROOT="$(find "$ARDUINO15_DIR/packages/esp32/hardware/esp32" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
-PARTITION_CSV="$ESP32_HW_ROOT/tools/partitions/no_ota.csv"
+# Sketch-local custom layout (app0 1.375 MB / spiffs 2.56 MB, no coredump).
+# The ESP32 core prebuild hook flashes this same file, so app/spiffs offsets and
+# sizes below are read straight from it and stay in sync with the on-device table.
+PARTITION_CSV="$ROOT_DIR/partitions.csv"
 MKLITTLEFS_BIN="$(find "$ARDUINO15_DIR/packages/esp32/tools/mklittlefs" -type f -name mklittlefs -perm -u+x | sort -V | tail -1)"
 ESPTOOL_PY="$(find "$ARDUINO15_DIR/packages/esp32/tools/esptool_py" -type f -name esptool.py | sort -V | tail -1)"
 GEN_PARTITIONS="$ESP32_HW_ROOT/tools/gen_esp32part.py"
@@ -168,8 +171,12 @@ python3 "$ESPTOOL_PY" --chip esp32 --port "$PORT" --baud "$BAUD" \
   "$PARTITION_TABLE_OFFSET" "$PARTITION_TABLE_SIZE" "$DEVICE_PARTITIONS"
 if ! cmp -s "$EXPECTED_PARTITIONS" "$DEVICE_PARTITIONS"; then
   echo "ERROR: device partition table does not match $PARTITION_CSV" >&2
-  echo "       Nothing was written. Perform a full Arduino IDE upload with" >&2
-  echo "       'No OTA (2MB APP/2MB SPIFFS)' before using this script." >&2
+  echo "       Nothing was written. The device still has an older layout." >&2
+  echo "       Do ONE full flash that rewrites the partition table first" >&2
+  echo "       (Arduino IDE Upload, or tools/gh-pages.sh bundle) — both use the" >&2
+  echo "       sketch-local partitions.csv. That first flash erases the filesystem," >&2
+  echo "       so back up config via /config/download beforehand. After that this" >&2
+  echo "       fast app+LittleFS script will match and work normally." >&2
   exit 1
 fi
 

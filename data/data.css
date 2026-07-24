@@ -9,6 +9,7 @@
   --cyan: #66f2d5;
   --amber: #ffbf69;
   --red: #ff6b6b;
+  --green: #5ad18a;
   font: 14px/1.35 Inter, ui-sans-serif, system-ui, sans-serif;
 }
 * { box-sizing: border-box; }
@@ -422,9 +423,17 @@ button { color: inherit; cursor: pointer; }
 .chat-bubble[data-message-status="interrupted"] footer { color:var(--amber); }
 .message-meta { display:flex; gap:8px; color:var(--muted); font-size:11px; white-space:nowrap; }
 .message strong { color: var(--cyan); cursor: pointer; }
-.own-callsign { color: var(--red) !important; }
+.own-callsign { color: var(--green) !important; }
 .message-text { min-width:0; color:#fff; white-space:normal; overflow-wrap:anywhere; }
 .message.directed { border-left: 3px solid var(--amber); }
+/* Own TX in the recent-traffic feed. Red = went on air (completed), grey = a
+   link/TX failure kept it off air. Not clickable — you cannot select yourself. */
+.message-tx strong { cursor: default; }
+.message-tx.tx-emitted strong, .message-tx.tx-emitted .message-text { color: var(--red); }
+.message-tx.tx-unsent strong, .message-tx.tx-unsent .message-text { color: var(--muted); }
+.message-tx.tx-unsent .message-text { text-decoration: line-through; text-decoration-color: rgba(139,165,157,0.5); }
+/* Understated "this recipient is blocked" note — amber, like the auto-reply ban, not an alarm. */
+.session-blocked { color: var(--amber); }
 .message.operational { opacity: .48; }
 .message.operational:hover { opacity: .82; }
 .traffic-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
@@ -452,8 +461,10 @@ button { color: inherit; cursor: pointer; }
 .map-scale { fill: var(--muted); font: 600 11px ui-monospace, monospace; text-anchor: end; }
 .map-link { stroke: var(--line); stroke-width: 1; }
 .map-dot circle { fill: var(--cyan); opacity: .85; }
+.map-dot.reacted circle { fill: var(--red); }
 .map-badge { fill: var(--text); font: 700 9px ui-monospace, monospace; }
 .map-center { fill: var(--amber); }
+.traffic-table td.call.reacted { color: var(--red); }
 
 .settings { padding: 10px; display: grid; grid-template-columns: repeat(2, minmax(260px, 1fr)); gap: 8px 18px; }
 .settings label { display: grid; grid-template-columns: 130px minmax(0, 1fr) auto; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }

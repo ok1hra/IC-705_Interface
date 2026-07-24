@@ -10,6 +10,11 @@
     4: {periodMs: 30000}, 8: {periodMs: 4000},
   };
 
+  // The firmware TX ring holds AUD1_TX_RING_SIZE = 12288 B of 8 kHz uLaw = 1.536 s.
+  // Before keying nothing drains it, so the pre-key stream span must stay under
+  // that (with margin) or the firmware aborts with "TX ring overflow before write".
+  const TX_RING_LIMIT_MS = 1400;
+
   function planSlot(nowUtcMs, mode, correctionMs = 0, leadMs = 800) {
     const period = MODES[mode].periodMs;
     const earliest = nowUtcMs + Math.max(0, leadMs) + correctionMs;
@@ -137,7 +142,7 @@
     // the clock correction and the firmware then rejects tx.prepare.
     constructor({buildFrames, encoder, sink, streamId = 0x4a533854,
                  clockCorrectionMs = 0, leadMs = 800, prebufferMs = 1000,
-                 maxCatchupPackets = 25,
+                 streamLeadMs = 350, maxCatchupPackets = 25,
                  wallNow = () => Date.now(),
                  monotonicNow = () => (typeof performance !== "undefined" ? performance.now() : Date.now())}) {
       this.buildFrames = buildFrames;
@@ -147,6 +152,7 @@
       this.clockCorrectionMs = clockCorrectionMs;
       this.leadMs = leadMs;
       this.prebufferMs = prebufferMs;
+      this.streamLeadMs = streamLeadMs;
       this.maxCatchupPackets = maxCatchupPackets;
       this.wallNow = wallNow;
       this.monotonicNow = monotonicNow;
@@ -205,7 +211,13 @@
       this.nextSlotUtcMs = this.immediate
         ? scheduledAtUtcMs + Math.max(this.activePrebufferMs + 100, 350)
         : planSlot(scheduledAtUtcMs, this.mode, this.clockCorrectionMs, this.leadMs);
-      this.prebufferStartUtcMs = this.nextSlotUtcMs - this.activePrebufferMs;
+      // Front-load: begin streaming earlier than the firmware's required prebuffer
+      // (metadata.prebufferSamples below is unchanged) so the ring is full ~streamLeadMs
+      // before the slot. That absorbs a loop stall during delivery without shifting the
+      // key. Immediate/tune keeps the tight span. Capped to the firmware ring capacity.
+      const streamSpanMs = this.immediate ? this.activePrebufferMs
+        : Math.min(this.activePrebufferMs + this.streamLeadMs, TX_RING_LIMIT_MS);
+      this.prebufferStartUtcMs = this.nextSlotUtcMs - streamSpanMs;
       this.endUtcMs = this.nextSlotUtcMs + pcm.length / 48;
       this.watchdogUtcMs = this.endUtcMs + 2000;
       const ready = this.sink.prepare(this.txId, {mode: this.mode, toneHz: this.toneHz,
