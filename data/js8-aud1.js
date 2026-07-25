@@ -59,6 +59,9 @@
     }
 
     connect() {
+      // onclose may already have queued this reconnect when the owning page is
+      // locked out and stop() runs. Never resurrect a stopped AUD1 session.
+      if (!this.running) return;
       const socket = new this.WebSocketImpl(this.url);
       socket.binaryType = "arraybuffer";
       socket.onopen = () => this.status("open");

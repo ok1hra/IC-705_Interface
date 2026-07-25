@@ -48,9 +48,9 @@
   - continue with Arduino IDE
 
   Features
-  + Connecting the IC-705 via Bluetooth and sending the frequency to MQTT
+  + Three independently configured radio slots using LAN, TrxNet or CI-V
   + Frequency and mode for PHP log available on http port 81 (address http://ic705.local:81)
-  + UDP port 89 receives ascii characters, which it sends via Bluetooth to the IC-705, and transmit them as a CW message
+  + UDP port 89 receives ascii characters and transmits them as a CW or RTTY message
   + UDP port 89 receives ascii characters, which it sends in RTTY mode by keying FSK and PTT TRX inputs
   + Status LED
     - Fade in/out - WiFi in AP mode
@@ -62,17 +62,17 @@
       - FLASH+PTT receive RTTY via UDP
   + mDNS - to easily find IP devices in the network, using the command "ping ic705.local"
   + Watchdog - resets the device after more than 73 seconds of inactivity
-  + Output signal POWER-OUT (13.8V/0.5A) with LED activates after connecting BT (can turn on your hamshack)
+  + Output signal POWER-OUT (13.8V/0.5A) with LED activates after connecting a full-CAT primary radio
   + Galvanically isolated CI-V output for connecting PA or other devices
   + CIV-MUTE on gpio16 allow send to CI-V output only commands with frequency (not debug messages)
   + UDP port for CAT command (clear RIT) from log
-  + after BT connect, set TRX to enable: CI-V transceive + enable RIT + enable BK-IN
+  + after a full-CAT primary connection, set TRX to enable CI-V transceive + RIT + BK-IN
   + support external shift register control switch by frequency (not tested)
   + Detect PCB hardware ID
   + postponed MQTT
-  + BT name to configure
+  + legacy BT configuration retained only for downgrade compatibility
   + detect HW rev 02
-  + after connect WiFi, play assigned IP address in CW on TRX as sidetone only (BT and LAN; BK-IN forced off so it never transmits; snapshots+restores mode/BK-IN/AF/RF gain)
+  + after connect WiFi, play assigned IP address in CW on a full-CAT TRX1 as sidetone only (BK-IN forced off so it never transmits; snapshots+restores mode/BK-IN/AF/RF gain)
   + send ? in serial terminal, answer interface status
   + add AP mode - status LED signal AP mode by slowly turning on and off (fade in / fade out)
   + add setup http web form on port 80
@@ -93,26 +93,26 @@ String PSWD2        = "";
 byte     TRXNET_ID      = 0x01;   // own device NET_ID → device name "705.01"
 byte     TRX2_NET_ID    = 0xff;   // peer NET_ID for TRX2 Band Decoder slot (0x00 = disabled)
 byte     TRX3_NET_ID    = 0x00;   // peer NET_ID for TRX3 Band Decoder slot (0x00 = disabled)
-byte     TRX2_CONN_TYPE = 0x00;   // 0=TrxNet, 1=CI-V (EEPROM byte 44)
-byte     TRX3_CONN_TYPE = 0x00;   // 0=TrxNet, 1=CI-V (EEPROM byte 47)
+byte     TRX2_CONN_TYPE = 0x00;   // 0=TrxNet, 1=CI-V, 2=LAN (EEPROM byte 44)
+byte     TRX3_CONN_TYPE = 0x00;   // 0=TrxNet, 1=CI-V, 2=LAN (EEPROM byte 47)
 byte     TRX2_CIV_ADDR  = 0x00;   // CI-V address of TRX2 when CONN_TYPE=CI-V (EEPROM byte 48; 0x00=unset)
 byte     TRX3_CIV_ADDR  = 0x00;   // CI-V address of TRX3 when CONN_TYPE=CI-V (EEPROM byte 49; 0x00=unset)
 uint16_t TRXNET_PORT    = 5683;   // CoAP/discovery UDP port (CoAP default)
 int BaudRate        = 9600;
 // char* BTname        = "";
 // const char* BTname  = "IC705-interface";
-String BT_NAME;  // loaded from EEPROM; default IC705-XXXXXX from MAC
+String BT_NAME;  // legacy EEPROM field, retained for downgrade compatibility
 bool Debug          = false;
-bool cwIpOnConnect  = true;       // announce WiFi IP via CW on first radio connect (BT or LAN)
+bool cwIpOnConnect  = true;       // announce WiFi IP via CW on first full-CAT radio connect
 volatile bool cwIpSendPending = false;
 
 #define LOOP_WARN_MS 200
-#define REV 20260724
+#define REV 20260725
 #define WIFI
 #define UDP_TO_FSK
 #define WDT         // watchdog timer
 #define CIV_OUT     // send freq to CIV out with BaudRate
-// #define BLUETOOTH   // BT — removed: only LAN and TrxNet transports supported (saves ~680 kB flash)
+// #define BLUETOOTH   // legacy only; UI supports LAN, TrxNet and CI-V
 // #define RTLE     // not work now | credit OK2CQR https://github.com/ok2cqr/rtle/tree/master
 // #define RESET_AFTER_DISCONNECT  // enable reset after each disconnect + short CW msg
 
@@ -140,13 +140,13 @@ volatile bool cwIpSendPending = false;
   41 TRXNET_ID       (own NET_ID, 0x00=disabled → device name "705.XX")
   42 TRX2_NET_ID     (peer NET_ID for TRX2 BD slot, 0x00=disabled)
   43 TRX3_NET_ID     (peer NET_ID for TRX3 BD slot, 0x00=disabled)
-  44 TRX2_CONN_TYPE (0=TrxNet, 1=CI-V; 0xff=unprogrammed → default 0x00)
+  44 TRX2_CONN_TYPE (0=TrxNet, 1=CI-V, 2=LAN; 0xff=unprogrammed → default 0x00)
   45-46 TRXNET_PORT  (was MQTT_PORT)
-  47 TRX3_CONN_TYPE (0=TrxNet, 1=CI-V; 0xff=unprogrammed → default 0x00)
+  47 TRX3_CONN_TYPE (0=TrxNet, 1=CI-V, 2=LAN; 0xff=unprogrammed → default 0x00)
   48 TRX2_CIV_ADDR  (CI-V address of TRX2; 0x00/0xff = unset)
   49 TRX3_CIV_ADDR  (CI-V address of TRX3; 0x00/0xff = unset)
   50 TRX1_CONFIG_MARKER (0xa5=current; 0xff=legacy memories.cfg fallback)
-  51 TRX1_TRANSPORT  (1=LAN, 2=Bluetooth, 3=IC-7610 CI-V)
+  51 TRX1_TRANSPORT  (1=LAN, 2=legacy Bluetooth, 3=CI-V, 4=TrxNet)
   52 TRX1_CIV_ADDR
   53-68 TRX1_LAN_IP (16B including 0xff terminator padding)
   69 FREE            (was HTTP_CAT_PORT)
@@ -363,13 +363,15 @@ char CwMsg[37] = "";
 #include <WiFiUdp.h>
 #include <TrxNet.h>
 #include "icomLanClient.h"      // LAN CI-V transport (alternative to BT)
+#include "radio_transport.h"    // shared per-slot transport/capability model
 #include "aud1_tx_state.h"      // shared TX-state predicates used by native regression tests
 #include "unattended_guard.h"   // shared liveness/arming rules used by native regression tests
 #include "unattended_events.h"  // shared event-log formatting used by native regression tests
 #include "aud1_ws_parser.h"     // incremental, non-blocking browser WebSocket framing
 #include "js8_session.h"        // single-operator lock for the JS8LAN page
 IcomLanClient lanClient;
-bool    lanMode = true;         // true when transceiverType == "IC-705-LAN" (LAN is the default)
+IcomLanClient* secondaryLanClients[2] = {nullptr, nullptr};
+bool    lanMode = true;         // compatibility mirror: TRX1 transport == LAN
 String  lanRadioIp = "";        // radio IP for LAN mode
 String  lanUser = "";           // ICOM network username
 String  lanPass = "";           // ICOM network password
@@ -377,6 +379,25 @@ uint32_t lanFreqTmp = 0;        // last freq published to TrxNet (change detect)
 bool    lanReconnectRequested = false;
 uint32_t lanRetryAt = 0;
 uint32_t lanBackoff = 3000;
+
+static const char* RADIO_CONFIG_PATH = "/radio-config.json";
+
+struct RadioSlotConfig {
+  bool enabled;
+  RadioTransport transport;
+  uint8_t civAddr;
+  uint8_t netId;
+  String lanIp;
+  String lanUser;
+  String lanPass;
+};
+
+RadioSlotConfig radioSlots[3];
+bool radioConfigLoaded = false;
+bool primarySerialHasData = false;
+bool primaryTrxNetHasData = false;
+uint32_t secondaryLanRetryAt[2] = {0, 0};
+uint32_t secondaryLanBackoff[2] = {3000, 3000};
 WiFiUDP trxUdp;
 TrxNet  net(trxUdp);
 char    trxDeviceName[TRXNET_MAX_DEVICE_NAME];
@@ -593,6 +614,16 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   bool hasPrimaryRadioConfig(void);
   void loadPrimaryRadioConfig(void);
   bool savePrimaryRadioConfig(void);
+  void initLegacyRadioSlots(void);
+  bool loadRadioConfig(void);
+  bool saveRadioConfig(void);
+  void syncLegacyRadioGlobals(void);
+  bool radioSlotConnected(uint8_t slot);
+  void radioSlotSetFrequencyState(uint8_t slot, uint32_t freq);
+  void radioSlotSetModeState(uint8_t slot, const char *mode);
+  IcomLanClient* radioLanClient(uint8_t slot);
+  bool beginRadioLanClient(uint8_t slot);
+  void secondaryLanClientsLoop(void);
   String jsonEscape(const String &value);
   String configJsonEscape(const String &s);
   String civFrameToHex(const uint8_t *frame, size_t frameLen);
@@ -637,6 +668,9 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   void onTrxHz(const char* from, const uint8_t* data, size_t len);
   void onTrxMode(const char* from, const uint8_t* data, size_t len);
   void onTrxSetHz(const char* from, const uint8_t* data, size_t len);
+  static const char* trxnetModeToString(uint8_t civMode);
+  void lanSecondaryCivFrameHandler(uint8_t slot, const uint8_t *frame, size_t len);
+  static void civSend(uint8_t toAddr, const uint8_t* body, size_t bodyLen);
   void DxcLoop(void);
   void dxcHandleRawClient(void);
   bool DxcConfigReady(void);
@@ -757,7 +791,7 @@ void loadMemoryConfig(void){
 
   if (file.available()) {
     String configuredType = trimMemoryValue(file.readStringUntil('\n'), 16);
-    if (configuredType == "IC-7610-CI-V") {
+    if (configuredType == "IC-7610-CI-V" || configuredType == "TRXNET") {
       transceiverType = configuredType;
     } else {
       // Bluetooth transport removed: any stored non-CIV value falls back to LAN.
@@ -1065,9 +1099,19 @@ String extractJsonObject(const String &json, const char *key) {
   while (start < (int)json.length() && (json[start] == ' ' || json[start] == '\t')) start++;
   if (start >= (int)json.length() || json[start] != '{') return String();
   int depth = 0, end = start;
+  bool inString = false;
+  bool escaped = false;
   for (; end < (int)json.length(); end++) {
-    if (json[end] == '{') depth++;
-    else if (json[end] == '}') { if (--depth == 0) { end++; break; } }
+    char c = json[end];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (c == '\\') escaped = true;
+      else if (c == '"') inString = false;
+      continue;
+    }
+    if (c == '"') inString = true;
+    else if (c == '{') depth++;
+    else if (c == '}') { if (--depth == 0) { end++; break; } }
   }
   return json.substring(start, end);
 }
@@ -1437,12 +1481,8 @@ void renderSetupPage(){
 }
 
 void handleSetupData(){
-  char civHex[3];
-  snprintf(civHex, sizeof(civHex), "%02X", configuredCivAddress);
-  char trxnetHex[3], trx2Hex[3], trx3Hex[3];
+  char trxnetHex[3];
   snprintf(trxnetHex, sizeof(trxnetHex), "%02x", TRXNET_ID);
-  snprintf(trx2Hex, sizeof(trx2Hex), "%02x", TRX2_NET_ID);
-  snprintf(trx3Hex, sizeof(trx3Hex), "%02x", TRX3_NET_ID);
 
   int baudSelect = 3;
   if (BaudRate == 1200) baudSelect = 0;
@@ -1455,7 +1495,7 @@ void handleSetupData(){
   bool trxnetidIsDefault = (EEPROM.read(41) == 0xff);
 
   String j;
-  j.reserve(2400);
+  j.reserve(3400);
   j += "{\"fwRev\":"; j += (unsigned)REV;
   j += ",\"apMode\":"; j += APmode ? "true" : "false";
   j += ",\"apModeText\":\""; j += APmode ? "AP mode ON" : "AP mode OFF"; j += "\"";
@@ -1473,21 +1513,37 @@ void handleSetupData(){
   j += ",\"trxnetport\":\""; j += TRXNET_PORT; j += "\"";
   j += ",\"trxnetprio\":\""; j += configJsonEscape(TRXNET_PRIO); j += "\"";
   j += ",\"baud\":\""; j += baudSelect; j += "\"";
-  j += ",\"trx1label\":\""; j += configJsonEscape(g_lcTrx1Label); j += "\"";
-  j += ",\"trx1transport\":\""; j += (transceiverType == "IC-7610-CI-V") ? "civ" : "lan"; j += "\"";
-  j += ",\"civaddr\":\""; j += civHex; j += "\"";
-  j += ",\"lanip\":\"";   j += configJsonEscape(lanRadioIp); j += "\"";
-  j += ",\"lanuser\":\""; j += configJsonEscape(lanUser); j += "\"";
-  j += ",\"lanpass\":\""; j += configJsonEscape(lanPass); j += "\"";
+  String labels[3] = {g_lcTrx1Label, g_lcTrx2Label, g_lcTrx3Label};
+  for (uint8_t slot = 0; slot < 3; slot++) {
+    char civ[3], netid[3];
+    snprintf(civ, sizeof(civ), "%02X", radioSlots[slot].civAddr);
+    snprintf(netid, sizeof(netid), "%02X", radioSlots[slot].netId);
+    String prefix = "trx" + String(slot + 1);
+    j += ",\""; j += prefix; j += "enabled\":";
+    j += (slot == 0 || radioSlots[slot].enabled) ? "true" : "false";
+    j += ",\""; j += prefix; j += "label\":\"";
+    j += configJsonEscape(labels[slot]); j += "\"";
+    j += ",\""; j += prefix; j += "transport\":\"";
+    j += radioTransportName(radioSlots[slot].transport); j += "\"";
+    j += ",\""; j += prefix; j += "civaddr\":\""; j += civ; j += "\"";
+    j += ",\""; j += prefix; j += "netid\":\""; j += netid; j += "\"";
+    j += ",\""; j += prefix; j += "lanip\":\"";
+    j += configJsonEscape(radioSlots[slot].lanIp); j += "\"";
+    j += ",\""; j += prefix; j += "lanuser\":\"";
+    j += configJsonEscape(radioSlots[slot].lanUser); j += "\"";
+    j += ",\""; j += prefix; j += "lanpass\":\"";
+    j += configJsonEscape(radioSlots[slot].lanPass); j += "\"";
+  }
+  // Compatibility aliases used by the current JS8 readiness check and older
+  // setup backups while the unified per-slot keys become authoritative.
+  { char civ[3]; snprintf(civ, sizeof(civ), "%02X", radioSlots[0].civAddr);
+    j += ",\"civaddr\":\""; j += civ; j += "\""; }
+  j += ",\"lanip\":\"";   j += configJsonEscape(radioSlots[0].lanIp); j += "\"";
+  j += ",\"lanuser\":\""; j += configJsonEscape(radioSlots[0].lanUser); j += "\"";
+  j += ",\"lanpass\":\""; j += configJsonEscape(radioSlots[0].lanPass); j += "\"";
   j += ",\"cwIpOnConnect\":"; j += cwIpOnConnect ? "true" : "false";
-  j += ",\"trx2label\":\""; j += configJsonEscape(g_lcTrx2Label); j += "\"";
-  j += ",\"trx2netid\":\""; j += trx2Hex; j += "\"";
   j += ",\"trx2conntype\":"; j += TRX2_CONN_TYPE;
-  { char h[3]; snprintf(h, sizeof(h), "%02x", TRX2_CIV_ADDR); j += ",\"trx2civaddr\":\""; j += h; j += "\""; }
-  j += ",\"trx3label\":\""; j += configJsonEscape(g_lcTrx3Label); j += "\"";
-  j += ",\"trx3netid\":\""; j += trx3Hex; j += "\"";
   j += ",\"trx3conntype\":"; j += TRX3_CONN_TYPE;
-  { char h[3]; snprintf(h, sizeof(h), "%02x", TRX3_CIV_ADDR); j += ",\"trx3civaddr\":\""; j += h; j += "\""; }
   j += ",\"dxchost\":\""; j += configJsonEscape(DxcHost); j += "\"";
   j += ",\"dxcport\":\""; j += DxcPort > 0 ? String(DxcPort) : ""; j += "\"";
   j += ",\"dxccall\":\""; j += configJsonEscape(DxcCallsign); j += "\"";
@@ -1576,25 +1632,30 @@ void buildStateJson(char *buf, size_t bufSize){
   copyModesText(modesSnapshot, sizeof(modesSnapshot));
   char addrStr[5];
   snprintf(addrStr, sizeof(addrStr), "0x%02X", radio_address);
-  bool radioLinked = lanMode ? lanClient.connected() : btClientConnected;
-  const char *lanStatus = !lanMode ? "disabled" :
+  RadioTransport primaryTransport = radioSlots[0].transport;
+  bool radioLinked = radioLinkUp();
+  const char *lanStatus = primaryTransport != RADIO_LAN ? "disabled" :
                           (lanClient.connected() ? "linked" :
                           ((lanClient.status() == IcomLanClient::LAN_IDLE || lanClient.failed())
                            ? "disconnected" : "connecting"));
-  const char *btStat = lanMode ? (lanClient.connected() ? "LAN linked" :
+  const char *btStat = primaryTransport == RADIO_LAN ? (lanClient.connected() ? "LAN linked" :
                        (strcmp(lanStatus, "connecting") == 0 ? "LAN connecting" : "LAN disconnected")) :
-                       (!btClientConnected ? "BT idle" :
-                       (radio_address == 0x00 ? "BT linked | searching CI-V" : "BT linked"));
+                       (primaryTransport == RADIO_CIV
+                         ? (radioLinked ? "CI-V linked" : "CI-V disconnected")
+                         : (radioLinked ? "TRXNET linked (limited)" : "TRXNET disconnected"));
   const char *wifiStat = APmode ? "WiFi AP" :
                          (WiFiStationReady() ? "WiFi STA" : "WiFi down");
   int rssi = (APmode || !WiFiStationReady()) ? -999 : (int)WiFi.RSSI();
   // Finer LAN health than a single "connected": CAT stream actually delivering,
-  // and audio sub-stream carrying fresh payload. Both false in BT mode.
-  bool lanCatHealthy = lanMode && lanClient.catHealthy();
-  bool lanAudioReady = lanMode && lanClient.audioReady();
+  // and audio sub-stream carrying fresh payload. Audio is false outside LAN.
+  bool lanCatHealthy = primaryTransport == RADIO_LAN ? lanClient.catHealthy()
+                                                     : (primaryTransport == RADIO_CIV && radioLinked);
+  bool lanAudioReady = primaryTransport == RADIO_LAN && lanClient.audioReady();
+  bool fullCat = radioHasCapability(0, primaryTransport, RADIO_CAP_FULL_CAT);
   snprintf(buf, bufSize,
     "{\"connected\":%s,\"catHealthy\":%s,\"audioReady\":%s,"
     "\"lanStatus\":\"%s\",\"btStatus\":\"%s\",\"wifiStatus\":\"%s\","
+    "\"radioTransport\":\"%s\",\"fullCat\":%s,\"tuneSupported\":true,"
     "\"wifiRssi\":%d,\"fwRev\":\"%u\",\"bdSupported\":%s,\"power\":%s,"
     "\"frequency\":%u,\"mode\":\"%s\",\"filter\":%u,"
     "\"radioAddress\":\"%s\",\"transceiverType\":\"%s\",\"tx\":%s,\"ritRaw\":%u,"
@@ -1604,6 +1665,7 @@ void buildStateJson(char *buf, size_t bufSize){
     "\"preamp\":%u,\"vox\":%u,\"dxcConnected\":%s}",
     radioLinked ? "true" : "false", lanCatHealthy ? "true" : "false",
     lanAudioReady ? "true" : "false", lanStatus, btStat, wifiStat,
+    radioTransportName(primaryTransport), fullCat ? "true" : "false",
     rssi, (unsigned)REV, bdEnabled ? "true" : "false", statusPower ? "true" : "false",
     (unsigned)frequency, modesSnapshot, (unsigned)stateFilter,
     addrStr, transceiverType.c_str(), stateTx ? "true" : "false", (unsigned)stateRitRaw,
@@ -1618,7 +1680,7 @@ void buildStateJson(char *buf, size_t bufSize){
 void handleGetState(){
   // CAT page polls /state?fast=1 — hold the fast BT poll cadence while it's open
   if (webServer.arg("fast") == "1") catFastUntil = millis() + CAT_FAST_HOLD_MS;
-  static char stateBuf[720];
+  static char stateBuf[900];
   buildStateJson(stateBuf, sizeof(stateBuf));
   webServer.sendHeader("Cache-Control", "no-cache");
   webServer.sendHeader("Connection", "close");
@@ -1776,6 +1838,12 @@ void handlePostCmd(){
   if (body.length() == 0) { webServer.send(400, "application/json", "{\"error\":\"empty body\"}"); return; }
   String type = extractJsonString(body, "type");
 
+  if (radioSlots[0].transport == RADIO_TRXNET && type != "setFrequency") {
+    webServer.send(409, "application/json",
+                   "{\"error\":\"unsupported_transport\",\"transport\":\"trxnet\",\"capability\":\"tune_only\"}");
+    return;
+  }
+
   if (type == "abortCw") {
     #if defined(UDP_TO_FSK)
     char modesSnapshot[sizeof(modes)];
@@ -1902,6 +1970,7 @@ void loadPrimaryRadioConfig(void) {
   uint8_t transport = EEPROM.read(PRIMARY_RADIO_TRANSPORT_ADDR);
   // Bluetooth transport removed: stored transport 2 (BT) now falls back to LAN.
   if (transport == 3) transceiverType = "IC-7610-CI-V";
+  else if (transport == 4) transceiverType = "TRXNET";
   else transceiverType = "IC-705-LAN";
 
   uint8_t civAddress = EEPROM.read(PRIMARY_RADIO_CIV_ADDR);
@@ -1918,6 +1987,7 @@ void loadPrimaryRadioConfig(void) {
 bool savePrimaryRadioConfig(void) {
   uint8_t transport = 1;  // default LAN (Bluetooth transport removed)
   if (transceiverType == "IC-7610-CI-V") transport = 3;
+  else if (transceiverType == "TRXNET") transport = 4;
 
   EEPROM.write(PRIMARY_RADIO_TRANSPORT_ADDR, transport);
   EEPROM.write(PRIMARY_RADIO_CIV_ADDR, configuredCivAddress);
@@ -1935,6 +2005,257 @@ bool savePrimaryRadioConfig(void) {
                  " ip=" + lanRadioIp + " user='" + lanUser +
                  "' passlen=" + String(lanPass.length()));
   return true;
+}
+
+void initLegacyRadioSlots(void) {
+  radioSlots[0].enabled = true;
+  radioSlots[0].transport = transceiverType == "TRXNET" ? RADIO_TRXNET
+                          : transceiverType == "IC-7610-CI-V" ? RADIO_CIV
+                                                              : RADIO_LAN;
+  radioSlots[0].civAddr = configuredCivAddress;
+  radioSlots[0].netId = 0x00;
+  radioSlots[0].lanIp = lanRadioIp;
+  radioSlots[0].lanUser = lanUser;
+  radioSlots[0].lanPass = lanPass;
+
+  radioSlots[1].transport = TRX2_CONN_TYPE == RADIO_LAN ? RADIO_LAN
+                          : TRX2_CONN_TYPE == RADIO_CIV ? RADIO_CIV
+                                                       : RADIO_TRXNET;
+  radioSlots[1].civAddr = TRX2_CIV_ADDR;
+  radioSlots[1].netId = (TRX2_NET_ID == 0xff) ? 0x00 : TRX2_NET_ID;
+  radioSlots[1].enabled = radioSlots[1].transport == RADIO_LAN ? false
+    : radioSlots[1].transport == RADIO_CIV
+      ? radioSlots[1].civAddr != 0x00 && radioSlots[1].civAddr != 0xff
+      : radioSlots[1].netId != 0x00 && radioSlots[1].netId != 0xff;
+
+  radioSlots[2].transport = TRX3_CONN_TYPE == RADIO_LAN ? RADIO_LAN
+                          : TRX3_CONN_TYPE == RADIO_CIV ? RADIO_CIV
+                                                       : RADIO_TRXNET;
+  radioSlots[2].civAddr = TRX3_CIV_ADDR;
+  radioSlots[2].netId = (TRX3_NET_ID == 0xff) ? 0x00 : TRX3_NET_ID;
+  radioSlots[2].enabled = radioSlots[2].transport == RADIO_LAN ? false
+    : radioSlots[2].transport == RADIO_CIV
+      ? radioSlots[2].civAddr != 0x00 && radioSlots[2].civAddr != 0xff
+      : radioSlots[2].netId != 0x00 && radioSlots[2].netId != 0xff;
+}
+
+void syncLegacyRadioGlobals(void) {
+  radioSlots[0].enabled = true;
+  configuredCivAddress = radioSlots[0].civAddr;
+  lanRadioIp = radioSlots[0].lanIp;
+  lanUser = radioSlots[0].lanUser;
+  lanPass = radioSlots[0].lanPass;
+  if (radioSlots[0].transport == RADIO_CIV) transceiverType = "IC-7610-CI-V";
+  else if (radioSlots[0].transport == RADIO_TRXNET) transceiverType = "TRXNET";
+  else transceiverType = "IC-705-LAN";
+  lanMode = radioSlots[0].transport == RADIO_LAN;
+
+  TRX2_CONN_TYPE = (byte)radioSlots[1].transport;
+  TRX3_CONN_TYPE = (byte)radioSlots[2].transport;
+  TRX2_NET_ID = radioSlots[1].enabled && radioSlots[1].transport == RADIO_TRXNET
+              ? radioSlots[1].netId : 0x00;
+  TRX3_NET_ID = radioSlots[2].enabled && radioSlots[2].transport == RADIO_TRXNET
+              ? radioSlots[2].netId : 0x00;
+  TRX2_CIV_ADDR = radioSlots[1].enabled && radioSlots[1].transport == RADIO_CIV
+                ? radioSlots[1].civAddr : 0x00;
+  TRX3_CIV_ADDR = radioSlots[2].enabled && radioSlots[2].transport == RADIO_CIV
+                ? radioSlots[2].civAddr : 0x00;
+}
+
+bool loadRadioConfig(void) {
+  initLegacyRadioSlots();
+  if (!LittleFS.exists(RADIO_CONFIG_PATH)) {
+    syncLegacyRadioGlobals();
+    radioConfigLoaded = false;
+    return false;
+  }
+
+  File f = LittleFS.open(RADIO_CONFIG_PATH, "r");
+  if (!f) {
+    syncLegacyRadioGlobals();
+    radioConfigLoaded = false;
+    return false;
+  }
+  String json = f.readString();
+  f.close();
+  json.trim();
+  if (!json.startsWith("{")) {
+    syncLegacyRadioGlobals();
+    radioConfigLoaded = false;
+    return false;
+  }
+
+  for (uint8_t slot = 0; slot < 3; slot++) {
+    char key[5];
+    snprintf(key, sizeof(key), "trx%u", slot + 1);
+    String obj = extractJsonObject(json, key);
+    if (!obj.startsWith("{")) continue;
+
+    radioSlots[slot].enabled =
+      slot == 0 ? true : extractJsonBool(obj, "enabled", radioSlots[slot].enabled);
+    String connection = extractJsonString(obj, "connection");
+    if (connection.length()) {
+      radioSlots[slot].transport =
+        radioTransportFromName(connection.c_str(), radioSlots[slot].transport);
+    }
+    uint8_t parsed;
+    String civ = extractJsonString(obj, "civaddr");
+    if (civ.length() && parseHexByteString(civ, parsed)) radioSlots[slot].civAddr = parsed;
+    String netid = extractJsonString(obj, "netid");
+    if (netid.length() && parseHexByteString(netid, parsed)) radioSlots[slot].netId = parsed;
+    if (obj.indexOf("\"lanip\"") >= 0)
+      radioSlots[slot].lanIp = trimMemoryValue(extractJsonString(obj, "lanip"), 15);
+    if (obj.indexOf("\"lanuser\"") >= 0)
+      radioSlots[slot].lanUser = trimMemoryValue(extractJsonString(obj, "lanuser"), 16);
+    if (obj.indexOf("\"lanpass\"") >= 0)
+      radioSlots[slot].lanPass = trimMemoryValue(extractJsonString(obj, "lanpass"), 16);
+  }
+
+  syncLegacyRadioGlobals();
+  radioConfigLoaded = true;
+  Serial.println("CFG | unified radio config loaded");
+  return true;
+}
+
+bool saveRadioConfig(void) {
+  String json;
+  json.reserve(768);
+  json = "{\"version\":1";
+  for (uint8_t slot = 0; slot < 3; slot++) {
+    char civ[3], netid[3];
+    snprintf(civ, sizeof(civ), "%02X", radioSlots[slot].civAddr);
+    snprintf(netid, sizeof(netid), "%02X", radioSlots[slot].netId);
+    json += ",\"trx"; json += slot + 1; json += "\":{";
+    json += "\"enabled\":"; json += (slot == 0 || radioSlots[slot].enabled) ? "true" : "false";
+    json += ",\"connection\":\""; json += radioTransportName(radioSlots[slot].transport); json += "\"";
+    json += ",\"civaddr\":\""; json += civ; json += "\"";
+    json += ",\"netid\":\""; json += netid; json += "\"";
+    json += ",\"lanip\":\""; json += configJsonEscape(radioSlots[slot].lanIp); json += "\"";
+    json += ",\"lanuser\":\""; json += configJsonEscape(radioSlots[slot].lanUser); json += "\"";
+    json += ",\"lanpass\":\""; json += configJsonEscape(radioSlots[slot].lanPass); json += "\"";
+    json += "}";
+  }
+  json += "}";
+
+  File f = LittleFS.open(RADIO_CONFIG_PATH, "w");
+  if (!f) return false;
+  size_t written = f.print(json);
+  f.flush();
+  bool ok = written == json.length() && f.size() == json.length();
+  f.close();
+  if (ok) {
+    radioConfigLoaded = true;
+    syncLegacyRadioGlobals();
+  }
+  return ok;
+}
+
+IcomLanClient* radioLanClient(uint8_t slot) {
+  if (slot == 0) return &lanClient;
+  if (slot > 2) return nullptr;
+  return secondaryLanClients[slot - 1];
+}
+
+bool beginRadioLanClient(uint8_t slot) {
+  if (slot > 2 || !radioSlots[slot].enabled || radioSlots[slot].transport != RADIO_LAN)
+    return false;
+  IPAddress radioIp;
+  if (!radioIp.fromString(radioSlots[slot].lanIp)
+      || radioSlots[slot].lanUser.length() == 0
+      || radioSlots[slot].lanPass.length() == 0) {
+    Serial.printf("LAN | TRX%u configuration incomplete\n", slot + 1);
+    return false;
+  }
+  if (slot > 0 && secondaryLanClients[slot - 1] == nullptr) {
+    secondaryLanClients[slot - 1] = new IcomLanClient();
+    if (secondaryLanClients[slot - 1] == nullptr) {
+      Serial.printf("LAN | TRX%u client allocation failed\n", slot + 1);
+      return false;
+    }
+  }
+  IcomLanClient* client = radioLanClient(slot);
+  if (!client) return false;
+  uint16_t localControlPort = radioLanLocalControlPort(slot);
+  client->begin(radioIp, 50001,
+                radioSlots[slot].lanUser.c_str(), radioSlots[slot].lanPass.c_str(),
+                radioSlots[slot].civAddr, slot, localControlPort, slot == 0);
+  Serial.printf("LAN | TRX%u active on local ports %u-%u\n",
+                slot + 1, localControlPort, localControlPort + 2);
+  return true;
+}
+
+bool radioSlotConnected(uint8_t slot) {
+  if (slot > 2 || !radioSlots[slot].enabled) return false;
+  if (radioSlots[slot].transport == RADIO_LAN) {
+    IcomLanClient* client = radioLanClient(slot);
+    return client && client->connected();
+  }
+  if (radioSlots[slot].transport == RADIO_TRXNET)
+    return slot == 0 ? primaryTrxNetHasData : g_trxHasData[slot - 1];
+  return slot == 0 ? primarySerialHasData : g_trxHasData[slot - 1];
+}
+
+void radioSlotSetFrequencyState(uint8_t slot, uint32_t freq) {
+  if (slot > 2) return;
+  if (slot == 0) {
+    frequency = freq;
+    if (radio_address == 0x00) radio_address = radioSlots[0].civAddr;
+    if (radioSlots[0].transport == RADIO_TRXNET) primaryTrxNetHasData = true;
+    if (radioSlots[0].transport == RADIO_CIV) primarySerialHasData = true;
+  } else {
+    g_trxFreq[slot - 1] = (long)freq;
+    g_trxHasData[slot - 1] = true;
+  }
+  if (bdEnabled && bdSource == slot + 1) bdUpdate(freq);
+}
+
+void radioSlotSetModeState(uint8_t slot, const char *mode) {
+  if (slot > 2 || !mode) return;
+  if (slot == 0) {
+    setModesText(mode);
+    if (radio_address == 0x00) radio_address = radioSlots[0].civAddr;
+    if (radioSlots[0].transport == RADIO_TRXNET) primaryTrxNetHasData = true;
+    if (radioSlots[0].transport == RADIO_CIV) primarySerialHasData = true;
+  } else {
+    strlcpy(g_trxMode[slot - 1], mode, sizeof(g_trxMode[slot - 1]));
+    g_trxHasData[slot - 1] = true;
+  }
+}
+
+void secondaryLanClientsLoop(void) {
+  if (APmode) return;
+  uint32_t now = millis();
+  for (uint8_t slot = 1; slot < 3; slot++) {
+    uint8_t idx = slot - 1;
+    if (!radioSlots[slot].enabled || radioSlots[slot].transport != RADIO_LAN) {
+      if (secondaryLanClients[idx]) secondaryLanClients[idx]->stop();
+      continue;
+    }
+    IcomLanClient* client = secondaryLanClients[idx];
+    if (!client) {
+      if (secondaryLanRetryAt[idx] == 0 || (int32_t)(now - secondaryLanRetryAt[idx]) >= 0) {
+        secondaryLanRetryAt[idx] = 0;
+        if (!beginRadioLanClient(slot)) secondaryLanRetryAt[idx] = now + secondaryLanBackoff[idx];
+      }
+      continue;
+    }
+    client->loop();
+    if (client->connected()) {
+      secondaryLanBackoff[idx] = 3000;
+    } else {
+      g_trxHasData[idx] = false;
+      if (client->failed()) {
+        client->stop();
+        secondaryLanRetryAt[idx] = now + secondaryLanBackoff[idx];
+        if (secondaryLanBackoff[idx] < 20000) secondaryLanBackoff[idx] *= 2;
+      } else if (client->status() == IcomLanClient::LAN_IDLE
+                 && secondaryLanRetryAt[idx]
+                 && (int32_t)(now - secondaryLanRetryAt[idx]) >= 0) {
+        secondaryLanRetryAt[idx] = 0;
+        beginRadioLanClient(slot);
+      }
+    }
+  }
 }
 
 // Normalize raw space-separated priority prefixes: uppercase, whitespace-collapsed,
@@ -2030,6 +2351,18 @@ void handleConfigDownload() {
   j += ",\"dxccall\":\"";    j += configJsonEscape(DxcCallsign); j += "\"";
   j += ",\"dxclocator\":\""; j += configJsonEscape(DxcLocator);  j += "\"";
   j += ",\"btname\":\"";     j += configJsonEscape(BT_NAME);     j += "\"";
+  if (LittleFS.exists(RADIO_CONFIG_PATH)) {
+    File radioFile = LittleFS.open(RADIO_CONFIG_PATH, "r");
+    if (radioFile) {
+      String radioJson = radioFile.readString();
+      radioFile.close();
+      radioJson.trim();
+      if (radioJson.startsWith("{")) {
+        j += ",\"radioConfig\":";
+        j += radioJson;
+      }
+    }
+  }
   String lc = readLogConfigJson();
   if (lc.startsWith("{")) {
     j += ",\"logConfig\":";
@@ -2081,8 +2414,9 @@ void handleConfigUpload() {
 
 
   String trx = extractJsonString(body, "trxprofile");
-  // Bluetooth transport removed: only CI-V and LAN remain; anything else -> LAN.
+  // Bluetooth transport removed; unified backups may also select TrxNet.
   if (trx == "IC-7610-CI-V") transceiverType = trx;
+  else if (trx == "TRXNET") transceiverType = trx;
   else if (trx.length() > 0) transceiverType = "IC-705-LAN";
 
   if (body.indexOf("\"lanip\"") >= 0) {
@@ -2132,7 +2466,7 @@ void handleConfigUpload() {
   v = parseField("trx2netid", 0, 255); if (v >= 0) { TRX2_NET_ID = (byte)v; EEPROM.writeByte(42, v); }
   v = parseField("trx3netid", 0, 255); if (v >= 0) { TRX3_NET_ID = (byte)v; EEPROM.writeByte(43, v); }
   // EEPROM 44 TRX2_CONN_TYPE
-  v = parseField("trx2conntype", 0, 1); if (v >= 0) { TRX2_CONN_TYPE = (byte)v; EEPROM.writeByte(44, v); }
+  v = parseField("trx2conntype", 0, 2); if (v >= 0) { TRX2_CONN_TYPE = (byte)v; EEPROM.writeByte(44, v); }
   v = parseField("trxnetport", 1, 65534); if (v >= 0) { TRXNET_PORT = (uint16_t)v; EEPROM.writeUShort(45, v); }
   // EEPROM 288 flag + 289-359 TRXNET_PRIO
   if (body.indexOf("\"trxnetprio\"") >= 0) {
@@ -2140,7 +2474,7 @@ void handleConfigUpload() {
     eepromWriteTrxPrio(TRXNET_PRIO);
   }
   // EEPROM 47 TRX3_CONN_TYPE
-  v = parseField("trx3conntype", 0, 1); if (v >= 0) { TRX3_CONN_TYPE = (byte)v; EEPROM.writeByte(47, v); }
+  v = parseField("trx3conntype", 0, 2); if (v >= 0) { TRX3_CONN_TYPE = (byte)v; EEPROM.writeByte(47, v); }
   // EEPROM 48/49 TRX2/3 CI-V address (hex string)
   {
     uint8_t a;
@@ -2210,6 +2544,35 @@ void handleConfigUpload() {
     }
   }
 
+  String uploadedRadioConfig = extractJsonObject(body, "radioConfig");
+  if (uploadedRadioConfig.startsWith("{")) {
+    File radioFile = LittleFS.open(RADIO_CONFIG_PATH, "w");
+    if (!radioFile || radioFile.print(uploadedRadioConfig) != uploadedRadioConfig.length()) {
+      if (radioFile) radioFile.close();
+      webServer.send(500, "application/json", "{\"error\":\"radio_config_write\"}");
+      return;
+    }
+    radioFile.close();
+    if (!loadRadioConfig()) {
+      webServer.send(400, "application/json", "{\"error\":\"radio_config_invalid\"}");
+      return;
+    }
+  } else {
+    // Backward-compatible import: translate the old asymmetric fields.
+    initLegacyRadioSlots();
+    if (!saveRadioConfig()) {
+      webServer.send(500, "application/json", "{\"error\":\"radio_config_write\"}");
+      return;
+    }
+  }
+
+  syncLegacyRadioGlobals();
+  EEPROM.writeByte(42, TRX2_NET_ID);
+  EEPROM.writeByte(43, TRX3_NET_ID);
+  EEPROM.writeByte(44, TRX2_CONN_TYPE);
+  EEPROM.writeByte(47, TRX3_CONN_TYPE);
+  EEPROM.writeByte(48, TRX2_CIV_ADDR);
+  EEPROM.writeByte(49, TRX3_CIV_ADDR);
   EEPROM.writeBool(0, false);
   bool memorySaved = saveMemoryConfig();
   bool primarySaved = savePrimaryRadioConfig();
@@ -2234,6 +2597,10 @@ void handleGetLogConfig() {
   inject += ",\"trx3netid\":"; inject += (unsigned)TRX3_NET_ID;
   inject += ",\"trx2conntype\":"; inject += (unsigned)TRX2_CONN_TYPE;
   inject += ",\"trx3conntype\":"; inject += (unsigned)TRX3_CONN_TYPE;
+  inject += ",\"trx2enabled\":"; inject += radioSlots[1].enabled ? "true" : "false";
+  inject += ",\"trx3enabled\":"; inject += radioSlots[2].enabled ? "true" : "false";
+  inject += ",\"trx2transport\":\""; inject += radioTransportName(radioSlots[1].transport); inject += "\"";
+  inject += ",\"trx3transport\":\""; inject += radioTransportName(radioSlots[2].transport); inject += "\"";
   String out;
   out.reserve(spiffsJson.length() + inject.length() + 4);
   if (spiffsJson.startsWith("{") && spiffsJson.length() > 2) {
@@ -2299,8 +2666,14 @@ void handleOi3Send() {
     return;
   }
   int trxN = trxArg.toInt();  // 2 or 3
-  byte peerNetId = (trxN == 3) ? TRX3_NET_ID : TRX2_NET_ID;
-  if (peerNetId == 0x00 || !trxNetEnabled) {
+  if (trxN < 2 || trxN > 3) {
+    webServer.send(400, "application/json", "{\"error\":\"invalid_trx\"}");
+    return;
+  }
+  RadioSlotConfig &cfg = radioSlots[trxN - 1];
+  byte peerNetId = cfg.netId;
+  if (!cfg.enabled || cfg.transport != RADIO_TRXNET
+      || peerNetId == 0x00 || !trxNetEnabled) {
     webServer.send(503, "application/json", "{\"error\":\"unavailable\"}");
     return;
   }
@@ -2327,8 +2700,14 @@ void handleOi3AbortCw() {
   String body = webServer.arg("plain");
   String trxArg = extractJsonString(body, "trx");
   int trxN = trxArg.toInt();  // 2 or 3
-  byte peerNetId = (trxN == 3) ? TRX3_NET_ID : TRX2_NET_ID;
-  if (peerNetId == 0x00 || !trxNetEnabled) {
+  if (trxN < 2 || trxN > 3) {
+    webServer.send(400, "application/json", "{\"error\":\"invalid_trx\"}");
+    return;
+  }
+  RadioSlotConfig &cfg = radioSlots[trxN - 1];
+  byte peerNetId = cfg.netId;
+  if (!cfg.enabled || cfg.transport != RADIO_TRXNET
+      || peerNetId == 0x00 || !trxNetEnabled) {
     webServer.send(503, "application/json", "{\"error\":\"unavailable\"}");
     return;
   }
@@ -2348,6 +2727,10 @@ void handleOi3SetHz() {
   String body = webServer.arg("plain");
   String trxArg = extractJsonString(body, "trx");
   int trxN = trxArg.toInt();  // 2 or 3
+  if (trxN < 2 || trxN > 3) {
+    webServer.send(400, "application/json", "{\"error\":\"invalid_trx\"}");
+    return;
+  }
   // hz comes as a number in JSON — parse manually
   int hzIdx = body.indexOf("\"hz\":");
   if (hzIdx < 0) { webServer.send(400, "application/json", "{\"error\":\"missing\"}"); return; }
@@ -2358,10 +2741,15 @@ void handleOi3SetHz() {
   uint32_t hz = (uint32_t)body.substring(start, end).toInt();
   if (hz == 0) { webServer.send(400, "application/json", "{\"error\":\"bad_hz\"}"); return; }
 
-  byte connType = (trxN == 3) ? TRX3_CONN_TYPE : TRX2_CONN_TYPE;
-  if (connType == 1) {
+  uint8_t slot = trxN - 1;
+  RadioSlotConfig &cfg = radioSlots[slot];
+  if (!cfg.enabled) {
+    webServer.send(503, "application/json", "{\"error\":\"unavailable\"}");
+    return;
+  }
+  if (cfg.transport == RADIO_CIV) {
     // CI-V transport: write frequency directly on the serial bus
-    uint8_t civAddr = (trxN == 3) ? TRX3_CIV_ADDR : TRX2_CIV_ADDR;
+    uint8_t civAddr = cfg.civAddr;
     if (civAddr == 0x00) {
       webServer.send(503, "application/json", "{\"error\":\"unavailable\"}");
       return;
@@ -2371,7 +2759,26 @@ void handleOi3SetHz() {
     return;
   }
 
-  byte peerNetId = (trxN == 3) ? TRX3_NET_ID : TRX2_NET_ID;
+  if (cfg.transport == RADIO_LAN) {
+    IcomLanClient* client = radioLanClient(slot);
+    if (!client || !client->connected()) {
+      webServer.send(503, "application/json", "{\"error\":\"unavailable\"}");
+      return;
+    }
+    String digits = IntToTenString((int)hz);
+    String pairs[5];
+    SplitString(digits, pairs);
+    uint8_t command[6] = {CMD_WRITE_FREQ, 0, 0, 0, 0, 0};
+    for (int i = 0; i < 5; i++) command[i + 1] = stringToByte(pairs[4 - i]);
+    if (!client->sendCommand(command, sizeof(command))) {
+      webServer.send(503, "application/json", "{\"error\":\"tx_failed\"}");
+      return;
+    }
+    webServer.send(200, "application/json", "{\"ok\":true}");
+    return;
+  }
+
+  byte peerNetId = cfg.netId;
   if (peerNetId == 0x00 || !trxNetEnabled) {
     webServer.send(503, "application/json", "{\"error\":\"unavailable\"}");
     return;
@@ -2471,9 +2878,11 @@ void setupWebServer(void){
     webServer.sendHeader("Cache-Control", "no-cache");
     webServer.sendHeader("Connection", "close");
     webServer.client().setNoDelay(true);
+    // Legacy field names are kept as availability booleans for the embedded DXC
+    // page; /oi3/set-hz now routes LAN/TRXNET/CI-V by the unified slot config.
     String j = "{\"locator\":\"" + DxcLocator + "\",\"callsign\":\"" + DxcCallsign
-             + "\",\"trx2netid\":" + String((unsigned)TRX2_NET_ID)
-             + ",\"trx3netid\":" + String((unsigned)TRX3_NET_ID) + "}";
+             + "\",\"trx2netid\":" + String(radioSlots[1].enabled ? 1 : 0)
+             + ",\"trx3netid\":" + String(radioSlots[2].enabled ? 1 : 0) + "}";
     webServer.send(200, "application/json", j);
   });
 
@@ -2559,16 +2968,35 @@ void setupWebServer(void){
 
 // True when the primary radio link is up, whichever transport it uses.
 bool radioLinkUp(){
-  return lanMode ? lanClient.connected() : btClientConnected;
+  return radioSlotConnected(0);
 }
 
 bool catWriteFrame(const uint8_t *frame, size_t frameLen, bool broadcastTx){
   (void)broadcastTx;
-  if (lanMode) {
+  if (frameLen < 6) return false;
+  RadioTransport transport = radioSlots[0].transport;
+  if (transport == RADIO_LAN) {
     // frame = FE FE <radio> <ctrl> <cmd> <payload> FD. Strip the wrapper and
     // hand the body (cmd+payload) to the LAN client, which re-wraps with 0xE1.
-    if (frameLen < 6) return false;
     return lanClient.sendCommand(frame + 4, frameLen - 5);
+  }
+  if (transport == RADIO_CIV) {
+    if (!radioSlotConnected(0) && frame[4] != CMD_READ_FREQ && frame[4] != CMD_READ_MODE)
+      return false;
+    civSend(radioSlots[0].civAddr, frame + 4, frameLen - 5);
+    return true;
+  }
+  if (transport == RADIO_TRXNET) {
+    // Deliberately limited primary transport: TrxNet exposes telemetry and
+    // frequency tuning, never arbitrary CAT/CW/PTT/audio frames.
+    if (frame[4] != CMD_WRITE_FREQ || frameLen < 11
+        || !trxNetEnabled || radioSlots[0].netId == 0x00)
+      return false;
+    uint32_t hz = decodeCivFrequencyBytes(frame + 5, 5);
+    if (hz == 0) return false;
+    char peerName[TRXNET_MAX_DEVICE_NAME];
+    snprintf(peerName, sizeof(peerName), "OI3.%02x", radioSlots[0].netId);
+    return net.publishTo(peerName, "/s-hz", (const uint8_t*)&hz, sizeof(hz));
   }
   #if defined(BLUETOOTH)
     if (!btClientConnected) {
@@ -2807,6 +3235,12 @@ void setup(){
           Serial.println("CFG | legacy TRX1 migration failed");
         }
       }
+      if (!loadRadioConfig()) {
+        // One-time migration of the asymmetric legacy TRX1 + TRX2/3 fields into
+        // the unified per-slot model. Legacy EEPROM mirrors remain populated so
+        // an older firmware can still boot with a usable configuration.
+        if (!saveRadioConfig()) Serial.println("CFG | unified radio migration failed");
+      }
       loadLogConfigVars();
       bdEnabled = (HardwareRev >= 4);
       if (bdEnabled) {
@@ -2935,25 +3369,14 @@ void setup(){
       esp_bt_mem_release(ESP_BT_MODE_BLE);
     #endif
 
-    if (lanMode) {
-      // LAN transport is independent of Bluetooth and must start even when the
-      // Bluetooth stack is compiled out.
-      IPAddress rip;
-      Serial.println("LAN | cfg ip=" + lanRadioIp + " user='" + lanUser +
-                     "' passlen=" + String(lanPass.length()));
-      if (!rip.fromString(lanRadioIp)) {
-        Serial.println("LAN | bad radio IP in config — LAN not started");
-      } else if (lanUser.length() == 0 || lanPass.length() == 0) {
-        Serial.println("LAN | empty user/pass in config — use CLI 'L' to set them");
-      } else {
-        lanClient.begin(rip, 50001, lanUser.c_str(), lanPass.c_str(), configuredCivAddress);
-        Serial.println("LAN | transport active (BT not started)");
-      }
-    } else {
-      #if defined(BLUETOOTH)
-        configRadioBaud(0);
-      #endif
+    // Start every configured LAN slot. Each instance owns a distinct local
+    // 500x1/2/3 port triplet; only TRX1 advertises/opens network audio.
+    for (uint8_t slot = 0; slot < 3; slot++) {
+      if (radioSlots[slot].enabled && radioSlots[slot].transport == RADIO_LAN)
+        beginRadioLanClient(slot);
     }
+    if (radioSlots[0].transport == RADIO_CIV)
+      radio_address = radioSlots[0].civAddr;
 
     // TrxNet init — after WiFi is up; NET_ID 0x00 = disabled
     if (TRXNET_ID != 0x00) {
@@ -3120,8 +3543,12 @@ static inline void encodeCivLevel(uint16_t value, uint8_t out[2]){
 static void cwAnnounceService(unsigned long ms){
   unsigned long start = millis();
   while (millis() - start < ms) {
-    if (lanMode) lanClient.loop();
-    else         processCatMessages();
+    if (radioSlots[0].transport == RADIO_LAN) lanClient.loop();
+    else if (radioSlots[0].transport == RADIO_CIV) {
+      serialPump();
+      civPollTick();
+    }
+    secondaryLanClientsLoop();
     if (trxNetEnabled) net.loop();
     if (APmode) dnsServer.processNextRequest();
     webServer.handleClient();
@@ -3260,53 +3687,54 @@ void pollRadio(){
 }
 
 void Watchdog(){
-  if (!lanMode) { handleBtEvents(); pollRadio(); }
+  #if defined(BLUETOOTH)
+    handleBtEvents();
+    pollRadio();
+  #endif
 
   static unsigned long mqttFreqTimer = 0;
 
-  // In LAN mode the PWR/freq state is owned by lanClientLoop(); skip the
-  // BT-driven power/publish logic below (powerTimer is never fed over LAN).
-  if (!lanMode) {
-  // Power OUT/LED
-  // powerTimer==0 => no radio data yet (fresh boot / disconnected): force OFF.
-  // Without this, at boot millis() is still < 3000 so millis()-powerTimer would
-  // read as "recent activity" and spuriously pulse PWR ON then OFF after 3s.
-  if(powerTimer==0 || millis()-powerTimer > 3000){
-    if(statusPower==1){
+  // Primary LAN owns PWR/audio in lanClientLoop(). Direct serial CI-V is also a
+  // full primary connection; TrxNet is intentionally telemetry+tune only and
+  // must never energise PWR-OUT or arm CAT/CW/PTT side effects.
+  if (radioSlots[0].transport == RADIO_CIV) {
+    bool connected = radioSlotConnected(0);
+    if (!connected) {
+      if (statusPower == 1) {
+        statusPower = 0;
+        digitalWrite(PowerOnPin, LOW);
+        Serial.println(" PWR| OFF (CI-V)");
+      }
+    } else {
+      if (statusPower == 0) {
+        statusPower = 1;
+        digitalWrite(PowerOnPin, HIGH);
+        Serial.println(" PWR| ON (CI-V)");
+        if (cwIpOnConnect) cwIpSendPending = true;
+      }
+      if (cwIpSendPending && radio_address != 0x00) {
+        cwIpSendPending = false;
+        announceIpViaCw();
+      }
+    }
+
+    if (connected && radio_address != 0x00 && millis() - mqttFreqTimer > 2000
+        && frequencyTmp != frequency) {
+      if (trxNetEnabled) {
+        uint32_t f = (uint32_t)frequency;
+        net.publish("/hz", (uint8_t*)&f, sizeof(f));
+      }
+      frequencyTmp = frequency;
+      mqttFreqTimer = millis();
+      if (bdEnabled && bdSource == 1) bdUpdate(frequency);
+    }
+  } else if (radioSlots[0].transport == RADIO_TRXNET) {
+    if (statusPower == 1) {
       digitalWrite(PowerOnPin, LOW);
-      Serial.println(" PWR| OFF");
+      Serial.println(" PWR| OFF (TRXNET limited)");
       statusPower = 0;
-      frequency = 0;
-      frequencyTmp = 0;
-      setModesText("OFF");
-      #if defined(RESET_AFTER_DISCONNECT)
-        Serial.println();
-        Serial.println("** Interface will be restarted **");
-        delay(3000);
-        ESP.restart();
-      #endif
-    }
-  }else{
-    if(statusPower==0){
-      digitalWrite(PowerOnPin, HIGH);
-      Serial.println(" PWR| ON");
-      statusPower = 1;
     }
   }
-
-  if(statusPower==1 && btClientConnected==true && radio_address!=0x00 && millis()-mqttFreqTimer > 2000 && frequencyTmp!=frequency){
-    // TrxNet publish /hz on frequency change (2s throttle)
-    if(trxNetEnabled){
-      uint32_t f = (uint32_t)frequency;
-      net.publish("/hz", (uint8_t*)&f, sizeof(f));
-    }
-    frequencyTmp=frequency;
-    mqttFreqTimer=millis();
-
-    // Band Decoder update on TRX1 frequency change
-    if (bdEnabled && bdSource == 1) bdUpdate(frequency);
-  }
-  } // end if(!lanMode)
 
   // WIFI status
   #if defined(WIFI)
@@ -3394,7 +3822,8 @@ void Watchdog(){
 // decoded frequency/mode into the same globals the BT path fills, so the web UI,
 // TrxNet publish and band decoder work unchanged. Auto-reconnects on failure.
 void lanClientLoop(){
-  if (!lanMode) return;
+  secondaryLanClientsLoop();
+  if (radioSlots[0].transport != RADIO_LAN) return;
   if (lanReconnectRequested) {
     lanReconnectRequested = false;
     lanClient.stop();
@@ -3903,6 +4332,22 @@ void lanCivFrameHandler(const uint8_t *frame, size_t len) {
   processCivBuffer((uint8_t)len);
 }
 
+void lanSecondaryCivFrameHandler(uint8_t slot, const uint8_t *frame, size_t len) {
+  if (slot < 1 || slot > 2 || !frame || len < 6) return;
+  uint8_t cmd = frame[4];
+  if ((cmd == CMD_READ_FREQ || cmd == CMD_TRANS_FREQ) && len >= 11) {
+    radioSlotSetFrequencyState(slot, decodeCivFrequencyBytes(frame + 5, 5));
+    return;
+  }
+  if ((cmd == CMD_READ_MODE || cmd == CMD_TRANS_MODE) && len >= 7) {
+    radioSlotSetModeState(slot, trxnetModeToString(frame[5]));
+    return;
+  }
+  if (cmd == 0x26 && len >= 10 && frame[5] == 0x00) {
+    radioSlotSetModeState(slot, trxnetModeToString(frame[6]));
+  }
+}
+
 //-------------------------------------------------------------------------------------------------------
 // call back to get info about connection
 #if defined(BLUETOOTH)
@@ -3995,7 +4440,7 @@ void radioSetMode(uint8_t modeid, uint8_t modewidth){
 bool radioSetFrequency(uint32_t freqHz){
   // Remote set-VFO (TrxNet /s-hz, OI3). catWriteFrame routes to lanClient for LAN,
   // so this must NOT be guarded by BLUETOOTH.
-  bool linkUp = lanMode ? lanClient.connected() : btClientConnected;
+  bool linkUp = radioLinkUp();
   if (!linkUp || radio_address == 0x00) {
     return false;
   }
@@ -4133,17 +4578,16 @@ void TrxNetLoop(){
 //-------------------------------------------------------------------------------------------------------
 // TrxNet callbacks — called from net.loop(), must be short and non-blocking.
 
-// Helper: match sender device name against a configured peer NET_ID.
-// Returns peer slot index (0=TRX2, 1=TRX3) or -1 if no match.
+// Helper: match sender device name against a configured TrxNet peer.
+// Returns radio slot index (0=TRX1, 1=TRX2, 2=TRX3) or -1 if no match.
 static int trxnetPeerSlot(const char* from) {
   char expected[TRXNET_MAX_DEVICE_NAME];
-  if (TRX2_NET_ID != 0x00) {
-    snprintf(expected, sizeof(expected), "OI3.%02x", TRX2_NET_ID);
-    if (strcmp(from, expected) == 0) return 0;
-  }
-  if (TRX3_NET_ID != 0x00) {
-    snprintf(expected, sizeof(expected), "OI3.%02x", TRX3_NET_ID);
-    if (strcmp(from, expected) == 0) return 1;
+  for (uint8_t slot = 0; slot < 3; slot++) {
+    if (!radioSlots[slot].enabled || radioSlots[slot].transport != RADIO_TRXNET
+        || radioSlots[slot].netId == 0x00 || radioSlots[slot].netId == 0xff)
+      continue;
+    snprintf(expected, sizeof(expected), "OI3.%02x", radioSlots[slot].netId);
+    if (strcmp(from, expected) == 0) return slot;
   }
   return -1;
 }
@@ -4166,29 +4610,26 @@ static const char* trxnetModeToString(uint8_t civMode) {
   }
 }
 
-// Receive /hz from any peer — update TRX2/TRX3 Band Decoder slot.
+// Receive /hz from a configured peer — update the matching TRX slot.
 void onTrxHz(const char* from, const uint8_t* data, size_t len) {
   if (len < sizeof(uint32_t)) return;
   uint32_t freq;
   memcpy(&freq, data, sizeof(freq));
-  int idx = trxnetPeerSlot(from);
-  if (idx < 0) return;
-  g_trxFreq[idx] = (long)freq;
-  g_trxHasData[idx] = true;
-  if (Debug) Serial.printf("TRXN| TRX%d freq=%lu\n", idx+2, (unsigned long)freq);
-  if (bdEnabled && bdSource == idx + 2) bdUpdate(freq);
+  int slot = trxnetPeerSlot(from);
+  if (slot < 0) return;
+  radioSlotSetFrequencyState((uint8_t)slot, freq);
+  if (Debug) Serial.printf("TRXN| TRX%d freq=%lu\n", slot + 1, (unsigned long)freq);
 }
 
-// Receive /mode from any peer — update TRX2/TRX3 mode string for Band Decoder / web UI.
+// Receive /mode from a configured peer — update the matching TRX slot.
 void onTrxMode(const char* from, const uint8_t* data, size_t len) {
   if (len < sizeof(uint8_t)) return;
-  int idx = trxnetPeerSlot(from);
-  if (idx < 0) return;
+  int slot = trxnetPeerSlot(from);
+  if (slot < 0) return;
   const char* modeStr = trxnetModeToString(data[0]);
   if (modeStr != nullptr) {
-    strlcpy(g_trxMode[idx], modeStr, sizeof(g_trxMode[idx]));
-    g_trxHasData[idx] = true;
-    if (Debug) Serial.printf("TRXN| TRX%d mode=%s\n", idx+2, modeStr);
+    radioSlotSetModeState((uint8_t)slot, modeStr);
+    if (Debug) Serial.printf("TRXN| TRX%d mode=%s\n", slot + 1, modeStr);
   }
 }
 
@@ -4203,7 +4644,7 @@ void onTrxSetHz(const char* from, const uint8_t* data, size_t len) {
 }
 
 //-----------------------------------------------------------------------------------
-// Serial CI-V driver for TRX2/TRX3 (shares UART0 with CLI/debug, gated by CIVmutePin)
+// Serial CI-V driver for TRX1/TRX2/TRX3 (shares UART0 with CLI/debug, gated by CIVmutePin)
 //
 // TRX2/3 can be reached either via TrxNet (CONN_TYPE=0) or via CI-V on the serial
 // bus (CONN_TYPE=1). When CI-V is selected we poll freq (03) and mode (04) and also
@@ -4218,10 +4659,10 @@ static const uint8_t  CIV_MAX_MISS         = 3;    // consecutive timeouts -> sl
 
 enum CivPollState { CIV_IDLE, CIV_WAIT };
 static CivPollState civState   = CIV_IDLE;
-static uint8_t  civSeq         = 0;        // schedule index 0..3 (see civSeqSlot/Cmd)
+static uint8_t  civSeq         = 0;        // schedule index 0..5 (see civSeqSlot/Cmd)
 static uint32_t civStateT0     = 0;
 static uint32_t civNextRun     = 0;
-static uint8_t  civMiss[2]     = {0, 0};
+static uint8_t  civMiss[3]     = {0, 0, 0};
 static uint8_t  civAwaitSlot   = 0xFF;     // slot we sent the current query to
 static uint8_t  civAwaitCmd    = 0;
 static bool     civGotReply    = false;
@@ -4233,16 +4674,19 @@ static bool     civInFrame     = false;
 static uint8_t  civPreCount    = 0;        // consecutive START_BYTE seen
 
 static inline uint8_t civSlotAddr(uint8_t idx) {
-  return (idx == 0) ? TRX2_CIV_ADDR : TRX3_CIV_ADDR;
+  return idx < 3 ? radioSlots[idx].civAddr : 0x00;
 }
 static inline bool civSlotEnabled(uint8_t idx) {
-  if (idx == 0) return TRX2_CONN_TYPE == 1 && TRX2_CIV_ADDR != 0x00;
-  return TRX3_CONN_TYPE == 1 && TRX3_CIV_ADDR != 0x00;
+  return idx < 3 && radioSlots[idx].enabled
+      && radioSlots[idx].transport == RADIO_CIV
+      && radioSlots[idx].civAddr != 0x00;
 }
-static inline bool civAnyEnabled() { return civSlotEnabled(0) || civSlotEnabled(1); }
+static inline bool civAnyEnabled() {
+  return civSlotEnabled(0) || civSlotEnabled(1) || civSlotEnabled(2);
+}
 
-// schedule mapping: seq 0..3 -> (slot, cmd)
-static inline uint8_t civSeqSlot(uint8_t seq) { return seq >> 1; }          // 0,0,1,1
+// schedule mapping: seq 0..5 -> (slot, cmd)
+static inline uint8_t civSeqSlot(uint8_t seq) { return seq >> 1; }          // 0,0,1,1,2,2
 static inline uint8_t civSeqCmd(uint8_t seq)  { return (seq & 1) ? CMD_READ_MODE : CMD_READ_FREQ; }
 
 // Send a CI-V frame: FE FE <toAddr> E0 <body...> FD, gated by MUTE so debug never
@@ -4292,31 +4736,43 @@ static void civHandleFrame() {
   // Accept only frames addressed to the controller or broadcast; drop our own echo.
   if (toAddr != CONTROLLER_ADDRESS && toAddr != BROADCAST_ADDRESS) return;
 
-  int idx = -1;
-  if (civSlotEnabled(0) && fromAddr == TRX2_CIV_ADDR) idx = 0;
-  else if (civSlotEnabled(1) && fromAddr == TRX3_CIV_ADDR) idx = 1;
-  if (idx < 0) return;
+  int slot = -1;
+  for (uint8_t candidate = 0; candidate < 3; candidate++) {
+    if (civSlotEnabled(candidate) && fromAddr == radioSlots[candidate].civAddr) {
+      slot = candidate;
+      break;
+    }
+  }
+  if (slot < 0) return;
 
   const uint8_t* pl = civRxBuf + 3;
   size_t plLen = (size_t)civRxLen - 4;              // minus toAddr,fromAddr,cmd,FD
 
-  if ((cmd == CMD_READ_FREQ || cmd == CMD_TRANS_FREQ) && plLen >= 5) {
-    uint32_t freq = decodeCivFrequencyBytes(pl, 5);
-    g_trxFreq[idx]    = (long)freq;
-    g_trxHasData[idx] = true;
-    civMiss[idx]      = 0;
-    if (bdEnabled && bdSource == idx + 2) bdUpdate(freq);
-    if (civAwaitSlot == idx && civAwaitCmd == CMD_READ_FREQ) civGotReply = true;
-    if (Debug) Serial.printf("CIV| TRX%d freq=%lu\n", idx + 2, (unsigned long)freq);
-  } else if ((cmd == CMD_READ_MODE || cmd == CMD_TRANS_MODE) && plLen >= 1) {
-    const char* modeStr = trxnetModeToString(pl[0]);
-    if (modeStr != nullptr) {
-      strlcpy(g_trxMode[idx], modeStr, sizeof(g_trxMode[idx]));
-      g_trxHasData[idx] = true;
-      civMiss[idx]      = 0;
-      if (civAwaitSlot == idx && civAwaitCmd == CMD_READ_MODE) civGotReply = true;
-      if (Debug) Serial.printf("CIV| TRX%d mode=%s\n", idx + 2, modeStr);
+  if (slot == 0) {
+    size_t fullLen = (size_t)civRxLen + 2;
+    if (fullLen <= sizeof(read_buffer)) {
+      read_buffer[0] = START_BYTE;
+      read_buffer[1] = START_BYTE;
+      memcpy(read_buffer + 2, civRxBuf, civRxLen);
+      radio_address = fromAddr;
+      processCivBuffer((uint8_t)fullLen);
+      primarySerialHasData = true;
     }
+  } else if ((cmd == CMD_READ_FREQ || cmd == CMD_TRANS_FREQ) && plLen >= 5) {
+    radioSlotSetFrequencyState((uint8_t)slot, decodeCivFrequencyBytes(pl, 5));
+  } else if ((cmd == CMD_READ_MODE || cmd == CMD_TRANS_MODE) && plLen >= 1) {
+    radioSlotSetModeState((uint8_t)slot, trxnetModeToString(pl[0]));
+  }
+
+  if (cmd == CMD_READ_FREQ || cmd == CMD_TRANS_FREQ
+      || cmd == CMD_READ_MODE || cmd == CMD_TRANS_MODE) {
+    civMiss[slot] = 0;
+    bool frequencyReply = (cmd == CMD_READ_FREQ || cmd == CMD_TRANS_FREQ)
+                       && civAwaitCmd == CMD_READ_FREQ;
+    bool modeReply = (cmd == CMD_READ_MODE || cmd == CMD_TRANS_MODE)
+                  && civAwaitCmd == CMD_READ_MODE;
+    if (civAwaitSlot == slot && (frequencyReply || modeReply)) civGotReply = true;
+    if (Debug) Serial.printf("CIV| TRX%d reply cmd=0x%02x\n", slot + 1, cmd);
   }
 }
 
@@ -4358,11 +4814,17 @@ void civPollTick() {
       civNextRun = now + CIV_GAP_MS;
     } else if (now - civStateT0 >= CIV_REPLY_TIMEOUT_MS) {
       uint8_t slot = civAwaitSlot;
-      if (slot < 2) {
+      if (slot < 3) {
         if (civMiss[slot] < 255) civMiss[slot]++;
-        if (civMiss[slot] >= CIV_MAX_MISS && g_trxHasData[slot]) {
-          g_trxHasData[slot] = false;
-          g_trxFreq[slot]    = 0;
+        if (civMiss[slot] >= CIV_MAX_MISS) {
+          if (slot == 0) {
+            primarySerialHasData = false;
+            frequency = 0;
+            setModesText("OFF");
+          } else if (g_trxHasData[slot - 1]) {
+            g_trxHasData[slot - 1] = false;
+            g_trxFreq[slot - 1] = 0;
+          }
         }
       }
       civState   = CIV_IDLE;
@@ -4375,21 +4837,24 @@ void civPollTick() {
   if ((int32_t)(now - civNextRun) < 0) return;
 
   // advance to the next enabled slot in the schedule
-  for (uint8_t tries = 0; tries < 4; tries++) {
+  for (uint8_t tries = 0; tries < 6; tries++) {
     uint8_t slot = civSeqSlot(civSeq);
     if (civSlotEnabled(slot)) break;
-    civSeq = (civSeq + 1) & 0x03;
+    civSeq = (civSeq + 1) % 6;
   }
 
   uint8_t slot = civSeqSlot(civSeq);
   uint8_t cmd  = civSeqCmd(civSeq);
-  bool roundEnd = (civSeq == 3) || (civSeq == 1 && !civSlotEnabled(1));
+  bool higherSlotEnabled = false;
+  for (uint8_t higher = slot + 1; higher < 3; higher++)
+    if (civSlotEnabled(higher)) higherSlotEnabled = true;
+  bool roundEnd = (cmd == CMD_READ_MODE) && !higherSlotEnabled;
 
   civQuery(slot, cmd);
   civStateT0 = now;
   civState   = CIV_WAIT;
 
-  civSeq = (civSeq + 1) & 0x03;
+  civSeq = (civSeq + 1) % 6;
   if (roundEnd) civNextRun = now + CIV_POLL_INTERVAL_MS;  // pace whole round
 }
 
@@ -4760,11 +5225,12 @@ String EnterLine(const char* prompt){
 //-------------------------------------------------------------------------------------------------------
 // LAN transport config menu (CLI 'L'). Enter "IP user pass" (or empty to keep
 // stored values), then choose: (t)est once, (s)ave+reboot into LAN mode, or
-// (b)ack to Bluetooth. Persisted in memories.cfg alongside transceiverType.
+// (b)ack. The unified radio config remains authoritative; legacy mirrors are
+// updated for downgrade compatibility.
 void runLanCivTest(){
   Serial.println("");
-  Serial.print("-- LAN transport -- current mode: ");
-  Serial.println(lanMode ? "LAN" : "Bluetooth");
+  Serial.print("-- TRX1 LAN transport -- current connection: ");
+  Serial.println(radioTransportName(radioSlots[0].transport));
   if (lanRadioIp.length()) {
     Serial.println("   stored: " + lanRadioIp + " user=" + lanUser +
                    " pass=" + String(lanPass.length() ? "(set)" : "(none)"));
@@ -4784,14 +5250,18 @@ void runLanCivTest(){
   IPAddress rip;
   if (!rip.fromString(ipStr)) { Serial.println("LAN | bad/empty IP"); return; }
 
-  Serial.println("   action: (t)est now  (s)ave + reboot to LAN  (b)ack to Bluetooth");
+  Serial.println("   action: (t)est now  (s)ave + reboot to LAN  (b)ack");
   EnterChar();
   char act = (char)incomingByte;
 
   if (act == 't' || act == 'T') {
-    if (lanMode) { Serial.println("LAN | already in LAN mode — client is live, watch the log"); return; }
-    Serial.println("LAN | testing (BT stays as is)...");
-    lanClient.begin(rip, 50001, user.c_str(), pass.c_str(), configuredCivAddress);
+    if (radioSlots[0].transport == RADIO_LAN) {
+      Serial.println("LAN | TRX1 client is already active; watch the connection log");
+      return;
+    }
+    Serial.println("LAN | testing without changing the stored connection...");
+    lanClient.begin(rip, 50001, user.c_str(), pass.c_str(),
+                    radioSlots[0].civAddr, 0, radioLanLocalControlPort(0), true);
     unsigned long t0 = millis();
     while (millis() - t0 < 20000) {
       lanClient.loop();
@@ -4816,24 +5286,30 @@ void runLanCivTest(){
       Serial.println("LAN | refusing to save: user/pass empty (type: IP user pass)");
       return;
     }
-    lanRadioIp = ipStr; lanUser = user; lanPass = pass;
-    transceiverType = "IC-705-LAN";
-    lanMode = true;
+    radioSlots[0].enabled = true;
+    radioSlots[0].transport = RADIO_LAN;
+    radioSlots[0].lanIp = ipStr;
+    radioSlots[0].lanUser = user;
+    radioSlots[0].lanPass = pass;
+    syncLegacyRadioGlobals();
+    if (!saveRadioConfig()) {
+      Serial.println("LAN | unified radio config save failed; reboot cancelled");
+      return;
+    }
     if (!savePrimaryRadioConfig()) {
-      Serial.println("LAN | save failed; reboot cancelled");
+      Serial.println("LAN | legacy EEPROM mirror save failed; reboot cancelled");
       return;
     }
     if (!saveMemoryConfig()) {
       Serial.println("LAN | warning: legacy memories.cfg copy was not updated");
     }
     Serial.println("LAN | saved (user='" + lanUser + "' passlen=" + String(lanPass.length()) +
-                   "). Rebooting into LAN mode (BT off)...");
+                   "). Rebooting with TRX1 connected over LAN...");
     delay(1500);
     ESP.restart();
 
   } else if (act == 'b' || act == 'B') {
-    // Bluetooth transport removed: this command is no longer supported.
-    Serial.println("LAN | Bluetooth transport removed; use LAN (S) or CI-V.");
+    Serial.println("LAN | unchanged");
 
   } else {
     Serial.println("LAN | aborted");
@@ -4863,7 +5339,7 @@ void ListCommands(){
     Serial.println("  WIFI-AP mode ON" );
     APcliAlert();
   }else{
-    Serial.println("  Bluetooth: "+BT_NAME);
+    Serial.println("  TRX1 connection: " + String(radioTransportName(radioSlots[0].transport)));
     Serial.println("  WIFI-AP mode OFF" );
     Serial.println("  WIFI-SSID1 "+SSID );
     if (SSID2.length() > 0) {
@@ -5137,33 +5613,74 @@ void handleSet() {
       Serial.println("New Baudrate "+String(BaudRate));
     }
 
-    // TRX1 transport: new setup field trx1transport (lan/civ) is the authority;
-    // legacy trxprofile kept as fallback for older clients. Bluetooth removed:
-    // any non-CIV selection resolves to LAN.
-    String trx1transport = trimMemoryValue(requestArg("trx1transport"), 12);
-    if (trx1transport == "civ" || trx1transport == "ci-v") {
-      transceiverType = "IC-7610-CI-V";
-    } else if (trx1transport == "lan") {
-      transceiverType = "IC-705-LAN";
-      String ip = trimMemoryValue(requestArg("lanip"), 15);
-      String u  = trimMemoryValue(requestArg("lanuser"), 16);
-      String pw = trimMemoryValue(requestArg("lanpass"), 16);
-      if (ip.length()) lanRadioIp = ip;
-      if (u.length())  lanUser = u;
-      if (pw.length()) lanPass = pw;   // blank = keep stored password
-    } else {
-      String nextTransceiverType = trimMemoryValue(requestArg("trxprofile"), 16);
-      if (nextTransceiverType != "IC-7610-CI-V") nextTransceiverType = "IC-705-LAN";
-      transceiverType = nextTransceiverType;
-    }
-    lanMode = (transceiverType == "IC-705-LAN");
+    // Unified per-radio model. All three slots expose the same transport menu;
+    // only the selected transport's fields are required.
+    RadioSlotConfig nextSlots[3] = {radioSlots[0], radioSlots[1], radioSlots[2]};
+    for (uint8_t slot = 0; slot < 3; slot++) {
+      String prefix = "trx" + String(slot + 1);
+      nextSlots[slot].enabled = slot == 0 || requestHasArg((prefix + "enable").c_str());
+      String transport = trimMemoryValue(requestArg((prefix + "transport").c_str()), 12);
+      nextSlots[slot].transport =
+        radioTransportFromName(transport.c_str(), nextSlots[slot].transport);
 
-    uint8_t nextCivAddress = configuredCivAddress;
-    if (!parseHexByteString(requestArg("civaddr"), nextCivAddress)) {
-      setupCivAddrErr = "Use 2-digit hex value 00-FF";
-      ERRdetect = 1;
-    } else {
-      configuredCivAddress = nextCivAddress;
+      uint8_t parsed;
+      if (nextSlots[slot].transport == RADIO_LAN
+          || nextSlots[slot].transport == RADIO_CIV) {
+        String civ = requestArg((prefix + "civaddr").c_str());
+        if (civ.length() && parseHexByteString(civ, parsed)) nextSlots[slot].civAddr = parsed;
+      }
+      if (nextSlots[slot].transport == RADIO_TRXNET) {
+        String netid = requestArg((prefix + "netid").c_str());
+        if (netid.length() && parseHexByteString(netid, parsed)) nextSlots[slot].netId = parsed;
+      }
+      if (nextSlots[slot].transport == RADIO_LAN) {
+        nextSlots[slot].lanIp =
+          trimMemoryValue(requestArg((prefix + "lanip").c_str()), 15);
+        nextSlots[slot].lanUser =
+          trimMemoryValue(requestArg((prefix + "lanuser").c_str()), 16);
+        String password = trimMemoryValue(requestArg((prefix + "lanpass").c_str()), 16);
+        if (password.length()) nextSlots[slot].lanPass = password; // blank keeps stored secret
+      }
+
+      if (!nextSlots[slot].enabled) continue;
+      if (nextSlots[slot].transport == RADIO_LAN) {
+        IPAddress parsedIp;
+        if (!parsedIp.fromString(nextSlots[slot].lanIp)
+            || nextSlots[slot].lanUser.length() == 0
+            || nextSlots[slot].lanPass.length() == 0) {
+          setupCivAddrErr = "TRX" + String(slot + 1) + " LAN needs IP, username and password";
+          ERRdetect = 1;
+        }
+      } else if (nextSlots[slot].transport == RADIO_TRXNET) {
+        if (TRXNET_ID == 0x00 || nextSlots[slot].netId == 0x00
+            || nextSlots[slot].netId == TRXNET_ID) {
+          setupCivAddrErr = "TRX" + String(slot + 1) + " needs a peer NET_ID different from Own NET_ID";
+          ERRdetect = 1;
+        }
+      } else if (nextSlots[slot].civAddr == 0x00) {
+        setupCivAddrErr = "TRX" + String(slot + 1) + " needs a CI-V address";
+        ERRdetect = 1;
+      }
+    }
+
+    // One incoming peer or CI-V address must resolve to exactly one slot.
+    for (uint8_t a = 0; a < 3; a++) {
+      if (!nextSlots[a].enabled) continue;
+      for (uint8_t b = a + 1; b < 3; b++) {
+        if (!nextSlots[b].enabled || nextSlots[a].transport != nextSlots[b].transport) continue;
+        bool duplicateTrxNet = nextSlots[a].transport == RADIO_TRXNET
+                            && nextSlots[a].netId == nextSlots[b].netId;
+        bool duplicateCiv = nextSlots[a].transport == RADIO_CIV
+                         && nextSlots[a].civAddr == nextSlots[b].civAddr;
+        if (duplicateTrxNet || duplicateCiv) {
+          setupCivAddrErr = "Each active TRX needs a unique peer/address";
+          ERRdetect = 1;
+        }
+      }
+    }
+    if (!ERRdetect) {
+      for (uint8_t slot = 0; slot < 3; slot++) radioSlots[slot] = nextSlots[slot];
+      syncLegacyRadioGlobals();
     }
 
     cwIpOnConnect = requestHasArg("cwIpOnConnect");
@@ -5238,15 +5755,24 @@ void handleSet() {
     if(ERRdetect==0){
       // // APmode
       EEPROM.writeBool(0, false);
+      if (!saveRadioConfig()) {
+        Serial.println("CFG | unified radio config save failed");
+        return;
+      }
+      EEPROM.writeByte(42, TRX2_NET_ID);
+      EEPROM.writeByte(43, TRX3_NET_ID);
+      EEPROM.writeByte(44, TRX2_CONN_TYPE);
+      EEPROM.writeByte(47, TRX3_CONN_TYPE);
+      EEPROM.writeByte(48, TRX2_CIV_ADDR);
+      EEPROM.writeByte(49, TRX3_CIV_ADDR);
       // TRX1 has its own EEPROM/NVS copy so a full filesystem upload cannot
       // erase the LAN credentials. This commit also persists all other fields
       // written above by this form submission.
       if (!savePrimaryRadioConfig()) {
         return;
       }
-      // memories.cfg is a backward-compatible copy plus CAT-page memories.
-      // TRX1 persistence and restart must not depend on filesystem garbage
-      // collection; the authoritative radio configuration is in EEPROM/NVS.
+      // memories.cfg and EEPROM are backward-compatible mirrors plus CAT-page
+      // memories. /radio-config.json remains authoritative for all three slots.
       if (!saveMemoryConfig()) {
         Serial.println("CFG | warning: CAT memories/legacy filesystem copy not saved");
       }

@@ -13,6 +13,7 @@ uint32_t testMillis = 0;
 
 static int parsedFrames = 0;
 void lanCivFrameHandler(const uint8_t*, size_t) { parsedFrames++; }
+void lanSecondaryCivFrameHandler(uint8_t, const uint8_t*, size_t) { parsedFrames++; }
 void lanAudioHandler(const uint8_t*, size_t, uint16_t) {}
 
 static void putLE16(std::vector<uint8_t>& packet, size_t offset, uint16_t value) {

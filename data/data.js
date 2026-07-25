@@ -247,6 +247,7 @@ const state = {
   blockedDxccList:[],
   settingsDraft:{myCall:null,grid:null,txGain:null}, reconnectPending:false,
   js8Log:null, loggedCalls:new Set(), autoLogInFlight:new Set(),
+  autoExpiryAt:null, // epoch ms when unattended arming lapses (null = unknown/disarmed)
 };
 let audioSource = null, activeDecoder = null, activeEncoder = null;
 let radioPollInFlight = false;
@@ -706,7 +707,13 @@ function audioUrl() {
 
 function ensureAudio() {
   const lan = state.radio.connected && state.radio.transceiverType === "IC-705-LAN";
-  if (!lan || state.decoderStatus !== "ready") { stopAudio(); return; }
+  // A duplicated tab can share the holder's sessionStorage token, so the
+  // firmware cannot distinguish it from the real owner. Wait until the local
+  // BroadcastChannel probe confirms this page before opening AUD1.
+  if (!sessionHeld || !sessionConfirmed || !lan || state.decoderStatus !== "ready") {
+    stopAudio();
+    return;
+  }
   if (audioSource) return;
   audioSource = new Js8WsAudioSource.WsAudioSource(AUDIO_RATE,
     {url:audioUrl(), wallNow:() => js8Clock.now()})
@@ -1170,6 +1177,33 @@ function formatMinutes(value) {
   return minutes<60?`${minutes} min`:`${Math.floor(minutes/60)} h ${minutes%60} min`;
 }
 
+// Countdown as hh:mm from a millisecond duration -- used for the unattended
+// "time left until deactivation" readout on the AUTO pill. Rounds minutes up
+// (like formatMinutes) so a fresh 12 h window reads 12:00, and the final
+// partial minute still shows 00:01 rather than dropping to 00:00 early.
+function formatHhMm(ms) {
+  const minutes=Math.max(0,Math.ceil((Number(ms)||0)/60000));
+  return `${String(Math.floor(minutes/60)).padStart(2,"0")}:${String(minutes%60).padStart(2,"0")}`;
+}
+
+// hh:mm still remaining on the arming window, or "" when disarmed/expired/unknown.
+function autoRemainingLabel() {
+  if(!state.autoExpiryAt)return "";
+  const remaining=state.autoExpiryAt-Date.now();
+  return remaining>0?formatHhMm(remaining):"";
+}
+
+// hh:mm until the next heartbeat beacon. heartbeat.dueInMs already folds in the
+// bounded activity defer, so a busy band pushes this out (up to the ceiling) on
+// its own. Blank when HB is off or unattended mode is not armed, because the
+// beacon only actually fires while armed -- a live countdown otherwise would
+// promise a transmission that never comes.
+function hbNextLabel() {
+  const dueInMs=heartbeat.dueInMs(js8Clock.now());
+  if(dueInMs===null||!currentJs8().auto)return "";
+  return formatHhMm(Math.max(0,dueInMs));
+}
+
 function terminalTransferState(value) {
   return ["complete","cancelled","rejected","failed"].includes(value);
 }
@@ -1248,22 +1282,40 @@ function renderBinControls() {
 // consequence are listed, so a closed panel still answers "what will this
 // station do by itself?". Reading a setting is all they do -- switching one
 // stays inside the section, which is why these are spans and not buttons.
+// needsTx marks the switches that only reach the air through the txSafetyAccepted
+// gate (drainTxQueue / checkHeartbeat / checkCqRepeat all refuse without it). With
+// Radio TX off they are configured-but-silent, so the header must show them off.
 const SETTINGS_FLAGS=[
   {key:"TX",   label:"Radio TX",                on:js8=>js8.txSafetyAccepted===true},
-  {key:"AUTO", label:"Automatic query answers", on:js8=>js8.auto===true},
-  {key:"CQ",   label:"Repeated CQ",             on:js8=>Number(js8.cqRepeatMin)>0,
+  {key:"AUTO", label:"Automatic query answers", on:js8=>js8.auto===true, needsTx:true,
+    detail:()=>autoRemainingLabel(), inline:true},
+  {key:"CQ",   label:"Repeated CQ",             on:js8=>Number(js8.cqRepeatMin)>0, needsTx:true,
     detail:js8=>`every ${Number(js8.cqRepeatMin)} min`},
-  {key:"HB",   label:"Heartbeat transmission",  on:js8=>js8.hb===true,
-    detail:js8=>`every ${Number(js8.hbMinutes)} min`},
-  {key:"ACK",  label:"Heartbeat acknowledgements", on:js8=>js8.hbAck!==false}
+  {key:"HB",   label:"Heartbeat transmission",  on:js8=>js8.hb===true, needsTx:true,
+    detail:()=>hbNextLabel(), inline:true, tip:js8=>`every ${Number(js8.hbMinutes)} min`},
+  {key:"ACK",  label:"Heartbeat acknowledgements", on:js8=>js8.hbAck!==false, needsTx:true}
 ];
 
 function renderSettingsFlags(js8) {
   if(!dom.settingsFlags)return;
+  const txOn=js8.txSafetyAccepted===true;
   dom.settingsFlags.innerHTML=SETTINGS_FLAGS.map(flag=>{
-    const on=flag.on(js8)===true;
-    const detail=on && flag.detail ? ` · ${flag.detail(js8)}` : "";
-    return `<span class="summary-flag${on?" on":""}" title="${esc(flag.label)}: ${on?"on":"off"}${esc(detail)}">${flag.key}</span>`;
+    // A TX-dependent switch that is configured but blocked by Radio TX being off is
+    // shown off (no pill, no countdown); the tooltip names the reason so it does not
+    // read as "the operator turned it off".
+    const configured=flag.on(js8)===true;
+    const suppressed=flag.needsTx===true && !txOn;
+    const on=configured && !suppressed;
+    const detailText=on && flag.detail ? flag.detail(js8) : "";
+    const tipExtra=on && flag.tip ? flag.tip(js8) : "";
+    // AUTO/HB show their live countdown (hh:mm to deactivation / next beacon)
+    // inline so it is visible without hovering; the others keep the key alone and
+    // carry any detail only in the tooltip. The tooltip always spells out the
+    // full state, including the configured interval via `tip`.
+    const text=flag.key + (flag.inline && detailText ? ` · ${detailText}` : "");
+    const stateWord=on ? "on" : (suppressed && configured ? "off · needs Radio TX" : "off");
+    const tip=[stateWord, detailText, tipExtra].filter(Boolean).join(" · ");
+    return `<span class="summary-flag${on?" on":""}" title="${esc(flag.label)}: ${esc(tip)}">${esc(text)}</span>`;
   }).join("");
 }
 
@@ -2453,9 +2505,10 @@ function armUnattended(action) {
   fetch("/unattended", {method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify({action, hours})})
     .then(response => response.ok ? response.json() : Promise.reject(new Error(String(response.status))))
-    .then(state => {
-      autoStateText = state.armed
-        ? `armed, ${Math.max(1, Math.round(state.remainingMs / 60000))} min left`
+    .then(result => {
+      applyUnattendedState(result);
+      autoStateText = result.armed
+        ? `armed, ${Math.max(1, Math.round(result.remainingMs / 60000))} min left`
         : "disarmed";
       console.info("[js8-unattended]", action, autoStateText);
       renderAutoState();
@@ -2467,6 +2520,26 @@ function armUnattended(action) {
       console.warn("[js8-unattended]", action, "failed:", error.message);
       renderAutoState();
     });
+}
+
+// Mirror the firmware's arming window into the local clock so the AUTO pill can
+// count down between polls without another round-trip. remainingMs is anchored
+// to Date.now() at receipt; disarmed clears it so the pill shows no time.
+function applyUnattendedState(result) {
+  state.autoExpiryAt = result && result.armed && Number(result.remainingMs) > 0
+    ? Date.now() + Number(result.remainingMs)
+    : null;
+}
+
+// Firmware is the source of truth for the arming window: it survives a page
+// reload and can be revoked/extended from any device, so poll it to keep the
+// AUTO countdown honest even when this browser did not start the timer.
+async function pollUnattended() {
+  try {
+    const response = await fetch("/unattended", {cache: "no-store"});
+    if (!response.ok) return;
+    applyUnattendedState(await response.json());
+  } catch (_error) { /* transient; the last known expiry keeps ticking */ }
 }
 
 // Routes a decoded frame to whichever engine owns it. Any traffic at all pushes
@@ -3062,7 +3135,8 @@ async function checkLanConfiguration() {
 // token is ever sent, and doubles as an instant answer for a plain second tab.
 const SESSION_TOKEN_KEY = "js8lan.session.token.v1";
 const SESSION_PING_MS = 5000, SESSION_RETRY_MS = 3000, SESSION_PROBE_MS = 250;
-let sessionTokenCache = null, sessionHeld = false, sessionRetryTimer = null;
+let sessionTokenCache = null, sessionHeld = false, sessionConfirmed = false;
+let sessionRetryTimer = null;
 let sessionSince = 0;                       // when this page took the lock
 let sessionLocalHolder = null;              // {id, since} of a live holder in this browser
 
@@ -3134,8 +3208,9 @@ async function sessionPost(path, extra) {
   } catch (_error) { return {granted:true}; }
 }
 
-function markSessionHeld() {
+function markSessionHeld(confirmed = false) {
   sessionHeld = true;
+  sessionConfirmed = confirmed;
   sessionSince = Date.now();
   if (sessionRetryTimer) { clearTimeout(sessionRetryTimer); sessionRetryTimer = null; }
   document.body.classList.remove("session-busy-only");
@@ -3152,6 +3227,7 @@ function yieldSession(info) {
 
 function showSessionBusy(info) {
   sessionHeld = false;
+  sessionConfirmed = false;
   document.body.classList.add("session-busy-only");
   dom.sessionBusy.hidden = false;
   dom.sessionBusyWhere.textContent = info.local ? "Open in another tab of this browser."
@@ -3185,15 +3261,19 @@ async function acquireJs8Session(force = false) {
   if (force && sessionChannel) sessionChannel.postMessage({type:"evict", id:pageId});
   const claim = await sessionPost("/js8/session/claim", {force});
   if (!claim.granted) { showSessionBusy(claim); return false; }
-  markSessionHeld();
-  // The duplicate-tab probe deliberately does not block startup: waiting on a
-  // 250 ms broadcast round trip before the first paint would tax every ordinary
-  // page load to catch a rare one. Audio needs about a second of decoder warm-up
-  // to start, so a late yield still lands before anything reaches the radio.
+  // A forced takeover is already an explicit operator decision. An ordinary
+  // claim remains unconfirmed until the same-browser duplicate probe finishes;
+  // the rest of the UI may load meanwhile, but ensureAudio() stays gated.
+  markSessionHeld(force);
   if (!force) probeLocalHolder().then(holder => {
     // No release here: a duplicate shares the token, so handing it back would
     // cancel the original page's lease instead of this page's.
+    if (!sessionHeld) return;
     if (localHolderOutranks(holder)) yieldSession({local:true});
+    else {
+      sessionConfirmed = true;
+      ensureAudio();
+    }
   });
   return true;
 }
@@ -3208,6 +3288,7 @@ async function pingJs8Session() {
 function releaseJs8Session() {
   if (!sessionHeld) return;
   sessionHeld = false;
+  sessionConfirmed = false;
   if (sessionChannel) sessionChannel.postMessage({type:"released", id:pageId});
   const body = JSON.stringify({token:sessionToken()});
   // sendBeacon survives the unload a fetch would be cancelled in.
@@ -3371,6 +3452,7 @@ async function init() {
   scheduler.every("txQueue",1000,()=>{drainTxQueue();renderTxQueue();});
   scheduler.every("heartbeat",5000,()=>{checkHeartbeat();renderHeartbeatState();});
   scheduler.every("cqRepeat",5000,checkCqRepeat);
+  pollUnattended(); scheduler.every("unattended",5000,pollUnattended);
   renderTimetableButton(); scheduler.every("freqTimetable",5000,reconcileTimetable); reconcileTimetable();
   applyHeartbeatSettings();
   loadInbox();

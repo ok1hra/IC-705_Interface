@@ -22,6 +22,10 @@
 // shared parser so LAN gets the same full CAT state (freq, mode, meters, TX...).
 extern void lanCivFrameHandler(const uint8_t *frame, size_t len);
 
+// Secondary LAN sessions use the same protocol client, but their CI-V frames
+// feed TRX2/TRX3 state instead of the primary radio's full CAT state.
+extern void lanSecondaryCivFrameHandler(uint8_t slot, const uint8_t *frame, size_t len);
+
 // Implemented in the .ino — receives a chunk of raw RX audio (payload of one audio
 // UDP datagram, codec = AUDIO_RX_CODEC below). Used by the DATA-page waterfall.
 extern void lanAudioHandler(const uint8_t *data, size_t len, uint16_t sequence);
@@ -43,17 +47,24 @@ public:
 
   // civAddr = radio CI-V address (IC-705 = 0xA4). name is filled from caps.
   void begin(IPAddress radioIp, uint16_t controlPort,
-             const char* user, const char* pass, uint8_t civAddr) {
+             const char* user, const char* pass, uint8_t civAddr,
+             uint8_t slot = 0, uint16_t localControlPort = 50001,
+             bool enableAudio = true) {
     stop();
     radioIP = radioIp;
     ctrlPort = controlPort ? controlPort : 50001;
+    radioSlot = slot;
+    ctrlLocalPort = localControlPort;
+    civLocalPort = localControlPort + 1;
+    audioLocalPort = localControlPort + 2;
+    audioAllowed = enableAudio && slot == 0;
     strlcpy(username, user, sizeof(username));
     strlcpy(password, pass, sizeof(password));
     radioCivAddr = civAddr;
 
     localIP = WiFi.localIP();
-    ctrlUdp.begin(50001);
-    ctrlMyId = mkId(50001);
+    ctrlUdp.begin(ctrlLocalPort);
+    ctrlMyId = mkId(ctrlLocalPort);
     ctrlRemoteId = 0;
     ctrlSendSeq = 1;
     ctrlTxHistory.clear();
@@ -329,8 +340,13 @@ private:
   // ---- config / session state ----
   IPAddress radioIP, localIP;
   uint16_t ctrlPort = 50001;
+  uint16_t ctrlLocalPort = 50001;
+  uint16_t civLocalPort = 50002;
+  uint16_t audioLocalPort = 50003;
   char username[24] = {0}, password[24] = {0};
   uint8_t radioCivAddr = 0xA4;
+  uint8_t radioSlot = 0;
+  bool audioAllowed = true;
 
   WiFiUDP ctrlUdp, civUdp, audioUdp;
   uint32_t ctrlMyId = 0, ctrlRemoteId = 0;
@@ -372,7 +388,6 @@ private:
   static const uint32_t AUDIO_RX_SAMPLE  = 8000;    // Hz
   static const uint8_t  AUDIO_TX_CODEC   = 0x01;    // uLaw 8-bit 1ch (M3 TX)
   static const uint32_t AUDIO_TX_SAMPLE  = 8000;    // Hz
-  static const uint16_t AUDIO_LOCAL_PORT = 50003;
   // Freshness window for audioReady(): the radio only streams audio while there
   // is AF (nothing on a quiet/squelched channel), so this is a "recently flowing"
   // threshold for the RX-live status, NOT a wedge/reopen trigger.
@@ -603,18 +618,20 @@ private:
     // RX audio enabled (TX off). Field offsets verified in tools/icom-lan-login-test.py.
     // The radio only actually streams once we complete the audio-channel handshake
     // (openAudioChannel), so advertising it here costs nothing until the page opens.
-    buf[0x70] = 1;                         // rxenable
-    buf[0x71] = 1;                         // txenable (M3: TX audio)
+    buf[0x70] = audioAllowed ? 1 : 0;      // rxenable
+    buf[0x71] = audioAllowed ? 1 : 0;      // txenable (M3: TX audio)
     buf[0x72] = AUDIO_RX_CODEC;            // rxcodec
     buf[0x73] = AUDIO_TX_CODEC;            // txcodec
     putBE32(buf+0x74, AUDIO_RX_SAMPLE);    // rxsample rate
     putBE32(buf+0x78, AUDIO_TX_SAMPLE);    // txsample rate
-    putBE32(buf+0x7c, 50002);              // civ local port
-    putBE32(buf+0x80, AUDIO_LOCAL_PORT);   // audio local port
+    putBE32(buf+0x7c, civLocalPort);        // civ local port
+    putBE32(buf+0x80, audioAllowed ? audioLocalPort : 0);
     putBE32(buf+0x84, 150);                // txbuffer
     buf[0x88] = 1;                         // convert
     sendTracked(ctrlUdp, 0x90, 0x90);
-    Serial.println("LAN | stream request sent (rx+tx audio uLaw/8k)");
+    Serial.println(audioAllowed
+      ? "LAN | stream request sent (rx+tx audio uLaw/8k)"
+      : "LAN | stream request sent (CI-V only)");
   }
 
   void sendCivOpenClose(bool close) {
@@ -816,8 +833,8 @@ private:
   void openCivChannel() {
     if (streamOpened) return;
     streamOpened = true;
-    civUdp.begin(50002);
-    civMyId = mkId(50002);
+    civUdp.begin(civLocalPort);
+    civMyId = mkId(civLocalPort);
     civRemoteId = 0;
     civGotHere = civGotReady = civOpenSent = civGotData = scopeOff = false;
     civRecovering = civReadyWaitAnnounced = civRequestPending = civSelectedModeSeen = false;
@@ -834,8 +851,9 @@ private:
   }
 
   void openAudioChannel() {
-    audioUdp.begin(AUDIO_LOCAL_PORT);
-    audioMyId = mkId(AUDIO_LOCAL_PORT);
+    if (!audioAllowed) return;
+    audioUdp.begin(audioLocalPort);
+    audioMyId = mkId(audioLocalPort);
     audioRemoteId = 0;
     audioGotHere = false;
     audioSendSeq = 1; audioPingSeq = 0; audioTxSeq = 0;
@@ -876,7 +894,8 @@ private:
     uint32_t plen = getLE32(r+0);
     if (type != 0x01 && plen >= 0x20 && n > 0x18) {
       audioLastDataMs = millis();
-      lanAudioHandler(r + 0x18, (size_t)(n - 0x18), getBE16(r + 0x12));
+      if (audioAllowed)
+        lanAudioHandler(r + 0x18, (size_t)(n - 0x18), getBE16(r + 0x12));
     }
   }
 
@@ -944,7 +963,10 @@ private:
     // (from == 0xE1 controller), which must not be parsed as replies.
     if (f[3] != radioCivAddr) return false;
     if (f[4] == 0x27) return false;                      // scope data does not prove CAT replies
-    lanCivFrameHandler(f, (size_t)len);                  // full CAT parse in the .ino
+    if (radioSlot == 0)
+      lanCivFrameHandler(f, (size_t)len);                // full CAT parse in the .ino
+    else
+      lanSecondaryCivFrameHandler(radioSlot, f, (size_t)len);
     // NOTE: state is intentionally NOT driven here — see maybeConnected(). A radio
     // that streams CI-V data before finishing its civ handshake used to flip the
     // state (and the log) CIV_OPEN<->CONNECTED on every frame.

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>IC-705 Setup</title>
-  <link rel="stylesheet" href="/setup.css?v=20260718j">
+  <link rel="stylesheet" href="/setup.css?v=20260725a">
 </head>
 <body>
   <header class="topbar">
@@ -69,7 +69,7 @@
                 <li>Set <code>Connection Type</code> to <b>Station</b> — this joins an existing router instead of the radio's own access-point mode.</li>
                 <li>Open <code>Access Point</code>, scan the networks, pick the <b>same SSID</b> as in step 1, and enter its password.</li>
                 <li>Keep <code>DHCP</code> <b>ON</b> so the router assigns the radio an address; note the <b>IP Address</b> shown in <code>WLAN Set</code>.</li>
-                <li>Enter that IP in the <b>CI-V / LAN</b> section below. For LAN control also set <code>Remote Settings → Network Control</code> to <b>ON</b> and configure a Network User1 ID/password.</li>
+                <li>Select <b>Radio → TRX1 → LAN</b> below and enter that IP. For LAN control also set <code>Remote Settings → Network Control</code> to <b>ON</b> and configure a Network User1 ID/password.</li>
               </ol>
               <span class="setup-guide-note">Both devices must be on the same access point for the interface to reach the radio.</span>
             </div>
@@ -109,116 +109,149 @@
         </details>
 
         <details class="setup-section" id="radioSection">
-          <summary class="setup-section-title">Radio <span class="setup-local-badge">eeprom</span><span id="trx1LanWarning" class="setup-required-warning" role="status" hidden>TRX1 LAN INCOMPLETE</span></summary>
+          <summary class="setup-section-title">Radio <span class="setup-local-badge">eeprom + spiffs</span><span id="radioConfigWarning" class="setup-required-warning" role="status" hidden>RADIO CONFIG INCOMPLETE</span></summary>
           <div class="setup-section-body">
-            <label>USB and CI-V serial baudrate
-              <div class="input-with-tip">
-                <select name="baud" class="setup-baud-select">
-                  <option value="0">1200</option>
-                  <option value="1">2400</option>
-                  <option value="2">4800</option>
-                  <option value="3">9600</option>
-                  <option value="4">115200</option>
-                </select>
-                <span class="help-tip" data-tip="Serial speed for CI-V data over USB-C. Must match the radio's USB Serial Baud Rate setting.">?</span>
-              </div>
-            </label>
-
-            <div class="setup-trx-divider"></div>
-            <div class="setup-trx-box">TRX1 &#8212; Primary radio</div>
-            <label>Label
-              <input type="text" id="ls_trx1Label" name="trx1label" maxlength="10" placeholder="IC-705" value="" class="setup-input-partial">
-            </label>
-            <label>Connection
-              <div class="input-with-tip">
-                <select name="trx1transport" id="trx1transport" class="setup-baud-select">
-                  <option value="lan">LAN &#8212; WiFi / RS-BA1</option>
-                </select>
-                <span class="help-tip" data-tip="How the interface reaches the primary radio. LAN (WiFi / RS-BA1) is the supported connection to the IC-705.">?</span>
-              </div>
-            </label>
-            <label>CI-V address
-              <div class="input-with-tip">
-                <input type="text" name="civaddr" maxlength="2" placeholder="A4" value="" class="setup-trx-short-input">
-                <span class="help-tip" data-tip="CI-V bus address in hexadecimal. IC-705 default: A4. Check MENU → SET → Connectors → CI-V → CI-V Address.">?</span>
-              </div>
-              <span class="msg"></span>
-            </label>
-            <div id="trx1LanFields">
-              <label>Radio IP address
+            <div class="setup-radio-global">
+              <strong>Shared CI-V bus</strong>
+              <label>USB and CI-V serial baudrate
                 <div class="input-with-tip">
-                  <input type="text" name="lanip" maxlength="15" placeholder="192.168.1.60" value="" class="setup-input-partial">
-                  <span class="help-tip" data-tip="IP address of the radio on your WiFi/LAN. The radio must be on the same network as this interface.">?</span>
+                  <select name="baud" class="setup-baud-select">
+                    <option value="0">1200</option>
+                    <option value="1">2400</option>
+                    <option value="2">4800</option>
+                    <option value="3">9600</option>
+                    <option value="4">115200</option>
+                  </select>
+                  <span class="help-tip" data-tip="Used by every radio whose Connection is CI-V. All radios on the physical serial bus must use this speed.">?</span>
                 </div>
               </label>
-              <label>Network username
-                <input type="text" name="lanuser" maxlength="16" value="" class="setup-input-partial">
-              </label>
-              <label>Network password
-                <input type="password" name="lanpass" maxlength="16" value="" class="setup-input-partial">
-              </label>
-              <small class="setup-hint">Enable on the radio: IC-705 <code>MENU → SET → WLAN SET → Remote Settings → Network Control ON</code> and set Network User1 ID/password.</small>
-            </div>
-            <label class="checkbox-row">
-              <input type="checkbox" name="cwIpOnConnect">
-              Announce WiFi IP via CW on first connect
-              <span class="help-tip" data-tip="Plays this interface's IP address in Morse code after the first connection to TRX1 — useful when DHCP assigns an unknown address. Sidetone only: break-in is forced off, so the radio never transmits. Mode, filter, BK-IN and AF/RF gain are restored afterwards.">?</span>
-            </label>
-
-            <div class="setup-trx-divider"></div>
-            <div class="setup-trx-box">TRX2</div>
-            <label class="checkbox-row">
-              <input type="checkbox" name="trx2enable" id="trx2enable">
-              Enable TRX2 (secondary — band map / OI3 keyer)
-              <span class="help-tip" data-tip="When off, TRX2 is not polled or shown. Turn on to configure its connection.">?</span>
-            </label>
-            <div id="trx2Config">
-            <label>Label
-              <input type="text" id="ls_trx2Label" name="trx2label" maxlength="10" placeholder="TRX2" value="" class="setup-input-partial">
-            </label>
-            <label class="setup-trx-conn-row">
-              <span class="setup-trx-conn-label"><input type="radio" name="trx2conntype" value="0" checked> TrxNet</span>
-              <div class="setup-trx-netid-wrap">
-                <input type="text" name="trx2netid" maxlength="2" placeholder="02" value="" class="setup-trx-short-input">
-                <span class="setup-trx-peer-name" id="trx2PeerName"></span>
-                <span class="help-tip" data-tip="TrxNet peer NET_ID of the OI3 keyer for TRX2 (2-digit hex). 00 = disabled. Device name: OI3.XX.">?</span>
-              </div>
-            </label>
-            <label class="setup-trx-conn-row">
-              <span class="setup-trx-conn-label"><input type="radio" name="trx2conntype" value="1"> CI-V</span>
-              <div class="setup-trx-netid-wrap">
-                <input type="text" name="trx2civaddr" maxlength="2" placeholder="A4" value="" class="setup-trx-short-input">
-                <span class="help-tip" data-tip="CI-V address of TRX2 on the shared serial bus (2-digit hex, e.g. 94 for IC-7300, A4 for IC-705). Baud rate is the common serial baud rate.">?</span>
-              </div>
-            </label>
             </div>
 
-            <div class="setup-trx-divider"></div>
-            <div class="setup-trx-box">TRX3</div>
-            <label class="checkbox-row">
-              <input type="checkbox" name="trx3enable" id="trx3enable">
-              Enable TRX3 (secondary — band map / OI3 keyer)
-              <span class="help-tip" data-tip="When off, TRX3 is not polled or shown. Turn on to configure its connection.">?</span>
-            </label>
-            <div id="trx3Config">
-            <label>Label
-              <input type="text" id="ls_trx3Label" name="trx3label" maxlength="10" placeholder="TRX3" value="" class="setup-input-partial">
-            </label>
-            <label class="setup-trx-conn-row">
-              <span class="setup-trx-conn-label"><input type="radio" name="trx3conntype" value="0" checked> TrxNet</span>
-              <div class="setup-trx-netid-wrap">
-                <input type="text" name="trx3netid" maxlength="2" placeholder="03" value="" class="setup-trx-short-input">
-                <span class="setup-trx-peer-name" id="trx3PeerName"></span>
-                <span class="help-tip" data-tip="TrxNet peer NET_ID of the OI3 keyer for TRX3 (2-digit hex). 00 = disabled. Device name: OI3.XX.">?</span>
+            <div class="setup-radio-workspace">
+              <nav class="setup-radio-nav" aria-label="Configured radios">
+                <button type="button" class="setup-radio-nav-item is-active" data-radio-select="trx1">
+                  <span class="setup-radio-nav-title">TRX1 · <span data-radio-label="trx1">IC-705</span></span>
+                  <span class="setup-radio-nav-transport" data-radio-summary="trx1">LAN</span>
+                  <span class="setup-radio-nav-state"></span>
+                </button>
+                <button type="button" class="setup-radio-nav-item" data-radio-select="trx2">
+                  <span class="setup-radio-nav-title">TRX2 · <span data-radio-label="trx2">TRX2</span></span>
+                  <span class="setup-radio-nav-transport" data-radio-summary="trx2">TRXNET · OFF</span>
+                  <span class="setup-radio-nav-state"></span>
+                </button>
+                <button type="button" class="setup-radio-nav-item" data-radio-select="trx3">
+                  <span class="setup-radio-nav-title">TRX3 · <span data-radio-label="trx3">TRX3</span></span>
+                  <span class="setup-radio-nav-transport" data-radio-summary="trx3">TRXNET · OFF</span>
+                  <span class="setup-radio-nav-state"></span>
+                </button>
+              </nav>
+
+              <div class="setup-radio-editors">
+                <section class="setup-radio-editor is-active" data-radio-editor="trx1">
+                  <header class="setup-radio-editor-head">
+                    <h3>TRX1 settings</h3>
+                    <span class="setup-radio-required">always active</span>
+                  </header>
+                  <div class="setup-radio-fields">
+                    <label>Label<input type="text" id="ls_trx1Label" name="trx1label" maxlength="10" placeholder="IC-705" value=""></label>
+                    <label>Connection
+                      <select name="trx1transport" data-radio-transport="trx1">
+                        <option value="lan">LAN</option>
+                        <option value="trxnet">TRXNET</option>
+                        <option value="civ">CI-V</option>
+                      </select>
+                    </label>
+                    <div class="setup-radio-context" data-radio-context="trx1" data-connections="lan">
+                      <label>Radio IP address<input type="text" name="trx1lanip" maxlength="15" placeholder="192.168.1.60" value=""></label>
+                      <label>Network username<input type="text" name="trx1lanuser" maxlength="16" value=""></label>
+                      <label>Network password<input type="password" name="trx1lanpass" maxlength="16" value=""></label>
+                    </div>
+                    <div class="setup-radio-context" data-radio-context="trx1" data-connections="lan civ">
+                      <label>CI-V address<input type="text" name="trx1civaddr" maxlength="2" placeholder="A4" value="" class="setup-trx-short-input"></label>
+                    </div>
+                    <div class="setup-radio-context" data-radio-context="trx1" data-connections="trxnet">
+                      <label>Peer NET_ID
+                        <div class="setup-trx-netid-wrap">
+                          <input type="text" name="trx1netid" maxlength="2" placeholder="02" value="" class="setup-trx-short-input">
+                          <span class="setup-trx-peer-name" id="trx1PeerName"></span>
+                        </div>
+                      </label>
+                      <p class="setup-radio-limited">TRX1 over TRXNET is limited to frequency, mode and tuning. Full CAT, CW, PTT, PWR-OUT and network audio are unavailable.</p>
+                    </div>
+                    <label class="checkbox-row" data-primary-full-cat>
+                      <input type="checkbox" name="cwIpOnConnect">
+                      Announce WiFi IP via CW on first connect
+                      <span class="help-tip" data-tip="Available for direct LAN or CI-V primary connections.">?</span>
+                    </label>
+                  </div>
+                </section>
+
+                <section class="setup-radio-editor" data-radio-editor="trx2">
+                  <header class="setup-radio-editor-head">
+                    <h3>TRX2 settings</h3>
+                    <label class="setup-radio-enable"><input type="checkbox" name="trx2enable" id="trx2enable"> Active</label>
+                  </header>
+                  <div class="setup-radio-fields">
+                    <label>Label<input type="text" id="ls_trx2Label" name="trx2label" maxlength="10" placeholder="TRX2" value=""></label>
+                    <label>Connection
+                      <select name="trx2transport" data-radio-transport="trx2">
+                        <option value="lan">LAN</option>
+                        <option value="trxnet">TRXNET</option>
+                        <option value="civ">CI-V</option>
+                      </select>
+                    </label>
+                    <div class="setup-radio-context" data-radio-context="trx2" data-connections="lan">
+                      <label>Radio IP address<input type="text" name="trx2lanip" maxlength="15" placeholder="192.168.1.61" value=""></label>
+                      <label>Network username<input type="text" name="trx2lanuser" maxlength="16" value=""></label>
+                      <label>Network password<input type="password" name="trx2lanpass" maxlength="16" value=""></label>
+                    </div>
+                    <div class="setup-radio-context" data-radio-context="trx2" data-connections="lan civ">
+                      <label>CI-V address<input type="text" name="trx2civaddr" maxlength="2" placeholder="94" value="" class="setup-trx-short-input"></label>
+                    </div>
+                    <div class="setup-radio-context" data-radio-context="trx2" data-connections="trxnet">
+                      <label>Peer NET_ID
+                        <div class="setup-trx-netid-wrap">
+                          <input type="text" name="trx2netid" maxlength="2" placeholder="02" value="" class="setup-trx-short-input">
+                          <span class="setup-trx-peer-name" id="trx2PeerName"></span>
+                        </div>
+                      </label>
+                    </div>
+                  </div>
+                </section>
+
+                <section class="setup-radio-editor" data-radio-editor="trx3">
+                  <header class="setup-radio-editor-head">
+                    <h3>TRX3 settings</h3>
+                    <label class="setup-radio-enable"><input type="checkbox" name="trx3enable" id="trx3enable"> Active</label>
+                  </header>
+                  <div class="setup-radio-fields">
+                    <label>Label<input type="text" id="ls_trx3Label" name="trx3label" maxlength="10" placeholder="TRX3" value=""></label>
+                    <label>Connection
+                      <select name="trx3transport" data-radio-transport="trx3">
+                        <option value="lan">LAN</option>
+                        <option value="trxnet">TRXNET</option>
+                        <option value="civ">CI-V</option>
+                      </select>
+                    </label>
+                    <div class="setup-radio-context" data-radio-context="trx3" data-connections="lan">
+                      <label>Radio IP address<input type="text" name="trx3lanip" maxlength="15" placeholder="192.168.1.62" value=""></label>
+                      <label>Network username<input type="text" name="trx3lanuser" maxlength="16" value=""></label>
+                      <label>Network password<input type="password" name="trx3lanpass" maxlength="16" value=""></label>
+                    </div>
+                    <div class="setup-radio-context" data-radio-context="trx3" data-connections="lan civ">
+                      <label>CI-V address<input type="text" name="trx3civaddr" maxlength="2" placeholder="A2" value="" class="setup-trx-short-input"></label>
+                    </div>
+                    <div class="setup-radio-context" data-radio-context="trx3" data-connections="trxnet">
+                      <label>Peer NET_ID
+                        <div class="setup-trx-netid-wrap">
+                          <input type="text" name="trx3netid" maxlength="2" placeholder="03" value="" class="setup-trx-short-input">
+                          <span class="setup-trx-peer-name" id="trx3PeerName"></span>
+                        </div>
+                      </label>
+                    </div>
+                  </div>
+                </section>
               </div>
-            </label>
-            <label class="setup-trx-conn-row">
-              <span class="setup-trx-conn-label"><input type="radio" name="trx3conntype" value="1"> CI-V</span>
-              <div class="setup-trx-netid-wrap">
-                <input type="text" name="trx3civaddr" maxlength="2" placeholder="A4" value="" class="setup-trx-short-input">
-                <span class="help-tip" data-tip="CI-V address of TRX3 on the shared serial bus (2-digit hex, e.g. 94 for IC-7300, A4 for IC-705). Baud rate is the common serial baud rate.">?</span>
-              </div>
-            </label>
             </div>
           </div>
         </details>
@@ -370,58 +403,168 @@
           ownTip.dataset.tip = "This device's TrxNet identity (2-digit hex). 00 = TrxNet disabled. Must be unique on the network. Device name: " + (data.trxnetDeviceName || '');
         }
 
-        [
+        var setupNames = [
           'ssid', 'pswd', 'ssid2', 'pswd2', 'trxnetport', 'trxnetprio',
-          'baud', 'trx1label', 'trx1transport', 'civaddr', 'lanip', 'lanuser', 'lanpass',
-          'trx2label',
-          'trx2netid', 'trx2civaddr', 'trx3label', 'trx3netid', 'trx3civaddr',
+          'baud',
           'dxchost', 'dxcport',
           'dxccall', 'dxclocator', 'rstSsb', 'rstCwRtty', 'blockedDxcc'
-        ].forEach(function (name) { setValue(name, data[name]); });
-
-        // TRX1 transport: only LAN is supported; keep the LAN fields visible.
-        function refreshTrx1Transport() {
-          var lanBox = document.getElementById('trx1LanFields');
-          if (lanBox) lanBox.style.display = '';
-        }
-        function refreshTrx1LanWarning() {
-          var sel = document.getElementById('trx1transport');
-          var isLan = sel && sel.value === 'lan';
-          var names = ['lanip', 'lanuser', 'lanpass'];
-          var missing = 0;
-          names.forEach(function (name) {
-            var input = document.querySelector('[name="' + name + '"]');
-            if (!input) return;
-            var empty = isLan && (!input.value.trim() || (name === 'lanip' && input.value.trim() === '0.0.0.0'));
-            input.classList.toggle('setup-required-missing', empty);
-            input.setAttribute('aria-invalid', empty ? 'true' : 'false');
-            if (input.closest('label')) input.closest('label').classList.toggle('setup-label-missing', empty);
-            if (empty) missing++;
+        ];
+        ['trx1', 'trx2', 'trx3'].forEach(function (prefix) {
+          ['label', 'transport', 'civaddr', 'netid', 'lanip', 'lanuser', 'lanpass'].forEach(function (suffix) {
+            setupNames.push(prefix + suffix);
           });
-          var warning = document.getElementById('trx1LanWarning');
-          if (warning) {
-            warning.hidden = !(isLan && missing);
-            warning.textContent = 'TRX1 LAN INCOMPLETE' + (missing ? ' · ' + missing : '');
-          }
-          var section = document.getElementById('radioSection');
-          if (section) section.classList.toggle('setup-section-warning', !!(isLan && missing));
-          return !!(isLan && missing);
-        }
-        var trx1t = document.getElementById('trx1transport');
-        if (trx1t) {
-          refreshTrx1Transport();
-          trx1t.addEventListener('change', function () { refreshTrx1Transport(); refreshTrx1LanWarning(); });
-        }
-        ['lanip', 'lanuser', 'lanpass'].forEach(function (name) {
-          var input = document.querySelector('[name="' + name + '"]');
-          if (input) input.addEventListener('input', refreshTrx1LanWarning);
         });
-        if (refreshTrx1LanWarning()) {
-          var radioSection = document.getElementById('radioSection');
-          if (radioSection) radioSection.open = true;
-        }
+        setupNames.forEach(function (name) { setValue(name, data[name]); });
+
         setValue('cwIpOnConnect', data.cwIpOnConnect);
         setValue('manualModeForPhone', data.manualModeForPhone);
+        setValue('trx2enable', data.trx2enabled);
+        setValue('trx3enable', data.trx3enabled);
+
+        var selectedRadio = 'trx1';
+        function radioEnabled(prefix) {
+          var checkbox = document.getElementById(prefix + 'enable');
+          return prefix === 'trx1' || !!(checkbox && checkbox.checked);
+        }
+        function selectRadio(prefix) {
+          selectedRadio = prefix;
+          document.querySelectorAll('[data-radio-select]').forEach(function (button) {
+            button.classList.toggle('is-active', button.dataset.radioSelect === prefix);
+          });
+          document.querySelectorAll('[data-radio-editor]').forEach(function (editor) {
+            editor.classList.toggle('is-active', editor.dataset.radioEditor === prefix);
+          });
+        }
+        function refreshRadio(prefix) {
+          var enabled = radioEnabled(prefix);
+          var transport = document.querySelector('[name="' + prefix + 'transport"]');
+          var connection = transport ? transport.value : 'trxnet';
+          var editor = document.querySelector('[data-radio-editor="' + prefix + '"]');
+          var nav = document.querySelector('[data-radio-select="' + prefix + '"]');
+          if (editor) editor.classList.toggle('is-disabled', !enabled);
+          if (nav) nav.classList.toggle('is-disabled', !enabled);
+          document.querySelectorAll('[data-radio-context="' + prefix + '"]').forEach(function (context) {
+            var visible = context.dataset.connections.split(/\s+/).indexOf(connection) >= 0;
+            context.hidden = !visible;
+            context.querySelectorAll('input,select').forEach(function (input) {
+              input.disabled = !visible || !enabled;
+            });
+          });
+          var label = document.querySelector('[name="' + prefix + 'label"]');
+          var navLabel = document.querySelector('[data-radio-label="' + prefix + '"]');
+          if (navLabel) navLabel.textContent = (label && label.value.trim()) || prefix.toUpperCase();
+          var summary = document.querySelector('[data-radio-summary="' + prefix + '"]');
+          if (summary) summary.textContent = connection.toUpperCase() + (enabled ? '' : ' · OFF');
+          if (prefix === 'trx1') {
+            var fullCatRow = document.querySelector('[data-primary-full-cat]');
+            if (fullCatRow) {
+              fullCatRow.hidden = connection === 'trxnet';
+              fullCatRow.querySelectorAll('input').forEach(function (input) {
+                input.disabled = connection === 'trxnet';
+              });
+            }
+          }
+        }
+        function markMissing(input, missing) {
+          if (!input) return;
+          input.classList.toggle('setup-radio-field-missing', missing);
+          input.setAttribute('aria-invalid', missing ? 'true' : 'false');
+        }
+        function validateRadios() {
+          var missing = 0;
+          var usedNetIds = {};
+          var usedCiv = {};
+          var lanSeen = false;
+          var ownNetId = String((document.querySelector('[name="trxnetid"]') || {}).value || '').toUpperCase();
+          ['trx1', 'trx2', 'trx3'].forEach(function (prefix) {
+            var enabled = radioEnabled(prefix);
+            var transportSelect = document.querySelector('[name="' + prefix + 'transport"]');
+            var transport = transportSelect.value;
+            markMissing(transportSelect, false);
+            var required = transport === 'lan'
+              ? ['lanip', 'lanuser', 'lanpass', 'civaddr']
+              : transport === 'trxnet' ? ['netid'] : ['civaddr'];
+            required.forEach(function (suffix) {
+              var input = document.querySelector('[name="' + prefix + suffix + '"]');
+              var empty = enabled && (!input || !input.value.trim() ||
+                (suffix === 'lanip' && input.value.trim() === '0.0.0.0'));
+              markMissing(input, empty);
+              if (empty) missing++;
+            });
+            if (!enabled) return;
+            if (transport === 'trxnet') {
+              var netInput = document.querySelector('[name="' + prefix + 'netid"]');
+              var netId = netInput.value.trim().toUpperCase();
+              var invalidNet = netId === '00' || netId === ownNetId || !!usedNetIds[netId];
+              markMissing(netInput, invalidNet);
+              if (invalidNet) missing++;
+              usedNetIds[netId] = true;
+            }
+            if (transport === 'civ') {
+              var civInput = document.querySelector('[name="' + prefix + 'civaddr"]');
+              var civ = civInput.value.trim().toUpperCase();
+              var duplicateCiv = !!usedCiv[civ];
+              markMissing(civInput, duplicateCiv);
+              if (duplicateCiv) missing++;
+              usedCiv[civ] = true;
+            }
+            if (transport === 'lan') {
+              // LAN is a single exclusive resource: only one TRX may own it, so a
+              // second enabled LAN slot is flagged on the Connection select itself.
+              markMissing(transportSelect, lanSeen);
+              if (lanSeen) missing++;
+              lanSeen = true;
+            }
+          });
+          var warning = document.getElementById('radioConfigWarning');
+          if (warning) {
+            warning.hidden = missing === 0;
+            warning.textContent = 'RADIO CONFIG INCOMPLETE' + (missing ? ' · ' + missing : '');
+          }
+          var section = document.getElementById('radioSection');
+          if (section) section.classList.toggle('setup-section-warning', missing > 0);
+          return missing === 0;
+        }
+        function enforceLanExclusivity() {
+          // Selecting LAN on one TRX blocks it on the other two: LAN is exclusive
+          // to a single slot, so disable the LAN option wherever it is not the
+          // current choice once any slot has taken it.
+          var selects = ['trx1', 'trx2', 'trx3'].map(function (prefix) {
+            return document.querySelector('[name="' + prefix + 'transport"]');
+          });
+          var lanTaken = selects.some(function (select) { return select && select.value === 'lan'; });
+          selects.forEach(function (select) {
+            if (!select) return;
+            var lanOption = select.querySelector('option[value="lan"]');
+            if (lanOption) lanOption.disabled = lanTaken && select.value !== 'lan';
+          });
+        }
+        function refreshAllRadios() {
+          enforceLanExclusivity();
+          ['trx1', 'trx2', 'trx3'].forEach(refreshRadio);
+          validateRadios();
+        }
+        document.querySelectorAll('[data-radio-select]').forEach(function (button) {
+          button.addEventListener('click', function () { selectRadio(button.dataset.radioSelect); });
+        });
+        document.querySelectorAll('[data-radio-transport]').forEach(function (select) {
+          select.addEventListener('change', refreshAllRadios);
+        });
+        ['trx2enable', 'trx3enable'].forEach(function (id) {
+          var checkbox = document.getElementById(id);
+          if (checkbox) checkbox.addEventListener('change', refreshAllRadios);
+        });
+        document.querySelectorAll('.setup-radio-workspace input').forEach(function (input) {
+          input.addEventListener('input', refreshAllRadios);
+        });
+        var ownNetIdInput = document.querySelector('[name="trxnetid"]');
+        if (ownNetIdInput) ownNetIdInput.addEventListener('input', refreshAllRadios);
+        var setupForm = document.getElementById('setup-form');
+        if (setupForm) setupForm._validateRadios = validateRadios;
+        selectRadio('trx1');
+        refreshAllRadios();
+        if (!validateRadios()) document.getElementById('radioSection').open = true;
+
         // TrxNet ID: auto-fill from IP last octet if factory default, else use saved value
         var trxnetInput = document.getElementById('trxnetidInput');
         if (trxnetInput) {
@@ -437,54 +580,11 @@
           if (btn) btn.dataset.octet = data.ipLastOctet;
         }
 
-        // Connection type radio buttons for TRX2/3
-        var ct2 = data.trx2conntype || 0;
-        document.querySelectorAll('[name="trx2conntype"]').forEach(function(r) {
-          r.checked = (parseInt(r.value) === ct2);
-        });
-        var ct3 = data.trx3conntype || 0;
-        document.querySelectorAll('[name="trx3conntype"]').forEach(function(r) {
-          r.checked = (parseInt(r.value) === ct3);
-        });
-
-        // Disable the unused input (netid or civaddr) per selected conn type
-        function refreshConnTypeInputs(prefix) {
-          var rs = document.querySelectorAll('[name="' + prefix + 'conntype"]');
-          var ct = 0;
-          rs.forEach(function (r) { if (r.checked) ct = parseInt(r.value); });
-          var netInp = document.querySelector('[name="' + prefix + 'netid"]');
-          var civInp = document.querySelector('[name="' + prefix + 'civaddr"]');
-          if (netInp) netInp.disabled = (ct === 1);
-          if (civInp) civInp.disabled = (ct !== 1);
-        }
-        ['trx2', 'trx3'].forEach(function (p) {
-          refreshConnTypeInputs(p);
-          document.querySelectorAll('[name="' + p + 'conntype"]').forEach(function (r) {
-            r.addEventListener('change', function () { refreshConnTypeInputs(p); });
-          });
-        });
-
-        // Enable toggle for TRX2/3: derive initial state from stored config
-        // (active = TrxNet with a real NET_ID, or CI-V with a real address).
-        // 0x00 (unset) and 0xff (unprogrammed sentinel) both count as disabled.
-        function isHexActive(v) { var n = v ? parseInt(v, 16) : 0; return n > 0 && n < 255; }
-        ['trx2', 'trx3'].forEach(function (p) {
-          var ct = (data[p + 'conntype'] || 0);
-          var enabled = (ct === 1) ? isHexActive(data[p + 'civaddr'])
-                                   : isHexActive(data[p + 'netid']);
-          var cb = document.getElementById(p + 'enable');
-          var cfg = document.getElementById(p + 'Config');
-          function refresh() { if (cfg) cfg.style.display = cb.checked ? '' : 'none'; }
-          if (cb) {
-            cb.checked = enabled;
-            refresh();
-            cb.addEventListener('change', refresh);
-          }
-        });
-
         // Show resolved peer device names
+        updatePeerName('trx1netid', 'trx1PeerName');
         updatePeerName('trx2netid', 'trx2PeerName');
         updatePeerName('trx3netid', 'trx3PeerName');
+        refreshAllRadios();
       }
 
       fetch('/setup-data.json', { cache: 'no-store' })
@@ -516,7 +616,9 @@
     document.getElementById('btnUseIpOctet').addEventListener('click', function() {
       var octet = parseInt(this.dataset.octet || '0', 10);
       if (octet > 0) {
-        document.getElementById('trxnetidInput').value = ('0' + octet.toString(16)).slice(-2);
+        var input = document.getElementById('trxnetidInput');
+        input.value = ('0' + octet.toString(16)).slice(-2);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
       }
     });
   </script>
@@ -692,6 +794,10 @@
       if (!form) return;
       form.addEventListener('submit', function (e) {
         e.preventDefault();
+        if (form._validateRadios && !form._validateRadios()) {
+          document.getElementById('radioSection').open = true;
+          return;
+        }
         var shell = document.querySelector('main.setup-shell') || form.parentNode;
         shell.style.display = 'none';
         var msg = document.createElement('p');

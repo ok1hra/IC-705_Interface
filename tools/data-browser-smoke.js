@@ -22,7 +22,7 @@ const mime={".html":"text/html",".css":"text/css",".js":"application/javascript"
 function frame(opcode,payload){const body=Buffer.isBuffer(payload)?payload:Buffer.from(payload);return body.length<126?Buffer.concat([Buffer.from([0x80|opcode,body.length]),body]):Buffer.concat([Buffer.from([0x80|opcode,126,body.length>>8,body.length&255]),body]);}
 function aud1(){const wire=Buffer.alloc(200,0xff);wire.write("AUD1");wire[4]=1;wire[5]=1;wire.writeUInt16BE(sequence===0?1:0,6);wire.writeUInt16BE(40,8);wire.writeUInt16BE(0,10);wire.writeUInt32BE(streamId,12);wire.writeUInt32BE(sequence++,16);wire.writeUInt32BE(8000,20);wire.writeBigUInt64BE(BigInt(firstSample),24);wire.writeUInt32BE(0,32);wire.writeUInt32BE(160,36);firstSample+=160;return wire;}
 function readClientFrames(socket){let input=Buffer.alloc(0);return chunk=>{input=Buffer.concat([input,chunk]);for(;;){if(input.length<2)return;let at=2,length=input[1]&127;if(length===126){if(input.length<4)return;length=input.readUInt16BE(2);at=4;}else if(length===127)return socket.destroy();const masked=Boolean(input[1]&128);if(masked)at+=4;if(input.length<at+length)return;const opcode=input[0]&15,maskAt=at-4,payload=Buffer.from(input.subarray(at,at+length));if(masked)for(let i=0;i<payload.length;i++)payload[i]^=input[maskAt+(i%4)];input=input.subarray(at+length);if(opcode===1){const message=JSON.parse(payload.toString());if(message.type==="tx.prepare"){txPrepares++;socket.write(frame(1,JSON.stringify({type:"tx-ready",txId:message.txId,ptt:false})));}}else if(opcode===2){txPackets++;const txId=payload.readUInt32BE(32),flags=payload.readUInt16BE(6);if(flags&1)socket.write(frame(1,JSON.stringify({type:"tx-state",txId,ptt:true})));if(flags&2)socket.write(frame(1,JSON.stringify({type:"tx-drained",txId,ptt:false})));}}};}
-function finish(ok,text){if(finished)return;finished=true;clearTimeout(timer);if(chrome)chrome.kill("SIGTERM");server.close();const encodingPass=js8Gzip>0&&js8Brotli===0;const frequencyPass=commands.some(command=>command.type==="setFrequency"&&Number(command.frequency)===14078000), setupArgs=new URLSearchParams(setupSaveBody), setupSavePass=setupArgs.get("trx1transport")==="lan"&&setupArgs.get("lanip")==="192.168.1.60"&&setupArgs.get("lanuser")==="operator"&&setupArgs.get("lanpass")==="secret123"&&setupArgs.get("noRestart")==="1"&&setupRestartRequests===1;const unattendedRevokePass=unattendedPosts.some(post=>post.action==="revoke");const inboxWritePass=inboxWrites.length>0;const sessionPass=session.claims>0&&session.wsRefusals===0;ok=ok&&encodingPass&&frequencyPass&&earlyWsConnections===0&&jscRequests===1&&setupSavePass&&lanReconnectRequests===1&&unattendedRevokePass&&inboxWritePass&&sessionPass;const report=`${text} js8Gzip=${js8Gzip} js8Brotli=${js8Brotli} jscRequests=${jscRequests} jscMs=${jscCompleteAt-jscStartedAt} wsAfterJscMs=${wsOpenedAt-jscCompleteAt} ws=${wsConnections} earlyWs=${earlyWsConnections} setupSave=${setupSavePass} setupRestarts=${setupRestartRequests} unattendedRevoke=${unattendedRevokePass} session=${sessionPass}(claims=${session.claims} refusals=${session.refusals} wsRefusals=${session.wsRefusals}) inboxWrites=${inboxWrites.length} reconnects=${lanReconnectRequests} commands=${JSON.stringify(commands)} prepares=${txPrepares} packets=${txPackets}`;(ok?console.log:console.error)(report);if(!ok)process.exitCode=1;}
+function finish(ok,text){if(finished)return;finished=true;clearTimeout(timer);if(chrome)chrome.kill("SIGTERM");server.close();const encodingPass=js8Gzip>0&&js8Brotli===0;const frequencyPass=commands.some(command=>command.type==="setFrequency"&&Number(command.frequency)===14078000), setupArgs=new URLSearchParams(setupSaveBody), setupSavePass=setupArgs.get("trx1transport")==="lan"&&setupArgs.get("trx1lanip")==="192.168.1.60"&&setupArgs.get("trx1lanuser")==="operator"&&setupArgs.get("trx1lanpass")==="secret123"&&setupArgs.get("noRestart")==="1"&&setupRestartRequests===1;const unattendedRevokePass=unattendedPosts.some(post=>post.action==="revoke");const inboxWritePass=inboxWrites.length>0;const sessionPass=session.claims>0&&session.wsRefusals===0;ok=ok&&encodingPass&&frequencyPass&&earlyWsConnections===0&&jscRequests===1&&setupSavePass&&lanReconnectRequests===1&&unattendedRevokePass&&inboxWritePass&&sessionPass;const report=`${text} js8Gzip=${js8Gzip} js8Brotli=${js8Brotli} jscRequests=${jscRequests} jscMs=${jscCompleteAt-jscStartedAt} wsAfterJscMs=${wsOpenedAt-jscCompleteAt} ws=${wsConnections} earlyWs=${earlyWsConnections} setupSave=${setupSavePass} setupRestarts=${setupRestartRequests} unattendedRevoke=${unattendedRevokePass} session=${sessionPass}(claims=${session.claims} refusals=${session.refusals} wsRefusals=${session.wsRefusals}) inboxWrites=${inboxWrites.length} reconnects=${lanReconnectRequests} commands=${JSON.stringify(commands)} prepares=${txPrepares} packets=${txPackets}`;(ok?console.log:console.error)(report);if(!ok)process.exitCode=1;}
 const server=http.createServer((req,res)=>{
   const url=new URL(req.url,"http://fixture");
   if(url.pathname==="/result"&&req.method==="POST"){let body="";req.on("data",c=>body+=c);req.on("end",()=>{res.writeHead(204).end();const result=JSON.parse(body);finish(result.pass,result.text);});return;}
@@ -38,7 +38,7 @@ const server=http.createServer((req,res)=>{
   if(url.pathname==="/unattended"){res.setHeader("Content-Type","application/json");res.end(JSON.stringify(unattendedState()));return;}
   if(url.pathname==="/unattended/log"){res.setHeader("Content-Type","text/plain");res.end("1200 ARM 12 h\n90500 BLOCK liveness lost before keying\n");return;}
   if(url.pathname==="/state"){res.setHeader("Content-Type","application/json");res.end(JSON.stringify({connected:true,lanStatus:"linked",transceiverType:"IC-705-LAN",power:true,frequency:7078000,mode:"USB",tx:false,rfPower:128,fwRev:"20260718",wifiRssi:-51,bdSupported:true}));return;}
-  if(url.pathname==="/setup-data.json"){const js8=url.searchParams.get("scope")==="js8call",missing=url.searchParams.get("fixture")==="missing"||!js8;res.setHeader("Content-Type","application/json");res.end(JSON.stringify({fwRev:20260718,hwRev:4,apModeText:"AP mode ON",mac:"00:11:22:33:44:55",ssid:"fixture-wifi",pswd:"fixture-password",ssid2:"",pswd2:"",trx1transport:"lan",lanip:missing?"":"192.168.1.60",lanuser:missing?"":"operator",lanpass:missing?"":"secret123",civaddr:"A4",trx2conntype:0,trx3conntype:0}));return;}
+  if(url.pathname==="/setup-data.json"){const js8=url.searchParams.get("scope")==="js8call",missing=url.searchParams.get("fixture")==="missing"||!js8,lanip=missing?"":"192.168.1.60",lanuser=missing?"":"operator",lanpass=missing?"":"secret123";res.setHeader("Content-Type","application/json");res.end(JSON.stringify({fwRev:20260718,hwRev:4,apModeText:"AP mode ON",mac:"00:11:22:33:44:55",ssid:"fixture-wifi",pswd:"fixture-password",ssid2:"",pswd2:"",trxnetid:"01",lanip,lanuser,lanpass,civaddr:"A4",trx1enabled:true,trx1label:"IC-705",trx1transport:"lan",trx1lanip:lanip,trx1lanuser:lanuser,trx1lanpass:lanpass,trx1civaddr:"A4",trx1netid:"02",trx2enabled:false,trx2label:"TRX2",trx2transport:"trxnet",trx2netid:"02",trx2civaddr:"94",trx3enabled:false,trx3label:"TRX3",trx3transport:"trxnet",trx3netid:"03",trx3civaddr:"A2"}));return;}
   if(url.pathname==="/cmd"&&req.method==="POST"){let body="";req.on("data",chunk=>body+=chunk);req.on("end",()=>{try{commands.push(JSON.parse(body));}catch(_error){}res.setHeader("Content-Type","application/json");res.end('{"ok":true}');});return;}
   if(url.pathname==="/smoke.html"){
     res.setHeader("Content-Type","text/html");res.end(`<!doctype html>
@@ -227,17 +227,17 @@ f.onload=()=>{
       checks.snapshotDivider=d.querySelectorAll('#traffic .restore-divider').length===1;
       f.contentWindow.sessionStorage.removeItem('js8lan.session.v1');
       d.querySelector('#messageInput').value='';
-      const sd=setupFrame.contentDocument,radioSection=sd.querySelector('#radioSection'),lanWarning=sd.querySelector('#trx1LanWarning');
+      const sd=setupFrame.contentDocument,radioSection=sd.querySelector('#radioSection'),lanWarning=sd.querySelector('#radioConfigWarning');
       const gd=lanGateFrame.contentDocument,lanGate=gd.querySelector('#lanRequired');
       checks.lanRequiredGate=gd.body.classList.contains('lan-required-only')&&!lanGate.hidden&&!gd.querySelector('.brand')&&getComputedStyle(gd.querySelector('.radio-bar')).display==='none'&&getComputedStyle(gd.querySelector('#js8Interface')).display==='none'&&lanGate.querySelector('h1')?.textContent.trim()==='JS8Call requires TRX1 over LAN'&&lanGate.textContent.includes('not available with a Bluetooth or serial/CAT connection')&&lanGate.textContent.includes('Other Icom transceivers')&&!!lanGate.querySelector('a[href="/setup#radioSection"]');
       checks.lanGateNoLeaveWarning=(()=>{const event=new lanGateFrame.contentWindow.Event('beforeunload',{cancelable:true});return lanGateFrame.contentWindow.dispatchEvent(event)!==false&&!event.defaultPrevented;})();
       checks.setupJs8Nav=sd.querySelector('a[href="/data"]')?.textContent.trim()==='JS8LAN'&&sd.querySelector('a[href="/data"]')?.title==='Web Client for JS8Call';
       checks.setupRemovedPagesAbsentFromNav=!sd.querySelector('.bd-nav,.tab-cat-muted,a[href="/bd"],a[href="/"]');
-      const missingInputs=[...sd.querySelectorAll('[name="lanip"],[name="lanuser"],[name="lanpass"]')];
-      const setupMissingObserved=radioSection?.open===true&&lanWarning?.hidden===false&&missingInputs.length===3&&missingInputs.every(input=>input.classList.contains('setup-required-missing')&&input.getAttribute('aria-invalid')==='true');
-      const setupValues={lanip:'192.168.1.60',lanuser:'operator',lanpass:'secret123'};
+      const missingInputs=[...sd.querySelectorAll('[name="trx1lanip"],[name="trx1lanuser"],[name="trx1lanpass"]')];
+      const setupMissingObserved=radioSection?.open===true&&lanWarning?.hidden===false&&missingInputs.length===3&&missingInputs.every(input=>input.classList.contains('setup-radio-field-missing')&&input.getAttribute('aria-invalid')==='true');
+      const setupValues={trx1lanip:'192.168.1.60',trx1lanuser:'operator',trx1lanpass:'secret123'};
       missingInputs.forEach(input=>{input.value=setupValues[input.name];input.dispatchEvent(new setupFrame.contentWindow.Event('input',{bubbles:true}));});
-      checks.setupLanWarning=setupMissingObserved&&lanWarning.hidden===true&&missingInputs.every(input=>!input.classList.contains('setup-required-missing')&&input.getAttribute('aria-invalid')==='false');
+      checks.setupLanWarning=setupMissingObserved&&lanWarning.hidden===true&&missingInputs.every(input=>!input.classList.contains('setup-radio-field-missing')&&input.getAttribute('aria-invalid')==='false');
       // Unattended panel: armed, but the fixture says the modem tab has been
       // silent for 31 s. A timer alone would still read "armed" -- the point of
       // the panel is that this state is visibly flagged.
@@ -341,9 +341,41 @@ f.onload=()=>{
       // follow the CQ selector, and none of them is clickable.
       const cqFlagOn=cqFlag()?.classList.contains('on')===true&&cqFlag()?.title.includes('5 min');
       cqSel.value='0'; cqSel.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));
-      checks.settingsFlags=[...d.querySelectorAll('#settingsFlags .summary-flag')].map(node=>node.textContent.trim()).join(',')==='TX,AUTO,CQ,HB,ACK'&&
+      // AUTO and HB carry a live countdown inline (hh:mm to deactivation / to the
+      // next beacon). AUTO is already armed; turn HB on too (auto stays on) and
+      // let one radio poll re-render the flags, because enabling HB re-renders
+      // before applyHeartbeatSettings arms the schedule. This block is served in
+      // a template literal with no charset, so avoid backslash regex classes and
+      // the middle-dot separator: match the leading uppercase key and validate
+      // the hh:mm tail character by character. Restore HB afterwards so a stray
+      // auto-beacon cannot fire during the manual-TX checks that follow.
+      const hbFlag=d.querySelector('#hbEnabled'),hbFlagWas=hbFlag.checked;
+      if(!hbFlagWas){hbFlag.click();}
+      await new Promise(resolve=>setTimeout(resolve,700));
+      const flagNodes=[...d.querySelectorAll('#settingsFlags .summary-flag')];
+      const flagKeys=flagNodes.map(node=>(node.textContent.trim().match(/^[A-Z]+/)||[''])[0]).join(',');
+      const isDigit=ch=>ch>='0'&&ch<='9';
+      const hhMmTail=text=>{const t=(text||'').slice(-5);return t.length===5&&t[2]===':'&&[0,1,3,4].every(i=>isDigit(t[i]));};
+      const flagText=key=>flagNodes.find(node=>node.textContent.trim().startsWith(key))?.textContent.trim()||'';
+      checks.settingsFlags=flagKeys==='TX,AUTO,CQ,HB,ACK'&&hhMmTail(flagText('AUTO'))&&hhMmTail(flagText('HB'))&&
         cqFlagOn&&cqFlag()?.classList.contains('on')===false&&
         !d.querySelector('#settingsFlags button,#settingsFlags input,#settingsFlags a');
+      // Turning Radio TX off must stand down every TX-dependent pill (AUTO/CQ/HB/ACK):
+      // none of them can reach the air without it, so a lit pill would promise a
+      // function that cannot fire. TX itself reads off; the dependents name the reason
+      // in their tooltip. AUTO and HB are on here, so configure CQ on too, then drop TX.
+      cqSel.value='5'; cqSel.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));
+      txSafetyBox.checked=false; txSafetyBox.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));
+      const flagOn=key=>[...d.querySelectorAll('#settingsFlags .summary-flag')]
+        .find(node=>node.textContent.trim().startsWith(key))?.classList.contains('on');
+      const flagTip=key=>[...d.querySelectorAll('#settingsFlags .summary-flag')]
+        .find(node=>node.textContent.trim().startsWith(key))?.title||'';
+      checks.settingsFlagsTxGate=flagOn('TX')===false&&flagOn('AUTO')===false&&flagOn('CQ')===false&&
+        flagOn('HB')===false&&flagOn('ACK')===false&&flagTip('AUTO').includes('needs Radio TX');
+      // Restore Radio TX (the manual-TX checks below expect it on) and the CQ selector.
+      txSafetyBox.checked=true; txSafetyBox.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));
+      cqSel.value='0'; cqSel.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));
+      if(!hbFlagWas){hbFlag.click();}
 
       // Multi-frame reassembly: a fully assembled, checksum-verified MSG message
       // must be stored; a checksum-failed one must be dropped. This is the real

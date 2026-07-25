@@ -2272,9 +2272,14 @@ function init() {
     if (cfg.trx2Label) app.trxLabels[1] = cfg.trx2Label;
     if (cfg.trx3Label) app.trxLabels[2] = cfg.trx3Label;
     // A TRX is "remote" (controlled via the ESP, not the local CAT link) when it has
-    // a TrxNet peer (netid != 0) OR is configured for CI-V on the serial bus (conntype == 1).
-    app.trxOi3[1] = (cfg.trx2netid || 0) !== 0 || (cfg.trx2conntype || 0) === 1;
-    app.trxOi3[2] = (cfg.trx3netid || 0) !== 0 || (cfg.trx3conntype || 0) === 1;
+    // Unified radio config explicitly carries active state. Fall back to the
+    // legacy peer/address inference for backups from older firmware.
+    app.trxOi3[1] = typeof cfg.trx2enabled === "boolean"
+      ? cfg.trx2enabled
+      : (cfg.trx2netid || 0) !== 0 || (cfg.trx2conntype || 0) === 1;
+    app.trxOi3[2] = typeof cfg.trx3enabled === "boolean"
+      ? cfg.trx3enabled
+      : (cfg.trx3netid || 0) !== 0 || (cfg.trx3conntype || 0) === 1;
     app.blockedDxccList = (cfg.blockedDxcc || '').split('\n')
       .map(s => s.trim().toLowerCase()).filter(Boolean);
     trxButtons.forEach((b, i) => { b.textContent = app.trxLabels[i]; });

@@ -91,6 +91,18 @@ async function main() {
       snapshot.media.reason === "clock-jump" && snapshot.media.slotFlushes === 2,
   };
   source.stop();
+  // A close can schedule a delayed reconnect just before the page loses its
+  // JS8 session. stop() must make that queued callback harmless.
+  const stoppedSource = new WsAudioSource(8000, {url:"ws://test/stopped",
+    WebSocketImpl:FakeWebSocket, reconnectMs:5});
+  stoppedSource.start();
+  const stoppedSocket = FakeWebSocket.instances.at(-1);
+  stoppedSocket.close();
+  stoppedSource.stop();
+  const stoppedAt = FakeWebSocket.instances.length;
+  await delay(15);
+  checks.stoppedSourceDoesNotReconnect =
+    FakeWebSocket.instances.length === stoppedAt;
   const pass = Object.values(checks).every(Boolean);
   console.log(`WS AUDIO SOURCE ${pass ? "PASS" : "FAIL"} ` +
     JSON.stringify({checks, epochs:epochs.length, delivered:delivered.length,

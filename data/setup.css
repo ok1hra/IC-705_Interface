@@ -537,6 +537,190 @@ label.setup-trx-disabled {
   color: var(--muted);
 }
 
+/* ── Unified Radio editor (variant B) ── */
+.setup-radio-global {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.setup-radio-global > strong {
+  color: var(--accent);
+  font-size: 0.82rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.setup-radio-workspace {
+  display: grid;
+  grid-template-columns: 230px minmax(0, 1fr);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+  min-height: 410px;
+}
+
+.setup-radio-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px;
+  border-right: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.13);
+}
+
+button.setup-radio-nav-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 8px;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+
+button.setup-radio-nav-item:hover {
+  background: rgba(0, 136, 0, 0.10);
+  color: var(--text);
+}
+
+button.setup-radio-nav-item.is-active {
+  border-color: #507163;
+  background: rgba(0, 136, 0, 0.18);
+}
+
+button.setup-radio-nav-item.is-disabled {
+  color: var(--muted);
+  opacity: 0.62;
+}
+
+.setup-radio-nav-title {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.setup-radio-nav-transport {
+  color: var(--muted);
+  font-size: 0.7rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.setup-radio-nav-state {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px rgba(0, 136, 0, 0.15);
+}
+
+.setup-radio-nav-item.is-disabled .setup-radio-nav-state {
+  background: #5a625e;
+  box-shadow: none;
+}
+
+.setup-radio-editor {
+  display: none;
+  padding: 18px 20px 22px;
+}
+
+.setup-radio-editor.is-active {
+  display: block;
+}
+
+.setup-radio-editor.is-disabled .setup-radio-fields {
+  opacity: 0.42;
+  pointer-events: none;
+}
+
+.setup-radio-editor-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.setup-radio-editor-head h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.setup-radio-required {
+  padding: 3px 7px;
+  border: 1px solid #507163;
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+label.setup-radio-enable {
+  display: inline-flex;
+  grid-template-columns: none;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.setup-radio-enable input {
+  width: auto;
+  accent-color: var(--accent);
+}
+
+.setup-radio-fields,
+.setup-radio-context {
+  display: grid;
+  gap: 10px;
+}
+
+.setup-radio-context[hidden] {
+  display: none;
+}
+
+.setup-radio-fields > label,
+.setup-radio-context > label {
+  min-height: 42px;
+}
+
+.setup-radio-fields input,
+.setup-radio-fields select {
+  max-width: 390px;
+}
+
+.setup-radio-limited {
+  margin: 2px 0 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 176, 98, 0.45);
+  border-radius: 10px;
+  background: rgba(255, 176, 98, 0.10);
+  color: var(--warn);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.setup-radio-field-missing {
+  border-color: #ff5c67;
+  box-shadow: 0 0 0 2px rgba(255, 92, 103, 0.18);
+}
+
 .use-ip-btn {
   font: inherit;
   font-size: 0.82em;
@@ -625,6 +809,30 @@ label.setup-trx-disabled {
     right: auto;
     left: -4px;
     width: min(260px, calc(100vw - 48px));
+  }
+
+  .setup-radio-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .setup-radio-nav {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  button.setup-radio-nav-item {
+    min-width: 0;
+    padding: 10px;
+  }
+
+  .setup-radio-nav-title {
+    font-size: 0.75rem;
+  }
+
+  .setup-radio-editor {
+    padding: 14px;
   }
 }
 
