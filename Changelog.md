@@ -3,19 +3,15 @@
 All notable changes to **IC-705_Interface**, grouped by firmware revision (`#define REV`) and
 broken down per commit.
 
-Sources used to reconstruct the entries: git history and diffs, Claude Code session transcripts
-(`~/.claude/projects/-home-dan-Arduino-hra-ok1hra-esp32-IC-705-Interface/`), Codex session logs
-(`~/.codex/sessions/`, filtered by this project's `cwd`), and the design notes in `docs/`.
-
 Newest first. Dates are local (CEST). A firmware revision is the `REV` value flashed with that
 commit — several commits usually share one revision, and the revision is bumped when a build is
 published.
 
 ---
 
-## Unreleased — REV 20260725 (working tree)
+## REV 20260725 — 2026-07-25
 
-Work in progress, not yet committed.
+### `a19c0ef` TRX setup and small changes
 
 * **SETUP / Radio redesign after the Bluetooth removal.** All three radios (TRX1/2/3) now use the
   same shape: label + a `Connection` dropdown with `LAN / TrxNet / CI-V`, and only the fields
@@ -34,14 +30,20 @@ Work in progress, not yet committed.
   needs TX and greys out the affected icons in the settings header.
 * **JS8LAN top navigation** behaves like the other pages: `QRPLog`, `SETUP`, `LOGSYNC` open in a new
   tab and `DXC` in a new window, so leaving JS8LAN no longer drops the session.
-* **Documentation added** (still untracked): `setup-interfaces-architecture.md`,
+* Icom LAN client and the AUD1 WebSocket session updated to match the new transport layer
+  (`icomLanClient.h`, `data/js8-aud1.js`, `prototype/.../aud1_websocket_session.js`), with the
+  browser and audio-source smoke tests extended accordingly.
+* Firmware rebuilt and republished to the USB-C web flasher (`build/gh-pages/`, firmware.bin
+  970 272 → 978 864 B).
+* **This changelog added** (`Changelog.md`).
+* **Known state:** the wider browser smoke suite still reports 5 red checks that were already red at
+  the previous HEAD and are unrelated to the SETUP work (own-call highlight is green by design, BD
+  nav is hidden rather than removed, `txSlotPauseVisual` unimplemented).
+* Still untracked in the working tree: the design notes in `docs/` (`setup-interfaces-architecture.md`,
   `icom-lan-implementace.md`, `js8call-komunikacni-funkce.md`, `js8call-log-qso-auto.md`,
   `js8call-neobsluhovany-provoz-plan.md`, `js8-tx-slot-stability-plan.md`, `how-to-bugfix.md`,
   `how-to-regenerate-manual.md`, `band-decoder-implementation.md`, `websocket-civ-proxy.md`,
-  plus `docs/agents/`.
-* **Known state:** the wider browser smoke suite still reports 5 red checks that were already red at
-  HEAD and are unrelated to the SETUP work (own-call highlight is green by design, BD nav is hidden
-  rather than removed, `txSlotPauseVisual` unimplemented).
+  `docs/agents/`) and most of the `prototype/js8-core-prototype/` smoke harness.
 
 ---
 
