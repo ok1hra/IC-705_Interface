@@ -91,6 +91,55 @@ for required in "$PARTITION_CSV" "$MKLITTLEFS_BIN" "$ESPTOOL_PY" "$GEN_PARTITION
   [[ -f "$required" ]] || { echo "ERROR: required tool/file missing: $required" >&2; exit 1; }
 done
 
+# ---- memory usage report helpers -------------------------------------------
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+  C_OFF=$'\033[0m'; C_BOLD=$'\033[1m'
+  C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'; C_RED=$'\033[31m'; C_CYAN=$'\033[36m'
+else
+  C_OFF=""; C_BOLD=""; C_GREEN=""; C_YELLOW=""; C_RED=""; C_CYAN=""
+fi
+
+fmt_num() { echo "$1" | rev | sed -E 's/([0-9]{3})/\1 /g' | rev | sed 's/^ *//'; }
+
+pct_of() { awk -v u="$1" -v t="$2" 'BEGIN { printf "%.1f", (t > 0 ? u * 100 / t : 0) }'; }
+
+# usage_line LABEL USED TOTAL  -> bar + percent + free, colour-coded by fill
+usage_line() {
+  local label="$1" used="$2" total="$3" width=32
+  local pct filled colour i bar=""
+  pct="$(pct_of "$used" "$total")"
+  filled=$(awk -v p="$pct" -v w="$width" 'BEGIN { f = int(p * w / 100); if (f > w) f = w; print f }')
+  if   awk -v p="$pct" 'BEGIN { exit !(p >= 90) }'; then colour="$C_RED"
+  elif awk -v p="$pct" 'BEGIN { exit !(p >= 75) }'; then colour="$C_YELLOW"
+  else colour="$C_GREEN"; fi
+  for ((i = 0; i < width; i++)); do
+    if ((i < filled)); then bar+="#"; else bar+="."; fi
+  done
+  printf '  %b%-19s%b %b%s%b %b%6s %%%b\n' \
+    "$C_BOLD" "$label" "$C_OFF" "$colour" "$bar" "$C_OFF" "$C_BOLD$colour" "$pct" "$C_OFF"
+  printf '  %-19s used %13s B   of %13s B   free %13s B\n' \
+    "" "$(fmt_num "$used")" "$(fmt_num "$total")" "$(fmt_num $((total - used)))"
+}
+
+print_memory_report() {
+  echo
+  printf '%b' "$C_CYAN"
+  echo "==============================================================================="
+  printf '  %bFLASH MEMORY USAGE%b%b\n' "$C_BOLD" "$C_OFF" "$C_CYAN"
+  echo "==============================================================================="
+  printf '%b' "$C_OFF"
+  usage_line "PROGRAM (app0)" "$FIRMWARE_SIZE" "$APP_SIZE_DEC"
+  echo
+  usage_line "FILESYSTEM (spiffs)" "$staging_bytes" "$SPIFFS_SIZE_DEC"
+  printf '  %-19s %s files, gate limit %s B (256 KiB runtime reserve + 64 KiB metadata)\n' \
+    "" "$staging_files" "$(fmt_num "$max_payload_bytes")"
+  printf '%b' "$C_CYAN"
+  echo "==============================================================================="
+  printf '%b' "$C_OFF"
+  echo
+}
+# ----------------------------------------------------------------------------
+
 partition_field() {
   local name="$1" field="$2"
   awk -F, -v wanted="$name" -v column="$field" '
@@ -152,7 +201,9 @@ echo "==> LittleFS image: $SPIFFS_IMAGE ($SPIFFS_IMAGE_SIZE bytes)"
 echo "==> Runtime reserve gate: $runtime_reserve_bytes bytes (payload $staging_bytes / $max_payload_bytes)"
 echo "==> Filesystem write: $SPIFFS_OFFSET (partition label: spiffs)"
 echo "==> Preserved     : bootloader, partition table, NVS and coredump"
-echo "==> Safety check  : device partition table must exactly match no_ota.csv"
+echo "==> Safety check  : device partition table must exactly match $(basename "$PARTITION_CSV")"
+
+print_memory_report
 
 if [[ "$DRY_RUN" == true ]]; then
   echo "==> Dry run complete; flash was NOT modified"
@@ -185,3 +236,7 @@ python3 "$ESPTOOL_PY" --chip esp32 --port "$PORT" --baud "$BAUD" \
   --before default_reset --after hard_reset write_flash \
   "$APP_OFFSET" "$FIRMWARE" \
   "$SPIFFS_OFFSET" "$SPIFFS_IMAGE"
+
+# Repeat the report after the long esptool output so it cannot be missed.
+echo "==> Upload complete"
+print_memory_report

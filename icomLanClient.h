@@ -26,6 +26,12 @@ extern void lanCivFrameHandler(const uint8_t *frame, size_t len);
 // feed TRX2/TRX3 state instead of the primary radio's full CAT state.
 extern void lanSecondaryCivFrameHandler(uint8_t slot, const uint8_t *frame, size_t len);
 
+// Single entry point for a decoded frame: the .ino decides what a slot's state
+// means (TRX1 owns the shared CAT globals, a LAN radio in another slot keeps its
+// own snapshot for the JS8 page). Keeping the decision there is what lets the
+// LAN radio live in any slot without this client knowing about slots at all.
+extern void lanCivFrameRoute(uint8_t slot, const uint8_t *frame, size_t len);
+
 // Implemented in the .ino — receives a chunk of raw RX audio (payload of one audio
 // UDP datagram, codec = AUDIO_RX_CODEC below). Used by the DATA-page waterfall.
 extern void lanAudioHandler(const uint8_t *data, size_t len, uint16_t sequence);
@@ -37,6 +43,17 @@ extern bool Debug;
 #else
 static const bool Debug = false;
 #endif
+
+// Link health since boot, device-wide and deliberately outside the class: the
+// client object is destroyed and rebuilt on every reconnect, and how often that
+// happens is exactly what these count. Watching a permanently open audio stream
+// otherwise means watching the serial console all night.
+//
+//   lanHealthDrops  — sessions lost to six seconds of control-channel silence
+//   lanHealthStalls — loop stalls long enough to log (>= LAN_STALL_LOG_MS)
+//   lanHealthFilled — retransmits answered with filler because the packet was
+//                     already gone; during TX this is a hole in the emitted tone
+static uint16_t lanHealthDrops = 0, lanHealthStalls = 0, lanHealthFilled = 0;
 
 class IcomLanClient {
 public:
@@ -57,7 +74,7 @@ public:
     ctrlLocalPort = localControlPort;
     civLocalPort = localControlPort + 1;
     audioLocalPort = localControlPort + 2;
-    audioAllowed = enableAudio && slot == 0;
+    audioAllowed = enableAudio;   // caller decides; the LAN radio may be any slot
     strlcpy(username, user, sizeof(username));
     strlcpy(password, pass, sizeof(password));
     radioCivAddr = civAddr;
@@ -109,6 +126,18 @@ public:
   bool audioReady() const {
     return audioOpened && audioGotHere && (millis() - audioLastDataMs) < LAN_AUDIO_FRESH_MS;
   }
+
+  // Model name the radio reports in its capabilities packet, and the CI-V
+  // address that came with it. Both are parsed already (see the caps branch in
+  // handleControl) and were only printed to Serial.
+  //
+  // Worth exposing because the LAN transport is configured as "IC-705-LAN" but
+  // the same protocol serves IC-7610 and IC-9700, which are 100 W radios. A
+  // WSPR beacon converting a dBm setting into a percentage of full power gets a
+  // factor of ten wrong if it trusts the profile name instead of this.
+  // Empty until the capabilities packet has arrived.
+  const char* radioModelName() const { return haveCaps ? radioName : ""; }
+  uint8_t radioCivAddress() const { return radioCivAddr; }
 
   // Send a CI-V command body (cmd + payload, WITHOUT the FE FE <to><from> .. FD
   // wrapper — sendCiv adds it with the LAN controller address 0xE1). Used by
@@ -185,6 +214,7 @@ public:
         if (civRecovering)         forgiveClock(civRecoveryStartedMs, now, forgive);
         if (audioOpened)           forgiveClock(audioLastDataMs, now, forgive);
         if (gap >= LAN_STALL_LOG_MS) {
+          if (lanHealthStalls < 0xffff) lanHealthStalls++;
           Serial.print("LAN | loop stall "); Serial.print(gap);
           Serial.println("ms, health timers forgiven");
         }
@@ -331,6 +361,7 @@ public:
     // CI-V retransmit requests or an open browser audio socket must not keep a
     // dead radio login reported as CONNECTED.
     if (state == LAN_CONNECTED && millis() - lastCtrlRxMs > 6000) {
+      if (lanHealthDrops < 0xffff) lanHealthDrops++;
       Serial.println("LAN | no control packets 6s, link lost");
       state = LAN_FAILED;
     }
@@ -528,7 +559,10 @@ private:
     if (retransmitBudget <= 0) { rtxDeferred++; return; }
     retransmitBudget--;
     if (resendTracked(u, sequence)) rtxResent++;
-    else { fillMissingTracked(u, sequence); rtxFilled++; }
+    else {
+      fillMissingTracked(u, sequence); rtxFilled++;
+      if (lanHealthFilled < 0xffff) lanHealthFilled++;
+    }
   }
 
   bool handleRetransmitRequest(WiFiUDP& u, const uint8_t* packet, int length) {
@@ -963,10 +997,7 @@ private:
     // (from == 0xE1 controller), which must not be parsed as replies.
     if (f[3] != radioCivAddr) return false;
     if (f[4] == 0x27) return false;                      // scope data does not prove CAT replies
-    if (radioSlot == 0)
-      lanCivFrameHandler(f, (size_t)len);                // full CAT parse in the .ino
-    else
-      lanSecondaryCivFrameHandler(radioSlot, f, (size_t)len);
+    lanCivFrameRoute(radioSlot, f, (size_t)len);         // slot-aware parse in the .ino
     // NOTE: state is intentionally NOT driven here — see maybeConnected(). A radio
     // that streams CI-V data before finishing its civ handshake used to flip the
     // state (and the log) CIV_OPEN<->CONNECTED on every frame.

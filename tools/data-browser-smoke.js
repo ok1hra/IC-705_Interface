@@ -17,12 +17,16 @@ function sessionOwns(token){return Boolean(session.token)&&session.token===token
 function sessionBody(req,res,handler){let body="";req.on("data",chunk=>body+=chunk);req.on("end",()=>{let parsed={};try{parsed=JSON.parse(body);}catch(_error){}handler(parsed,res);});}
 function sessionReply(res,status){res.writeHead(status,{"Content-Type":"application/json"});res.end(JSON.stringify({ok:status===200,owner:"192.168.1.99",ageMs:1200,leaseMs:15000}));}
 function unattendedState(){return{armed:true,remainingMs:43200000,clientLive:false,clientAgeMs:31000,clientSeen:true,blockedLiveness:2,blockedNotArmed:0,livenessTimeoutMs:5000,ptt:false,txState:0,txUsed:0,txCapacity:12288,rxPackets:5,lan:true,upMs:90500,choicesH:[1,6,12,24,168]};}
+let lanStateRequests=0, primaryStateRequests=0, primaryCommands=[];
 let chrome, finished=false, timer, sequence=0, firstSample=0, streamId=707, txPrepares=0, txPackets=0, wsConnections=0, earlyWsConnections=0, jscRequests=0, jscStartedAt=0, jscCompleteAt=0, wsOpenedAt=0, jscComplete=false, js8Gzip=0, js8Brotli=0, commands=[], setupSaveBody="", setupRestartRequests=0, lanReconnectRequests=0;
 const mime={".html":"text/html",".css":"text/css",".js":"application/javascript",".wasm":"application/wasm",".bin":"application/octet-stream"};
 function frame(opcode,payload){const body=Buffer.isBuffer(payload)?payload:Buffer.from(payload);return body.length<126?Buffer.concat([Buffer.from([0x80|opcode,body.length]),body]):Buffer.concat([Buffer.from([0x80|opcode,126,body.length>>8,body.length&255]),body]);}
 function aud1(){const wire=Buffer.alloc(200,0xff);wire.write("AUD1");wire[4]=1;wire[5]=1;wire.writeUInt16BE(sequence===0?1:0,6);wire.writeUInt16BE(40,8);wire.writeUInt16BE(0,10);wire.writeUInt32BE(streamId,12);wire.writeUInt32BE(sequence++,16);wire.writeUInt32BE(8000,20);wire.writeBigUInt64BE(BigInt(firstSample),24);wire.writeUInt32BE(0,32);wire.writeUInt32BE(160,36);firstSample+=160;return wire;}
 function readClientFrames(socket){let input=Buffer.alloc(0);return chunk=>{input=Buffer.concat([input,chunk]);for(;;){if(input.length<2)return;let at=2,length=input[1]&127;if(length===126){if(input.length<4)return;length=input.readUInt16BE(2);at=4;}else if(length===127)return socket.destroy();const masked=Boolean(input[1]&128);if(masked)at+=4;if(input.length<at+length)return;const opcode=input[0]&15,maskAt=at-4,payload=Buffer.from(input.subarray(at,at+length));if(masked)for(let i=0;i<payload.length;i++)payload[i]^=input[maskAt+(i%4)];input=input.subarray(at+length);if(opcode===1){const message=JSON.parse(payload.toString());if(message.type==="tx.prepare"){txPrepares++;socket.write(frame(1,JSON.stringify({type:"tx-ready",txId:message.txId,ptt:false})));}}else if(opcode===2){txPackets++;const txId=payload.readUInt32BE(32),flags=payload.readUInt16BE(6);if(flags&1)socket.write(frame(1,JSON.stringify({type:"tx-state",txId,ptt:true})));if(flags&2)socket.write(frame(1,JSON.stringify({type:"tx-drained",txId,ptt:false})));}}};}
-function finish(ok,text){if(finished)return;finished=true;clearTimeout(timer);if(chrome)chrome.kill("SIGTERM");server.close();const encodingPass=js8Gzip>0&&js8Brotli===0;const frequencyPass=commands.some(command=>command.type==="setFrequency"&&Number(command.frequency)===14078000), setupArgs=new URLSearchParams(setupSaveBody), setupSavePass=setupArgs.get("trx1transport")==="lan"&&setupArgs.get("trx1lanip")==="192.168.1.60"&&setupArgs.get("trx1lanuser")==="operator"&&setupArgs.get("trx1lanpass")==="secret123"&&setupArgs.get("noRestart")==="1"&&setupRestartRequests===1;const unattendedRevokePass=unattendedPosts.some(post=>post.action==="revoke");const inboxWritePass=inboxWrites.length>0;const sessionPass=session.claims>0&&session.wsRefusals===0;ok=ok&&encodingPass&&frequencyPass&&earlyWsConnections===0&&jscRequests===1&&setupSavePass&&lanReconnectRequests===1&&unattendedRevokePass&&inboxWritePass&&sessionPass;const report=`${text} js8Gzip=${js8Gzip} js8Brotli=${js8Brotli} jscRequests=${jscRequests} jscMs=${jscCompleteAt-jscStartedAt} wsAfterJscMs=${wsOpenedAt-jscCompleteAt} ws=${wsConnections} earlyWs=${earlyWsConnections} setupSave=${setupSavePass} setupRestarts=${setupRestartRequests} unattendedRevoke=${unattendedRevokePass} session=${sessionPass}(claims=${session.claims} refusals=${session.refusals} wsRefusals=${session.wsRefusals}) inboxWrites=${inboxWrites.length} reconnects=${lanReconnectRequests} commands=${JSON.stringify(commands)} prepares=${txPrepares} packets=${txPackets}`;(ok?console.log:console.error)(report);if(!ok)process.exitCode=1;}
+// lanTargetPass: radio polling and tuning must address the LAN radio
+// (?radio=lan), which is TRX1 only when the operator put LAN there. Plain
+// /state is still expected -- fw-version.js reads the badge from it everywhere.
+function finish(ok,text){if(finished)return;finished=true;clearTimeout(timer);if(chrome)chrome.kill("SIGTERM");server.close();const encodingPass=js8Gzip>0&&js8Brotli===0;const frequencyPass=commands.some(command=>command.type==="setFrequency"&&Number(command.frequency)===14078000), setupArgs=new URLSearchParams(setupSaveBody), setupSavePass=setupArgs.get("trx1transport")==="lan"&&setupArgs.get("trx1lanip")==="192.168.1.60"&&setupArgs.get("trx1lanuser")==="operator"&&setupArgs.get("trx1lanpass")==="secret123"&&setupArgs.get("noRestart")==="1"&&setupRestartRequests===1;const unattendedRevokePass=unattendedPosts.some(post=>post.action==="revoke");const inboxWritePass=inboxWrites.length>0;const sessionPass=session.claims>0&&session.wsRefusals===0;const lanTargetPass=lanStateRequests>0&&primaryCommands.length===0;ok=ok&&encodingPass&&frequencyPass&&earlyWsConnections===0&&jscRequests===1&&setupSavePass&&lanReconnectRequests===1&&unattendedRevokePass&&inboxWritePass&&sessionPass&&lanTargetPass;const report=`${text} lanTarget=${lanTargetPass}(lanState=${lanStateRequests} primaryState=${primaryStateRequests} primaryCmds=${primaryCommands.length}) js8Gzip=${js8Gzip} js8Brotli=${js8Brotli} jscRequests=${jscRequests} jscMs=${jscCompleteAt-jscStartedAt} wsAfterJscMs=${wsOpenedAt-jscCompleteAt} ws=${wsConnections} earlyWs=${earlyWsConnections} setupSave=${setupSavePass} setupRestarts=${setupRestartRequests} unattendedRevoke=${unattendedRevokePass} session=${sessionPass}(claims=${session.claims} refusals=${session.refusals} wsRefusals=${session.wsRefusals}) inboxWrites=${inboxWrites.length} reconnects=${lanReconnectRequests} commands=${JSON.stringify(commands)} prepares=${txPrepares} packets=${txPackets}`;(ok?console.log:console.error)(report);if(!ok)process.exitCode=1;}
 const server=http.createServer((req,res)=>{
   const url=new URL(req.url,"http://fixture");
   if(url.pathname==="/result"&&req.method==="POST"){let body="";req.on("data",c=>body+=c);req.on("end",()=>{res.writeHead(204).end();const result=JSON.parse(body);finish(result.pass,result.text);});return;}
@@ -37,20 +41,27 @@ const server=http.createServer((req,res)=>{
   if(url.pathname==="/unattended"&&req.method==="POST"){let body="";req.on("data",c=>body+=c);req.on("end",()=>{try{unattendedPosts.push(JSON.parse(body));}catch(_error){}res.setHeader("Content-Type","application/json");res.end(JSON.stringify(unattendedState()));});return;}
   if(url.pathname==="/unattended"){res.setHeader("Content-Type","application/json");res.end(JSON.stringify(unattendedState()));return;}
   if(url.pathname==="/unattended/log"){res.setHeader("Content-Type","text/plain");res.end("1200 ARM 12 h\n90500 BLOCK liveness lost before keying\n");return;}
-  if(url.pathname==="/state"){res.setHeader("Content-Type","application/json");res.end(JSON.stringify({connected:true,lanStatus:"linked",transceiverType:"IC-705-LAN",power:true,frequency:7078000,mode:"USB",tx:false,rfPower:128,fwRev:"20260718",wifiRssi:-51,bdSupported:true}));return;}
-  if(url.pathname==="/setup-data.json"){const js8=url.searchParams.get("scope")==="js8call",missing=url.searchParams.get("fixture")==="missing"||!js8,lanip=missing?"":"192.168.1.60",lanuser=missing?"":"operator",lanpass=missing?"":"secret123";res.setHeader("Content-Type","application/json");res.end(JSON.stringify({fwRev:20260718,hwRev:4,apModeText:"AP mode ON",mac:"00:11:22:33:44:55",ssid:"fixture-wifi",pswd:"fixture-password",ssid2:"",pswd2:"",trxnetid:"01",lanip,lanuser,lanpass,civaddr:"A4",trx1enabled:true,trx1label:"IC-705",trx1transport:"lan",trx1lanip:lanip,trx1lanuser:lanuser,trx1lanpass:lanpass,trx1civaddr:"A4",trx1netid:"02",trx2enabled:false,trx2label:"TRX2",trx2transport:"trxnet",trx2netid:"02",trx2civaddr:"94",trx3enabled:false,trx3label:"TRX3",trx3transport:"trxnet",trx3netid:"03",trx3civaddr:"A2"}));return;}
-  if(url.pathname==="/cmd"&&req.method==="POST"){let body="";req.on("data",chunk=>body+=chunk);req.on("end",()=>{try{commands.push(JSON.parse(body));}catch(_error){}res.setHeader("Content-Type","application/json");res.end('{"ok":true}');});return;}
+  // The JS8 page must ask for the LAN radio by name -- plain /state means TRX1,
+  // which is a different radio whenever LAN sits on TRX2/TRX3.
+  if(url.pathname==="/state"){if(url.searchParams.get("radio")==="lan")lanStateRequests++;else primaryStateRequests++;/* fw-version.js badge, shared by every page */res.setHeader("Content-Type","application/json");res.end(JSON.stringify({connected:true,lanStatus:"linked",transceiverType:"IC-705-LAN",power:true,frequency:7078000,mode:"USB",tx:false,rfPower:128,fwRev:"20260718",wifiRssi:-51,bdSupported:true}));return;}
+  // fixture=trx2 moves LAN to the second slot with one credential still blank:
+  // the page must name TRX 2 and read that slot's fields, while staying gated so
+  // it never competes with the main frame for the single-operator lease.
+  if(url.pathname==="/setup-data.json"){const js8=url.searchParams.get("scope")==="js8call",fixture=url.searchParams.get("fixture"),lanOnTrx2=fixture==="trx2",missing=fixture==="missing"||lanOnTrx2||!js8,lanip=missing?"":"192.168.1.60",lanuser=missing?"":"operator",lanpass=missing?"":"secret123";res.setHeader("Content-Type","application/json");res.end(JSON.stringify({fwRev:20260718,hwRev:4,apModeText:"AP mode ON",mac:"00:11:22:33:44:55",ssid:"fixture-wifi",pswd:"fixture-password",ssid2:"",pswd2:"",trxnetid:"01",lanip,lanuser,lanpass,civaddr:"A4",trx1enabled:true,trx1label:"IC-705",trx1transport:lanOnTrx2?"trxnet":"lan",trx1lanip:lanip,trx1lanuser:lanuser,trx1lanpass:lanpass,trx1civaddr:"A4",trx1netid:"02",trx2enabled:lanOnTrx2,trx2label:"TRX2",trx2transport:lanOnTrx2?"lan":"trxnet",trx2lanip:lanOnTrx2?"192.168.1.61":"",trx2lanuser:lanOnTrx2?"operator":"",trx2lanpass:"",trx2netid:"02",trx2civaddr:"94",trx3enabled:false,trx3label:"TRX3",trx3transport:"trxnet",trx3netid:"03",trx3civaddr:"A2"}));return;}
+  if(url.pathname==="/cmd"&&req.method==="POST"){const lanTarget=url.searchParams.get("radio")==="lan";let body="";req.on("data",chunk=>body+=chunk);req.on("end",()=>{try{const parsed=JSON.parse(body);commands.push(parsed);if(!lanTarget)primaryCommands.push(parsed);}catch(_error){}res.setHeader("Content-Type","application/json");res.end('{"ok":true}');});return;}
   if(url.pathname==="/smoke.html"){
     res.setHeader("Content-Type","text/html");res.end(`<!doctype html>
 <iframe id="app" src="/data?test=1&audioPort=${server.address().port}" style="width:1100px;height:800px"></iframe>
 <iframe id="setup" src="/setup" style="display:none"></iframe>
 <iframe id="lanGate" src="/data?test=1&lanFixture=missing" style="display:none"></iframe>
+<iframe id="lanSlot" src="/data?test=1&lanFixture=trx2" style="display:none"></iframe>
 <script>
 addEventListener('error',event=>fetch('/result',{method:'POST',body:JSON.stringify({pass:false,text:'DATA BROWSER SCRIPT ERROR: '+event.message+' at '+event.filename+':'+event.lineno+':'+event.colno})}));
 addEventListener('unhandledrejection',event=>fetch('/result',{method:'POST',body:JSON.stringify({pass:false,text:'DATA BROWSER SCRIPT REJECTION: '+String(event.reason?.stack||event.reason)})}));
 const f=document.querySelector('#app');
 const setupFrame=document.querySelector('#setup');
 const lanGateFrame=document.querySelector('#lanGate');
+const lanSlotFrame=document.querySelector('#lanSlot');
 f.onload=()=>{
   const d=f.contentDocument;
   setTimeout(()=>{
@@ -133,6 +144,15 @@ f.onload=()=>{
       const checks={
         frequencyScopedActivity:originalBandActivity.messages===6&&originalBandActivity.calls===3&&otherBandStartsEmpty.messages===0&&otherBandStartsEmpty.calls===0&&otherBandActivity.messages===1&&otherBandActivity.calls===1&&restoredBandActivity.messages===6&&restoredBandActivity.calls===3&&withinToleranceActivity.messages===6&&withinToleranceActivity.calls===3,
         emptyIdentityDefaults,
+        // This harness browses http://ic705.test, a named host rather than
+        // loopback, so it is NOT a secure context and navigator.wakeLock is
+        // undefined here exactly as it is on http://192.168.x.x. That makes the
+        // state deterministic: the keeper must fall through to the video, and
+        // "video" is what the operator's phone will really get. Anything else
+        // means the fallback broke. (tools/wspr-browser-smoke.js browses
+        // 127.0.0.1, which IS secure, so it sees the other branch.)
+        wakeLockFallback:d.querySelector('#wakeLockPill')?.dataset.wakelockState==='video',
+        wakeLockVideoPlaying:(()=>{const video=d.querySelector('video');return Boolean(video)&&!video.paused&&video.muted;})(),
         modemSettingsEditingStable,
         defaultTxGain,
         txGainEditingStable,
@@ -179,7 +199,16 @@ f.onload=()=>{
           ['qsl-query','yes','no','tu','dit-dit','grid-query','info-query','status-query']
             .every(key=>!!d.querySelector('[data-message-preset="'+key+'"]')),
         sendHidden:d.querySelector('#sendButton').hidden===true&&d.querySelector('#sendHint').textContent.trim()==='Enter sends',
-        js8Nav:d.querySelector('a[href="/data"]')?.textContent.trim()==='JS8LAN'&&d.querySelector('a[href="/data"]')?.title==='Web Client for JS8Call',
+        js8Nav:d.querySelector('.tabs a[href="/data"]')?.textContent.trim()==='DATA'&&d.querySelector('.tabs a[href="/data"]')?.title==='JS8Call and WSPR over ICOM-LAN',
+        // WSPR moved one level down: it is reachable from DATA, not from the
+        // primary bar. The sub-nav must sit outside .data-page so the gate and
+        // session-busy blanking cannot strand an operator on one sub-page.
+        wsprOnlyInSubnav:!d.querySelector('.tabs a[href="/wspr.html"]')&&
+          d.querySelector('.subtabs a[href="/wspr.html"]')?.textContent.trim()==='WSPR-Beacon'&&
+          d.querySelector('.subtabs a[href="/data"]')?.textContent.trim()==='JS8Call'&&
+          d.querySelector('.subtabs a[href="/data"]')?.classList.contains('subtab-active')===true&&
+          !d.querySelector('.subtabs a[target]')&&
+          !d.querySelector('.data-page .subtabs'),
         pageFooter:d.querySelector('.js8-page-footer a[href^="https://github.com/"]')?.textContent.trim()==='GitHub'&&d.querySelector('.js8-page-footer a[href="/THIRD-PARTY-NOTICES.txt"]')?.textContent.trim()==='Licenses',
         idleNoLeaveWarning:(()=>{const event=new f.contentWindow.Event('beforeunload',{cancelable:true});return f.contentWindow.dispatchEvent(event)!==false&&!event.defaultPrevented;})(),
         helpButton:d.querySelector('#trxHelpButton')?.textContent.trim()==='?',
@@ -228,10 +257,21 @@ f.onload=()=>{
       f.contentWindow.sessionStorage.removeItem('js8lan.session.v1');
       d.querySelector('#messageInput').value='';
       const sd=setupFrame.contentDocument,radioSection=sd.querySelector('#radioSection'),lanWarning=sd.querySelector('#radioConfigWarning');
-      const gd=lanGateFrame.contentDocument,lanGate=gd.querySelector('#lanRequired');
-      checks.lanRequiredGate=gd.body.classList.contains('lan-required-only')&&!lanGate.hidden&&!gd.querySelector('.brand')&&getComputedStyle(gd.querySelector('.radio-bar')).display==='none'&&getComputedStyle(gd.querySelector('#js8Interface')).display==='none'&&lanGate.querySelector('h1')?.textContent.trim()==='JS8Call requires TRX1 over LAN'&&lanGate.textContent.includes('not available with a Bluetooth or serial/CAT connection')&&lanGate.textContent.includes('Other Icom transceivers')&&!!lanGate.querySelector('a[href="/setup#radioSection"]');
+      // The card is built by lan-gate.js and worded for both sub-pages, so it
+      // says DATA rather than JS8Call and names the transports that still exist.
+      const gd=lanGateFrame.contentDocument,lanGate=gd.querySelector('#lanGate');
+      checks.lanRequiredGate=gd.body.classList.contains('lan-gate-blocked')&&!!lanGate&&!lanGate.hidden&&!gd.querySelector('.brand')&&getComputedStyle(gd.querySelector('.radio-bar')).display==='none'&&getComputedStyle(gd.querySelector('#js8Interface')).display==='none'&&lanGate.querySelector('h1')?.textContent.trim()==='DATA requires a TRX over ICOM-LAN'&&lanGate.textContent.includes('TRXNET and CI-V carry commands only')&&!lanGate.textContent.includes('Bluetooth')&&lanGate.textContent.includes('Other Icom transceivers')&&!!lanGate.querySelector('a[href="/setup#radioSection"]');
+      // The sub-nav is the one thing that must outlive the blanking, otherwise a
+      // blocked WSPR page would have no way back to JS8LAN.
+      checks.lanGateKeepsSubnav=getComputedStyle(gd.querySelector('.subtabs')).display!=='none'&&
+        !!gd.querySelector('.subtabs a[href="/wspr.html"]');
+      // The frequency button names the slot that actually carries LAN.
+      checks.trxSlotLabelPrimary=d.querySelector('#trxSlotLabel')?.textContent.trim()==='TRX 1';
+      const sld=lanSlotFrame.contentDocument;
+      checks.trxSlotLabelFollowsLan=sld.querySelector('#trxSlotLabel')?.textContent.trim()==='TRX 2'&&
+        sld.querySelector('#lanGateDetail')?.textContent.trim()==='network password is missing';
       checks.lanGateNoLeaveWarning=(()=>{const event=new lanGateFrame.contentWindow.Event('beforeunload',{cancelable:true});return lanGateFrame.contentWindow.dispatchEvent(event)!==false&&!event.defaultPrevented;})();
-      checks.setupJs8Nav=sd.querySelector('a[href="/data"]')?.textContent.trim()==='JS8LAN'&&sd.querySelector('a[href="/data"]')?.title==='Web Client for JS8Call';
+      checks.setupJs8Nav=sd.querySelector('a[href="/data"]')?.textContent.trim()==='DATA'&&sd.querySelector('a[href="/data"]')?.title==='JS8Call and WSPR over ICOM-LAN'&&!sd.querySelector('a[href="/wspr.html"]');
       checks.setupRemovedPagesAbsentFromNav=!sd.querySelector('.bd-nav,.tab-cat-muted,a[href="/bd"],a[href="/"]');
       const missingInputs=[...sd.querySelectorAll('[name="trx1lanip"],[name="trx1lanuser"],[name="trx1lanpass"]')];
       const setupMissingObserved=radioSection?.open===true&&lanWarning?.hidden===false&&missingInputs.length===3&&missingInputs.every(input=>input.classList.contains('setup-radio-field-missing')&&input.getAttribute('aria-invalid')==='true');
@@ -573,6 +613,53 @@ f.onload=()=>{
                   d.querySelector('#tuneButton').click();
                   checks.tuneStopped=d.querySelector('#txSummary').textContent.toLowerCase().includes('aborted')&&d.querySelector('#tuneLabel').textContent==='TUNE';
                   checks.viewportTxCleared=!d.body.classList.contains('radio-transmitting');
+                  // Hearing links: third-party propagation between two remote dots. A fresh
+                  // frequency gives an empty activity bucket, so the fixture below is the
+                  // only thing on the map and the geometry stays predictable.
+                  f.contentWindow.__dataTest.setRadioFrequency(10136000);
+                  const mapSection=d.querySelector('details[data-section="stations-map"]');mapSection.open=true;
+                  const hearNow=Date.now();
+                  const hearMsg=(from,to,command,payload,atMs)=>({directed:{from,to,command},payload,text:from+': '+to+command+' '+payload,callsigns:[from,to],kinds:['directed'],submode:0,offsetHz:900,firstSlotUtcMs:atMs,lastSlotUtcMs:atMs});
+                  const hearLinks=()=>[...d.querySelectorAll('#stationMap .map-hearing')];
+                  const hearTitles=()=>hearLinks().map(node=>node.querySelector('title').textContent).join('|');
+                  const hearDot=call=>[...d.querySelectorAll('#stationMap .map-dot')].find(node=>node.textContent.trim().startsWith(call));
+                  f.contentWindow.__dataTest.setActivity({frames:[],timing:[],channels:[],messages:[
+                    hearMsg('SN9GK','MM0VIK',' HEARTBEAT SNR','-13',hearNow-60000),
+                    hearMsg('SN9GK','DL1ABC',' ACK','',hearNow-5400000),
+                    hearMsg('SN9GK','G0XYZ',' SNR?','',hearNow-30000)
+                  ],calls:[
+                    {call:'SN9GK',snr:-7,offsetHz:900,submode:0,lastSlotUtcMs:hearNow-60000,grid:'JO90',heardDirectly:true},
+                    {call:'MM0VIK',snr:null,offsetHz:null,submode:null,lastSlotUtcMs:hearNow-60000,grid:'IO75',heardDirectly:false},
+                    {call:'DL1ABC',snr:-9,offsetHz:910,submode:0,lastSlotUtcMs:hearNow-5400000,grid:'JN58',heardDirectly:true},
+                    {call:'G0XYZ',snr:-11,offsetHz:920,submode:0,lastSlotUtcMs:hearNow-30000,grid:'IO91',heardDirectly:true}
+                  ]});
+                  const oneWay=hearLinks(),oneWayLine=oneWay[0]?.querySelector('.map-hearing-line');
+                  checks.hearingLinkOne=oneWay.length===1&&hearTitles().includes('MM0VIK \\u2192 SN9GK \\u00b7 -13 dB')&&
+                    oneWayLine.getAttribute('marker-end')==='url(#mapHearingArrow)'&&!oneWayLine.hasAttribute('marker-start')&&
+                    d.querySelector('#stationMapSummary').textContent.includes('1 link');
+                  // An hour-old ACK and a fresh question are both silent: propagation expires,
+                  // and calling a station blind proves nothing about hearing it.
+                  checks.hearingLinkStale=!hearTitles().includes('DL1ABC');
+                  checks.hearingLinkQueryIgnored=!hearTitles().includes('G0XYZ');
+                  checks.hearingPhantomHollow=Boolean(hearDot('MM0VIK'))&&hearDot('MM0VIK').classList.contains('phantom')&&
+                    Boolean(hearDot('SN9GK'))&&!hearDot('SN9GK').classList.contains('phantom')&&
+                    d.querySelector('#stationRows tr[data-call="MM0VIK"] td:nth-child(3)')?.textContent==='\\u2014'&&
+                    d.querySelector('#stationRows tr[data-call="SN9GK"] td:nth-child(3)')?.textContent==='-7';
+                  // The same pair reported the other way stays one line, now with a head at
+                  // each end -- two arrows on identical geometry would only fight each other.
+                  f.contentWindow.__dataTest.setActivity({frames:[],timing:[],channels:[],
+                    messages:[hearMsg('MM0VIK','SN9GK',' SNR','-09',hearNow-30000)],
+                    calls:[{call:'MM0VIK',snr:-15,offsetHz:905,submode:0,lastSlotUtcMs:hearNow-30000,grid:'IO75',heardDirectly:true}]});
+                  const bothWays=hearLinks(),bothWaysLine=bothWays[0]?.querySelector('.map-hearing-line');
+                  checks.hearingLinkBidir=bothWays.length===1&&bothWaysLine.hasAttribute('marker-start')&&
+                    bothWaysLine.getAttribute('marker-end')==='url(#mapHearingArrow)'&&
+                    bothWays[0].querySelector('title').textContent.split('\\n').length===2;
+                  d.querySelector('#stationMapLinks').click();
+                  checks.hearingToggleOff=hearLinks().length===0&&d.querySelectorAll('#stationMap .map-dot').length>0&&
+                    d.querySelector('#stationMapLinks').getAttribute('aria-pressed')==='false'&&
+                    f.contentWindow.__dataTest.snapshotBuild().hearingLinksVisible===false;
+                  d.querySelector('#stationMapLinks').click();
+                  checks.hearingToggleBack=hearLinks().length===1&&d.querySelector('#stationMapLinks').getAttribute('aria-pressed')==='true';
                   const pass=Object.values(checks).every(Boolean);
                   fetch('/result',{method:'POST',body:JSON.stringify({pass,text:'DATA BROWSER '+(pass?'PASS ':'FAIL ')+JSON.stringify(checks)+' station='+JSON.stringify(stationObserved)+' sort='+JSON.stringify({sortAscObserved,sortDescObserved})+' gate='+gate+' tx='+d.querySelector('#txSummary').textContent+' modem='+d.querySelector('#modemState').textContent+' diag='+diag})});
                 }
@@ -586,7 +673,7 @@ f.onload=()=>{
       }
     },650);
     } catch(error) {
-      fetch('/result',{method:'POST',body:JSON.stringify({pass:false,text:'DATA BROWSER INIT ERROR: '+String(error?.stack||error)+' body='+d.body.className+' detail='+d.querySelector('#lanRequiredDetail')?.textContent})});
+      fetch('/result',{method:'POST',body:JSON.stringify({pass:false,text:'DATA BROWSER INIT ERROR: '+String(error?.stack||error)+' body='+d.body.className+' detail='+d.querySelector('#lanGateDetail')?.textContent})});
     }
   },5000);
 };
@@ -607,4 +694,9 @@ server.on("upgrade",(req,socket)=>{const wsUrl=new URL(req.url,"http://fixture")
 // so a handshake without the owning token never reaches the stream.
 if(!sessionOwns(wsUrl.searchParams.get("token"))){session.wsRefusals++;socket.write("HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\n");return socket.destroy();}
 wsConnections++;wsOpenedAt=Date.now();if(!jscComplete)earlyWsConnections++;const accept=crypto.createHash("sha1").update(req.headers["sec-websocket-key"]+"258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");socket.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "+accept+"\r\n\r\n");socket.write(frame(1,JSON.stringify({type:"hello",protocol:"AUD1",version:1,streamId,rx:[{kind:"RX_ULAW",sampleRate:8000}],tx:[{kind:"TX_PCM16",sampleRate:48000}],maxPayloadBytes:1920})));const interval=setInterval(()=>{if(socket.destroyed)return clearInterval(interval);socket.write(frame(2,aud1()));},20);socket.on("data",readClientFrames(socket));socket.on("close",()=>clearInterval(interval));socket.on("error",()=>clearInterval(interval));});
-server.listen(0,"127.0.0.1",()=>{chrome=spawn("google-chrome",["--headless=new","--no-sandbox","--disable-gpu","--disable-dev-shm-usage","--no-proxy-server","--host-resolver-rules=MAP ic705.test 127.0.0.1",`http://ic705.test:${server.address().port}/smoke.html`]);let errors="";chrome.stderr.on("data",c=>errors+=c);chrome.on("close",code=>{if(!finished)finish(false,`DATA BROWSER FAIL Chrome exited ${code}\n${errors}`);});timer=setTimeout(()=>finish(false,`DATA BROWSER FAIL timeout prepares=${txPrepares} packets=${txPackets}`),45000);});
+// The operator's device is an Android phone or tablet on the LAN, so the harness
+// says so. It costs nothing -- no page reads the user agent -- and it is what
+// makes the wake lock checks meaningful: the video fallback is a mobile technique
+// and a desktop user agent would (correctly) refuse to use it.
+const ANDROID_UA="Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36";
+server.listen(0,"127.0.0.1",()=>{chrome=spawn("google-chrome",["--headless=new","--no-sandbox","--disable-gpu","--disable-dev-shm-usage","--no-proxy-server",`--user-agent=${ANDROID_UA}`,"--host-resolver-rules=MAP ic705.test 127.0.0.1",`http://ic705.test:${server.address().port}/smoke.html`]);let errors="";chrome.stderr.on("data",c=>errors+=c);chrome.on("close",code=>{if(!finished)finish(false,`DATA BROWSER FAIL Chrome exited ${code}\n${errors}`);});timer=setTimeout(()=>finish(false,`DATA BROWSER FAIL timeout prepares=${txPrepares} packets=${txPackets}`),45000);});

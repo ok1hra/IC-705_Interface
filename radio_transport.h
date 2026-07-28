@@ -21,11 +21,12 @@ enum RadioCapability : uint8_t {
 static inline uint8_t radioCapabilities(uint8_t slot, RadioTransport transport) {
   const uint8_t limited = RADIO_CAP_FREQUENCY | RADIO_CAP_MODE | RADIO_CAP_TUNE;
   if (transport == RADIO_TRXNET) return limited;
-  if (slot == 0) {
-    uint8_t primary = limited | RADIO_CAP_FULL_CAT;
-    if (transport == RADIO_LAN) primary |= RADIO_CAP_AUDIO;
-    return primary;
-  }
+  // LAN brings its own CI-V and audio sub-streams, so it is fully capable in
+  // whichever slot the operator gave it -- the LAN radio is not required to be
+  // TRX1. Serial CI-V is polled thinly (frequency/mode only) outside slot 0,
+  // which is exactly where its capabilities stop.
+  if (transport == RADIO_LAN) return limited | RADIO_CAP_FULL_CAT | RADIO_CAP_AUDIO;
+  if (slot == 0) return limited | RADIO_CAP_FULL_CAT;
   return limited;
 }
 

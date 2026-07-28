@@ -96,3 +96,31 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 Source: https://github.com/google/brotli
+
+WSPR protocol
+-------------
+The WSPR encoder in data/wspr-core.js is original code, but the protocol
+constants it implements are those of WSPR as defined by WSJT-X: the 162-bit
+synchronisation vector, the K=32 convolutional polynomials, the interleaving
+order and the callsign/locator/power packing.
+Copyright 2001-2026 Joe Taylor (K1JT) and the WSJT-X development team.
+License: GNU GPL version 3.
+Protocol description this implementation was written from: docs/wspr.md
+Upstream: https://sourceforge.net/projects/wsjt/
+
+DXCC prefix data
+----------------
+data/dxcc.js is a JavaScript port of the dxcc prefix lookup engine, carrying the
+cty.dat country file it is built on.
+Copyright 2007 Fabian Kurz (DJ1YFK) — http://fkurz.net/ham/dxcc/
+cty.dat country file by Jim Reisert (AD1C) — http://country-files.com/
+License: GNU GPL, as stated in the header of data/dxcc.js.
+
+NoSleep.js
+----------
+The silent looping video that keeps the display awake on the JS8LAN and WSPR
+pages is the media from NoSleep.js, embedded as base64 data URIs in
+data/wake-lock.js. The surrounding keeper code is original.
+Copyright (c) 2017 Rich Tibbett.
+License: MIT, under the same terms printed in the Brotli section above.
+Source: https://github.com/richtr/NoSleep.js

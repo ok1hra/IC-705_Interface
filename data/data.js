@@ -8,6 +8,12 @@ const TEST_MODE = PAGE_PARAMS.has("test");
 const ASSET_REV = "20260719d";
 const assetUrl = path => `${path}?v=${ASSET_REV}`;
 const TRX_HELP_SEEN_KEY = "ic705.data.trx-help-seen.v1";
+// This page drives the LAN radio, which the operator may have put on any of the
+// three TRX slots, so it asks the firmware for that radio by name rather than
+// for "the primary radio" -- /state and /cmd without the marker still mean TRX1
+// and are what the log page, band decoder and WSPR read.
+const RADIO_STATE_URL = "/state?radio=lan";
+const RADIO_CMD_URL = "/cmd?radio=lan";
 const AUDIO_WS_PORT = Number(new URLSearchParams(location.search).get("audioPort")) || 83;
 const RX_LOW = 500, RX_HIGH = 2700, HB_HIGH = 1000, AUDIO_RATE = 8000;
 const FFT_SIZE = 4096, HOP_SIZE = 2048;
@@ -61,7 +67,8 @@ Object.assign(globalThis, {AudioSource, Modems, registerModem, Decoder, Encoder}
 const $ = id => document.getElementById(id);
 const dom = {
   radioBar:document.querySelector(".radio-bar"), trxFrequency:$("trxFrequency"),
-  trxFrequencyValue:$("trxFrequencyValue"), trxMode:$("trxMode"), trxDot:$("trxDot"),
+  trxFrequencyValue:$("trxFrequencyValue"), trxSlotLabel:$("trxSlotLabel"),
+  trxMode:$("trxMode"), trxDot:$("trxDot"),
   trxHelpButton:$("trxHelpButton"), trxHelpDialog:$("trxHelpDialog"),
   trxHelpModeWarning:$("trxHelpModeWarning"),
   frequencyMenu:$("frequencyMenu"), linkState:$("linkState"), operatorState:$("operatorState"),
@@ -123,7 +130,7 @@ const dom = {
   trafficClear:document.querySelector("[data-traffic-clear]"),
   stationsSection:document.querySelector('[data-section="stations"]'),
   stationMapSection:document.querySelector('[data-section="stations-map"]'),
-  stationMap:$("stationMap"), stationMapSummary:$("stationMapSummary"),
+  stationMap:$("stationMap"), stationMapSummary:$("stationMapSummary"), stationMapLinks:$("stationMapLinks"),
   stationHead:document.querySelector(".traffic-table thead"), reply:document.querySelector('[data-section="reply"]'),
   stationSummary:$("stationSummary"), myCall:$("myCall"), myGrid:$("myGrid"),
   followSpeed:$("followSpeed"), clockCorrection:$("clockCorrection"), autoTiming:$("autoTiming"),
@@ -136,7 +143,6 @@ const dom = {
   armHours:$("armHours"), autoState:$("autoState"),
   resetSettings:$("resetSettings"), settingsSummary:$("settingsSummary"), settingsFlags:$("settingsFlags"),
   diagnosticSummary:$("diagnosticSummary"), diagnostics:$("diagnostics"),
-  lanRequired:$("lanRequired"), lanRequiredDetail:$("lanRequiredDetail"),
   sessionBusy:$("sessionBusy"), sessionBusyWhere:$("sessionBusyWhere"),
   sessionBusyDetail:$("sessionBusyDetail"), sessionTakeover:$("sessionTakeover"),
   startup:$("startupLoader"), startupProgress:$("startupProgress"),
@@ -239,9 +245,10 @@ const state = {
   startup:{ready:false, failed:false, progress:0, label:"Loading JS8Call modem",
     detail:"Preparing modem components…"},
   stationSort:{key:"lastSlotUtcMs", direction:"desc"}, trafficFilter:"all", testActivityLocked:false,
+  hearingLinksVisible:true,
   txSessionMode:"CHAT", audioDb:-90, tuneActive:false, spectrumWasTransmitting:false,
   help:{incompatibleActive:false},
-  lanConfig:{checked:false, ready:false, detail:""},
+  lanConfig:{checked:false, ready:false, detail:"", slot:0},
   ownCallAttention:{call:"", messages:new Set(), stations:new Set()},
   activeOutgoing:null, lastOutgoing:null, outgoingLog:[],
   blockedDxccList:[],
@@ -298,6 +305,7 @@ function buildSessionSnapshot() {
     selectedCall: state.selectedCall || "",
     trafficFilter: state.trafficFilter || "all",
     stationSort: {...state.stationSort},
+    hearingLinksVisible: state.hearingLinksVisible !== false,
     draft: (dom.message && dom.message.value) || "",
     lastOutgoing: state.lastOutgoing ? snapshotOutgoing(state.lastOutgoing) : null,
     // Own-TX feed history: mid-flight sends become "interrupted" (grey) on the way
@@ -378,6 +386,7 @@ function restoreSession() {
     if (typeof snapshot.trafficFilter === "string") state.trafficFilter = snapshot.trafficFilter;
     if (snapshot.stationSort && typeof snapshot.stationSort.key === "string")
       state.stationSort = {key: snapshot.stationSort.key, direction: snapshot.stationSort.direction === "asc" ? "asc" : "desc"};
+    if (typeof snapshot.hearingLinksVisible === "boolean") state.hearingLinksVisible = snapshot.hearingLinksVisible;
     if (snapshot.lastOutgoing && typeof snapshot.lastOutgoing === "object") state.lastOutgoing = {...snapshot.lastOutgoing};
     if (Array.isArray(snapshot.outgoingLog))
       state.outgoingLog = snapshot.outgoingLog.map(item => ({...item, restored: true}));
@@ -435,7 +444,7 @@ function activityFrameKey(item) {
   return `${item.slotUtcMs || 0}|${item.submode}|${item.offsetHz}|${item.raw}`;
 }
 function activityCallSignature(item) {
-  return `${item.lastSlotUtcMs || 0}|${item.snr}|${item.offsetHz}|${item.submode}|${item.dtMs}|${item.quality}|${item.grid || ""}`;
+  return `${item.lastSlotUtcMs || 0}|${item.snr}|${item.offsetHz}|${item.submode}|${item.dtMs}|${item.quality}|${item.grid || ""}|${item.heardDirectly !== false}`;
 }
 function activitySessionFor(frequency, create=true) {
   const hz=Number(frequency)||0;
@@ -737,45 +746,40 @@ function onAudioStatus(status) {
   renderHeader(); renderControls(); renderDiagnostics();
 }
 
-const wfCtx = dom.canvas.getContext("2d"), overlayCtx = dom.overlay.getContext("2d");
-const fftRe = new Float32Array(FFT_SIZE), fftIm = new Float32Array(FFT_SIZE), ring = new Float32Array(FFT_SIZE);
-const hann = Float32Array.from({length:FFT_SIZE}, (_, i) => .5 - .5 * Math.cos(2 * Math.PI * i / (FFT_SIZE - 1)));
-let ringPos = 0, hop = 0, spectrumFill = 0, spectrumRows = 0;
 let lastSlotIndex = null, lastSlotPeriod = 0;
-let agcLow = -85, agcHigh = -35, agcReady = false;
 
-function fft(re, im) {
-  for (let i = 1, j = 0; i < FFT_SIZE; i++) {
-    let bit = FFT_SIZE >> 1; for (; j & bit; bit >>= 1) j ^= bit; j ^= bit;
-    if (i < j) { let t=re[i]; re[i]=re[j]; re[j]=t; t=im[i]; im[i]=im[j]; im[j]=t; }
-  }
-  for (let len = 2; len <= FFT_SIZE; len <<= 1) {
-    const angle = -2 * Math.PI / len, wr0 = Math.cos(angle), wi0 = Math.sin(angle);
-    for (let start = 0; start < FFT_SIZE; start += len) {
-      let wr=1, wi=0;
-      for (let j=0; j<(len>>1); j++) {
-        const a=start+j, b=a+(len>>1), tr=wr*re[b]-wi*im[b], ti=wr*im[b]+wi*re[b];
-        re[b]=re[a]-tr; im[b]=im[a]-ti; re[a]+=tr; im[a]+=ti;
-        const nextWr=wr*wr0-wi*wi0; wi=wr*wi0+wi*wr0; wr=nextWr;
-      }
+// The FFT, ring, AGC and canvas scrolling live in data/spectrum.js, shared with
+// the WSPR-Beacon page. What stays here is JS8-specific: the slot ruler burnt
+// into each new row, and the overlay showing the heartbeat sub-band and the TX
+// window for the selected speed.
+const waterfall = new Spectrum.Waterfall({
+  canvas: dom.canvas, overlay: dom.overlay, container: dom.waterfall,
+  sampleRate: AUDIO_RATE, lowHz: RX_LOW, highHz: RX_HIGH,
+  fftSize: FFT_SIZE, hopSize: HOP_SIZE,
+  markRow: (context, width) => {
+    // Burn a faint line into the newest row whenever a UTC slot boundary passes,
+    // so it scrolls down with the history. Same clock and period as the slot
+    // meter (renderRhythm) — ruler and slot-fill bar stay in lockstep.
+    const slotPeriodMs=(MODE_PERIOD_SECONDS[selectedMode()] || 15)*1000;
+    const slotCorrection=audioSource ? Number(audioSource.state().timebase?.correction?.totalMs || 0) : 0;
+    const slotIndex=Math.floor((Date.now()+slotCorrection)/slotPeriodMs);
+    if(lastSlotPeriod===slotPeriodMs && lastSlotIndex!==null && slotIndex!==lastSlotIndex){
+      context.fillStyle="rgba(235,240,250,0.6)"; context.fillRect(0,0,width,2);
     }
-  }
-}
+    lastSlotIndex=slotIndex; lastSlotPeriod=slotPeriodMs;
+  },
+  drawOverlay: (context, view) => drawTxMarker(context, view),
+});
 
 function radioTransmitting() { return Boolean(state.radio.tx || sinkProxy.ptt); }
 
-function resetSpectrumAnalyzer() {
-  ring.fill(0); ringPos=0; hop=0; spectrumFill=0; agcReady=false;
-  agcLow=-85; agcHigh=-35; lastSlotIndex=null;
-}
+function resetSpectrumAnalyzer() { waterfall.reset(); lastSlotIndex=null; }
 
+// JS8Call stops the analyser while transmitting: the decoder is deaf then
+// anyway, and a monitored carrier would poison the AGC for the next slot.
 function ingestSpectrum(samples) {
   if(radioTransmitting())return;
-  for (const value of samples) {
-    ring[ringPos] = value; ringPos = (ringPos + 1) % FFT_SIZE;
-    spectrumFill=Math.min(FFT_SIZE,spectrumFill+1);
-    if (++hop >= HOP_SIZE) { hop=0; if(spectrumFill>=FFT_SIZE)drawSpectrum(); }
-  }
+  waterfall.ingest(samples);
 }
 
 function onSamples(samples, rate, metadata) {
@@ -789,54 +793,12 @@ function onSamples(samples, rate, metadata) {
   if (activeDecoder) activeDecoder.pushSamples(samples, metadata);
 }
 
-function color(value) {
-  const v=Math.pow(Math.max(0,Math.min(1,value)),1.8);
-  const mix=(a,b,t)=>a.map((channel,index)=>Math.round(channel+(b[index]-channel)*t));
-  if (v<.55) return mix([0,2,20],[0,42,145],v/.55);
-  if (v<.92) return mix([0,42,145],[0,180,205],(v-.55)/.37);
-  return mix([0,180,205],[255,215,55],(v-.92)/.08);
-}
+function resizeWaterfall() { waterfall.resize(); }
 
-function drawSpectrum() {
-  for (let i=0;i<FFT_SIZE;i++) { fftRe[i]=ring[(ringPos+i)%FFT_SIZE]*hann[i]; fftIm[i]=0; }
-  fft(fftRe,fftIm);
-  const first=Math.floor(RX_LOW*FFT_SIZE/AUDIO_RATE), last=Math.ceil(RX_HIGH*FFT_SIZE/AUDIO_RATE);
-  const values=new Float32Array(last-first+1);
-  for (let bin=first;bin<=last;bin++) values[bin-first]=20*Math.log10(Math.hypot(fftRe[bin],fftIm[bin])/FFT_SIZE+1e-9);
-  const sorted=Array.from(values).sort((a,b)=>a-b);
-  const targetLow=sorted[Math.floor((sorted.length-1)*.18)]-3;
-  const observedHigh=sorted[Math.floor((sorted.length-1)*.985)];
-  const targetHigh=Math.max(observedHigh,targetLow+22);
-  if(observedHigh>-140){
-    if(!agcReady){agcLow=targetLow;agcHigh=targetHigh;agcReady=true;}
-    else {agcLow+=(targetLow-agcLow)*.10;agcHigh+=(targetHigh-agcHigh)*.10;}
-  }
-  wfCtx.drawImage(dom.canvas,0,0,dom.canvas.width,dom.canvas.height-1,0,1,dom.canvas.width,dom.canvas.height-1);
-  const row=wfCtx.createImageData(dom.canvas.width,1);
-  for (let x=0;x<dom.canvas.width;x++) { const bin=Math.min(values.length-1,Math.floor(x*values.length/dom.canvas.width)); const c=color((values[bin]-agcLow)/(agcHigh-agcLow)); const at=x*4; row.data[at]=c[0];row.data[at+1]=c[1];row.data[at+2]=c[2];row.data[at+3]=255; }
-  wfCtx.putImageData(row,0,0);
-  // JS8 time-slot ruler: burn a faint horizontal line into the newest row whenever a
-  // UTC slot boundary passes, so it scrolls down with the history. Same clock/period as
-  // the slot meter (renderRhythm) — the ruler and the slot-fill bar stay in lockstep.
-  const slotPeriodMs=(MODE_PERIOD_SECONDS[selectedMode()] || 15)*1000;
-  const slotCorrection=audioSource ? Number(audioSource.state().timebase?.correction?.totalMs || 0) : 0;
-  const slotIndex=Math.floor((Date.now()+slotCorrection)/slotPeriodMs);
-  if(lastSlotPeriod===slotPeriodMs && lastSlotIndex!==null && slotIndex!==lastSlotIndex){
-    wfCtx.fillStyle="rgba(235,240,250,0.6)"; wfCtx.fillRect(0,0,dom.canvas.width,2);
-  }
-  lastSlotIndex=slotIndex; lastSlotPeriod=slotPeriodMs;
-  spectrumRows++;
-}
-
-function resizeWaterfall() {
-  const width=Math.max(320,Math.round(dom.waterfall.clientWidth));
-  if (dom.canvas.width !== width) { dom.canvas.width=width; dom.canvas.height=64; }
-  dom.overlay.width=width; dom.overlay.height=64; drawTxMarker();
-}
-
-function drawTxMarker() {
-  overlayCtx.clearRect(0,0,dom.overlay.width,dom.overlay.height);
-  const hzToX=hz=>(hz-RX_LOW)/(RX_HIGH-RX_LOW)*dom.overlay.width;
+// Called by the waterfall with a freshly cleared overlay context; use
+// waterfall.paintOverlay() to request a repaint from elsewhere.
+function drawTxMarker(overlayCtx, view) {
+  const hzToX=hz=>view.hzToX(hz,dom.overlay.width);
   const heartbeatRight=hzToX(HB_HIGH);
   overlayCtx.strokeStyle="rgba(185,195,191,.52)"; overlayCtx.lineWidth=1; overlayCtx.setLineDash([3,3]);
   overlayCtx.beginPath(); overlayCtx.moveTo(Math.round(heartbeatRight)+.5,0); overlayCtx.lineTo(Math.round(heartbeatRight)+.5,dom.overlay.height); overlayCtx.stroke();
@@ -1020,6 +982,16 @@ function openTrxHelp(reason = "manual") {
   else dom.trxHelpDialog.setAttribute("open","");
 }
 
+// The LAN radio is whichever slot the operator gave the LAN connection to, so
+// the frequency button names it ("TRX 2") instead of an anonymous "TRX". Before
+// the configuration check answers there is no number to show yet.
+function renderTrxSlotLabel() {
+  if(!dom.trxSlotLabel)return;
+  const slot=state.lanConfig.slot;
+  dom.trxSlotLabel.textContent=slot ? `TRX ${slot}` : "TRX";
+  dom.trxSlotLabel.title=slot ? `TRX${slot} is the LAN radio` : "TRX";
+}
+
 function renderHeader() {
   const connected=state.radio.connected && state.radio.transceiverType === "IC-705-LAN";
   const transmitting=radioTransmitting();
@@ -1029,6 +1001,7 @@ function renderHeader() {
   const modeCompatible=["USB","USB-D"].includes(state.radio.mode);
   dom.trxFrequencyValue.textContent=formatFrequency(state.pendingFrequency || state.radio.frequency);
   dom.trxFrequency.classList.toggle("pending",Boolean(state.pendingFrequency));
+  renderTrxSlotLabel();
   dom.trxMode.textContent=state.radio.mode || "---";
   dom.trxMode.classList.toggle("incompatible",connected && !modeCompatible);
   dom.trxMode.title=connected && !modeCompatible ? "JS8Call requires USB or USB-D" : "TRX mode";
@@ -1368,7 +1341,9 @@ function renderControls() {
   dom.tuneLabel.textContent=state.tuneActive?"STOP":"TUNE";
   dom.tuneOffset.textContent=`${js8.txOffsetHz} Hz`;
   const snrPreset=dom.messagePresetsMenu.querySelector('[data-message-preset="snr"]');
-  const snrStation=state.activity.calls.find(item=>item.call===state.selectedCall);
+  // Only a station decoded here has an SNR to report back; one we were merely told about
+  // would insert somebody else's signal report.
+  const snrStation=state.activity.calls.find(item=>item.call===state.selectedCall && item.heardDirectly!==false);
   snrPreset.disabled=!snrStation;
   snrPreset.title=snrStation ? `Insert SNR ${formatJs8Snr(snrStation.snr)}` : "Select a heard station first";
   dom.txSessionMode.value=state.txSessionMode;
@@ -1380,7 +1355,7 @@ function renderControls() {
   dom.txSummary.textContent=state.txState ? `${state.txState.status}${state.txState.frameCount ? ` · frame ${Math.min(state.txState.frameIndex+1,state.txState.frameCount)}/${state.txState.frameCount}` : ""}${state.txState.error ? ` · ${state.txState.error}` : ""}` : "Idle";
   dom.modemState.textContent=state.decoderStatus === "ready" ? "JS8Call ready · auto speed RX" : state.decoderStatus;
   dom.modemState.className=`modem-state ${state.decoderStatus === "ready" ? "available" : state.decoderStatus.includes("error") ? "error" : ""}`;
-  renderEmailControls(); renderBinControls(); renderTxPayload(); drawTxMarker(); renderHeader();
+  renderEmailControls(); renderBinControls(); renderTxPayload(); waterfall.paintOverlay(); renderHeader();
 }
 
 function chooseCall(call) {
@@ -1477,6 +1452,12 @@ function sortedStations(calls) {
       return (av-bv)*factor || String(a.call).localeCompare(String(b.call));
     }
     const av=a[key], bv=b[key];
+    // Missing numbers (stations we only heard about) sink to the bottom in both
+    // directions, exactly like an unresolved prefix or an unknown distance.
+    if(key!=="call"){
+      if(av==null && bv==null)return String(a.call).localeCompare(String(b.call));
+      if(av==null)return 1; if(bv==null)return -1;
+    }
     const result=key==="call" ? String(av).localeCompare(String(bv)) : Number(av||0)-Number(bv||0);
     return result*factor || String(a.call).localeCompare(String(b.call));
   });
@@ -1607,7 +1588,12 @@ function renderActivity() {
     const ban=bannedCalls.get(item.call);
     const banMark=ban?`<span class="station-ban" title="Auto replies paused ${Math.ceil(ban.remainingMs/60000)} min (level ${ban.level})">&#9208;</span>`:"";
     const country=stationCountry(item);
-    return `<tr data-call="${esc(item.call)}" class="${item.call===state.selectedCall?"selected":""}${ban?" station-restricted":""}"><td class="call${ownCall?" own-callsign":""}${reacted?" reacted":""}"${ownCall?' data-own-call="true"':""}${reacted?' title="Reacted to your transmission"':""}>${reacted?"← ":""}${esc(item.call)}${banMark}</td><td class="station-country"${country?` title="${esc(country)}"`:""}>${esc(country||"—")}</td><td>${signed(item.snr)}</td><td>${Math.round(item.offsetHz)}</td><td>${speedDetail(item.submode)}</td><td class="station-direction">${directionHtml}</td><td>${age(item.lastSlotUtcMs)}</td></tr>`;
+    // Stations we were only told about (named in someone else's frame) have no signal of
+    // their own: showing the transmitting station's numbers here would credit them to the
+    // wrong callsign, so the cells stay empty until we hear the station ourselves.
+    const heard=item.heardDirectly!==false;
+    const heardTitle=heard?"":' title="Heard about only — never decoded here"';
+    return `<tr data-call="${esc(item.call)}" class="${item.call===state.selectedCall?"selected":""}${ban?" station-restricted":""}${heard?"":" station-indirect"}"${heardTitle}><td class="call${ownCall?" own-callsign":""}${reacted?" reacted":""}"${ownCall?' data-own-call="true"':""}${reacted?' title="Reacted to your transmission"':""}>${reacted?"← ":""}${esc(item.call)}${banMark}</td><td class="station-country"${country?` title="${esc(country)}"`:""}>${esc(country||"—")}</td><td>${heard?signed(item.snr):"—"}</td><td>${heard?Math.round(item.offsetHz):"—"}</td><td>${heard?speedDetail(item.submode):"—"}</td><td class="station-direction">${directionHtml}</td><td>${age(item.lastSlotUtcMs)}</td></tr>`;
   }).join("");
   openSectionsForNewOwnCall(recent,calls);
   renderStationSort();
@@ -1633,12 +1619,66 @@ function respondingCalls() {
 }
 function stationReacted(responders,call){ return responders.has(String(call||"").toUpperCase()); }
 
+// HEARING LINKS: the traffic constantly proves who is hearing whom, not only who I hear.
+// Two commands carry a real report ("your signal is -13 dB here"), a handful are replies
+// that make no sense except as a reaction to something copied, and HEARING names the
+// stations the sender is currently copying. Everything else proves nothing: a station is
+// called blind precisely when it cannot be heard, and store-and-forward mail is aimed at
+// stations that may not even be on the band.
+const HEARING_REPORT_COMMANDS=new Set([" SNR"," HEARTBEAT SNR"]);
+const HEARING_REPLY_COMMANDS=new Set([" ACK"," NACK"," RR"," QSL"," 73"," SK"," YES"," NO",
+  " FB"," AGN?"," DIT DIT"," STATUS"," INFO"," GRID"]);
+// Propagation moves; an hour-old arrow claims a path that may be long gone.
+const HEARING_LINK_MAX_AGE_MS=3600000;
+
+// Groups, the placeholder call and free-text words out of a HEARING payload are not
+// stations. Every real callsign carries a digit, which is enough of a sieve here.
+function hearingLinkCall(call){
+  const value=String(call||"").trim().toUpperCase();
+  return /^[A-Z0-9/]{3,}$/.test(value) && /\d/.test(value) ? value : "";
+}
+
+// Ordered pairs "heard -> listener", newest report per pair. Pairs touching my own call are
+// left out on purpose: every dot is by definition a station I hear, and "they reacted to me"
+// is already the red dot plus the ← in the stations table.
+function hearingLinks(messages, own, nowMs){
+  const links=new Map();
+  const add=(heard,listener,detail,atMs)=>{
+    const from=hearingLinkCall(heard), to=hearingLinkCall(listener);
+    if(!from || !to || from===to) return;
+    if(sameCall(from,own) || sameCall(to,own)) return;
+    if(isBlockedCall(from) || isBlockedCall(to)) return;
+    const key=`${from}|${to}`, previous=links.get(key);
+    if(previous && previous.atMs>=atMs) return;
+    links.set(key,{from,to,detail,atMs});
+  };
+  for(const message of messages||[]){
+    const directed=!message.outgoing && message.directed;
+    if(!directed) continue;
+    const atMs=Number(message.lastSlotUtcMs||message.firstSlotUtcMs||0);
+    if(!atMs || nowMs-atMs>HEARING_LINK_MAX_AGE_MS) continue;
+    if(HEARING_REPORT_COMMANDS.has(directed.command)){
+      const report=String(message.payload||"").trim().split(/\s+/)[0]||"";
+      add(directed.to,directed.from,report?`${report} dB`:"report",atMs);
+    } else if(HEARING_REPLY_COMMANDS.has(directed.command)){
+      add(directed.to,directed.from,directed.command.trim().toLowerCase(),atMs);
+    } else if(directed.command===" HEARING"){
+      // The payload lists who the SENDER copies; the addressee is only who is being told.
+      for(const listed of String(message.payload||"").toUpperCase().split(/[^A-Z0-9/]+/))
+        add(listed,directed.from,"hearing",atMs);
+    }
+  }
+  return [...links.values()];
+}
+
 // STATIONS MAP: azimuthal-equidistant radar centred on my QTH. Dots are stations placed by
 // azimuth (0deg = N = up) and linear distance (furthest sits at the plotting edge). Summary
 // count is always refreshed; the SVG is only built while the disclosure is open. Dots of
-// stations that reacted to us are drawn red (see respondingCalls).
+// stations that reacted to us are drawn red (see respondingCalls), and green arrows between
+// two remote dots show a third-party path (see hearingLinks).
 function renderStationMap(calls, responders) {
   responders=responders || respondingCalls();
+  renderHearingLinksButton();
   const placed=[], noPos=[];
   for(const item of (calls||[])){
     const dir=stationDirection(item);
@@ -1646,9 +1686,15 @@ function renderStationMap(calls, responders) {
     if(dir && Number.isFinite(dir.qrbKm) && Number.isFinite(dir.azimuthDeg)) placed.push({item,dir,reacted});
     else noPos.push(item);
   }
+  // Only paths whose both ends are on the map can be drawn -- and are counted, so the
+  // summary never promises links the operator cannot see.
+  const onMap=new Set(placed.map(entry=>entry.item.call));
+  const edges=hearingLinks(state.activity.messages,currentJs8().myCall,Date.now())
+    .filter(link=>onMap.has(link.from) && onMap.has(link.to));
   const reactedCount=(calls||[]).filter(item=>stationReacted(responders,item.call)).length;
   const parts=[`${placed.length} on map`];
   if(reactedCount) parts.push(`${reactedCount} reacted`);
+  if(edges.length) parts.push(`${edges.length} link${edges.length===1?"":"s"}`);
   if(noPos.length) parts.push(`${noPos.length} no pos`);
   dom.stationMapSummary.textContent=parts.join(" · ");
   if(!dom.stationMapSection || !dom.stationMapSection.open) return;
@@ -1658,14 +1704,25 @@ function renderStationMap(calls, responders) {
   if(!placed.length){
     dom.stationMap.innerHTML='<div class="empty-row">Waiting for stations with position…</div>'; return;
   }
-  dom.stationMap.innerHTML=buildStationMapSvg(placed);
+  dom.stationMap.innerHTML=buildStationMapSvg(placed,state.hearingLinksVisible?edges:[]);
+}
+
+function renderHearingLinksButton(){
+  if(!dom.stationMapLinks) return;
+  const on=state.hearingLinksVisible!==false;
+  dom.stationMapLinks.classList.toggle("active",on);
+  dom.stationMapLinks.setAttribute("aria-pressed",String(on));
 }
 
 const MAP={CX:150, CY:150, R_FRAME:132, R_PLOT:120, DOT:4, LABEL_R:143};
 function stationMapTip({item,dir,reacted}){
-  return `${reacted?"← ":""}${item.call} · ${signed(item.snr)} dB · ${Math.round(dir.qrbKm)} km · ${dir.azimuthDeg}°`;
+  // A station we only ever heard *about* has no signal numbers of its own -- the ones in
+  // the table row belong to whoever transmitted its callsign.
+  const heard=item.heardDirectly!==false;
+  return `${reacted?"← ":""}${item.call} · ${heard?`${signed(item.snr)} dB`:"not heard directly"} · ${Math.round(dir.qrbKm)} km · ${dir.azimuthDeg}°`;
 }
-function buildStationMapSvg(placed) {
+function hearingLinkTip(link){ return `${link.from} → ${link.to} · ${link.detail} · ${age(link.atMs)}`; }
+function buildStationMapSvg(placed, edges) {
   const {CX,CY,R_FRAME,R_PLOT,DOT,LABEL_R}=MAP;
   const maxKm=Math.max(...placed.map(p=>p.dir.qrbKm)) || 1;
   const points=placed.map(({item,dir,reacted})=>{
@@ -1679,6 +1736,39 @@ function buildStationMapSvg(placed) {
     const c=clusters.find(cl=>Math.hypot(cl.x-p.x,cl.y-p.y)<=touch);
     if(c) c.members.push(p); else clusters.push({x:p.x,y:p.y,members:[p]});
   }
+  // Hearing links attach to the merged cluster, never to the raw point, or an arrow would
+  // end next to the dot it belongs to. One line per station pair: reported in both
+  // directions it becomes a single line with a head at each end ("we hear each other").
+  const clusterOf=new Map();
+  for(const cluster of clusters) for(const member of cluster.members) clusterOf.set(member.item.call,cluster);
+  const pairs=new Map();
+  for(const link of edges||[]){
+    const from=clusterOf.get(link.from), to=clusterOf.get(link.to);
+    if(!from || !to) continue;
+    const key=[link.from,link.to].sort().join("|"), pair=pairs.get(key);
+    if(pair) pair.links.push(link); else pairs.set(key,{from,to,links:[link]});
+  }
+  const insideCluster=new Map(), hearingLines=[];
+  for(const pair of pairs.values()){
+    // Both ends merged into one dot: there is no line to draw, so the pair is reported in
+    // that dot's tooltip instead of being lost.
+    if(pair.from===pair.to){
+      const listed=insideCluster.get(pair.from) || [];
+      listed.push(...pair.links.map(link=>`hears: ${hearingLinkTip(link)}`));
+      insideCluster.set(pair.from,listed); continue;
+    }
+    const dx=pair.to.x-pair.from.x, dy=pair.to.y-pair.from.y, length=Math.hypot(dx,dy) || 1;
+    // Pull each end back so the arrowhead clears the dot instead of hiding under it,
+    // without ever inverting the line when two clusters sit close together.
+    const gap=Math.min(DOT+2,(length-2)/2), ux=dx/length*gap, uy=dy/length*gap;
+    const x1=(pair.from.x+ux).toFixed(1), y1=(pair.from.y+uy).toFixed(1);
+    const x2=(pair.to.x-ux).toFixed(1), y2=(pair.to.y-uy).toFixed(1);
+    const both=pair.links.length>1 ? ' marker-start="url(#mapHearingArrow)"' : "";
+    hearingLines.push(`<g class="map-hearing"><title>${esc(pair.links.map(hearingLinkTip).join("\n"))}</title>`+
+      `<line class="map-hearing-hit" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"/>`+
+      `<line class="map-hearing-line" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" marker-end="url(#mapHearingArrow)"${both}/></g>`);
+  }
+  const defs=`<defs><marker id="mapHearingArrow" viewBox="0 0 8 8" refX="8" refY="4" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0 0 L8 4 L0 8 Z" class="map-hearing-head"/></marker></defs>`;
   const frame=
     `<circle cx="${CX}" cy="${CY}" r="${(R_PLOT/3).toFixed(1)}" class="map-ring"/>`+
     `<circle cx="${CX}" cy="${CY}" r="${(R_PLOT*2/3).toFixed(1)}" class="map-ring"/>`+
@@ -1688,17 +1778,20 @@ function buildStationMapSvg(placed) {
     `<text x="${CX}" y="${CY+LABEL_R}" class="map-compass">S</text>`+
     `<text x="${CX-LABEL_R}" y="${CY}" class="map-compass">W</text>`+
     `<text x="294" y="14" class="map-scale">${(maxKm/1000).toFixed(1)} kkm</text>`;
-  const links=clusters.map(c=>`<line x1="${c.x.toFixed(1)}" y1="${c.y.toFixed(1)}" x2="${CX}" y2="${CY}" class="map-link"/>`).join("");
+  const spokes=clusters.map(c=>`<line x1="${c.x.toFixed(1)}" y1="${c.y.toFixed(1)}" x2="${CX}" y2="${CY}" class="map-link"/>`).join("");
   const dots=clusters.map(c=>{
-    const tip=esc(c.members.map(stationMapTip).join("\n"));
+    const tip=esc([...c.members.map(stationMapTip),...(insideCluster.get(c)||[])].join("\n"));
     // A cluster is red if any of its merged members reacted to us (Q4): the alert
     // that "someone here made contact" must win over the plain heard dots.
     const reacted=c.members.some(m=>m.reacted);
+    // Hollow while every station merged here is one we have only been told about, so the
+    // map never claims to hear a station that merely got named on the air.
+    const phantom=!c.members.some(m=>m.item.heardDirectly!==false);
     const badge=c.members.length>1 ? `<text x="${(c.x+6).toFixed(1)}" y="${(c.y-5).toFixed(1)}" class="map-badge">×${c.members.length}</text>` : "";
-    return `<g class="map-dot${reacted?" reacted":""}"><circle cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="${DOT}"><title>${tip}</title></circle>${badge}</g>`;
+    return `<g class="map-dot${reacted?" reacted":""}${phantom?" phantom":""}"><circle cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="${DOT}"><title>${tip}</title></circle>${badge}</g>`;
   }).join("");
   const center=`<circle cx="${CX}" cy="${CY}" r="5" class="map-center"><title>${esc(currentJs8().myCall||"My station")}</title></circle>`;
-  return `<svg viewBox="0 0 300 300" class="station-map-svg" role="img" aria-label="Stations radar map">${frame}${links}${dots}${center}</svg>`;
+  return `<svg viewBox="0 0 300 300" class="station-map-svg" role="img" aria-label="Stations radar map">${defs}${frame}${spokes}${hearingLines.join("")}${dots}${center}</svg>`;
 }
 
 function age(utcMs) {
@@ -1744,8 +1837,12 @@ function renderConversation() {
   dom.sessionCall.textContent=state.selectedCall || "No station selected";
   const station=state.activity.calls.find(item=>item.call===state.selectedCall);
   const blockedCountry=blockedCountryForCall(state.selectedCall);
+  // A station we have only been told about carries no signal numbers of its own; saying
+  // so is better than printing the zeros left behind by the missing values.
+  const indirect=Boolean(station) && station.heardDirectly===false;
   dom.sessionMeta.textContent=blockedCountry
     ? `blocked · ${blockedCountry} — TX refused`
+    : indirect ? "heard about only — never decoded here"
     : station ? `${signed(station.snr)} dB · ${Math.round(station.offsetHz)} Hz · speed ${speedDetail(station.submode)}` : "Choose a callsign from traffic or stations";
   dom.sessionMeta.classList.toggle("session-blocked",Boolean(blockedCountry));
   updateLogQsoButton(station);
@@ -2475,7 +2572,7 @@ async function restoreFileTransfers() {
 async function requestFrequency(frequency) {
   state.pendingFrequency=frequency; dom.frequencyMenu.hidden=true; dom.trxFrequency.setAttribute("aria-expanded","false"); renderHeader();
   try {
-    const response=await fetch("/cmd",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type:"setFrequency",frequency:String(frequency)})});
+    const response=await fetch(RADIO_CMD_URL,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type:"setFrequency",frequency:String(frequency)})});
     if (!response.ok) throw new Error(`TRX request ${response.status}`);
     await ensureUsbDataMode();
     return true;
@@ -2490,7 +2587,7 @@ async function ensureUsbDataMode() {
   if (!state.radio.connected || state.radio.mode === "USB-D") return;
   const filter=[1,2,3].includes(Number(state.radio.filter)) ? Number(state.radio.filter) : 1;
   const data="26000101"+String(filter).padStart(2,"0");
-  try { await fetch("/cmd",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type:"civ.raw",data})}); }
+  try { await fetch(RADIO_CMD_URL,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type:"civ.raw",data})}); }
   catch (_error) {}
 }
 
@@ -2645,7 +2742,9 @@ function queryStoredMessages() {
 function handleInboxAssembled(directed, norm, now) {
   const js8 = currentJs8();
   if (!js8.myCall) return;
-  const heard = (state.activity.calls || []).filter(item => item && item.call);
+  // Only stations decoded here may be offered as heard -- a callsign we merely saw named
+  // in someone else's frame must never be relayed on air as one we copy.
+  const heard = (state.activity.calls || []).filter(item => item && item.call && item.heardDirectly !== false);
   const outcome = inbox.handle(
     {from: directed.from, to: directed.to, command: norm.command,
      text: norm.text, complete: true},
@@ -2814,8 +2913,10 @@ function handleDirectedFrame(decoded) {
     return;
   }
   const station = state.activity.calls.find(item => item.call === decoded.from);
+  // A HEARING answer must list only stations actually decoded here, never one we were
+  // just told about (heardDirectly === false).
   const heard = (state.activity.calls || [])
-    .filter(item => item.call && item.call !== js8.myCall)
+    .filter(item => item.call && item.call !== js8.myCall && item.heardDirectly !== false)
     .sort((a, b) => (b.lastSlotUtcMs || 0) - (a.lastSlotUtcMs || 0))
     .map(item => item.call);
 
@@ -3062,7 +3163,7 @@ async function pollRadio() {
   if (radioPollInFlight) return;
   radioPollInFlight=true;
   try {
-    const response=await fetch("/state",{cache:"no-store"}); if (!response.ok) throw new Error();
+    const response=await fetch(RADIO_STATE_URL,{cache:"no-store"}); if (!response.ok) throw new Error();
     const next=await response.json();
     state.radio={...state.radio,...next,frequency:Number(next.frequency)||0};
     const activityFrequencyChanged=selectActivityFrequency(state.radio.frequency);
@@ -3087,36 +3188,18 @@ async function reconnectRadio() {
   }
 }
 
+// The ICOM-LAN precondition itself lives in lan-gate.js, shared with the WSPR
+// page so the two DATA sub-pages cannot disagree about whether the link is
+// usable. This only lifts what JS8LAN needs out of the answer.
 async function checkLanConfiguration() {
-  const query=new URLSearchParams({scope:"js8call"});
-  if(TEST_MODE && PAGE_PARAMS.get("lanFixture"))query.set("fixture",PAGE_PARAMS.get("lanFixture"));
-  let ready=false, detail="";
-  try {
-    const response=await fetch(`/setup-data.json?${query}`,{cache:"no-store"});
-    if(!response.ok)throw new Error(`HTTP ${response.status}`);
-    const config=await response.json();
-    // The same JSON carries the "Blocked DXCC" list; capture it so blocking
-    // applies from the moment the page is ready. It only changes on a reboot.
-    state.blockedDxccList=String(config.blockedDxcc||"").split("\n")
-      .map(entry=>entry.trim().toLowerCase()).filter(Boolean);
-    const ip=String(config.lanip||"").trim();
-    const user=String(config.lanuser||"").trim();
-    const password=String(config.lanpass||"").trim();
-    const missing=[];
-    if(config.trx1transport!=="lan")missing.push("TRX1 connection is not LAN");
-    if(!ip || ip==="0.0.0.0")missing.push("radio IP address is missing");
-    if(!user)missing.push("network username is missing");
-    if(!password)missing.push("network password is missing");
-    ready=missing.length===0;
-    detail=missing.join(" · ");
-  } catch (error) {
-    detail=`Unable to read TRX1 configuration: ${error.message}`;
-  }
-  state.lanConfig={checked:true,ready,detail};
-  document.body.classList.remove("lan-config-checking");
-  document.body.classList.toggle("lan-required-only",!ready);
-  dom.lanRequired.hidden=ready;
-  dom.lanRequiredDetail.textContent=detail;
+  const ready=await LanGate.gate();
+  const config=LanGate.config()||{};
+  // The same JSON carries the "Blocked DXCC" list; capture it so blocking
+  // applies from the moment the page is ready. It only changes on a reboot.
+  state.blockedDxccList=String(config.blockedDxcc||"").split("\n")
+    .map(entry=>entry.trim().toLowerCase()).filter(Boolean);
+  state.lanConfig={checked:true,...LanGate.result()};
+  renderTrxSlotLabel();
   return ready;
 }
 
@@ -3420,7 +3503,14 @@ function bind() {
   dom.logQso.addEventListener("click",()=>{ if(dom.logQso.dataset.action==="view")openJs8Log(); else handleLogQso(); });
   window.addEventListener("focus",refreshJs8Log);
   document.querySelectorAll("details[data-section]").forEach(details=>details.addEventListener("toggle",()=>{settings.ui.disclosures[details.dataset.section]=details.open;persistSettings(false);}));
-  dom.stationMapSection.addEventListener("toggle",()=>{if(dom.stationMapSection.open)renderStationMap(state.activity.calls||[]);});
+  // Blocked entities are hidden everywhere, so the on-demand render of the disclosure has
+  // to filter exactly like renderActivity does.
+  dom.stationMapSection.addEventListener("toggle",()=>{if(dom.stationMapSection.open)renderStationMap((state.activity.calls||[]).filter(item=>!isBlockedCall(item.call)));});
+  dom.stationMapLinks.addEventListener("click",()=>{
+    state.hearingLinksVisible=state.hearingLinksVisible===false;
+    renderStationMap((state.activity.calls||[]).filter(item=>!isBlockedCall(item.call)));
+    persistSession();
+  });
   window.addEventListener("resize",resizeWaterfall);
   window.addEventListener("beforeunload",confirmJs8Leave);
   dom.sessionTakeover.addEventListener("click",()=>{dom.sessionTakeover.disabled=true;acquireJs8Session(true).then(won=>{if(won)location.reload();else dom.sessionTakeover.disabled=false;});});
@@ -3474,7 +3564,7 @@ async function init() {
     ttButton(){return {text:dom.freqTimetableValue.textContent,active:dom.freqTimetableButton.classList.contains("active")};},
     ttReset(){const tt=timetable();tt.slots={};tt.enabled=false;ttRuntime.appliedSlotIndex=null;ttRuntime.appliedHz=null;ttRuntime.appliedBand=null;state.pendingFrequency=null;persistTimetable();renderTimetableButton();renderHeader();},
     feedSpectrum(samples){ingestSpectrum(samples);},
-    spectrumState(){return {agcLow,agcHigh,agcReady,rows:spectrumRows,fill:spectrumFill};},
+    spectrumState(){return waterfall.state();},
     selectedCall(){return state.selectedCall;},
     feedDirected(frame){handleDirectedFrame({kind:"directed",...frame});},
     txQueueState(){return txQueue.snapshot(js8Clock.now());},

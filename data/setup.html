@@ -11,7 +11,7 @@
     <nav class="tabs" aria-label="Primary">
       <a class="tab" href="/log">QRPLog</a>
       <a class="tab" href="/dxc.html" onclick="window.open(this.href,'DXC','width=600,height=750,left=0,top=0,menubar=no,location=no,status=no'); return false;">DXC</a>
-      <a class="tab" href="/data" title="Web Client for JS8Call">JS8LAN</a>
+      <a class="tab" href="/data" title="JS8Call and WSPR over ICOM-LAN">DATA</a>
       <a class="tab tab-active" href="/setup">SETUP</a>
       <a class="tab" href="/datasync">LOGSYNC</a>
       <a class="tab bd-nav" href="/bd" hidden>BD</a>
@@ -69,7 +69,7 @@
                 <li>Set <code>Connection Type</code> to <b>Station</b> — this joins an existing router instead of the radio's own access-point mode.</li>
                 <li>Open <code>Access Point</code>, scan the networks, pick the <b>same SSID</b> as in step 1, and enter its password.</li>
                 <li>Keep <code>DHCP</code> <b>ON</b> so the router assigns the radio an address; note the <b>IP Address</b> shown in <code>WLAN Set</code>.</li>
-                <li>Select <b>Radio → TRX1 → LAN</b> below and enter that IP. For LAN control also set <code>Remote Settings → Network Control</code> to <b>ON</b> and configure a Network User1 ID/password.</li>
+                <li>Select <b>Radio → TRX1 → ICOM-LAN</b> below and enter that IP. For ICOM-LAN control also set <code>Remote Settings → Network Control</code> to <b>ON</b> and configure a Network User1 ID/password.</li>
               </ol>
               <span class="setup-guide-note">Both devices must be on the same access point for the interface to reach the radio.</span>
             </div>
@@ -131,7 +131,7 @@
               <nav class="setup-radio-nav" aria-label="Configured radios">
                 <button type="button" class="setup-radio-nav-item is-active" data-radio-select="trx1">
                   <span class="setup-radio-nav-title">TRX1 · <span data-radio-label="trx1">IC-705</span></span>
-                  <span class="setup-radio-nav-transport" data-radio-summary="trx1">LAN</span>
+                  <span class="setup-radio-nav-transport" data-radio-summary="trx1">ICOM-LAN</span>
                   <span class="setup-radio-nav-state"></span>
                 </button>
                 <button type="button" class="setup-radio-nav-item" data-radio-select="trx2">
@@ -156,7 +156,7 @@
                     <label>Label<input type="text" id="ls_trx1Label" name="trx1label" maxlength="10" placeholder="IC-705" value=""></label>
                     <label>Connection
                       <select name="trx1transport" data-radio-transport="trx1">
-                        <option value="lan">LAN</option>
+                        <option value="lan">ICOM-LAN</option>
                         <option value="trxnet">TRXNET</option>
                         <option value="civ">CI-V</option>
                       </select>
@@ -181,7 +181,7 @@
                     <label class="checkbox-row" data-primary-full-cat>
                       <input type="checkbox" name="cwIpOnConnect">
                       Announce WiFi IP via CW on first connect
-                      <span class="help-tip" data-tip="Available for direct LAN or CI-V primary connections.">?</span>
+                      <span class="help-tip" data-tip="Available for direct ICOM-LAN or CI-V primary connections.">?</span>
                     </label>
                   </div>
                 </section>
@@ -195,7 +195,7 @@
                     <label>Label<input type="text" id="ls_trx2Label" name="trx2label" maxlength="10" placeholder="TRX2" value=""></label>
                     <label>Connection
                       <select name="trx2transport" data-radio-transport="trx2">
-                        <option value="lan">LAN</option>
+                        <option value="lan">ICOM-LAN</option>
                         <option value="trxnet">TRXNET</option>
                         <option value="civ">CI-V</option>
                       </select>
@@ -228,7 +228,7 @@
                     <label>Label<input type="text" id="ls_trx3Label" name="trx3label" maxlength="10" placeholder="TRX3" value=""></label>
                     <label>Connection
                       <select name="trx3transport" data-radio-transport="trx3">
-                        <option value="lan">LAN</option>
+                        <option value="lan">ICOM-LAN</option>
                         <option value="trxnet">TRXNET</option>
                         <option value="civ">CI-V</option>
                       </select>
@@ -435,6 +435,9 @@
             editor.classList.toggle('is-active', editor.dataset.radioEditor === prefix);
           });
         }
+        function transportName(connection) {
+          return connection === 'lan' ? 'ICOM-LAN' : String(connection).toUpperCase();
+        }
         function refreshRadio(prefix) {
           var enabled = radioEnabled(prefix);
           var transport = document.querySelector('[name="' + prefix + 'transport"]');
@@ -454,7 +457,9 @@
           var navLabel = document.querySelector('[data-radio-label="' + prefix + '"]');
           if (navLabel) navLabel.textContent = (label && label.value.trim()) || prefix.toUpperCase();
           var summary = document.querySelector('[data-radio-summary="' + prefix + '"]');
-          if (summary) summary.textContent = connection.toUpperCase() + (enabled ? '' : ' · OFF');
+          // The stored value stays 'lan'; only the operator-facing name says the
+          // protocol is Icom's, so the nav summary maps instead of upper-casing.
+          if (summary) summary.textContent = transportName(connection) + (enabled ? '' : ' · OFF');
           if (prefix === 'trx1') {
             var fullCatRow = document.querySelector('[data-primary-full-cat]');
             if (fullCatRow) {
@@ -917,7 +922,7 @@
           row('PTT', state.ptt ? 'KEYED' : 'off', state.ptt);
           row('TX buffer', state.txUsed + ' / ' + state.txCapacity + ' B', false);
           row('RX audio packets', String(state.rxPackets), state.rxPackets === 0);
-          row('LAN / CI-V', state.lan ? 'connected' : 'disconnected', !state.lan);
+          row('ICOM-LAN / CI-V', state.lan ? 'connected' : 'disconnected', !state.lan);
           row('Refused transmissions',
               state.blockedLiveness + ' liveness, ' + state.blockedNotArmed + ' disarmed',
               (state.blockedLiveness + state.blockedNotArmed) > 0);

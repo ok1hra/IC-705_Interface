@@ -107,7 +107,7 @@ bool cwIpOnConnect  = true;       // announce WiFi IP via CW on first full-CAT r
 volatile bool cwIpSendPending = false;
 
 #define LOOP_WARN_MS 200
-#define REV 20260725
+#define REV 20260727
 #define WIFI
 #define UDP_TO_FSK
 #define WDT         // watchdog timer
@@ -398,6 +398,26 @@ bool primarySerialHasData = false;
 bool primaryTrxNetHasData = false;
 uint32_t secondaryLanRetryAt[2] = {0, 0};
 uint32_t secondaryLanBackoff[2] = {3000, 3000};
+
+// ── The LAN radio, wherever the operator put it ───────────────────────────────
+// LAN may be assigned to any one of the three slots, and JS8LAN (audio, PTT, TX)
+// follows it instead of assuming TRX1. The shared CAT globals (frequency, modes,
+// stateTx, meters) belong to TRX1 -- /state, the log page's TRX1 tab, band
+// decoder source 1 and the TrxNet publish all read them -- so a LAN radio in
+// slot 1 or 2 keeps its own compact snapshot here and the JS8 page asks for it
+// with /state?radio=lan. Only one slot can be LAN, hence one snapshot.
+struct LanRadioSnapshot {
+  uint8_t  slot = 0xFF;           // which slot this snapshot describes
+  bool     tx = false;
+  uint8_t  filter = 0;
+  uint8_t  rfPower = 0;
+  uint16_t smeterRaw = 0;
+  uint16_t powerMeterRaw = 0;
+  float    swr = 1.0f;
+  float    supplyVolts = 0.0f;
+  char     mode[8] = "";          // includes the -D suffix, unlike g_trxMode
+};
+LanRadioSnapshot lanRadioSnap;
 WiFiUDP trxUdp;
 TrxNet  net(trxUdp);
 char    trxDeviceName[TRXNET_MAX_DEVICE_NAME];
@@ -624,6 +644,13 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   IcomLanClient* radioLanClient(uint8_t slot);
   bool beginRadioLanClient(uint8_t slot);
   void secondaryLanClientsLoop(void);
+  uint8_t lanRadioSlotIndex(void);
+  IcomLanClient* lanRadioClient(void);
+  bool lanRadioConnected(void);
+  bool lanRadioSendCommand(const uint8_t *body, size_t len);
+  void lanRadioAudioService(IcomLanClient *client);
+  void lanRadioCivSnapshot(const uint8_t *frame, size_t len);
+  void lanCivFrameRoute(uint8_t slot, const uint8_t *frame, size_t len);
   String jsonEscape(const String &value);
   String configJsonEscape(const String &s);
   String civFrameToHex(const uint8_t *frame, size_t frameLen);
@@ -631,6 +658,7 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   uint32_t decodeCivBcdBytes(const uint8_t *bytes, size_t byteCount);
   String decodeModeName(uint8_t modeId);
   bool catWriteFrame(const uint8_t *frame, size_t frameLen, bool broadcastTx);
+  bool catWriteFrameSlot(uint8_t slot, const uint8_t *frame, size_t frameLen);
   void setModesText(const char *value);
   void copyModesText(char *dest, size_t destSize);
   bool applyModeState(uint8_t modeId, bool dataMode);
@@ -644,7 +672,7 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   size_t buildSetFrequencyFrame(uint32_t freqHz, uint8_t *frame, size_t frameMaxLen);
   size_t buildSetModeFrame(uint8_t modeId, uint8_t modeWidth, uint8_t *frame, size_t frameMaxLen);
   size_t buildReadQuickSplitFrame(uint8_t *frame, size_t frameMaxLen);
-  void buildStateJson(char *buf, size_t bufSize);
+  void buildStateJson(char *buf, size_t bufSize, bool lanView);
   void handleGetState(void);
   bool sendTemplatedHtml(const char *path);
   void handleSetupData(void);
@@ -1627,18 +1655,52 @@ void handleWebServerLoop(){
   }
 }
 
-void buildStateJson(char *buf, size_t bufSize){
+// The radio's own model name, safe to paste into the /state document.
+//
+// radioName is copied straight out of the capabilities datagram, so it is
+// network-derived: a garbled or hostile packet could carry a quote, a backslash
+// or a control byte and corrupt the JSON for every page that polls /state.
+// buildStateJson uses snprintf with no escaping, so the sanitising has to happen
+// here. Anything outside printable ASCII, and both JSON metacharacters, are
+// dropped rather than escaped -- a model name is not worth an escape path.
+static const char *radioNameForJson(IcomLanClient *client){
+  static char safe[16];
+  const char *source = client ? client->radioModelName() : "";
+  size_t out = 0;
+  for (size_t i = 0; source[i] && out + 1 < sizeof(safe); i++) {
+    char c = source[i];
+    if (c == '"' || c == '\\' || (uint8_t)c < 0x20 || (uint8_t)c > 0x7e) continue;
+    safe[out++] = c;
+  }
+  safe[out] = 0;
+  return safe;
+}
+
+// lanView answers "describe the radio JS8 is driving" instead of the default
+// "describe TRX1". The two are the same document whenever LAN sits on TRX1, and
+// only the JS8 page asks for the LAN view -- the log page's TRX1 tab, the band
+// decoder and WSPR keep reading TRX1 exactly as before.
+void buildStateJson(char *buf, size_t bufSize, bool lanView){
+  uint8_t slot = 0;
+  if (lanView) {
+    uint8_t lanSlot = lanRadioSlotIndex();
+    if (lanSlot != 0xFF) slot = lanSlot;
+  }
+  const bool snapView = slot != 0;   // a LAN radio outside TRX1 keeps its own state
   char modesSnapshot[sizeof(modes)];
-  copyModesText(modesSnapshot, sizeof(modesSnapshot));
+  if (snapView) strlcpy(modesSnapshot, lanRadioSnap.mode, sizeof(modesSnapshot));
+  else copyModesText(modesSnapshot, sizeof(modesSnapshot));
   char addrStr[5];
-  snprintf(addrStr, sizeof(addrStr), "0x%02X", radio_address);
-  RadioTransport primaryTransport = radioSlots[0].transport;
-  bool radioLinked = radioLinkUp();
-  const char *lanStatus = primaryTransport != RADIO_LAN ? "disabled" :
-                          (lanClient.connected() ? "linked" :
-                          ((lanClient.status() == IcomLanClient::LAN_IDLE || lanClient.failed())
+  snprintf(addrStr, sizeof(addrStr), "0x%02X",
+           snapView ? radioSlots[slot].civAddr : radio_address);
+  RadioTransport primaryTransport = radioSlots[slot].transport;
+  bool radioLinked = radioSlotConnected(slot);
+  IcomLanClient *client = primaryTransport == RADIO_LAN ? radioLanClient(slot) : nullptr;
+  const char *lanStatus = !client ? "disabled" :
+                          (client->connected() ? "linked" :
+                          ((client->status() == IcomLanClient::LAN_IDLE || client->failed())
                            ? "disconnected" : "connecting"));
-  const char *btStat = primaryTransport == RADIO_LAN ? (lanClient.connected() ? "LAN linked" :
+  const char *btStat = primaryTransport == RADIO_LAN ? (radioLinked ? "LAN linked" :
                        (strcmp(lanStatus, "connecting") == 0 ? "LAN connecting" : "LAN disconnected")) :
                        (primaryTransport == RADIO_CIV
                          ? (radioLinked ? "CI-V linked" : "CI-V disconnected")
@@ -1648,31 +1710,54 @@ void buildStateJson(char *buf, size_t bufSize){
   int rssi = (APmode || !WiFiStationReady()) ? -999 : (int)WiFi.RSSI();
   // Finer LAN health than a single "connected": CAT stream actually delivering,
   // and audio sub-stream carrying fresh payload. Audio is false outside LAN.
-  bool lanCatHealthy = primaryTransport == RADIO_LAN ? lanClient.catHealthy()
-                                                     : (primaryTransport == RADIO_CIV && radioLinked);
-  bool lanAudioReady = primaryTransport == RADIO_LAN && lanClient.audioReady();
-  bool fullCat = radioHasCapability(0, primaryTransport, RADIO_CAP_FULL_CAT);
+  bool lanCatHealthy = client ? client->catHealthy()
+                              : (primaryTransport == RADIO_CIV && radioLinked);
+  bool lanAudioReady = client && client->audioReady();
+  bool fullCat = radioHasCapability(slot, primaryTransport, RADIO_CAP_FULL_CAT);
+  // Values that live in the shared globals for TRX1 and in the snapshot for a
+  // LAN radio in another slot. AF gain, RIT, key speed, preamp and VOX have no
+  // consumer on the JS8 path and are not kept in the snapshot -- they report 0.
+  uint32_t viewFrequency = snapView ? (uint32_t)g_trxFreq[slot - 1] : (uint32_t)frequency;
+  bool viewPower = snapView ? radioLinked : (statusPower != 0);
+  bool viewTx = snapView ? lanRadioSnap.tx : stateTx;
+  unsigned viewFilter = snapView ? lanRadioSnap.filter : stateFilter;
+  unsigned viewSmeter = snapView ? lanRadioSnap.smeterRaw : stateSmeterRaw;
+  unsigned viewPowerMeter = snapView ? lanRadioSnap.powerMeterRaw : statePowerMeterRaw;
+  unsigned viewRfPower = snapView ? lanRadioSnap.rfPower : stateRfPower;
+  float viewSupplyVolts = snapView ? lanRadioSnap.supplyVolts : stateSupplyVolts;
+  float viewSwr = snapView ? lanRadioSnap.swr : stateSwr;
+  const char *viewType = snapView ? (primaryTransport == RADIO_LAN ? "IC-705-LAN" : "TRXNET")
+                                  : transceiverType.c_str();
+  // lanDrops/lanStalls/lanFilled are link health since boot, reported on every
+  // view rather than only the LAN one: an operator watching an unattended beacon
+  // should not have to know which slot carries LAN to see whether it has been
+  // dropping. Keep comments out of the snprintf call itself -- the argument
+  // bounds in tools/state-json-budget-smoke.js are parsed straight from it.
   snprintf(buf, bufSize,
     "{\"connected\":%s,\"catHealthy\":%s,\"audioReady\":%s,"
     "\"lanStatus\":\"%s\",\"btStatus\":\"%s\",\"wifiStatus\":\"%s\","
     "\"radioTransport\":\"%s\",\"fullCat\":%s,\"tuneSupported\":true,"
     "\"wifiRssi\":%d,\"fwRev\":\"%u\",\"bdSupported\":%s,\"power\":%s,"
     "\"frequency\":%u,\"mode\":\"%s\",\"filter\":%u,"
-    "\"radioAddress\":\"%s\",\"transceiverType\":\"%s\",\"tx\":%s,\"ritRaw\":%u,"
+    "\"radioAddress\":\"%s\",\"transceiverType\":\"%s\",\"radioName\":\"%s\",\"tx\":%s,\"ritRaw\":%u,"
     "\"smeterRaw\":%u,\"powerMeterRaw\":%u,"
     "\"afGain\":%u,\"keySpeed\":%u,\"rfPower\":%u,"
     "\"supplyVolts\":%.2f,\"swr\":%.2f,"
-    "\"preamp\":%u,\"vox\":%u,\"dxcConnected\":%s}",
+    "\"preamp\":%u,\"vox\":%u,"
+    "\"lanDrops\":%u,\"lanStalls\":%u,\"lanFilled\":%u,"
+    "\"dxcConnected\":%s}",
     radioLinked ? "true" : "false", lanCatHealthy ? "true" : "false",
     lanAudioReady ? "true" : "false", lanStatus, btStat, wifiStat,
     radioTransportName(primaryTransport), fullCat ? "true" : "false",
-    rssi, (unsigned)REV, bdEnabled ? "true" : "false", statusPower ? "true" : "false",
-    (unsigned)frequency, modesSnapshot, (unsigned)stateFilter,
-    addrStr, transceiverType.c_str(), stateTx ? "true" : "false", (unsigned)stateRitRaw,
-    (unsigned)stateSmeterRaw, (unsigned)statePowerMeterRaw,
-    (unsigned)stateAfGain, (unsigned)stateKeySpeed, (unsigned)stateRfPower,
-    stateSupplyVolts, stateSwr,
-    (unsigned)statePreampMode, (unsigned)stateVoxMode,
+    rssi, (unsigned)REV, bdEnabled ? "true" : "false", viewPower ? "true" : "false",
+    (unsigned)viewFrequency, modesSnapshot, (unsigned)viewFilter,
+    addrStr, viewType, radioNameForJson(client), viewTx ? "true" : "false",
+    (unsigned)(snapView ? 0 : stateRitRaw),
+    (unsigned)viewSmeter, (unsigned)viewPowerMeter,
+    (unsigned)(snapView ? 0 : stateAfGain), (unsigned)(snapView ? 0 : stateKeySpeed), (unsigned)viewRfPower,
+    viewSupplyVolts, viewSwr,
+    (unsigned)(snapView ? 0 : statePreampMode), (unsigned)(snapView ? 0 : stateVoxMode),
+    (unsigned)lanHealthDrops, (unsigned)lanHealthStalls, (unsigned)lanHealthFilled,
     DxcTelnetStatus ? "true" : "false"
   );
 }
@@ -1681,7 +1766,8 @@ void handleGetState(){
   // CAT page polls /state?fast=1 — hold the fast BT poll cadence while it's open
   if (webServer.arg("fast") == "1") catFastUntil = millis() + CAT_FAST_HOLD_MS;
   static char stateBuf[900];
-  buildStateJson(stateBuf, sizeof(stateBuf));
+  // ?radio=lan -> the radio JS8 drives; anything else keeps meaning TRX1.
+  buildStateJson(stateBuf, sizeof(stateBuf), webServer.arg("radio") == "lan");
   webServer.sendHeader("Cache-Control", "no-cache");
   webServer.sendHeader("Connection", "close");
   webServer.client().setNoDelay(true);
@@ -1838,7 +1924,15 @@ void handlePostCmd(){
   if (body.length() == 0) { webServer.send(400, "application/json", "{\"error\":\"empty body\"}"); return; }
   String type = extractJsonString(body, "type");
 
-  if (radioSlots[0].transport == RADIO_TRXNET && type != "setFrequency") {
+  // ?radio=lan addresses the radio JS8 drives, which is TRX1 only when the
+  // operator put LAN there. Everything else still means the primary radio.
+  uint8_t targetSlot = 0;
+  if (webServer.arg("radio") == "lan") {
+    uint8_t lanSlot = lanRadioSlotIndex();
+    if (lanSlot != 0xFF) targetSlot = lanSlot;
+  }
+
+  if (radioSlots[targetSlot].transport == RADIO_TRXNET && type != "setFrequency") {
     webServer.send(409, "application/json",
                    "{\"error\":\"unsupported_transport\",\"transport\":\"trxnet\",\"capability\":\"tune_only\"}");
     return;
@@ -1870,7 +1964,11 @@ void handlePostCmd(){
     return;
   }
 
-  if (!radioLinkUp() || radio_address == 0x00) {
+  // radio_address is TRX1's learned CI-V address and says nothing about another
+  // slot, whose address comes from its own configuration.
+  bool targetReady = targetSlot == 0 ? (radioLinkUp() && radio_address != 0x00)
+                                     : radioSlotConnected(targetSlot);
+  if (!targetReady) {
     webServer.send(503, "application/json", "{\"error\":\"radio_disconnected\"}");
     return;
   }
@@ -1880,7 +1978,7 @@ void handlePostCmd(){
     if (freq == 0) { webServer.send(400, "application/json", "{\"error\":\"invalid_frequency\"}"); return; }
     uint8_t frame[16];
     size_t len = buildSetFrequencyFrame(freq, frame, sizeof(frame));
-    if (len == 0 || !catWriteFrame(frame, len, true)) { webServer.send(500, "application/json", "{\"error\":\"tx_failed\"}"); return; }
+    if (len == 0 || !catWriteFrameSlot(targetSlot, frame, len)) { webServer.send(500, "application/json", "{\"error\":\"tx_failed\"}"); return; }
     webServer.send(200, "application/json", "{\"ok\":true}");
     return;
   }
@@ -1891,7 +1989,7 @@ void handlePostCmd(){
     modeWidth = parseFilterWidth(extractJsonString(body, "filter"));
     uint8_t frame[16];
     size_t len = buildSetModeFrame(modeId, modeWidth, frame, sizeof(frame));
-    if (len == 0 || !catWriteFrame(frame, len, true)) { webServer.send(500, "application/json", "{\"error\":\"tx_failed\"}"); return; }
+    if (len == 0 || !catWriteFrameSlot(targetSlot, frame, len)) { webServer.send(500, "application/json", "{\"error\":\"tx_failed\"}"); return; }
     webServer.send(200, "application/json", "{\"ok\":true}");
     return;
   }
@@ -1914,7 +2012,7 @@ void handlePostCmd(){
     if (!parseHexPayload(hexData, payload, payloadLen, sizeof(payload))) { webServer.send(400, "application/json", "{\"error\":\"invalid_hex\"}"); return; }
     uint8_t frame[40];
     size_t frameLen = buildSimpleCatFrame(payload[0], payload + 1, payloadLen - 1, frame, sizeof(frame));
-    if (frameLen == 0 || !catWriteFrame(frame, frameLen, true)) { webServer.send(500, "application/json", "{\"error\":\"tx_failed\"}"); return; }
+    if (frameLen == 0 || !catWriteFrameSlot(targetSlot, frame, frameLen)) { webServer.send(500, "application/json", "{\"error\":\"tx_failed\"}"); return; }
     webServer.send(200, "application/json", "{\"ok\":true}");
     return;
   }
@@ -2156,6 +2254,34 @@ IcomLanClient* radioLanClient(uint8_t slot) {
   return secondaryLanClients[slot - 1];
 }
 
+// Which slot owns the LAN radio, or 0xFF when none does. Only one slot may be
+// LAN (the SETUP page enforces it); should a hand-edited config sneak a second
+// one past, the lowest slot wins so the audio channel has one deterministic
+// owner instead of two clients fighting over the single AUD1 socket.
+uint8_t lanRadioSlotIndex(void) {
+  for (uint8_t slot = 0; slot < 3; slot++)
+    if (radioSlots[slot].transport == RADIO_LAN && (slot == 0 || radioSlots[slot].enabled))
+      return slot;
+  return 0xFF;
+}
+
+// The client driving that radio. Null until the session has been allocated,
+// which is normal for a secondary slot during the first connect attempt.
+IcomLanClient* lanRadioClient(void) {
+  uint8_t slot = lanRadioSlotIndex();
+  return slot == 0xFF ? nullptr : radioLanClient(slot);
+}
+
+bool lanRadioConnected(void) {
+  IcomLanClient* client = lanRadioClient();
+  return client && client->connected();
+}
+
+bool lanRadioSendCommand(const uint8_t *body, size_t len) {
+  IcomLanClient* client = lanRadioClient();
+  return client && client->connected() && client->sendCommand(body, len);
+}
+
 bool beginRadioLanClient(uint8_t slot) {
   if (slot > 2 || !radioSlots[slot].enabled || radioSlots[slot].transport != RADIO_LAN)
     return false;
@@ -2176,11 +2302,17 @@ bool beginRadioLanClient(uint8_t slot) {
   IcomLanClient* client = radioLanClient(slot);
   if (!client) return false;
   uint16_t localControlPort = radioLanLocalControlPort(slot);
+  // Audio goes to the slot that owns the LAN radio, not to slot 0: the JS8 page
+  // drives whichever TRX the operator put LAN on.
+  bool withAudio = slot == lanRadioSlotIndex();
+  if (withAudio && slot != lanRadioSnap.slot) lanRadioSnap = LanRadioSnapshot{};
+  if (withAudio) lanRadioSnap.slot = slot;
   client->begin(radioIp, 50001,
                 radioSlots[slot].lanUser.c_str(), radioSlots[slot].lanPass.c_str(),
-                radioSlots[slot].civAddr, slot, localControlPort, slot == 0);
-  Serial.printf("LAN | TRX%u active on local ports %u-%u\n",
-                slot + 1, localControlPort, localControlPort + 2);
+                radioSlots[slot].civAddr, slot, localControlPort, withAudio);
+  Serial.printf("LAN | TRX%u active on local ports %u-%u%s\n",
+                slot + 1, localControlPort, localControlPort + 2,
+                withAudio ? " (audio)" : "");
   return true;
 }
 
@@ -2222,9 +2354,21 @@ void radioSlotSetModeState(uint8_t slot, const char *mode) {
   }
 }
 
+// Audio-side lifecycle of whichever client owns the LAN radio: the one-shot
+// safety un-key on every link-up (PTT is radio-held state and outlives a reset)
+// and re-opening the RX audio channel for a DATA page that is already connected.
+// Shared shape with the slot-0 path in lanClientLoop(); only one of the two runs
+// for a given configuration, so the single lanLinkWasUp edge flag serves both.
+void lanRadioAudioService(IcomLanClient *client) {
+  if (!client || !client->connected()) { lanLinkWasUp = false; return; }
+  if (!lanLinkWasUp) { lanLinkWasUp = true; audioPttSafetyOnLink(); }
+  if (AudioWsClient.connected() && !client->rxAudioActive()) client->startRxAudio();
+}
+
 void secondaryLanClientsLoop(void) {
   if (APmode) return;
   uint32_t now = millis();
+  uint8_t lanSlot = lanRadioSlotIndex();
   for (uint8_t slot = 1; slot < 3; slot++) {
     uint8_t idx = slot - 1;
     if (!radioSlots[slot].enabled || radioSlots[slot].transport != RADIO_LAN) {
@@ -2232,6 +2376,15 @@ void secondaryLanClientsLoop(void) {
       continue;
     }
     IcomLanClient* client = secondaryLanClients[idx];
+    // A manual reconnect from the JS8 page targets the LAN radio wherever it is.
+    if (slot == lanSlot && lanReconnectRequested) {
+      lanReconnectRequested = false;
+      if (client) client->stop();
+      secondaryLanRetryAt[idx] = 0;
+      secondaryLanBackoff[idx] = 3000;
+      Serial.printf("LAN | manual reconnect requested (TRX%u)\n", slot + 1);
+      if (client) { beginRadioLanClient(slot); continue; }
+    }
     if (!client) {
       if (secondaryLanRetryAt[idx] == 0 || (int32_t)(now - secondaryLanRetryAt[idx]) >= 0) {
         secondaryLanRetryAt[idx] = 0;
@@ -2240,10 +2393,14 @@ void secondaryLanClientsLoop(void) {
       continue;
     }
     client->loop();
+    if (slot == lanSlot) lanRadioAudioService(client);
     if (client->connected()) {
       secondaryLanBackoff[idx] = 3000;
     } else {
       g_trxHasData[idx] = false;
+      // Never leave TX showing on a link that is gone -- the page reads this as
+      // "the radio is transmitting".
+      if (slot == lanSlot) lanRadioSnap.tx = false;
       if (client->failed()) {
         client->stop();
         secondaryLanRetryAt[idx] = now + secondaryLanBackoff[idx];
@@ -2809,7 +2966,9 @@ void setupWebServer(void){
   webServer.on("/lan/reconnect", HTTP_POST, [](){
     webServer.sendHeader("Connection", "close");
     webServer.client().setNoDelay(true);
-    if (!lanMode) {
+    // Whichever slot owns the LAN radio; the loop that services it picks the
+    // request up (lanClientLoop for TRX1, secondaryLanClientsLoop otherwise).
+    if (lanRadioSlotIndex() == 0xFF) {
       webServer.send(409, "application/json", "{\"ok\":false,\"error\":\"lan_not_active\"}");
       return;
     }
@@ -2971,33 +3130,44 @@ bool radioLinkUp(){
   return radioSlotConnected(0);
 }
 
+// Everything that keys, tunes or polls the operator's primary radio goes here;
+// it is TRX1 by definition. /cmd is the one caller that may address a different
+// slot (the JS8 page tuning the LAN radio) and uses catWriteFrameSlot directly.
 bool catWriteFrame(const uint8_t *frame, size_t frameLen, bool broadcastTx){
   (void)broadcastTx;
-  if (frameLen < 6) return false;
-  RadioTransport transport = radioSlots[0].transport;
+  return catWriteFrameSlot(0, frame, frameLen);
+}
+
+bool catWriteFrameSlot(uint8_t slot, const uint8_t *frame, size_t frameLen){
+  if (frameLen < 6 || slot > 2) return false;
+  RadioTransport transport = radioSlots[slot].transport;
   if (transport == RADIO_LAN) {
     // frame = FE FE <radio> <ctrl> <cmd> <payload> FD. Strip the wrapper and
-    // hand the body (cmd+payload) to the LAN client, which re-wraps with 0xE1.
-    return lanClient.sendCommand(frame + 4, frameLen - 5);
+    // hand the body (cmd+payload) to the LAN client, which re-wraps with 0xE1
+    // and its own configured CI-V address -- so the address byte in the frame
+    // never has to match the slot.
+    IcomLanClient *client = radioLanClient(slot);
+    return client && client->sendCommand(frame + 4, frameLen - 5);
   }
   if (transport == RADIO_CIV) {
-    if (!radioSlotConnected(0) && frame[4] != CMD_READ_FREQ && frame[4] != CMD_READ_MODE)
+    if (!radioSlotConnected(slot) && frame[4] != CMD_READ_FREQ && frame[4] != CMD_READ_MODE)
       return false;
-    civSend(radioSlots[0].civAddr, frame + 4, frameLen - 5);
+    civSend(radioSlots[slot].civAddr, frame + 4, frameLen - 5);
     return true;
   }
   if (transport == RADIO_TRXNET) {
-    // Deliberately limited primary transport: TrxNet exposes telemetry and
-    // frequency tuning, never arbitrary CAT/CW/PTT/audio frames.
+    // Deliberately limited transport: TrxNet exposes telemetry and frequency
+    // tuning, never arbitrary CAT/CW/PTT/audio frames.
     if (frame[4] != CMD_WRITE_FREQ || frameLen < 11
-        || !trxNetEnabled || radioSlots[0].netId == 0x00)
+        || !trxNetEnabled || radioSlots[slot].netId == 0x00)
       return false;
     uint32_t hz = decodeCivFrequencyBytes(frame + 5, 5);
     if (hz == 0) return false;
     char peerName[TRXNET_MAX_DEVICE_NAME];
-    snprintf(peerName, sizeof(peerName), "OI3.%02x", radioSlots[0].netId);
+    snprintf(peerName, sizeof(peerName), "OI3.%02x", radioSlots[slot].netId);
     return net.publishTo(peerName, "/s-hz", (const uint8_t*)&hz, sizeof(hz));
   }
+  if (slot != 0) return false;
   #if defined(BLUETOOTH)
     if (!btClientConnected) {
       return false;
@@ -4346,6 +4516,62 @@ void lanSecondaryCivFrameHandler(uint8_t slot, const uint8_t *frame, size_t len)
   if (cmd == 0x26 && len >= 10 && frame[5] == 0x00) {
     radioSlotSetModeState(slot, trxnetModeToString(frame[6]));
   }
+}
+
+// A LAN radio outside slot 0 polls the very same rich CI-V schedule as TRX1
+// (meters, TX state, RF power -- see the aux rotation in icomLanClient.h), so
+// the data is already on the wire; only its destination differs. Keep what the
+// JS8 page needs in the snapshot. Deliberately narrower than processCivBuffer:
+// AF/RIT/preamp/VOX have no consumer on this path and report as 0 in the LAN
+// view of /state.
+void lanRadioCivSnapshot(const uint8_t *frame, size_t len) {
+  if (!frame || len < 7) return;
+  const uint8_t cmd = frame[4];
+  const uint8_t *pl = frame + 5;
+  const size_t plLen = len - 6;
+  // Mode with the DATA suffix: the thin per-slot state only knows "USB", but
+  // JS8 has to be able to tell USB from USB-D.
+  if (cmd == 0x26 && len >= 10 && pl[0] == 0x00) {
+    const char *base = trxnetModeToString(pl[1]);
+    snprintf(lanRadioSnap.mode, sizeof(lanRadioSnap.mode),
+             pl[2] != 0 ? "%s-D" : "%s", base);
+    lanRadioSnap.filter = pl[3];
+    return;
+  }
+  if ((cmd == CMD_READ_MODE || cmd == CMD_TRANS_MODE) && len >= 7) {
+    // Legacy 04: data-mode blind, so never let it overwrite a known -D mode.
+    if (strstr(lanRadioSnap.mode, "-D") == nullptr)
+      strlcpy(lanRadioSnap.mode, trxnetModeToString(pl[0]), sizeof(lanRadioSnap.mode));
+    if (plLen >= 2) lanRadioSnap.filter = pl[1];
+    return;
+  }
+  if (cmd == 0x1C && plLen >= 2 && pl[0] == 0x00) {
+    bool newTx = (pl[1] == 0x01);
+    if (newTx != lanRadioSnap.tx) {
+      Serial.print("CIV | TRX"); Serial.print(lanRadioSnap.slot + 1);
+      Serial.print(" radio TX state -> "); Serial.println(newTx ? "TX" : "RX");
+    }
+    lanRadioSnap.tx = newTx;
+    return;
+  }
+  if (cmd == 0x14 && plLen >= 2 && pl[0] == 0x0A)
+    lanRadioSnap.rfPower = (uint8_t)decodeCivBcdBytes(pl + 1, plLen - 1);
+  if (cmd == 0x15 && plLen >= 2) {
+    uint32_t raw = decodeCivBcdBytes(pl + 1, plLen - 1);
+    if (pl[0] == 0x02) lanRadioSnap.smeterRaw = (uint16_t)raw;
+    else if (pl[0] == 0x11) lanRadioSnap.powerMeterRaw = (uint16_t)raw;
+    else if (pl[0] == 0x12) lanRadioSnap.swr = 1.0f + ((float)raw * 3.0f / 120.0f);
+    else if (pl[0] == 0x15) lanRadioSnap.supplyVolts = ((float)raw * 16.0f) / 241.0f;
+  }
+}
+
+// Every decoded LAN frame lands here. TRX1 owns the shared CAT globals; any
+// other slot feeds the thin per-slot state that the log/BD pages read, plus the
+// snapshot when it is the LAN radio driving JS8.
+void lanCivFrameRoute(uint8_t slot, const uint8_t *frame, size_t len) {
+  if (slot == 0) { lanCivFrameHandler(frame, len); return; }
+  lanSecondaryCivFrameHandler(slot, frame, len);
+  if (slot == lanRadioSnap.slot) lanRadioCivSnapshot(frame, len);
 }
 
 //-------------------------------------------------------------------------------------------------------
@@ -6420,7 +6646,7 @@ void handleUnattendedGet(){
   json += ",\"txUsed\":" + String((unsigned long)aud1TxUsed);
   json += ",\"txCapacity\":" + String((unsigned long)AUD1_TX_RING_SIZE);
   json += ",\"rxPackets\":" + String((unsigned long)audioRxPackets);
-  json += ",\"lan\":" + String((lanMode && lanClient.connected()) ? "true" : "false");
+  json += ",\"lan\":" + String(lanRadioConnected() ? "true" : "false");
   json += ",\"upMs\":" + String((unsigned long)now);
   json += ",\"choicesH\":[";
   for(uint8_t i = 0; i < UNATTENDED_ARM_CHOICE_COUNT; i++){
@@ -6476,11 +6702,11 @@ void handleUnattendedPost(){
 // ── M3 TX: key/un-key PTT via CI-V (LAN); dead-man safety un-keys on loss ──────
 void audioPttOn(){
   if(audioTxKeyed) { audioTxLastMs = millis(); return; }
-  if(!lanMode || !lanClient.connected()){ Serial.println("AUD | PTT ON skipped (LAN not connected)"); return; }
+  if(!lanRadioConnected()){ Serial.println("AUD | PTT ON skipped (LAN not connected)"); return; }
   uint8_t f[] = {0x1C, 0x00, 0x01};          // TX ON (same CI-V as CAT-page PTT)
-  bool ok = lanClient.sendCommand(f, 3);
+  bool ok = lanRadioSendCommand(f, 3);
   uint8_t rd[] = {0x1C, 0x00};               // read back -> "CIV | radio TX state" log
-  lanClient.sendCommand(rd, 2);
+  lanRadioSendCommand(rd, 2);
   audioTxKeyed = ok; audioTxLastMs = millis();
   if(ok) rtcPttWasKeyed = 1;   // cleared again only by a confirmed PTT OFF
   Serial.print("AUD | PTT ON (TX audio) sendCommand="); Serial.println(ok ? "ok" : "FAIL");
@@ -6489,7 +6715,7 @@ void audioPttOff(){
   if(!audioTxKeyed) return;
   audioTxKeyed = false;
   uint8_t f[] = {0x1C, 0x00, 0x00};          // TX OFF
-  if(lanMode && lanClient.connected()) lanClient.sendCommand(f, 3);
+  lanRadioSendCommand(f, 3);
   rtcPttWasKeyed = 0;
   Serial.println("AUD | PTT OFF");
 }
@@ -6499,12 +6725,12 @@ void audioPttOff(){
 // transmitting with nothing left that knows about it. Send TX OFF on every
 // link-up unconditionally -- never gated on what this boot believes it did.
 void audioPttSafetyOnLink(){
-  if(!lanMode || !lanClient.connected()){
+  if(!lanRadioConnected()){
     Serial.println("AUD | SAFETY: skipped, LAN not connected");
     return;
   }
   uint8_t f[] = {0x1C, 0x00, 0x00};
-  bool ok = lanClient.sendCommand(f, 3);
+  bool ok = lanRadioSendCommand(f, 3);
   audioTxKeyed = false;
   // Always log: without a radio on the bench this line is the only evidence the
   // safety un-key ran at all, and its absence is itself the symptom to look for.
@@ -6607,6 +6833,10 @@ void aud1TxTick(bool deferPrebufferMiss){
                   ",\"ptt\":true}");
   }
   uint8_t packet[160]; int bursts = 0;
+  // Resolved once: this drains on a 20 ms budget and the LAN radio cannot move
+  // slots mid-transmission.
+  IcomLanClient *txClient = lanRadioClient();
+  if(!txClient){ aud1TxAbort("LAN radio gone"); return; }
   while((int32_t)(now - aud1TxNextDrainMs) >= 0 && bursts++ < 3){
     uint64_t totalUlaw = (aud1TxTotalSamples + 5) / 6;
     uint64_t remaining = totalUlaw - aud1TxConsumedUlaw;
@@ -6614,7 +6844,7 @@ void aud1TxTick(bool deferPrebufferMiss){
     if(wanted == 0) break;
     if(aud1TxUsed < wanted){ aud1TxAbort("TX buffer underrun"); return; }
     if(aud1RingRead(packet, wanted) != wanted){ aud1TxAbort("TX ring failure"); return; }
-    lanClient.sendAudioPacket(packet, wanted);
+    txClient->sendAudioPacket(packet, wanted);
     aud1TxConsumedUlaw += wanted; aud1TxNextDrainMs += 20; audioTxLastMs = now;
   }
   uint64_t totalUlaw = (aud1TxTotalSamples + 5) / 6;
@@ -6635,7 +6865,7 @@ void AudioDisconnectWs(){
   if(AudioWsClient.connected()) AudioWsClient.stop();
   wsRingReset();
   aud1WsParser.reset();
-  lanClient.stopRxAudio();
+  if(IcomLanClient *client = lanRadioClient()) client->stopRxAudio();
 }
 
 // Called by the LAN client for every RX audio datagram payload (~160 B / 20 ms).
@@ -6709,7 +6939,7 @@ static void aud1HandleControl(const String& json){
   if(txId == 0 || sampleRate != 48000 || packetMs != 20 || totalSamples == 0 ||
      packets == 0 || prebuffer == 0 || prebuffer > totalSamples ||
      prebuffer > AUD1_TX_RING_SIZE * 6 || delayMs < 100 || delayMs > 35000 ||
-     !lanMode || !lanClient.connected()){
+     !lanRadioConnected()){
     aud1TxId = txId; aud1TxAbort("invalid tx.prepare"); return;
   }
   if(aud1TxState != AUD1_TX_IDLE && aud1TxState != AUD1_TX_DRAINED && aud1TxState != AUD1_TX_FAULT)
@@ -6805,7 +7035,7 @@ bool AudioHandleWsUpgrade(WiFiClient& webClient, const String& request, const St
                  String(audioStreamId) + ",\"rx\":[{\"kind\":\"RX_ULAW\",\"sampleRate\":8000}]," +
                  "\"tx\":[{\"kind\":\"TX_PCM16\",\"sampleRate\":48000}],\"maxPayloadBytes\":1920}";
   if(!AudioSendText(hello)){ AudioDisconnectWs(); return false; }
-  lanClient.startRxAudio();                          // opens the LAN audio channel
+  if(IcomLanClient *client = lanRadioClient()) client->startRxAudio();   // opens the LAN audio channel
   Serial.print("AUD1 | WS client connected, stream="); Serial.println(audioStreamId);
   return true;
 }
@@ -6814,7 +7044,7 @@ void AudioHandleWsClient(){
   if(!AudioWsClient.connected()){
     if(aud1TxNeedsDisconnectAbort(aud1TxState, audioTxKeyed))
       aud1TxAbort("WebSocket disconnected", false);
-    if(lanClient.rxAudioActive()) lanClient.stopRxAudio();
+    if(IcomLanClient *client = lanRadioClient(); client && client->rxAudioActive()) client->stopRxAudio();
     audioTxLen = 0;
     aud1WsParser.reset();
     return;

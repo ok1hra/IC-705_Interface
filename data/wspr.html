@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WSPR beacon</title>
+<!-- The shell -- topbar, radio bar, disclosure sections, waterfall, timetable --
+     is shared with the JS8Call page so the two cannot drift apart. wspr.css only
+     carries what is genuinely WSPR's. -->
+<link rel="stylesheet" href="/data.css?v=20260728a">
+<link rel="stylesheet" href="/wspr.css?v=20260728a">
+</head>
+<!-- lan-gate.js clears the checking class once it knows whether ICOM-LAN is set
+     up, so the page never flashes an interface it is about to replace. -->
+<body class="lan-gate-checking">
+
+<header class="site-topbar">
+  <nav class="tabs" aria-label="Primary">
+    <a class="tab" href="/log" target="_blank" rel="noopener">QRPLog</a><a class="tab" href="/dxc.html" onclick="window.open(this.href,'DXC','width=600,height=750,left=0,top=0,menubar=no,location=no,status=no'); return false;">DXC</a>
+    <a class="tab tab-active" href="/data" title="JS8Call and WSPR over ICOM-LAN">DATA</a><a class="tab" href="/setup" target="_blank" rel="noopener">SETUP</a>
+    <a class="tab" href="/datasync" target="_blank" rel="noopener">LOGSYNC</a>
+    <span id="topbarFw" class="topbar-fw"></span>
+  </nav>
+  <!-- Plain links, no target: both pages share one session token in
+       sessionStorage, so navigating in this tab keeps the radio lease while a
+       new tab would land on "session busy". -->
+  <nav class="subtabs" aria-label="DATA mode">
+    <a class="subtab" href="/data">JS8Call</a><a class="subtab subtab-active" href="/wspr.html">WSPR-Beacon</a>
+  </nav>
+</header>
+
+<header class="radio-bar">
+  <button id="trxHelpButton" class="trx-help-button" type="button" aria-haspopup="dialog" aria-controls="trxHelpDialog" aria-label="IC-705 setup help" title="IC-705 setup help">?</button>
+  <!-- No dial menu here, unlike JS8Call: on this page the frequency is the
+       schedule's to choose, so the readout is exactly that -- a readout. -->
+  <span class="trx-frequency trx-frequency-static">
+    <span><small>TRX</small><b id="trxFrequencyValue">--.---.---</b></span><span class="unit">MHz</span>
+  </span>
+  <div class="trx-control tt-control">
+    <button id="freqTimetableButton" class="freq-timetable" type="button" aria-expanded="false" aria-controls="freqTimetablePanel" title="Transmission schedule">
+      <span><small>TIMETABLE</small><b id="freqTimetableValue">NO SCHEDULE</b></span><span class="chevron">▾</span>
+    </button>
+    <section id="freqTimetablePanel" class="freq-timetable-panel" hidden aria-label="Transmission schedule">
+      <header>
+        <div><strong>Transmission schedule</strong><small>24-hour UTC, 30-min steps · an empty slot means silence</small></div>
+        <div class="tt-actions">
+          <label class="tt-period">every
+            <select id="periodFrames"></select>
+          </label>
+          <label class="tt-random"><input id="randomizeFrame" type="checkbox"> randomise</label>
+          <button id="scheduleClear" class="tt-clear" type="button">Clear</button>
+        </div>
+      </header>
+      <div id="scheduleGrid" class="tt-grid"></div>
+      <div id="schedulePopover" class="tt-popover" hidden></div>
+      <footer id="periodHint">START runs this schedule. Frequency and mode are set a few seconds before each slot.</footer>
+    </section>
+  </div>
+  <span id="trxMode" class="trx-mode">---</span>
+  <span id="radioModel" class="radio-model" title="Model reported by the radio itself">--</span>
+  <span id="linkState" class="live">● OFFLINE</span>
+  <button id="trxReconnect" class="trx-reconnect" type="button" hidden>Reconnect</button>
+  <!-- Separate from LINKED on purpose: that one reports CI-V over LAN, this one
+       the audio socket. A dead audio socket is what stops a beacon keying. -->
+  <span id="aud1State" class="pill aud1-state">AUD1 —</span>
+  <span class="spacer"></span>
+  <span id="utcClock" class="pill">UTC --:--:--</span>
+  <span id="timingState" class="muted">clock +0 ms</span>
+  <span id="lanHealth" class="muted lan-health" title="LAN link health since the interface booted: dropped sessions · loop stalls · retransmits answered with filler">LAN 0·0·0</span>
+</header>
+
+<dialog id="trxHelpDialog" class="trx-help-dialog" aria-labelledby="trxHelpTitle">
+  <form method="dialog" class="trx-help-card">
+    <header>
+      <div><small>WSPR BEACON OVER WLAN</small><h2 id="trxHelpTitle">IC-705 setup</h2></div>
+      <button class="trx-help-close" type="submit" value="close" aria-label="Close setup help" title="Close">×</button>
+    </header>
+    <div class="trx-help-content">
+      <p id="trxHelpModeWarning" class="trx-help-warning" hidden>
+        The radio is not in a data mode. The beacon sets <strong>USB-D</strong> itself before
+        every slot, but the audio path below has to be set up by hand first.
+      </p>
+      <ol class="trx-setup-steps">
+        <li><code>MENU → SET → Connectors → MOD Input → DATA MOD</code> to <code>WLAN</code>.</li>
+        <li><code>MENU → SET → Connectors → MOD Input → WLAN MOD Level</code> to <code>25%</code> as a starting point, then trim with TUNE until the radio's ALC meter stays at zero.</li>
+        <li>Mode <code>USB-D</code> with filter <code>FIL1</code>. The beacon selects the mode, not the filter.</li>
+        <li>RF power at or below <strong>10 W</strong>. The beacon refuses to key above that, whatever the radio can do.</li>
+        <li>Turn the monitor on if you want to see your own tone in the waterfall during transmission.</li>
+        <li>Break-in off. WSPR keys through the network, not through VOX.</li>
+      </ol>
+      <p class="trx-help-note">The transmitted power in the WSPR message follows the radio: turn the
+         power knob and the reported value follows it, to the nearest legal WSPR level.</p>
+    </div>
+  </form>
+</dialog>
+
+<main class="data-page wspr-page">
+
+  <!-- The ICOM-LAN card is built by lan-gate.js, which also owns .gate-card
+       styling for the panel below. -->
+  <section id="sessionBusy" class="gate-card session-busy" hidden role="alert">
+    <div class="gate-card-icon" aria-hidden="true">!</div>
+    <div>
+      <h1>The radio is driven from somewhere else</h1>
+      <p>One radio, one operator: JS8Call and WSPR-Beacon both drive the transceiver through a
+         single audio link, so only one page can run at a time.</p>
+      <p id="sessionBusyWhere" class="session-busy-where"></p>
+      <button id="sessionTakeover" class="gate-card-action" type="button">TAKE THE SESSION OVER HERE</button>
+    </div>
+  </section>
+
+  <div id="beaconInterface">
+
+    <details class="compact-section spectrum-section" data-section="spectrum" open>
+      <summary><span>Waterfall</span><span id="spectrumSummary" class="summary-status">RX 500–2700 Hz · WSPR window 1400–1600 Hz</span></summary>
+      <div id="waterfall" class="waterfall" title="Receiver audio. The two lines mark the 1400–1600 Hz WSPR window; the red marker is where this beacon transmits.">
+        <canvas id="waterfallCanvas" width="1024" height="64"></canvas>
+        <canvas id="waterfallOverlay" width="1024" height="64"></canvas>
+        <div class="frequency-scale"><span>500 Hz</span><span>1100</span><span>1700</span><span>2200</span><span>2700 Hz</span></div>
+      </div>
+      <div class="quick-controls wspr-controls">
+        <span class="inline-status">Audio <b id="audioLevel">-- dBFS</b></span>
+        <span class="inline-status">PTT <b id="pttState">off</b></span>
+        <span id="beaconState" class="beacon-state">stopped</span>
+        <div class="tx-actions">
+          <button id="startStop" class="primary" type="button" disabled>START</button>
+          <button id="tuneButton" class="tune secondary" type="button" disabled>TUNE</button>
+        </div>
+      </div>
+    </details>
+
+    <details class="compact-section" data-section="tx-session" open>
+      <summary><span>TX SESSION</span><span id="txSessionSummary" class="summary-status">no slot scheduled</span></summary>
+      <div class="tx-session-body">
+        <p id="nextSession" class="next-session">no slot scheduled</p>
+        <div id="liveSession" class="live-session" hidden>
+          <progress id="sessionProgress" max="110592" value="0"></progress>
+          <span class="inline-status">ring <b id="ringFill">--</b></span>
+          <span class="inline-status">packets <b id="packetCount">0</b></span>
+          <span class="inline-status">power meter <b id="powerMeter">--</b></span>
+          <span class="inline-status">SWR <b id="swr">--</b></span>
+        </div>
+        <p id="beaconError" class="form-error" role="alert" hidden></p>
+      </div>
+    </details>
+
+    <details class="compact-section" data-section="activity">
+      <summary><span>Activity</span><span id="activitySummary" class="summary-status"></span></summary>
+      <div class="activity-body">
+        <div class="activity-legend">
+          <select id="activityDays" aria-label="Activity range">
+            <option value="1h">1 hour</option>
+            <option value="6h">6 hours</option>
+            <option value="24h" selected>24 hours</option>
+            <option value="7d">7 days</option>
+          </select>
+          <span><i class="swatch sent"></i>sent</span>
+          <span><i class="swatch suspect"></i>power unconfirmed</span>
+          <span><i class="swatch missed"></i>missed before keying</span>
+          <span><i class="swatch broken"></i>broken on air</span>
+          <span id="activityTotals" class="activity-totals"></span>
+        </div>
+        <div id="activityGrid" class="activity-grid"></div>
+        <div id="activityDetail" class="activity-detail" hidden></div>
+      </div>
+    </details>
+
+    <details class="compact-section" data-section="settings">
+      <summary><span>SETTINGS</span><span id="settingsSummary" class="summary-status"></span></summary>
+      <div class="settings wspr-settings">
+        <label>My callsign <input id="callsign" maxlength="10" autocomplete="off" spellcheck="false"></label>
+        <label>My locator or coordinates
+          <input id="locator" maxlength="24" autocomplete="off" spellcheck="false"
+                 placeholder="JN79QI or 50.0755, 14.4378">
+          <small>transmits <b id="locatorTransmitted">----</b> — WSPR type 1 carries four characters</small>
+        </label>
+        <label>Clock correction <span><input id="clockCorrection" type="number" min="-1000" max="1000" step="1"><small>ms, shared with JS8Call</small></span></label>
+        <label>Radio
+          <select id="radioModelOverride">
+            <option value="">auto (from the radio)</option>
+          </select>
+          <small>full scale <b id="fullPowerWatts">--</b> <span id="fullPowerSource"></span></small>
+        </label>
+        <!-- Power is a readout with a write button, not a setting: what goes in
+             the message is whatever the radio is actually set to. -->
+        <label class="power-field">Power on the radio
+          <span class="power-readout"><b id="powerWatts">--</b><small id="powerPercent">reading the radio</small></span>
+        </label>
+        <label>Set the radio to
+          <span class="power-set"><select id="powerDbm"></select><button id="powerSet" type="button">SET</button></span>
+          <small>legal WSPR levels only, capped at 10 W</small>
+        </label>
+        <label>TX audio gain <input id="txGain" type="range" min="0.10" max="0.80" step="0.01">
+          <small><b id="txGainValue">0.25</b> — trim with TUNE until the radio's ALC meter stays at zero</small>
+        </label>
+        <label>TUNE power reference <input id="powerReference" readonly><small>set by the last TUNE; transmissions far off it are logged as unconfirmed</small></label>
+        <label class="safety-setting">Enable radio TX <input id="txSafety" type="checkbox">
+          <small>I will use safe RF power and a suitable load/antenna. The same confirmation as
+                 on the JS8Call page &mdash; one radio, one pledge.</small>
+        </label>
+        <p id="stationError" class="form-error" role="alert" hidden></p>
+      </div>
+    </details>
+
+  </div>
+</main>
+
+<footer class="js8-page-footer">
+  <a href="https://github.com/ok1hra/IC-705_Interface" target="_blank" rel="noopener">GitHub</a><span aria-hidden="true">|</span><a href="/THIRD-PARTY-NOTICES.txt" target="_blank" rel="noopener">Licenses</a>
+</footer>
+
+<script src="/wake-lock.js?v=20260727a"></script>
+<script src="/lan-gate.js?v=20260727a"></script>
+<script src="/fw-version.js?v=20260726a"></script>
+<script src="/js8-settings.js?v=20260726a"></script>
+<script src="/spectrum.js?v=20260728a"></script>
+<script src="/js8-aud1.js?v=20260726a"></script>
+<script src="/wspr-core.js?v=20260726a"></script>
+<script src="/wspr-tx.js?v=20260728a"></script>
+<script src="/wspr-log.js?v=20260726a"></script>
+<script src="/wspr.js?v=20260728a"></script>
+</body>
+</html>

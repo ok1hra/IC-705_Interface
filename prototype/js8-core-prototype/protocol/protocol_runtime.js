@@ -668,10 +668,20 @@
       for (const call of decoded.callsigns || []) {
         if (!call || call.startsWith("@") || call === "<....>") continue;
         const previous = this.calls.get(call);
-        this.calls.set(call, {call, lastSlotUtcMs: frame.slotUtcMs, snr: frame.snr,
-                             offsetHz: frame.offsetHz, submode: frame.submode,
-                             dtMs: frame.dtMs, quality: frame.quality,
-                             grid: decoded.from === call ? decoded.grid || previous?.grid || "" : previous?.grid || ""});
+        // A callsign enters this table two ways: it transmitted the frame, or it was
+        // merely named in one (the addressee of somebody else's directed message, a
+        // call listed in a HEARING report). Only the first kind was actually heard,
+        // so only it may claim the frame's signal numbers -- crediting the sender's
+        // SNR to the station being talked about is a lie the map would then draw.
+        const direct = decoded.from === call;
+        this.calls.set(call, {call, lastSlotUtcMs: frame.slotUtcMs,
+                             snr: direct ? frame.snr : (previous ? previous.snr : null),
+                             offsetHz: direct ? frame.offsetHz : (previous ? previous.offsetHz : null),
+                             submode: direct ? frame.submode : (previous ? previous.submode : null),
+                             dtMs: direct ? frame.dtMs : (previous ? previous.dtMs : null),
+                             quality: direct ? frame.quality : (previous ? previous.quality : null),
+                             heardDirectly: direct || Boolean(previous && previous.heardDirectly),
+                             grid: direct ? decoded.grid || previous?.grid || "" : previous?.grid || ""});
       }
       const emitted = [{type: "protocol-frame", frame: decoded}];
       if (frame.frameType & 2) {

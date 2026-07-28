@@ -45,40 +45,30 @@ button { color: inherit; cursor: pointer; }
   margin-left:auto; align-self:center; padding-right:4px; color:var(--muted);
   font-size:13px; letter-spacing:.06em; white-space:nowrap;
 }
+/* DATA covers two pages; this picks which one. It sits in the topbar rather than
+   in <main> so it survives the lan-gate and session-busy blanking -- otherwise a
+   locked-out WSPR would have no way back to JS8LAN. */
+.site-topbar .subtabs {
+  width:min(980px, calc(100vw - 24px)); margin:0 auto; padding:0 0 8px;
+  display:flex; gap:4px; border-top:1px solid var(--line); padding-top:8px;
+}
+.site-topbar .subtab {
+  padding:5px 14px; border:1px solid transparent; border-radius:4px;
+  color:var(--muted); font-size:12px; font-weight:800; letter-spacing:.1em;
+  text-decoration:none;
+}
+.site-topbar .subtab:hover { color:var(--text); }
+.site-topbar .subtab-active {
+  border-color:#2c4f77; background:rgba(46,100,165,.16); color:var(--cyan);
+}
 .data-page { width:min(1180px, 100%); margin:0 auto; padding:8px 8px 52px; }
-.lan-config-checking .radio-bar,
-.lan-config-checking .data-page > :not(.lan-required),
-.lan-required-only .radio-bar,
-.lan-required-only .data-page > :not(.lan-required) { display:none; }
-/* The lock-out panel replaces the page outright: a half-rendered JS8LAN that
-   cannot key the radio is worse than an explanation. */
+/* The .gate-card look, the ICOM-LAN card and the blanking rules for the
+   lan-gate-checking/lan-gate-blocked states all live in lan-gate.js, so both
+   DATA sub-pages explain a missing LAN link the same way. Only the session lock
+   is page-specific: the panel replaces JS8LAN outright, because a half-rendered
+   page that cannot key the radio is worse than an explanation. */
 .session-busy-only .radio-bar,
 .session-busy-only .data-page > :not(.session-busy) { display:none; }
-.lan-required[hidden] { display:none; }
-.lan-required {
-  max-width:760px; margin:clamp(28px,8vh,90px) auto 24px; padding:clamp(20px,4vw,36px);
-  display:grid; grid-template-columns:44px minmax(0,1fr); gap:18px;
-  border:1px solid #8a572b; border-radius:8px; background:#21170d; box-shadow:0 16px 48px #0007;
-}
-.lan-required-icon {
-  width:42px; height:42px; display:grid; place-items:center; border:2px solid var(--amber);
-  border-radius:50%; color:var(--amber); font:900 24px/1 ui-monospace,monospace;
-}
-.lan-required h1 { margin:0 0 9px; color:#fff; font-size:clamp(20px,4vw,28px); }
-.lan-required p { margin:8px 0; color:#d9c6ad; line-height:1.55; }
-.lan-required ol { margin:15px 0; padding-left:24px; color:#f1e3d2; }
-.lan-required li { margin:8px 0; padding-left:3px; }
-.lan-required li::marker { color:var(--amber); font-weight:900; }
-.lan-required-compatibility { color:var(--muted) !important; font-size:12px; }
-.lan-required-action {
-  display:inline-block; margin-top:8px; padding:9px 13px; border:1px solid var(--amber);
-  border-radius:4px; background:#352311; color:#ffd49a; font-weight:850; text-decoration:none;
-}
-.lan-required-action:hover, .lan-required-action:focus-visible { background:#4a3016; color:#fff; }
-.lan-required small { display:block; min-height:1em; margin-top:10px; color:var(--red); }
-.session-busy-where { color:#f1e3d2 !important; font-weight:800; }
-.session-busy button.lan-required-action { cursor:pointer; font:inherit; font-weight:850; }
-.session-busy small { color:var(--muted); }
 .js8-page-footer {
   display:flex; justify-content:center; gap:9px; padding:0 10px 24px; color:#52655f; font-size:11px;
 }
@@ -527,8 +517,19 @@ button { color: inherit; cursor: pointer; }
 .map-compass { fill: var(--muted); font: 700 11px ui-monospace, monospace; text-anchor: middle; dominant-baseline: central; }
 .map-scale { fill: var(--muted); font: 600 11px ui-monospace, monospace; text-anchor: end; }
 .map-link { stroke: var(--line); stroke-width: 1; }
+/* Third-party paths: green so they never collide with the cyan dots, the red responders
+   or the amber centre. The wide transparent twin only exists to make a 1px line hoverable. */
+.map-hearing-line { stroke: var(--green); stroke-width: 1; opacity: .75; }
+.map-hearing-hit { stroke: transparent; stroke-width: 7; }
+.map-hearing-head { fill: var(--green); opacity: .75; }
 .map-dot circle { fill: var(--cyan); opacity: .85; }
 .map-dot.reacted circle { fill: var(--red); }
+/* Heard about, never decoded here: hollow, so the map does not claim to hear it. */
+.map-dot.phantom circle { fill: none; stroke: var(--cyan); stroke-width: 1.5; }
+.map-toolbar { padding: 8px 10px 0; }
+.map-toggle { padding: 3px 8px; border: 1px solid var(--line); border-radius: 4px; background: transparent; color: var(--muted); font: 600 11px ui-monospace, monospace; letter-spacing: .08em; }
+.map-toggle.active { border-color: var(--green); color: var(--green); }
+.traffic-table tr.station-indirect td:not(.call) { color: var(--muted); }
 .map-badge { fill: var(--text); font: 700 9px ui-monospace, monospace; }
 .map-center { fill: var(--amber); }
 .traffic-table td.call.reacted { color: var(--red); }
@@ -629,8 +630,6 @@ button { color: inherit; cursor: pointer; }
   .trx-help-settings { grid-template-columns:1fr; }
   .trx-help-card footer span { display:none; }
   .trx-help-card > footer { justify-content:flex-end; }
-  .lan-required { grid-template-columns:1fr; margin-top:18px; padding:19px 16px; }
-  .lan-required-icon { width:36px; height:36px; font-size:20px; }
 }
 
 @media (max-width: 420px) {

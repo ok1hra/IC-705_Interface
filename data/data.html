@@ -6,13 +6,19 @@
   <title>JS8Call</title>
   <link rel="stylesheet" href="/data.css?v=20260724a">
 </head>
-<body class="startup-pending lan-config-checking">
+<body class="startup-pending lan-gate-checking">
   <header class="site-topbar">
     <nav class="tabs" aria-label="Primary">
       <a class="tab" href="/log" target="_blank" rel="noopener">QRPLog</a><a class="tab" href="/dxc.html" onclick="window.open(this.href,'DXC','width=600,height=750,left=0,top=0,menubar=no,location=no,status=no'); return false;">DXC</a>
-      <a class="tab tab-active" href="/data" title="Web Client for JS8Call">JS8LAN</a><a class="tab" href="/setup" target="_blank" rel="noopener">SETUP</a>
+      <a class="tab tab-active" href="/data" title="JS8Call and WSPR over ICOM-LAN">DATA</a><a class="tab" href="/setup" target="_blank" rel="noopener">SETUP</a>
       <a class="tab" href="/datasync" target="_blank" rel="noopener">LOGSYNC</a><a class="tab bd-nav" href="/bd" target="_blank" rel="noopener" hidden>BD</a>
       <span id="topbarFw" class="topbar-fw"></span>
+    </nav>
+    <!-- Plain links, no target: both pages share one session token in
+         sessionStorage, so navigating in this tab keeps the radio lease while a
+         new tab would land on "session busy". -->
+    <nav class="subtabs" aria-label="DATA mode">
+      <a class="subtab subtab-active" href="/data">JS8Call</a><a class="subtab" href="/wspr.html">WSPR-Beacon</a>
     </nav>
   </header>
 
@@ -20,7 +26,7 @@
     <button id="trxHelpButton" class="trx-help-button" type="button" aria-haspopup="dialog" aria-controls="trxHelpDialog" aria-label="IC-705 setup help" title="IC-705 setup help">?</button>
     <div class="trx-control">
       <button id="trxFrequency" class="trx-frequency" type="button" aria-expanded="false">
-        <span id="trxDot" class="trx-dot"></span><span><small>TRX</small><b id="trxFrequencyValue">--.---.---</b></span><span class="unit">MHz</span><span>▾</span>
+        <span id="trxDot" class="trx-dot"></span><span><small id="trxSlotLabel">TRX</small><b id="trxFrequencyValue">--.---.---</b></span><span class="unit">MHz</span><span>▾</span>
       </button>
       <section id="frequencyMenu" class="frequency-menu" hidden aria-label="JS8 dial frequencies"></section>
     </div>
@@ -159,30 +165,16 @@
   </dialog>
 
   <main class="data-page">
-    <section id="lanRequired" class="lan-required" hidden role="alert">
-      <div class="lan-required-icon" aria-hidden="true">!</div>
-      <div>
-        <h1>JS8Call requires TRX1 over LAN</h1>
-        <p>This function uses Icom network control and bidirectional WLAN audio. It is not available with a Bluetooth or serial/CAT connection.</p>
-        <ol>
-          <li>On the radio, connect to WLAN and enable <strong>Network Control</strong> in its remote/network settings.</li>
-          <li>Open <strong>SETUP → Radio</strong> and select <strong>TRX1 Connection: LAN</strong>.</li>
-          <li>Enter the radio IP address, network username and network password, then save the setup.</li>
-        </ol>
-        <p class="lan-required-compatibility">IC-705 is tested. Other Icom transceivers using the compatible LAN remote-control and audio protocol may also work.</p>
-        <a class="lan-required-action" href="/setup#radioSection">OPEN TRX1 LAN SETUP</a>
-        <small id="lanRequiredDetail"></small>
-      </div>
-    </section>
-
-    <section id="sessionBusy" class="lan-required session-busy" hidden role="alert">
-      <div class="lan-required-icon" aria-hidden="true">!</div>
+    <!-- The ICOM-LAN card is built by lan-gate.js, which also owns .gate-card
+         styling for the panel below. -->
+    <section id="sessionBusy" class="gate-card session-busy" hidden role="alert">
+      <div class="gate-card-icon" aria-hidden="true">!</div>
       <div>
         <h1>JS8LAN is already open elsewhere</h1>
         <p>One radio, one operator: JS8LAN drives the transceiver over a single audio link, so only one page can run it at a time. Close the other page, or take the session over here.</p>
         <p id="sessionBusyWhere" class="session-busy-where"></p>
         <p>This page will unlock by itself as soon as the other one is closed.</p>
-        <button id="sessionTakeover" class="lan-required-action" type="button">TAKE THE SESSION OVER HERE</button>
+        <button id="sessionTakeover" class="gate-card-action" type="button">TAKE THE SESSION OVER HERE</button>
         <small id="sessionBusyDetail"></small>
       </div>
     </section>
@@ -334,6 +326,7 @@
 
       <details class="compact-section" data-section="stations-map">
         <summary><span>Stations map</span><span id="stationMapSummary" class="summary-status">0 on map</span></summary>
+        <div class="map-toolbar"><button type="button" id="stationMapLinks" class="map-toggle active" aria-pressed="true" title="Show who hears whom between remote stations">LINKS</button></div>
         <div id="stationMap" class="station-map"></div>
       </details>
 
@@ -372,6 +365,8 @@
     <a href="https://github.com/ok1hra/IC-705_Interface" target="_blank" rel="noopener">GitHub</a><span aria-hidden="true">|</span><a href="/THIRD-PARTY-NOTICES.txt" target="_blank" rel="noopener">Licenses</a>
   </footer>
 
+  <script src="/wake-lock.js?v=20260727a"></script>
+  <script src="/lan-gate.js?v=20260727a"></script>
   <script src="/fw-version.js?v=20260719d"></script>
   <script src="/js8-settings.js?v=20260719d"></script>
   <script src="/js8-email.js?v=20260719d"></script>
@@ -386,6 +381,7 @@
   <script src="/js8-autoreply.js?v=20260723a"></script>
   <script src="/js8-protocol.js?v=20260719d"></script>
   <script src="/js8-timebase.js?v=20260719d"></script>
+  <script src="/spectrum.js?v=20260728a"></script>
   <script src="/js8-aud1.js?v=20260724c"></script>
   <script src="/js8-audio.js?v=20260719d"></script>
   <script src="/js8-tx.js?v=20260724b"></script>

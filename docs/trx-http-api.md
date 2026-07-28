@@ -40,6 +40,17 @@ GET /state HTTP/1.1
 Host: <ip-zarizeni>
 ```
 
+**Který TRX endpoint popisuje:** bez parametru vždy **TRX1** (primární rádio) —
+tak ho čte log, band decoder i WSPR. Volitelný `?radio=lan` vrátí stejný dokument,
+ale pro **rádio připojené přes LAN**, ať už je na TRX1, TRX2 nebo TRX3. To používá
+stránka JS8LAN, protože LAN může operátor přiřadit kterémukoli slotu. Když LAN
+žádný slot nemá, parametr se ignoruje a odpověď popisuje TRX1.
+
+U LAN rádia mimo TRX1 nese odpověď kompaktnější stav: `frequency`, `mode` (včetně
+`-D`), `tx`, `filter`, `rfPower`, `smeterRaw`, `powerMeterRaw`, `swr` a
+`supplyVolts` jsou platné; `ritRaw`, `afGain`, `keySpeed`, `preamp` a `vox` se pro
+tuto cestu nesledují a vracejí `0`.
+
 **Odpověď:** `200 OK`, `Content-Type: application/json`
 
 ```json
@@ -55,6 +66,7 @@ Host: <ip-zarizeni>
   "filter":          1,
   "radioAddress":    "0xA4",
   "transceiverType": "IC-705-BT",
+  "radioName":       "IC-705",
   "tx":              false,
   "ritRaw":          0,
   "smeterRaw":       0,
@@ -102,6 +114,11 @@ Content-Type: application/json
 
 { "type": "<typ>", ... }
 ```
+
+**Cíl příkazu:** bez parametru míří na **TRX1**. Stejně jako u `/state` lze přidat
+`?radio=lan` a příkaz půjde do rádia na LAN, ať je na kterémkoli slotu — tak
+JS8LAN ladí a přepíná mód. `setFrequency`, `setMode` a `civ.raw` respektují cíl;
+`sendCw` a `abortCw` zůstávají u TRX1.
 
 **Úspěšná odpověď:** `200 OK`
 ```json

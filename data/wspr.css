@@ -1,0 +1,140 @@
+/* WSPR-Beacon page. The shell -- topbar, radio bar, disclosure sections,
+   waterfall, timetable panel, settings grid, help dialog, gate cards -- comes
+   from data.css, which the page loads first. What is left here is only what
+   JS8Call has no equivalent of: the beacon state line, the transmission session
+   readout, and the activity grid.
+
+   data.css owns the palette. These aliases exist because the WSPR-specific
+   rules below were written against the older names; keeping them mapped is
+   cheaper and less risky than renaming every use, and it means a palette change
+   in data.css still reaches this page. */
+:root {
+  --ink: var(--text);
+  --ok: var(--green);
+  --bad: var(--red);
+  --warn: var(--amber);
+  --accent: var(--cyan);
+}
+
+/* ---- radio bar ---------------------------------------------------------- */
+
+/* Unlike JS8Call there is no dial menu: the schedule owns the frequency, so the
+   readout must not look pressable. */
+.trx-frequency-static { cursor: default; }
+.trx-frequency-static:hover { border-color: var(--line); background: transparent; }
+.radio-model { color: var(--muted); font-size: 11px; white-space: nowrap; }
+
+.aud1-state { color: var(--muted); font-size: 11px; }
+.aud1-state.up { color: var(--green); border-color: #2f6b57; }
+.lan-health { font-size: 11px; font-variant-numeric: tabular-nums; }
+.lan-health.warn { color: var(--amber); }
+
+/* The schedule's own controls, in the timetable panel header next to Clear. */
+.tt-period, .tt-random {
+  display: flex; align-items: center; gap: 4px;
+  color: var(--muted); font-size: 11px; white-space: nowrap;
+}
+.tt-period select { padding: 2px 4px; font-size: 11px; }
+
+/* ---- waterfall ---------------------------------------------------------- */
+
+/* Read-only here: WSPR randomises its offset inside the window, so there is
+   nothing to click and the crosshair JS8Call uses would promise otherwise. */
+.wspr-page .waterfall canvas { cursor: default; }
+
+.wspr-controls { grid-template-columns: auto auto 1fr auto; align-items: center; }
+.beacon-state { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.beacon-state.running { color: var(--green); }
+.beacon-state.paused { color: var(--red); }
+.wspr-controls .tx-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.wspr-controls button.primary {
+  background: var(--green); border: 1px solid var(--green); color: #04170a;
+  font-weight: 700; border-radius: 6px; padding: 7px 16px;
+}
+.wspr-controls button.primary.running { background: var(--red); border-color: var(--red); color: #fff; }
+.wspr-controls button.secondary {
+  background: #16211f; border: 1px solid var(--line); border-radius: 6px; padding: 7px 16px;
+}
+.wspr-controls button.secondary.running { border-color: var(--red); color: var(--red); }
+.wspr-controls button:disabled { opacity: .45; cursor: not-allowed; }
+#pttState.keyed { color: var(--red); }
+
+/* ---- TX session --------------------------------------------------------- */
+
+.tx-session-body { padding: 9px 10px; }
+.next-session { margin: 0; font-size: 13px; font-variant-numeric: tabular-nums; }
+.live-session { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+.live-session progress { flex: 1; min-width: 200px; height: 8px; }
+.form-error { color: var(--red); }
+
+/* ---- settings ----------------------------------------------------------- */
+
+.wspr-settings .power-readout { display: flex; flex-direction: column; gap: 2px; }
+.wspr-settings .power-readout b { font-size: 17px; font-variant-numeric: tabular-nums; }
+.wspr-settings .power-readout b.over { color: var(--red); }
+.wspr-settings .power-set { display: flex; gap: 6px; align-items: center; }
+.wspr-settings .power-set select { flex: 1; }
+.wspr-settings .power-set button {
+  background: #16211f; border: 1px solid var(--line); border-radius: 5px;
+  padding: 5px 12px; font-size: 11px; letter-spacing: .06em;
+}
+.wspr-settings .power-set button:hover:not(:disabled) { border-color: var(--cyan); }
+.wspr-settings input[readonly] { color: var(--muted); }
+
+/* ---- activity ----------------------------------------------------------- */
+
+.activity-body { padding: 9px 10px; }
+.activity-legend {
+  display: flex; gap: 14px; flex-wrap: wrap; align-items: center;
+  font-size: 11px; color: var(--muted); margin-bottom: 10px;
+}
+.activity-legend span { display: flex; gap: 5px; align-items: center; }
+.activity-legend select { padding: 3px 6px; font-size: 11px; }
+.activity-totals { margin-left: auto; font-variant-numeric: tabular-nums; }
+.swatch { width: 11px; height: 11px; border-radius: 2px; display: inline-block; }
+.swatch.sent { background: var(--green); }
+.swatch.suspect { background: var(--amber); }
+.swatch.missed { background: #b3630f; }
+.swatch.broken { background: var(--red); }
+
+.activity-grid { display: flex; flex-direction: column; gap: 2px; overflow-x: auto; }
+.activity-row { display: flex; gap: 2px; align-items: center; }
+.activity-hour {
+  width: 26px; flex: none; text-align: right; color: var(--muted);
+  font-size: 10px; font-variant-numeric: tabular-nums;
+}
+.activity-cell {
+  width: 12px; height: 12px; flex: none; border-radius: 2px;
+  background: #171d26; border: 1px solid #21262d; padding: 0; cursor: default;
+}
+/* Slot resolution packs thirty cells into a row, so they get narrower rather
+   than pushing the grid into a horizontal scroll on a phone. */
+.activity-grid.slot-view .activity-cell { width: 9px; }
+.activity-cell.sent { background: var(--green); border-color: var(--green); cursor: pointer; }
+.activity-cell.suspect { background: var(--amber); border-color: var(--amber); cursor: pointer; }
+.activity-cell.missed { background: #b3630f; border-color: #b3630f; cursor: pointer; }
+.activity-cell.broken { background: var(--red); border-color: var(--red); cursor: pointer; }
+.activity-cell.selected { outline: 2px solid var(--cyan); outline-offset: 1px; }
+
+.activity-detail {
+  margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px;
+  font-size: 12px;
+}
+.activity-detail h3 { margin: 0 0 8px; font-size: 12px; color: var(--muted); font-weight: 400; }
+.activity-detail table { width: 100%; border-collapse: collapse; }
+.activity-detail th {
+  text-align: left; color: var(--muted); font-weight: 400; font-size: 11px;
+  border-bottom: 1px solid var(--line); padding: 3px 6px 3px 0;
+}
+.activity-detail td { padding: 3px 6px 3px 0; font-variant-numeric: tabular-nums; }
+.activity-detail td.reason { color: var(--red); font-variant-numeric: normal; }
+.activity-detail .status-sent { color: var(--green); }
+.activity-detail .status-suspect { color: var(--amber); }
+.activity-detail .status-missed { color: #d98324; }
+.activity-detail .status-broken { color: var(--red); }
+
+@media (max-width: 720px) {
+  .wspr-controls { grid-template-columns: 1fr 1fr; }
+  .wspr-controls .tx-actions { grid-column: 1 / -1; justify-content: stretch; }
+  .wspr-controls .tx-actions button { flex: 1; }
+}
