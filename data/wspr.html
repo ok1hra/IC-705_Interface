@@ -31,11 +31,15 @@
 
 <header class="radio-bar">
   <button id="trxHelpButton" class="trx-help-button" type="button" aria-haspopup="dialog" aria-controls="trxHelpDialog" aria-label="IC-705 setup help" title="IC-705 setup help">?</button>
-  <!-- No dial menu here, unlike JS8Call: on this page the frequency is the
-       schedule's to choose, so the readout is exactly that -- a readout. -->
-  <span class="trx-frequency trx-frequency-static">
-    <span><small>TRX</small><b id="trxFrequencyValue">--.---.---</b></span><span class="unit">MHz</span>
-  </span>
+  <!-- Same dial menu as JS8Call, with WSPR frequencies. It opens whatever the
+       beacon is doing, but the presets only act while the beacon is stopped:
+       during a run the schedule owns the band and would tune back anyway. -->
+  <div class="trx-control">
+    <button id="trxFrequency" class="trx-frequency" type="button" aria-expanded="false" aria-controls="frequencyMenu">
+      <span><small id="trxSlotLabel">TRX</small><b id="trxFrequencyValue">--.---.---</b></span><span class="unit">MHz</span><span class="chevron">▾</span>
+    </button>
+    <section id="frequencyMenu" class="frequency-menu" hidden aria-label="WSPR dial frequencies"></section>
+  </div>
   <div class="trx-control tt-control">
     <button id="freqTimetableButton" class="freq-timetable" type="button" aria-expanded="false" aria-controls="freqTimetablePanel" title="Transmission schedule">
       <span><small>TIMETABLE</small><b id="freqTimetableValue">NO SCHEDULE</b></span><span class="chevron">▾</span>
@@ -47,12 +51,26 @@
           <label class="tt-period">every
             <select id="periodFrames"></select>
           </label>
-          <label class="tt-random"><input id="randomizeFrame" type="checkbox"> randomise</label>
+          <label class="tt-random" title="Move the transmission to a different two-minute frame each half hour, so the beacon does not sit on the same frame for ever. The frame is derived from the date and the slot, so it is still known in advance."><input id="randomizeFrame" type="checkbox"> randomise</label>
+          <button id="scheduleUndo" class="tt-clear" type="button" hidden
+                  title="Undo the last bulk change to the schedule">UNDO</button>
           <button id="scheduleClear" class="tt-clear" type="button">Clear</button>
         </div>
       </header>
-      <div id="scheduleGrid" class="tt-grid"></div>
+      <div id="scheduleGrid" class="tt-grid compact"></div>
       <div id="schedulePopover" class="tt-popover" hidden></div>
+      <!-- What the schedule above will actually key, at the two-minute
+           resolution the band-per-half-hour grid cannot show. Same visual
+           language as the Activity block, smaller, and recomputed from the same
+           prediction the countdown uses. -->
+      <div class="tt-preview">
+        <div class="tt-preview-head">
+          <span id="previewTitle">planned · next 6 h</span>
+          <span id="previewCount"></span>
+        </div>
+        <div id="previewGrid" class="tt-preview-grid" aria-hidden="true"></div>
+        <div id="previewNext" class="tt-preview-next"></div>
+      </div>
       <footer id="periodHint">START runs this schedule. Frequency and mode are set a few seconds before each slot.</footer>
     </section>
   </div>
@@ -120,9 +138,16 @@
       </div>
       <div class="quick-controls wspr-controls">
         <span class="inline-status">Audio <b id="audioLevel">-- dBFS</b></span>
+        <!-- Two separate facts, and the gap between them matters: PTT is what
+             the radio reports, Beacon is what this page believes. "transmitting
+             / PTT off" is a real failure mode, not a redundancy. -->
         <span class="inline-status">PTT <b id="pttState">off</b></span>
-        <span id="beaconState" class="beacon-state">stopped</span>
+        <span class="inline-status">Beacon <b id="beaconState" class="beacon-state">stopped</b></span>
         <div class="tx-actions">
+          <!-- Green counts down to the next slot while armed, red counts the
+               transmission out. Hidden when the beacon is stopped, because then
+               there is nothing to count. -->
+          <span id="slotTimer" class="slot-timer" hidden></span>
           <button id="startStop" class="primary" type="button" disabled>START</button>
           <button id="tuneButton" class="tune secondary" type="button" disabled>TUNE</button>
         </div>
@@ -135,10 +160,22 @@
         <p id="nextSession" class="next-session">no slot scheduled</p>
         <div id="liveSession" class="live-session" hidden>
           <progress id="sessionProgress" max="110592" value="0"></progress>
-          <span class="inline-status">ring <b id="ringFill">--</b></span>
-          <span class="inline-status">packets <b id="packetCount">0</b></span>
-          <span class="inline-status">power meter <b id="powerMeter">--</b></span>
-          <span class="inline-status">SWR <b id="swr">--</b></span>
+          <!-- Named after the failure it predicts: when this reaches zero the
+               tone breaks and the transmission is logged "TX buffer underrun".
+               "ring" named the data structure, which told the operator nothing. -->
+          <span class="inline-status"
+                title="How much audio the radio still has queued ahead of it, as a share of the firmware's 1.5 s TX buffer. The browser deliberately runs ahead of the radio; if this falls to zero the tone breaks and the transmission is logged as “TX buffer underrun”.">TX buffer <b id="ringFill">--</b></span>
+          <span class="inline-status" title="Audio packets sent to the radio so far in this transmission.">packets <b id="packetCount">0</b></span>
+          <!-- Both meters carry their scale in the text, not only in a tooltip:
+               this page is used on a phone, where nothing hovers. -->
+          <span class="inline-status"
+                title="Forward power on the radio's own meter scale, where 255 is full deflection. This is an instrument reading, not watts — the scale is not linear in power. Only read while the radio is keyed.">power meter <b id="powerMeter">--</b></span>
+          <span class="inline-status" title="Standing wave ratio reported by the radio. Only read while keyed.">SWR <b id="swr">--</b></span>
+          <!-- Beside the live meter, not in the settings: it is the number the
+               meter has to match, and this is where the operator is looking
+               while tuning. -->
+          <span class="inline-status"
+                title="What the power meter peaked at during the last TUNE on this band and power level, on the same 0–255 scale. A transmission whose forward power ends up more than 20 % away from it is logged as “power unconfirmed” instead of sent.">TUNE ref <b id="tuneReference">--</b></span>
         </div>
         <p id="beaconError" class="form-error" role="alert" hidden></p>
       </div>
@@ -150,16 +187,24 @@
         <div class="activity-legend">
           <select id="activityDays" aria-label="Activity range">
             <option value="1h">1 hour</option>
-            <option value="6h">6 hours</option>
-            <option value="24h" selected>24 hours</option>
+            <option value="6h" selected>6 hours</option>
+            <option value="24h">24 hours</option>
             <option value="7d">7 days</option>
           </select>
           <span><i class="swatch sent"></i>sent</span>
           <span><i class="swatch suspect"></i>power unconfirmed</span>
           <span><i class="swatch missed"></i>missed before keying</span>
           <span><i class="swatch broken"></i>broken on air</span>
+          <span id="plannedLegend"><i class="swatch planned"></i>planned</span>
           <span id="activityTotals" class="activity-totals"></span>
         </div>
+        <!-- This section says what the beacon did; these say who heard it.
+             External sites, so a new tab -- and nothing to see here when the
+             browser is on the interface's own access point with no internet. -->
+        <p class="spot-links">SPOTS
+          <a href="https://wspr.aprsinfo.com/" target="_blank" rel="noopener">wspr.aprsinfo.com</a>
+          <a href="https://wspr.rocks/" target="_blank" rel="noopener">wspr.rocks</a>
+        </p>
         <div id="activityGrid" class="activity-grid"></div>
         <div id="activityDetail" class="activity-detail" hidden></div>
       </div>
@@ -179,21 +224,30 @@
           <select id="radioModelOverride">
             <option value="">auto (from the radio)</option>
           </select>
-          <small>full scale <b id="fullPowerWatts">--</b> <span id="fullPowerSource"></span></small>
         </label>
-        <!-- Power is a readout with a write button, not a setting: what goes in
-             the message is whatever the radio is actually set to. -->
-        <label class="power-field">Power on the radio
-          <span class="power-readout"><b id="powerWatts">--</b><small id="powerPercent">reading the radio</small></span>
+        <!-- One row, two directions. Left of the arrow is what the radio is
+             actually doing -- that is what goes into the message, rounding
+             error and all. Right of it is the target for SET, which is the only
+             way this page ever writes power. The two can differ, so the row
+             says so in amber: amber is "not applied", red stays reserved for
+             the 10 W ceiling, the only thing that stops a transmission. -->
+        <label class="power-field" id="powerField">Power
+          <span class="power-row">
+            <span class="power-readout"><b id="powerWatts">--</b><small id="powerPercent">reading the radio</small></span>
+            <span class="power-arrow" aria-hidden="true">&rarr;</span>
+            <span class="power-set"><select id="powerDbm"></select><button id="powerSet" type="button">SET</button></span>
+          </span>
+          <small>full scale <b id="fullPowerWatts">--</b> <span id="fullPowerSource"></span> &mdash; legal WSPR levels only, capped at 10 W</small>
+          <small id="powerMismatch" class="power-mismatch" hidden></small>
         </label>
-        <label>Set the radio to
-          <span class="power-set"><select id="powerDbm"></select><button id="powerSet" type="button">SET</button></span>
-          <small>legal WSPR levels only, capped at 10 W</small>
+        <label>TX audio gain <input id="txGain" type="number" min="0.1" max="0.8" step="0.05">
+          <small>shared with JS8Call &mdash; one MOD input, one level</small>
         </label>
-        <label>TX audio gain <input id="txGain" type="range" min="0.10" max="0.80" step="0.01">
-          <small><b id="txGainValue">0.25</b> — trim with TUNE until the radio's ALC meter stays at zero</small>
+        <label class="reference-field">TUNE power references
+          <span class="reference-row"><b id="referenceCount">no bands measured</b><button id="referenceClear" type="button">Clear</button></span>
+          <small>a transmission whose forward power drifts more than 20 % from the
+                 TUNE reading for its band is logged as &ldquo;power unconfirmed&rdquo;</small>
         </label>
-        <label>TUNE power reference <input id="powerReference" readonly><small>set by the last TUNE; transmissions far off it are logged as unconfirmed</small></label>
         <label class="safety-setting">Enable radio TX <input id="txSafety" type="checkbox">
           <small>I will use safe RF power and a suitable load/antenna. The same confirmation as
                  on the JS8Call page &mdash; one radio, one pledge.</small>
@@ -213,6 +267,9 @@
 <script src="/lan-gate.js?v=20260727a"></script>
 <script src="/fw-version.js?v=20260726a"></script>
 <script src="/js8-settings.js?v=20260726a"></script>
+<!-- Only for formatFrequency(): the dotted grouping has to match the JS8Call
+     page exactly, and one shared function is the way to guarantee that. -->
+<script src="/js8-presets.js?v=20260719d"></script>
 <script src="/spectrum.js?v=20260728a"></script>
 <script src="/js8-aud1.js?v=20260726a"></script>
 <script src="/wspr-core.js?v=20260726a"></script>

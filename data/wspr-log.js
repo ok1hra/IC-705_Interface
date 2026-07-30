@@ -65,11 +65,15 @@
   const HOUR_MS = 3600000, SLOT_MS = 120000, SLOTS_PER_HOUR = 30;
   const hourStart = utcMs => Math.floor(utcMs / HOUR_MS) * HOUR_MS;
 
-  function summariseSlots(records, {hours = 24, nowUtcMs = Date.now()} = {}) {
+  // aheadHours appends empty rows after the current hour. This file stays about
+  // records -- it never predicts anything -- but the caller needs the future rows
+  // to exist on the same axis before it can mark what the schedule will key there.
+  function summariseSlots(records, {hours = 24, aheadHours = 0, nowUtcMs = Date.now()} = {}) {
     const lastHour = hourStart(nowUtcMs);
     const firstHour = lastHour - (hours - 1) * HOUR_MS;
+    const rows = hours + Math.max(0, aheadHours);
     const cells = [];
-    for (let row = 0; row < hours; row++) {
+    for (let row = 0; row < rows; row++) {
       const hourUtcMs = firstHour + row * HOUR_MS, line = [];
       for (let slot = 0; slot < SLOTS_PER_HOUR; slot++)
         line.push({status: "idle", counts: {}, records: [], hourUtcMs,
@@ -81,7 +85,7 @@
       const at = Number(record && record.slotUtcMs);
       if (!Number.isFinite(at)) continue;
       const row = Math.round((hourStart(at) - firstHour) / HOUR_MS);
-      if (row < 0 || row >= hours) continue;
+      if (row < 0 || row >= rows) continue;
       const slot = Math.floor((at - hourStart(at)) / SLOT_MS);
       if (slot < 0 || slot >= SLOTS_PER_HOUR) continue;
       const cell = cells[row][slot];

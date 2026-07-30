@@ -18,11 +18,13 @@
 
 /* ---- radio bar ---------------------------------------------------------- */
 
-/* Unlike JS8Call there is no dial menu: the schedule owns the frequency, so the
-   readout must not look pressable. */
-.trx-frequency-static { cursor: default; }
-.trx-frequency-static:hover { border-color: var(--line); background: transparent; }
 .radio-model { color: var(--muted); font-size: 11px; white-space: nowrap; }
+
+/* While the beacon runs the schedule owns the band, so the presets are shown
+   disabled rather than removed -- the menu still answers "what is it going to
+   use", which is why an operator opens it mid-run. */
+.frequency-preset:disabled { opacity: .4; cursor: not-allowed; }
+.frequency-preset:disabled:hover { border-color: var(--line); background: transparent; }
 
 .aud1-state { color: var(--muted); font-size: 11px; }
 .aud1-state.up { color: var(--green); border-color: #2f6b57; }
@@ -35,6 +37,73 @@
   color: var(--muted); font-size: 11px; white-space: nowrap;
 }
 .tt-period select { padding: 2px 4px; font-size: 11px; }
+
+/* The .tt-* geometry in data.css is sized for the JS8Call timetable, whose cells
+   can hold a whole "14.095.600". A WSPR slot never holds more than "160m", so
+   here the cells are sized for that -- roughly a third of the width -- and the
+   room that frees up goes into showing the day in four columns of six hours.
+   Hours run DOWN each column: grid-auto-flow does it in CSS, so renderSchedule()
+   keeps emitting 24 rows in time order and nothing in JS knows about columns. */
+.tt-grid.compact {
+  grid-template-columns: repeat(4, auto); grid-template-rows: repeat(6, auto);
+  grid-auto-flow: column; justify-content: start;
+  gap: 3px 10px; max-height: none; overflow: visible;
+}
+.tt-grid.compact .tt-row { grid-template-columns: 20px 36px 36px; }
+.tt-grid.compact .tt-cell { padding: 3px 4px; }
+/* The slots a click is about to write, marked before it writes them: a "+6h"
+   from 21:00 wraps past midnight, and that has to be visible in advance rather
+   than discovered afterwards. */
+.tt-grid.compact .tt-cell.pending {
+  border-color: var(--cyan); box-shadow: inset 0 0 0 1px var(--cyan);
+}
+
+/* One control governs both writing and clearing, so there is one thing to learn
+   rather than a fill mechanism and a separate clear mechanism. It keeps its
+   choice while the panel is open -- a sticky "all day" surviving a reload would
+   be a footgun, so it is deliberately session-only. */
+.tt-span-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-bottom: 6px; }
+.tt-span-row > span { color: var(--muted); font-size: 10px; margin-right: 2px; }
+.tt-span {
+  padding: 3px 6px; border: 1px solid var(--line); border-radius: 4px; background: #081310;
+  color: var(--muted); font: 700 10px ui-monospace, monospace;
+}
+.tt-span:hover { border-color: var(--cyan); color: var(--cyan); }
+.tt-span.current { border-color: var(--cyan); background: #15332d; color: var(--cyan); }
+.tt-span-reach {
+  display: block; margin: 0 1px 7px; color: var(--amber); font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* What the schedule will actually key. The grid above answers "which band this
+   half hour", which is not the question an operator is stuck on -- the minute is,
+   because it comes out of the period and the randomised frame. Same raster as the
+   activity block's slot view (a row per hour, 30 two-minute cells), just smaller
+   and hollow, because these have not happened yet. */
+.tt-preview { margin: 9px 2px 0; }
+.tt-preview-head {
+  display: flex; justify-content: space-between; gap: 8px;
+  color: var(--muted); font-size: 10px;
+}
+.tt-preview-head .hypothetical { color: var(--amber); }
+.tt-preview-grid { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
+.tt-preview-row { display: flex; gap: 2px; align-items: center; }
+.tt-preview-row b {
+  width: 16px; flex: none; color: var(--muted);
+  font: 700 9px ui-monospace, monospace;
+}
+.tt-frame {
+  width: 6px; height: 7px; flex: none; border-radius: 1px;
+  background: #171d26; border: 1px solid #21262d;
+}
+.tt-frame.planned { background: transparent; border-color: var(--cyan); }
+.tt-frame.past { opacity: .3; }
+.tt-preview-next {
+  margin-top: 4px; color: var(--muted); font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+/* Where "now" sits, in both the strip and the activity grid. */
+.tt-frame.edge, .activity-cell.edge { border-left: 2px solid var(--amber); }
 
 /* ---- waterfall ---------------------------------------------------------- */
 
@@ -59,6 +128,20 @@
 .wspr-controls button:disabled { opacity: .45; cursor: not-allowed; }
 #pttState.keyed { color: var(--red); }
 
+/* Waiting is green, radiating is red. Tabular figures and a fixed minimum width
+   so the countdown cannot shove the buttons sideways every second. */
+.slot-timer {
+  min-width: 62px; text-align: center; padding: 6px 8px; border-radius: 6px;
+  border: 1px solid var(--line); background: #0d1c18;
+  font: 700 15px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+.slot-timer.waiting { color: var(--green); border-color: #2f6b57; }
+.slot-timer.transmitting {
+  color: #fff; background: #3a1116; border-color: var(--red);
+  box-shadow: 0 0 8px #ff183840;
+}
+
 /* ---- TX session --------------------------------------------------------- */
 
 .tx-session-body { padding: 9px 10px; }
@@ -69,17 +152,39 @@
 
 /* ---- settings ----------------------------------------------------------- */
 
+/* The power row spans both settings columns: it carries a readout, an arrow and
+   a write control, and squeezed into one half it wraps into nonsense. */
+.wspr-settings .power-field,
+.wspr-settings .reference-field { grid-column: 1 / -1; grid-template-columns: 130px minmax(0, 1fr); }
+.wspr-settings .power-field small,
+.wspr-settings .reference-field small { grid-column: 2; }
+.wspr-settings .power-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.wspr-settings .power-arrow { color: var(--muted); font-size: 15px; }
 .wspr-settings .power-readout { display: flex; flex-direction: column; gap: 2px; }
 .wspr-settings .power-readout b { font-size: 17px; font-variant-numeric: tabular-nums; }
 .wspr-settings .power-readout b.over { color: var(--red); }
+/* Amber, and only amber: the target has not been written. Red belongs to the
+   10 W ceiling one line up, which is the case that actually refuses to key. */
+.wspr-settings .power-field.mismatch {
+  outline: 1px solid var(--amber); outline-offset: 5px; border-radius: 3px;
+}
+.wspr-settings .power-field.mismatch .power-set button { border-color: var(--amber); color: var(--amber); }
+.wspr-settings .power-mismatch { color: var(--amber); }
+.wspr-settings .reference-row { display: flex; gap: 8px; align-items: center; }
+.wspr-settings .reference-row b { color: var(--text); font-weight: 400; }
 .wspr-settings .power-set { display: flex; gap: 6px; align-items: center; }
 .wspr-settings .power-set select { flex: 1; }
+.wspr-settings .reference-row button,
 .wspr-settings .power-set button {
   background: #16211f; border: 1px solid var(--line); border-radius: 5px;
   padding: 5px 12px; font-size: 11px; letter-spacing: .06em;
 }
+.wspr-settings .reference-row button:hover:not(:disabled),
 .wspr-settings .power-set button:hover:not(:disabled) { border-color: var(--cyan); }
 .wspr-settings input[readonly] { color: var(--muted); }
+/* The section opens collapsed, so an amber row nobody can see is not a warning.
+   The header carries the same colour until the target is written. */
+.compact-section .summary-status.mismatch { color: var(--amber); }
 
 /* ---- activity ----------------------------------------------------------- */
 
@@ -96,6 +201,7 @@
 .swatch.suspect { background: var(--amber); }
 .swatch.missed { background: #b3630f; }
 .swatch.broken { background: var(--red); }
+.swatch.planned { background: transparent; border: 1px solid #4a5460; }
 
 .activity-grid { display: flex; flex-direction: column; gap: 2px; overflow-x: auto; }
 .activity-row { display: flex; gap: 2px; align-items: center; }
@@ -115,6 +221,11 @@
 .activity-cell.missed { background: #b3630f; border-color: #b3630f; cursor: pointer; }
 .activity-cell.broken { background: var(--red); border-color: var(--red); cursor: pointer; }
 .activity-cell.selected { outline: 2px solid var(--cyan); outline-offset: 1px; }
+/* Hollow means "has not happened": the block keeps showing what the beacon did,
+   and continues on the same axis with what it is going to do. Grey, not cyan --
+   this section is a record of what happened, and an intention drawn brighter
+   than the history reads as the more important of the two. */
+.activity-cell.planned { background: transparent; border-color: #4a5460; cursor: default; }
 
 .activity-detail {
   margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px;
@@ -133,8 +244,28 @@
 .activity-detail .status-missed { color: #d98324; }
 .activity-detail .status-broken { color: var(--red); }
 
+/* Where the answer to "did anyone hear me" lives -- off the device, so these
+   need the browser to have internet, which the interface's own AP does not. */
+.spot-links { margin: 10px 0 0; font-size: 11px; color: var(--muted); letter-spacing: .06em; }
+.spot-links a { color: var(--cyan); margin-left: 10px; text-decoration: none; }
+.spot-links a:hover { text-decoration: underline; }
+
 @media (max-width: 720px) {
   .wspr-controls { grid-template-columns: 1fr 1fr; }
   .wspr-controls .tx-actions { grid-column: 1 / -1; justify-content: stretch; }
   .wspr-controls .tx-actions button { flex: 1; }
+}
+
+/* Same breakpoint data.css uses for the panel. Four columns of hours need ~420px
+   and a phone has ~350, so the day goes into two columns of twelve. And with the
+   preview strip below the grid the PANEL has to be the scroll container: a grid
+   that scrolls on its own leaves the strip and the footer off-screen with no
+   gesture that reaches them. */
+@media (max-width: 560px) {
+  /* No .wspr-page prefix: this stylesheet is only loaded by wspr.html, and the
+     panel lives in the radio bar rather than inside main anyway. */
+  .freq-timetable-panel { max-height: calc(100vh - 60px); overflow-y: auto; }
+  .tt-grid.compact {
+    grid-template-columns: repeat(2, auto); grid-template-rows: repeat(12, auto);
+  }
 }

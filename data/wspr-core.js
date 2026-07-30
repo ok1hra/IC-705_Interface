@@ -350,6 +350,99 @@
     return slot <= nowUtcMs ? slot + period : slot;
   }
 
+  // ---- schedule prediction --------------------------------------------------
+  //
+  // A schedule here is anything carrying {slots, periodFrames, randomizeFrame} --
+  // the page's settings object does. The beacon keys one frame out of every
+  // periodFrames, and which one is either fixed or moved every half hour. Three
+  // different views ask that question (the countdown, the panel preview, the
+  // activity block's future), so the arithmetic lives here once: a preview that
+  // re-implements it is a preview that can lie.
+
+  const FRAME_MS = 120000, DAY_MS = 86400000, SLOTS_PER_DAY = 48;
+
+  const slotIndexAt = utcMs => {
+    const at = new Date(utcMs);
+    return at.getUTCHours() * 2 + (at.getUTCMinutes() >= 30 ? 1 : 0);
+  };
+  const slotLabel = index =>
+    `${String(Math.floor(index / 2)).padStart(2, "0")}:${index % 2 ? "30" : "00"}`;
+
+  // Deterministic but different every half hour, so the beacon does not always
+  // land on the same two-minute frame while staying predictable enough to show.
+  //
+  // The final >>> 0 is not decoration. `a ^ b` in JS produces a SIGNED 32-bit int,
+  // so whenever bit 31 came out set the offset was negative -- and the caller
+  // compares it against `frameIndex % period`, which never is. That silently
+  // killed every frame of the affected half hours: with randomise on, 40 % of
+  // scheduled slots never transmitted at all.
+  function frameOffset(slotIndex, dayNumber, schedule) {
+    const period = Math.max(1, Number(schedule.periodFrames) || 1);
+    if (!schedule.randomizeFrame) return 0;
+    let hash = (dayNumber * SLOTS_PER_DAY + slotIndex) >>> 0;
+    hash = (hash ^ (hash >>> 13)) * 0x5bd1e995 >>> 0;
+    return ((hash ^ (hash >>> 15)) >>> 0) % period;
+  }
+
+  // Does the frame starting at this instant key, and on what band? null is
+  // silence -- either the half hour has no band or this is not its frame.
+  function frameTransmission(frameUtcMs, schedule) {
+    const index = slotIndexAt(frameUtcMs);
+    const slot = (schedule.slots || {})[index];
+    if (!slot) return null;
+    const period = Math.max(1, Number(schedule.periodFrames) || 1);
+    const at = new Date(frameUtcMs);
+    const frameIndex = Math.floor((at.getUTCHours() * 60 + at.getUTCMinutes()) / 2);
+    if (frameIndex % period !== frameOffset(index, Math.floor(frameUtcMs / DAY_MS), schedule))
+      return null;
+    return {slotUtcMs: frameUtcMs, slot, index};
+  }
+
+  // The next frame this schedule keys in, or null when it stays silent for the
+  // whole 24-hour cycle.
+  function nextTransmission(fromUtcMs, schedule) {
+    for (let step = 0; step < 720; step++) {
+      const frame = frameTransmission(nextSlotUtcMs(fromUtcMs + step * FRAME_MS - 1000), schedule);
+      if (frame) return frame;
+    }
+    return null;
+  }
+
+  // Every frame that keys inside a window. Frames, not half hours: the minute is
+  // the one thing the timetable's band-per-half-hour geometry cannot show, and
+  // it is exactly what the operator cannot currently predict.
+  function plannedFrames(fromUtcMs, hours, schedule) {
+    const until = fromUtcMs + hours * 3600000, frames = [];
+    for (let step = 0; step < Math.ceil(hours * 30) + 2; step++) {
+      const frameUtcMs = nextSlotUtcMs(fromUtcMs + step * FRAME_MS - 1000);
+      if (frameUtcMs >= until) break;
+      const frame = frameTransmission(frameUtcMs, schedule);
+      if (frame) frames.push(frame);
+    }
+    return frames;
+  }
+
+  // Which half-hour slots one edit touches. The ranges run forward from the
+  // clicked slot and wrap past midnight, because the schedule is a 24-hour cycle
+  // and a 21:00-03:00 night block is the case this exists for; "day" is the
+  // explicit non-wrapping choice.
+  const SPANS = [
+    {id: "slot", label: "slot"}, {id: "hour", label: "hour"},
+    {id: "3h", label: "+3h", slots: 6}, {id: "6h", label: "+6h", slots: 12},
+    {id: "day", label: "to 24:00"}, {id: "all", label: "all day"},
+  ];
+
+  function spanSlots(index, spanId) {
+    const start = ((Number(index) % SLOTS_PER_DAY) + SLOTS_PER_DAY) % SLOTS_PER_DAY;
+    const span = SPANS.find(entry => entry.id === spanId) || SPANS[0];
+    if (span.id === "all") return Array.from({length: SLOTS_PER_DAY}, (_, slot) => slot);
+    if (span.id === "day")
+      return Array.from({length: SLOTS_PER_DAY - start}, (_, offset) => start + offset);
+    if (span.id === "hour") { const hour = Math.floor(start / 2) * 2; return [hour, hour + 1]; }
+    const count = span.slots || 1;
+    return Array.from({length: count}, (_, offset) => (start + offset) % SLOTS_PER_DAY);
+  }
+
   return {
     SYMBOL_COUNT, SAMPLE_RATE, SAMPLES_PER_SYMBOL, SIGNAL_SAMPLES,
     TONE_SPACING_HZ, DURATION_S, POWER_LEVELS, WsprError,
@@ -360,5 +453,7 @@
     WsprStream, nextSlotUtcMs,
     PRESETS, RADIO_FULL_POWER_W, fullPowerWatts, dbmToWatts, wattsToDbm,
     powerCommand, maxPowerDbm,
+    FRAME_MS, SLOTS_PER_DAY, SPANS, slotIndexAt, slotLabel, frameOffset,
+    frameTransmission, nextTransmission, plannedFrames, spanSlots,
   };
 });
