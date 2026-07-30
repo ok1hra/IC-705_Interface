@@ -9,6 +9,100 @@ published.
 
 ---
 
+## Working tree — not committed
+
+* **Design notes in `docs/`** (22 files untracked), including `wspr-page-redesign.md`,
+  `wspr-timetable-redesign.md`, `wspr-majak-implementace.md`, `data-menu-wspr-subnav-plan.md`,
+  `wake-lock.md`, `js8lan-hearing-links.md`, `setup-interfaces-architecture.md`,
+  `icom-lan-implementace.md`, the `js8call-*` guides and `docs/agents/`.
+* **`mercury/`** — Rhizomatica Mercury v2 evaluated as a second file-transfer modem beside JS8 and
+  WSPR; the WASM build exists and passes a loopback test (~230 kB Brotli). Airtime, not flash, is the
+  limiting factor. Notes in `docs/mercury-implementace.md`.
+* Most of the `prototype/js8-core-prototype/` smoke harness and the newer `tools/*-smoke.*` scripts,
+  plus `backups/` and `AGENTS.md`.
+
+---
+
+## REV 20260729 — 2026-07-30
+
+### `eaf6336` some fix
+
+WSPR beacon polish — the page's second pass after the first on-air use.
+
+* **Time table redesigned.** The 24-hour schedule became a compact 4×6 grid of half-hour slots with
+  a per-slot popover, apply-to-range filling and a single-step **UNDO** for every write wider than
+  one slot (Clear included); closing the panel drops the undo snapshot with it.
+* **Planned-frame preview** — the panel shows which frames actually key inside the selected window
+  (frames, not half hours), and keeps showing a plan even when the beacon cannot currently carry it
+  out.
+* `every frame` and `every 2 frames` removed; schedules now start at *every 3rd frame*, so a
+  frequency cannot be overloaded by accident.
+* **`randomise` explained in place** — deterministic but different every half hour, described in the
+  panel footer instead of yet another popup.
+* **Bug fixed: signed XOR in `frameOffset`** silently dropped roughly 40 % of scheduled half hours.
+* **Power model.** The beacon now opens at 1 % of the transmitter instead of a fixed dBm, keeps a
+  per-band TUNE reference and compares it against the radio on the raw 0–255 CI-V level; a mismatch
+  raises a non-blocking amber warning (`targetDbm`, `powerMismatch`, `referenceFor`,
+  `storeReference`, `fullPowerWatts`).
+* **Setup help offered automatically** when the radio is *both* outside a data mode *and* off any
+  WSPR dial frequency — either one alone is legitimate, so both conditions must hold.
+* TRX button carries the slot number and the frequency is grouped in threes, matching the JS8Call
+  page.
+* **SWR is shown only while transmitting** (nothing is measured on RX); both meters are polled only
+  while the radio is keyed.
+* Running clock next to `START/STOP`; during `TUNE` it counts down the watchdog that will end the
+  tune.
+* Collapsed-section summaries updated so a folded header cannot show stale state; the `TX buffer
+  underrun` notice now clears on the next good transmission and the slot thermometer empties on the
+  RX transition.
+* Activity panel: future slots drawn dark grey instead of bright outlines, and tooltips explain the
+  power meter, TUNE reference and ring values.
+* REV bumped to 20260729 and the build republished to the USB-C web flasher.
+
+---
+
+## REV 20260727 — 2026-07-28
+
+### `9d65d8f` WSPR, ICOM-LAN for all TRX1-3, WakeLock on Android os, Add RX lines to map
+
+34 files, ~4 000 insertions. Design notes: `docs/wspr-majak-implementace.md`,
+`docs/data-menu-wspr-subnav-plan.md`, `docs/wake-lock.md`, `docs/js8lan-hearing-links.md`.
+
+* **New WSPR beacon page** (`wspr.html`, `wspr.css`, `wspr.js`) with a browser-side encoder
+  (`wspr-core.js`: callsign/locator/power packing, convolutional encoder, interleaving), a transmit
+  path (`wspr-tx.js`) that emits AUD1 v1 kind-3 frames byte-for-byte as `aud1AcceptTxPacket` expects,
+  and its own activity log in a separate IndexedDB database (`wspr-log.js`) so WSPR never mixes into
+  the QSO log.
+* TX flow control is credit-based off the firmware's TX audio ring (`AUD1_TX_RING_SIZE` = 12 288 B of
+  8 kHz µ-law ≈ 1.536 s) instead of browser timers, with a keepalive ping as insurance against an
+  idle session. The locator field accepts a locator or a coordinate pair; six characters are kept but
+  only four are transmitted. The GPS idea was dropped — the beacon has to work offline.
+* **DATA menu with a sub-navigation.** JS8LAN and WSPR became sub-pages of `DATA` (later shown in the
+  menu as `JS8Call` and `WSPR-Beacon`), sharing `data/lan-gate.js` — which owns the "radio is not in
+  LAN mode" gate card — and `data/spectrum.js`, the waterfall lifted verbatim out of `data.js` so
+  both pages render identically.
+* **ICOM-LAN can now be assigned to any of TRX1/2/3.** LAN is no longer wired to slot 0: the sketch
+  tracks which slot owns the LAN radio and routes through `lanCivFrameRoute()`,
+  `lanRadioCivSnapshot()` and `lanRadioAudioService()`. JS8/WSPR audio, PTT and `/state` follow that
+  slot, a manual reconnect targets the LAN radio wherever it sits, and a LAN radio outside slot 0
+  polls the same rich CI-V schedule as TRX1. `USB` and `USB-D` are now distinguishable by JS8.
+* SETUP option renamed `LAN` → **`ICOM-LAN`** (it is an Icom-only protocol); the frequency selector
+  header shows the actual TRX number. TrxNet slots deliberately expose only telemetry, frequency and
+  mode — `docs/trx-http-api.md` documents the HTTP contract for TRX2/TRX3 adapters.
+* **Wake Lock** (`data/wake-lock.js`) keeps the display alive on both data pages: Screen Wake Lock
+  API first, a muted looping inline video as fallback (12 440 B of base64, 5 235 B gzipped), and an
+  honest failure message when neither works. iOS stays unfixable without TLS.
+* **RX lines on the station map** — green "who hears whom" arrows derived from decoded HEARING
+  traffic, behind a `LINKS` toggle. Only paths with both ends on the map are drawn, stations that
+  were merely heard *about* get a hollow ring and no signal figures, and blocked entities stay hidden
+  everywhere.
+* Waterfall gained UTC slot boundary lines and a TX marker, and resets the analyser during TX because
+  the decoder is deaf while transmitting.
+* `tools/upload-firmware-spiffs.sh` reports program and SPIFFS usage prominently after each upload;
+  `data/THIRD-PARTY-NOTICES.txt` added; `tools/data-browser-smoke.js` extended for the new pages.
+
+---
+
 ## REV 20260725 — 2026-07-25
 
 ### `a19c0ef` TRX setup and small changes
@@ -39,11 +133,10 @@ published.
 * **Known state:** the wider browser smoke suite still reports 5 red checks that were already red at
   the previous HEAD and are unrelated to the SETUP work (own-call highlight is green by design, BD
   nav is hidden rather than removed, `txSlotPauseVisual` unimplemented).
-* Still untracked in the working tree: the design notes in `docs/` (`setup-interfaces-architecture.md`,
-  `icom-lan-implementace.md`, `js8call-komunikacni-funkce.md`, `js8call-log-qso-auto.md`,
-  `js8call-neobsluhovany-provoz-plan.md`, `js8-tx-slot-stability-plan.md`, `how-to-bugfix.md`,
-  `how-to-regenerate-manual.md`, `band-decoder-implementation.md`, `websocket-civ-proxy.md`,
-  `docs/agents/`) and most of the `prototype/js8-core-prototype/` smoke harness.
+
+### `81c3797` update changelog
+
+* Documentation only — first version of this file.
 
 ---
 
