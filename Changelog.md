@@ -11,6 +11,14 @@ published.
 
 ## Working tree — not committed
 
+* **WSPR timetable simplified to ordered sequence changes.** The band × 48-half-hour matrix and
+  variable/randomised period were replaced by a short 24-hour UTC list such as `08:30 20→15→10`,
+  `20:00 160→80→40`. Each sequence runs until the next half-hour change, preserves the operator's
+  order and wraps through midnight. The scheduler has a fixed six-minute minimum per band; one or
+  two bands automatically leave unused frame positions. Existing v1–v3 schedules migrate to the
+  new v4 shape. Back-to-back retuning now starts immediately on `tx-drained`, polls CAT readback at
+  100 ms and overlaps the 300 ms band-relay settle interval with frequency confirmation.
+
 * **RF power in the JS8Call header.** A ten-segment vertical bar sits after the mode, the height of
   the TIMETABLE button, one segment per 10 % of the radio's own 0–255 CI-V power scale — so the
   count of lit segments reads back as the percentage. Beside it, that percentage against the

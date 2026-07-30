@@ -31,36 +31,31 @@
 .lan-health { font-size: 11px; font-variant-numeric: tabular-nums; }
 .lan-health.warn { color: var(--amber); }
 
-/* The schedule's own controls, in the timetable panel header next to Clear. */
-.tt-period, .tt-random {
-  display: flex; align-items: center; gap: 4px;
-  color: var(--muted); font-size: 11px; white-space: nowrap;
+/* A timetable is a list of changes. Each row says when an ordered sequence
+   starts and the next row says when it ends; the final row wraps at midnight. */
+.tt-schedule-list { display: flex; flex-direction: column; gap: 5px; }
+.tt-schedule-row {
+  display: grid; grid-template-columns: 92px 1fr 12px; gap: 8px; align-items: center;
+  width: 100%; padding: 7px 8px; border: 1px solid var(--line); border-radius: 5px;
+  background: #081310; color: var(--text); text-align: left;
 }
-.tt-period select { padding: 2px 4px; font-size: 11px; }
-
-/* The .tt-* geometry in data.css is sized for the JS8Call timetable, whose cells
-   can hold a whole "14.095.600". A WSPR slot never holds more than "160m", so
-   here the cells are sized for that -- roughly a third of the width -- and the
-   room that frees up goes into showing the day in four columns of six hours.
-   Hours run DOWN each column: grid-auto-flow does it in CSS, so renderSchedule()
-   keeps emitting 24 rows in time order and nothing in JS knows about columns. */
-.tt-grid.compact {
-  grid-template-columns: repeat(4, auto); grid-template-rows: repeat(6, auto);
-  grid-auto-flow: column; justify-content: start;
-  gap: 3px 10px; max-height: none; overflow: visible;
+.tt-schedule-row:hover { border-color: var(--cyan); }
+.tt-schedule-row.now { border-color: var(--amber); background: #171b12; }
+.tt-range { color: var(--cyan); font: 750 11px ui-monospace, monospace; }
+.tt-sequence { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.tt-sequence-band {
+  display: inline-flex; gap: 4px; align-items: center; padding: 2px 5px;
+  border: 1px solid #31564e; border-radius: 4px; color: var(--muted);
+  font: 700 9px ui-monospace, monospace;
 }
-.tt-grid.compact .tt-row { grid-template-columns: 20px 36px 36px; }
-.tt-grid.compact .tt-cell { padding: 3px 4px; }
-/* A half hour that runs bands, but not the one being drawn. Visible enough that
-   the operator does not paint over a busy slot by accident, faint enough that
-   the row in hand still reads as the subject of the grid. */
-.tt-grid.compact .tt-cell.other {
-  border-color: #1d4b41; color: var(--muted); background: #0b1a17;
+.tt-sequence-band b { color: var(--cyan); font-size: 10px; }
+.tt-silent { color: var(--muted); font-size: 10px; font-style: italic; }
+.tt-empty {
+  margin: 2px; padding: 12px; border: 1px dashed var(--line); border-radius: 5px;
+  color: var(--muted); font-size: 11px; text-align: center;
 }
 
-/* The rotation: one chip per band, the current one being what the grid draws.
-   Adding a band here is one click instead of forty-eight in the grid, which is
-   the whole reason the matrix is edited by rows. */
+/* Activity filtering still uses the small band chips. */
 .tt-bands-row {
   display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 0 0 7px;
 }
@@ -78,36 +73,35 @@
    a verified one unless something says so here. */
 .tt-chip.unreferenced { border-style: dashed; border-color: var(--amber); }
 .tt-chip.unreferenced::after { content: "•"; color: var(--amber); }
-.tt-chip-drop { color: var(--muted); padding: 0 1px; }
-.tt-chip-drop:hover { color: var(--red, #ff6b6b); }
-.tt-chip-menu { display: inline-flex; flex-wrap: wrap; gap: 4px; }
 /* The same chips narrow the activity grid to one band. Same shape on purpose:
    one control to learn, in both places it appears. */
 .activity-bands { margin: 6px 0 4px; }
 .activity-bands:empty { display: none; }
-/* The slots a click is about to write, marked before it writes them: a "+6h"
-   from 21:00 wraps past midnight, and that has to be visible in advance rather
-   than discovered afterwards. */
-.tt-grid.compact .tt-cell.pending {
-  border-color: var(--cyan); box-shadow: inset 0 0 0 1px var(--cyan);
-}
 
-/* One control governs both writing and clearing, so there is one thing to learn
-   rather than a fill mechanism and a separate clear mechanism. It keeps its
-   choice while the panel is open -- a sticky "all day" surviving a reload would
-   be a footgun, so it is deliberately session-only. */
-.tt-span-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-bottom: 6px; }
-.tt-span-row > span { color: var(--muted); font-size: 10px; margin-right: 2px; }
-.tt-span {
-  padding: 3px 6px; border: 1px solid var(--line); border-radius: 4px; background: #081310;
-  color: var(--muted); font: 700 10px ui-monospace, monospace;
+.tt-change-time {
+  display: flex; align-items: center; gap: 7px; margin: 0 1px 8px;
+  color: var(--muted); font-size: 10px;
 }
-.tt-span:hover { border-color: var(--cyan); color: var(--cyan); }
-.tt-span.current { border-color: var(--cyan); background: #15332d; color: var(--cyan); }
-.tt-span-reach {
-  display: block; margin: 0 1px 7px; color: var(--amber); font-size: 10px;
-  font-variant-numeric: tabular-nums;
+.tt-change-time select {
+  padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px;
+  background: #06100e; color: var(--text); font: 700 11px ui-monospace, monospace;
 }
+.tt-sequence-editor { display: flex; flex-wrap: wrap; gap: 5px; min-height: 27px; }
+.tt-sequence-edit {
+  display: inline-flex; align-items: center; gap: 2px; padding: 2px 3px 2px 6px;
+  border: 1px solid #31564e; border-radius: 4px; color: var(--cyan);
+  font: 700 10px ui-monospace, monospace;
+}
+.tt-sequence-edit button {
+  width: 20px; height: 20px; padding: 0; border: 0; border-radius: 3px;
+  background: #10231f; color: var(--muted);
+}
+.tt-sequence-edit button:hover:not(:disabled) { color: var(--cyan); background: #15332d; }
+.tt-sequence-edit button:disabled { opacity: .3; }
+.tt-band-picker { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-top: 8px; }
+.tt-band-picker > span { color: var(--muted); font-size: 10px; margin-right: 2px; }
+.tt-band-picker .tt-band { padding: 4px 6px; }
+.tt-gap-note { display: block; margin: 8px 1px 0; color: var(--muted); font-size: 9px; }
 
 /* What the schedule will actually key. The grid above answers "which band this
    half hour", which is not the question an operator is stuck on -- the minute is,
@@ -290,16 +284,9 @@
   .wspr-controls .tx-actions button { flex: 1; }
 }
 
-/* Same breakpoint data.css uses for the panel. Four columns of hours need ~420px
-   and a phone has ~350, so the day goes into two columns of twelve. And with the
-   preview strip below the grid the PANEL has to be the scroll container: a grid
-   that scrolls on its own leaves the strip and the footer off-screen with no
-   gesture that reaches them. */
+/* The panel itself scrolls on phones so the preview and footer stay reachable. */
 @media (max-width: 560px) {
-  /* No .wspr-page prefix: this stylesheet is only loaded by wspr.html, and the
-     panel lives in the radio bar rather than inside main anyway. */
   .freq-timetable-panel { max-height: calc(100vh - 60px); overflow-y: auto; }
-  .tt-grid.compact {
-    grid-template-columns: repeat(2, auto); grid-template-rows: repeat(12, auto);
-  }
+  .freq-timetable-panel header { flex-direction: column; }
+  .tt-schedule-row { grid-template-columns: 78px 1fr 10px; }
 }

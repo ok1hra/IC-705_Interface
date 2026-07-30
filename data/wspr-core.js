@@ -352,20 +352,21 @@
 
   // ---- schedule prediction --------------------------------------------------
   //
-  // A schedule here is anything carrying {rotation, periodFrames, randomizeFrame}
-  // -- the page's settings object does. `rotation` is ONE matrix, band x half
-  // hour, stored by rows because that is the axis the operator edits on:
+  // The timetable is a short list of changes, not a band x half-hour matrix:
   //
-  //   rotation: [{band: "40m", hz: 7038600, slots: "1110000…"}]   // 48 characters
+  //   timetable: [
+  //     {slot: 17, bands: ["20m", "15m", "10m"]},  // from 08:30 UTC
+  //     {slot: 40, bands: ["160m", "80m", "40m"]}, // from 20:00 UTC
+  //   ]
   //
-  // Several bands may share a half hour. They then take turns frame by frame, so
-  // the transmitter can key continuously while each individual band still rests
-  // for periodFrames -- that rest is a courtesy owed to the WSPR channel, not to
-  // the PA, so rotating away from a band discharges it.
+  // The last entry wraps through midnight until the first entry. Band order is
+  // operator-owned and is the exact order used on air. A cycle is at least three
+  // frames long, so even a one- or two-band sequence leaves enough silent frames
+  // that one band can never key more than once in six minutes.
   //
-  // Four different views ask what a frame does (the countdown, the panel preview,
-  // the activity block's future, and the beacon itself), so the arithmetic lives
-  // here once: a preview that re-implements it is a preview that can lie.
+  // Countdown, preview, activity and the beacon all ask these functions. Keeping
+  // the rule here once prevents a preview that promises something the beacon will
+  // not actually transmit.
 
   const FRAME_MS = 120000, DAY_MS = 86400000, SLOTS_PER_DAY = 48;
   const FRAMES_PER_SLOT = 15, FRAMES_PER_DAY = SLOTS_PER_DAY * FRAMES_PER_SLOT;
@@ -376,127 +377,117 @@
   };
   const slotLabel = index =>
     `${String(Math.floor(index / 2)).padStart(2, "0")}:${index % 2 ? "30" : "00"}`;
-  const schedulePeriod = schedule => Math.max(1, Number(schedule.periodFrames) || 1);
+  const MIN_BAND_GAP_FRAMES = 3;
+  const PRESET_BY_BAND = new Map(PRESETS.map(preset => [preset.band, preset]));
 
-  // Rotation order is canonical -- the PRESETS order, which is by frequency --
-  // rather than the order bands were added, so adding one does not reshuffle the
-  // cycle for the others.
-  const PRESET_RANK = new Map(PRESETS.map((preset, index) => [preset.band, index]));
-
-  function rotationRows(schedule) {
-    const rows = [];
-    for (const row of (schedule && schedule.rotation) || []) {
-      const mask = String((row && row.slots) || "");
-      if (!row || !row.band || !Number(row.hz) || !mask.includes("1")) continue;
-      rows.push({band: row.band, hz: Number(row.hz), mask});
+  function cleanBands(values) {
+    const seen = new Set(), bands = [];
+    for (const value of Array.isArray(values) ? values : []) {
+      const name = typeof value === "string" ? value : value && value.band;
+      const preset = PRESET_BY_BAND.get(String(name || ""));
+      if (!preset || seen.has(preset.band)) continue;
+      seen.add(preset.band);
+      bands.push({band: preset.band, hz: preset.hz});
     }
-    // Pre-rotation shape: one band per half hour. Folded into the same matrix so
-    // nothing below this line ever sees two schedule formats. Only when there is
-    // no `rotation` key at all -- an emptied rotation must stay empty rather than
-    // resurrecting whatever the operator cleared.
-    if (!Array.isArray(schedule && schedule.rotation) && schedule && schedule.slots) {
-      const byBand = new Map();
-      for (const [index, slot] of Object.entries(schedule.slots)) {
-        if (!slot || !slot.band) continue;
-        if (!byBand.has(slot.band))
-          byBand.set(slot.band, {band: slot.band, hz: Number(slot.hz),
-                                 mask: Array(SLOTS_PER_DAY).fill("0")});
-        byBand.get(slot.band).mask[Number(index)] = "1";
+    return bands;
+  }
+
+  function sameBands(left, right) {
+    return left.length === right.length &&
+      left.every((band, index) => band.band === right[index].band);
+  }
+
+  // Converts both old schedule shapes to the change-list model. This is also used
+  // once by the settings migration, so existing installations keep their day.
+  function legacyTimetable(schedule) {
+    const sequences = Array.from({length: SLOTS_PER_DAY}, () => []);
+    if (Array.isArray(schedule && schedule.rotation)) {
+      for (let slot = 0; slot < SLOTS_PER_DAY; slot++)
+        for (const row of schedule.rotation) {
+          if (!row || String(row.slots || "")[slot] !== "1") continue;
+          const band = PRESET_BY_BAND.get(String(row.band || ""));
+          if (band && !sequences[slot].some(value => value.band === band.band))
+            sequences[slot].push({band: band.band, hz: band.hz});
+        }
+    } else if (schedule && schedule.slots) {
+      for (const [index, value] of Object.entries(schedule.slots)) {
+        const slot = Number(index), bands = cleanBands([value]);
+        if (slot >= 0 && slot < SLOTS_PER_DAY) sequences[slot] = bands;
       }
-      for (const row of byBand.values()) rows.push({...row, mask: row.mask.join("")});
     }
-    rows.sort((a, b) => (PRESET_RANK.get(a.band) ?? 99) - (PRESET_RANK.get(b.band) ?? 99));
-    return rows;
+    const entries = [];
+    for (let slot = 0; slot < SLOTS_PER_DAY; slot++) {
+      const previous = sequences[(slot + SLOTS_PER_DAY - 1) % SLOTS_PER_DAY];
+      if (!sameBands(sequences[slot], previous))
+        entries.push({slot, bands: sequences[slot]});
+    }
+    // A constant all-day sequence has no edge at which the comparison above can
+    // create a change, so anchor it explicitly at midnight.
+    if (!entries.length && sequences[0].length)
+      entries.push({slot: 0, bands: sequences[0]});
+    return entries;
   }
 
-  const bandsInSlot = (rows, slotIndex) => rows.filter(row => row.mask[slotIndex] === "1");
-  const slotKey = (rows, slotIndex) =>
-    bandsInSlot(rows, slotIndex).map(row => row.band).join(",");
-
-  // Which half hour the phase is drawn for. NOT every half hour: the phase is
-  // redrawn only where the set of bands actually changes, so a run of identical
-  // half hours keeps one phase and the cycle rolls through them unbroken.
-  //
-  // This is what makes a continuous rotation continuous. Redrawing per half hour
-  // moved every band by a random amount at each edge, which the look-back lock
-  // then had to silence -- about 8 % of a three-band run. It is also the exact
-  // shape of the pre-rotation bug: a single band held across two half hours drew
-  // two unrelated phases and could land two minutes after itself, 13 % of the
-  // time. A run that circles the whole day anchors on slot 0, so the answer does
-  // not depend on which half hour happened to ask.
-  function phaseAnchor(rows, slotIndex) {
-    const key = slotKey(rows, slotIndex);
-    let anchor = slotIndex, steps = 0;
-    for (; steps < SLOTS_PER_DAY - 1; steps++) {
-      const previous = (anchor - 1 + SLOTS_PER_DAY) % SLOTS_PER_DAY;
-      if (slotKey(rows, previous) !== key) break;
-      anchor = previous;
+  function timetableEntries(schedule) {
+    if (!Array.isArray(schedule && schedule.timetable))
+      return legacyTimetable(schedule);
+    const bySlot = new Map();
+    for (const entry of schedule.timetable) {
+      const slot = Number(entry && entry.slot);
+      if (!Number.isInteger(slot) || slot < 0 || slot >= SLOTS_PER_DAY) continue;
+      bySlot.set(slot, {slot, bands: cleanBands(entry.bands)});
     }
-    return steps === SLOTS_PER_DAY - 1 ? 0 : anchor;
+    return [...bySlot.values()].sort((a, b) => a.slot - b.slot);
   }
 
-  // Deterministic but different every half hour, so the beacon does not always
-  // land on the same two-minute frame while staying predictable enough to show.
-  // With several bands in rotation it rotates the whole cycle instead, which
-  // keeps the same promise per band: never the same frame for long.
-  //
-  // The final >>> 0 is not decoration. `a ^ b` in JS produces a SIGNED 32-bit int,
-  // so whenever bit 31 came out set the offset was negative -- and the caller
-  // compares it against `frameIndex % period`, which never is. That silently
-  // killed every frame of the affected half hours: with randomise on, 40 % of
-  // scheduled slots never transmitted at all.
-  function frameOffset(slotIndex, dayNumber, schedule, cycle) {
-    const modulus = Math.max(1, Number(cycle) || schedulePeriod(schedule));
-    if (!schedule.randomizeFrame) return 0;
-    let hash = (dayNumber * SLOTS_PER_DAY + slotIndex) >>> 0;
-    hash = (hash ^ (hash >>> 13)) * 0x5bd1e995 >>> 0;
-    return ((hash ^ (hash >>> 15)) >>> 0) % modulus;
+  function entryAt(entries, slotIndex) {
+    if (!entries.length) return null;
+    let found = entries[entries.length - 1];
+    for (const entry of entries) {
+      if (entry.slot > slotIndex) break;
+      found = entry;
+    }
+    return found;
+  }
+
+  function sequenceAt(slotIndex, schedule) {
+    const entry = entryAt(timetableEntries(schedule),
+                          ((Number(slotIndex) % SLOTS_PER_DAY) + SLOTS_PER_DAY) % SLOTS_PER_DAY);
+    return entry ? entry.bands.slice() : [];
   }
 
   // Every frame of one UTC day: the band it keys, or null for silence.
   //
-  // Two rules, and the second one is why this is a sequence rather than a formula.
-  //
-  //   cycle = max(N, P)   with N bands in that half hour and P = periodFrames.
-  //   Position (frame - phase) mod cycle picks the band when it lands below N.
-  //   Each band therefore comes round exactly once per cycle, and cycle >= P, so
-  //   the minimum gap holds by construction. N = 1 is the old behaviour.
-  //
-  //   Then a look-back lock: a band may not key within P frames of its own last
-  //   transmission. The formula alone cannot promise this, because the phase is
-  //   recomputed per half hour -- when the set of bands changes at 02:30, or even
-  //   when randomise merely moves the phase of a single-band schedule, the same
-  //   band can land two minutes after itself. Measured on the pre-rotation code:
-  //   13 % of transmissions, worst case one frame apart. The lock silences those.
-  //
-  // The warm-up pass starts fifteen frames before midnight (the schedule repeats
-  // daily, so the same rows apply) so the lock is honest across the date change
-  // too -- 720 frames is not a multiple of most periods, and without it the first
-  // frame after midnight could follow the last one before it too closely.
+  // Position inside the active sequence is counted from its change point. The
+  // cycle keeps rolling over half-hour boundaries and restarts only when the
+  // operator explicitly changes the schema. A three-frame look-back protects
+  // shared bands at schema boundaries and across midnight.
   let sequenceCache = {key: "", day: NaN, frames: null};
 
   function daySequence(dayNumber, schedule) {
-    const rows = rotationRows(schedule), period = schedulePeriod(schedule);
-    const key = `${period}|${schedule.randomizeFrame ? 1 : 0}` +
-                `|${schedule.spaceBandChanges ? 1 : 0}|` +
-                rows.map(row => `${row.band}:${row.hz}:${row.mask}`).join(",");
+    const entries = timetableEntries(schedule);
+    const key = `${schedule.spaceBandChanges ? 1 : 0}|` +
+                entries.map(entry =>
+                  `${entry.slot}:${entry.bands.map(band => band.band).join(">")}`).join(",");
     if (sequenceCache.day === dayNumber && sequenceCache.key === key)
       return sequenceCache.frames;
     const frames = new Array(FRAMES_PER_DAY).fill(null), lastKeyed = new Map();
     let previousBand = null, previousStep = -Infinity;
-    for (let step = -FRAMES_PER_SLOT; step < FRAMES_PER_DAY; step++) {
+    for (let step = -(MIN_BAND_GAP_FRAMES - 1); step < FRAMES_PER_DAY; step++) {
       const frame = ((step % FRAMES_PER_DAY) + FRAMES_PER_DAY) % FRAMES_PER_DAY;
       const slotIndex = Math.floor(frame / FRAMES_PER_SLOT);
-      const bands = bandsInSlot(rows, slotIndex);
+      const entry = entryAt(entries, slotIndex);
+      const bands = entry ? entry.bands : [];
       if (!bands.length) continue;
-      const cycle = Math.max(bands.length, period);
-      const phase = frameOffset(phaseAnchor(rows, slotIndex),
-                                step < 0 ? dayNumber - 1 : dayNumber, schedule, cycle);
-      const position = (((frame - phase) % cycle) + cycle) % cycle;
+      const cycle = Math.max(bands.length, MIN_BAND_GAP_FRAMES);
+      const dayOffset = Math.floor(step / FRAMES_PER_DAY);
+      let anchor = dayOffset * FRAMES_PER_DAY + entry.slot * FRAMES_PER_SLOT;
+      if (entry.slot > slotIndex) anchor -= FRAMES_PER_DAY;
+      const position = ((step - anchor) % cycle + cycle) % cycle;
       if (position >= bands.length) continue;
       const band = bands[position];
       const last = lastKeyed.get(band.band);
-      if (last !== undefined && step - last < period) continue;   // look-back lock
+      if (last !== undefined && step - last < MIN_BAND_GAP_FRAMES) continue;
       // spaceBandChanges is the beacon telling the schedule that this radio
       // cannot retune inside the nine seconds between two frames. It leaves the
       // frame after a band change silent, which is the only honest way to slow
@@ -547,27 +538,6 @@
     return frames;
   }
 
-  // Which half-hour slots one edit touches. The ranges run forward from the
-  // clicked slot and wrap past midnight, because the schedule is a 24-hour cycle
-  // and a 21:00-03:00 night block is the case this exists for; "day" is the
-  // explicit non-wrapping choice.
-  const SPANS = [
-    {id: "slot", label: "slot"}, {id: "hour", label: "hour"},
-    {id: "3h", label: "+3h", slots: 6}, {id: "6h", label: "+6h", slots: 12},
-    {id: "day", label: "to 24:00"}, {id: "all", label: "all day"},
-  ];
-
-  function spanSlots(index, spanId) {
-    const start = ((Number(index) % SLOTS_PER_DAY) + SLOTS_PER_DAY) % SLOTS_PER_DAY;
-    const span = SPANS.find(entry => entry.id === spanId) || SPANS[0];
-    if (span.id === "all") return Array.from({length: SLOTS_PER_DAY}, (_, slot) => slot);
-    if (span.id === "day")
-      return Array.from({length: SLOTS_PER_DAY - start}, (_, offset) => start + offset);
-    if (span.id === "hour") { const hour = Math.floor(start / 2) * 2; return [hour, hour + 1]; }
-    const count = span.slots || 1;
-    return Array.from({length: count}, (_, offset) => (start + offset) % SLOTS_PER_DAY);
-  }
-
   return {
     SYMBOL_COUNT, SAMPLE_RATE, SAMPLES_PER_SYMBOL, SIGNAL_SAMPLES,
     TONE_SPACING_HZ, DURATION_S, POWER_LEVELS, WsprError,
@@ -578,9 +548,8 @@
     WsprStream, nextSlotUtcMs,
     PRESETS, RADIO_FULL_POWER_W, fullPowerWatts, dbmToWatts, wattsToDbm,
     powerCommand, maxPowerDbm,
-    FRAME_MS, SLOTS_PER_DAY, FRAMES_PER_SLOT, FRAMES_PER_DAY,
-    SPANS, slotIndexAt, slotLabel, frameOffset,
-    rotationRows, bandsInSlot, daySequence,
-    frameTransmission, nextTransmission, plannedFrames, spanSlots,
+    FRAME_MS, SLOTS_PER_DAY, FRAMES_PER_SLOT, FRAMES_PER_DAY, MIN_BAND_GAP_FRAMES,
+    slotIndexAt, slotLabel, timetableEntries, sequenceAt, daySequence,
+    frameTransmission, nextTransmission, plannedFrames,
   };
 });
