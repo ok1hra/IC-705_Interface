@@ -11,6 +11,58 @@ published.
 
 ## Working tree — not committed
 
+* **RF power in the JS8Call header.** A ten-segment vertical bar sits after the mode, the height of
+  the TIMETABLE button, one segment per 10 % of the radio's own 0–255 CI-V power scale — so the
+  count of lit segments reads back as the percentage. Beside it, that percentage against the
+  transmitter's full scale in watts, resolved through the same cascade the WSPR page uses (manual
+  model override first, then the model the radio reports), so the two pages can never quote
+  different watts for one radio. An unrecognised model leaves the bar lit and the watts at `--`:
+  percent belongs to the level alone. On phones the number gives way and the bar stays.
+* **`/state` says whether the RF power level was ever read.** `rfPower` starts life as a
+  fabrication — 205 on TRX1, 0 in the LAN snapshot — and until the radio answered `14 0A` there was
+  no way to tell that from a reading. The new `rfPowerSeen` flag makes the difference visible, and
+  the WSPR page now refuses to derive watts, a dBm level or a power mismatch from the default: it
+  had been reporting a confident and entirely invented `8.00 W` for a radio that had not yet spoken.
+
+* **WSPR time table rotates bands.** A half hour may now hold several bands, which take turns frame
+  by frame: with three or more the radio keys continuously, never twice running on the same band,
+  and every band still rests its `periodFrames`. The schedule became one matrix, band × half hour,
+  edited by rows — chips pick the band, the 24×2 grid paints its hours, a cell counts the bands
+  sharing it. `periodFrames` therefore changed meaning, from "how often the station transmits" to
+  "the shortest gap on one band", and the footer derives the old figure from the busiest half hour.
+  Settings migrate v2 → v3 (`slots` → `rotation` rows) with no loss.
+  * **This exposed a fault in the shipping schedule.** The phase was drawn per half hour, so a band
+    held across two of them could key two minutes after itself: measured over 30 days, **581 of
+    4 320 transmissions (13 %)** on a single-band day at every 5th frame, worst case one frame
+    apart — plus one violation per midnight whenever 720 frames is not a multiple of the period.
+    The phase is now drawn per *run of half hours with the same set of bands*, and a look-back lock
+    catches what is left. Over the same window that removes 2 399 violations for 73 lost frames.
+  * **Band changes now fit the gap between frames.** A WSPR signal is 110,592 s of a 120 s frame, so
+    a rotation has 9 s to retune: the beacon confirms the polled PTT flag instead of trusting it,
+    hands `WsprTx` a 4 s lead instead of 10 s for those frames, allows 300 ms for the band-decoder
+    relays, and **refuses to key on a dial it has not confirmed** by T−2 s. Three late changes in a
+    row and the schedule leaves a frame free after each band change until one fits again — declared
+    in the schedule itself, so the preview shows the reduced pace rather than promising frames the
+    beacon has already given up on. The measured band-change time is shown in TX SESSION.
+  * Activity gained band chips: with several bands in a cell the worst status wins its colour, so
+    one broken 10 m frame would paint an hour in which 40 m and 30 m were perfect. A band with no
+    TUNE reference at the current power is marked amber in the rotation — it still transmits, but
+    its forward power is never checked.
+  * Fixed alongside: changing the gap or `randomise` did not redraw the predicted tail in Activity,
+    so it kept showing the previous setting until something unrelated rebuilt the grid.
+* **EMAIL removed from `TX SESSION → Mode`.** Only the `<option>` is gone — the gateway composer,
+  both dialogs and `js8-email.js` still ship and stay covered by `tools/data-browser-smoke.js`
+  (`emailReady`), which now opens the form through a test hook. Putting the option back re-enables
+  the mode.
+* **JS8 AUTO countdown starts by itself again.** The arming window lives only in ESP RAM, while the
+  AUTO switch is a browser setting that outlives both the tab and the radio, so after a restart the
+  pill read `AUTO` with no countdown until the operator toggled the switch off and on. `data.js` now
+  re-arms on a page load and on a firmware restart (seen as `upMs` dropping in `GET /unattended`);
+  a window that lapsed on its own or was revoked from another device is left alone, so a forgotten
+  tab still switches itself off and a remote revoke still sticks. The `armed, N min left` readout in
+  SETTINGS is derived from the polled deadline instead of the last POST, so it also shows a window
+  armed before this page loaded. Covered by `tools/data-browser-smoke.js`
+  (`unattendedRearmAfterRestart`).
 * **Design notes in `docs/`** (22 files untracked), including `wspr-page-redesign.md`,
   `wspr-timetable-redesign.md`, `wspr-majak-implementace.md`, `data-menu-wspr-subnav-plan.md`,
   `wake-lock.md`, `js8lan-hearing-links.md`, `setup-interfaces-architecture.md`,

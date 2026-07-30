@@ -69,6 +69,8 @@ const dom = {
   radioBar:document.querySelector(".radio-bar"), trxFrequency:$("trxFrequency"),
   trxFrequencyValue:$("trxFrequencyValue"), trxSlotLabel:$("trxSlotLabel"),
   trxMode:$("trxMode"), trxDot:$("trxDot"),
+  trxPower:$("trxPower"), trxPowerWatts:$("trxPowerWatts"),
+  trxPowerSegments:Array.from(document.querySelectorAll("#trxPower .pwr-bar i")),
   trxHelpButton:$("trxHelpButton"), trxHelpDialog:$("trxHelpDialog"),
   trxHelpModeWarning:$("trxHelpModeWarning"),
   frequencyMenu:$("frequencyMenu"), linkState:$("linkState"), operatorState:$("operatorState"),
@@ -237,7 +239,7 @@ const binState={sessions:[],active:null,prepared:null,preparing:false,peerDraft:
   txQueue:[],txCurrent:null,responseTimer:null,incomingOffer:null,nackParts:new Map(),
   lastProtocol:"",storageError:"",restored:false};
 const state = {
-  radio:{connected:false, lanStatus:"connecting", transceiverType:"", power:false, frequency:0, mode:"", tx:false, rfPower:0},
+  radio:{connected:false, lanStatus:"connecting", transceiverType:"", power:false, frequency:0, mode:"", tx:false, rfPower:0, rfPowerSeen:false, radioName:""},
   activeMode:settings.activeModem, selectedCall:"", activity:emptyActivity(),
   activityFrequency:0, activitySessions:[],
   conversations:{}, audioStatus:"stopped", decoderStatus:"loading", txStatus:"idle",
@@ -992,6 +994,54 @@ function renderTrxSlotLabel() {
   dom.trxSlotLabel.title=slot ? `TRX${slot} is the LAN radio` : "TRX";
 }
 
+// Full scale of the LAN radio, on the very cascade wspr.js fullPower() uses: the
+// operator's manual override outranks what the radio calls itself, so the two
+// pages can never put different watts on the same transmitter. An unrecognised
+// model returns null rather than a guess -- a factor-of-ten error here would be
+// invisible and wrong.
+const WSPR_SETTINGS_KEY="ic705.wspr.v1";
+function fullPowerScale() {
+  let override="";
+  try { override=String((JSON.parse(localStorage.getItem(WSPR_SETTINGS_KEY)||"null")||{}).modelOverride||""); }
+  catch(_error) { override=""; }
+  const manual=override && WsprCore.fullPowerWatts(override);
+  if(manual)return {watts:manual, source:"manual override"};
+  const reported=WsprCore.fullPowerWatts(state.radio.radioName);
+  return reported ? {watts:reported, source:`reported as ${state.radio.radioName}`} : {watts:null, source:""};
+}
+
+// The CI-V level is quantised to 1/255 and the radio's own scale is not exactly
+// linear in watts, so more precision than this would be invented. Below a watt
+// the beacon levels live, which is why milliwatts get their own branch: "0 W"
+// for a station actually radiating 100 mW is the one reading worth avoiding.
+function formatWatts(watts) {
+  if(watts<0.9995)return `${Math.round(watts*1000)} mW`;
+  return watts<9.95 ? `${watts.toFixed(1)} W` : `${Math.round(watts)} W`;
+}
+
+// rfPower is the 0..255 CI-V level. Percent is a property of the level alone, so
+// the bar stays honest for a radio whose model we cannot turn into watts --
+// only the number beside it goes to "--".
+function renderTrxPower(connected) {
+  dom.trxPower.hidden=!connected;
+  if(!connected)return;
+  // Before the radio has answered 14 0A the firmware is reporting a fabricated
+  // default (205 on TRX1, 0 in the LAN snapshot). Show nothing rather than that.
+  const seen=state.radio.rfPowerSeen===true;
+  const level=Math.max(0,Math.min(255,Number(state.radio.rfPower)||0));
+  const percent=seen ? level*100/255 : 0;
+  // ceil, so any power at all lights the bottom segment: a radio left on the
+  // WSPR beacon's 1 % must not read as a dead transmitter.
+  const lit=seen ? Math.min(10,Math.ceil(percent/10)) : 0;
+  dom.trxPowerSegments.forEach((segment,index)=>segment.classList.toggle("on",index<lit));
+  const scale=fullPowerScale();
+  const watts=seen && scale.watts ? scale.watts*level/255 : null;
+  dom.trxPowerWatts.textContent=watts===null ? "--" : formatWatts(watts);
+  dom.trxPower.title=!seen ? "TRX power — the radio has not reported its power level yet"
+    : watts===null ? `TRX power ${Math.round(percent)} % · watts unknown: the radio model is not recognised`
+    : `TRX power ${Math.round(percent)} % · ${formatWatts(watts)} of ${scale.watts} W (${scale.source})`;
+}
+
 function renderHeader() {
   const connected=state.radio.connected && state.radio.transceiverType === "IC-705-LAN";
   const transmitting=radioTransmitting();
@@ -1005,6 +1055,7 @@ function renderHeader() {
   dom.trxMode.textContent=state.radio.mode || "---";
   dom.trxMode.classList.toggle("incompatible",connected && !modeCompatible);
   dom.trxMode.title=connected && !modeCompatible ? "JS8Call requires USB or USB-D" : "TRX mode";
+  renderTrxPower(connected);
   const incompatible=connected && Boolean(state.radio.mode) && !modeCompatible;
   if(incompatible && !state.help.incompatibleActive)openTrxHelp("mode");
   state.help.incompatibleActive=incompatible;
@@ -1346,7 +1397,10 @@ function renderControls() {
   const snrStation=state.activity.calls.find(item=>item.call===state.selectedCall && item.heardDirectly!==false);
   snrPreset.disabled=!snrStation;
   snrPreset.title=snrStation ? `Insert SNR ${formatJs8Snr(snrStation.snr)}` : "Select a heard station first";
-  dom.txSessionMode.value=state.txSessionMode;
+  // A value with no matching <option> blanks the selector, and EMAIL no longer has
+  // one; keep the last real choice on screen instead of an empty box.
+  if([...dom.txSessionMode.options].some(option=>option.value===state.txSessionMode))
+    dom.txSessionMode.value=state.txSessionMode;
   dom.chatSession.hidden=state.txSessionMode!=="CHAT";
   dom.emailSession.hidden=state.txSessionMode!=="EMAIL";
   dom.binSession.hidden=state.txSessionMode!=="BIN";
@@ -2593,27 +2647,32 @@ async function ensureUsbDataMode() {
 
 // Arming lives in the firmware so it survives a reload and can be revoked from
 // any device on the network; this only mirrors the operator's switch to it.
-let autoStateText = "disarmed";
+// The readout is derived from the mirrored deadline rather than remembered from
+// the last POST, so a window armed before this page loaded -- or from another
+// device -- is shown here too, and ticks down with renderControls.
+let autoStateError = "";   // last firmware refusal, kept until an arming exists
 function renderAutoState() {
-  if (dom.autoState) dom.autoState.textContent = autoStateText;
+  if (!dom.autoState) return;
+  const remaining = state.autoExpiryAt ? state.autoExpiryAt - Date.now() : 0;
+  dom.autoState.textContent = autoStateError || (remaining > 0
+    ? `armed, ${Math.max(1, Math.round(remaining / 60000))} min left`
+    : "disarmed");
 }
 function armUnattended(action) {
   const hours = Number(currentJs8().armHours) || 1;
-  fetch("/unattended", {method: "POST", headers: {"Content-Type": "application/json"},
+  return fetch("/unattended", {method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify({action, hours})})
     .then(response => response.ok ? response.json() : Promise.reject(new Error(String(response.status))))
     .then(result => {
+      autoStateError = "";
       applyUnattendedState(result);
-      autoStateText = result.armed
-        ? `armed, ${Math.max(1, Math.round(result.remainingMs / 60000))} min left`
-        : "disarmed";
-      console.info("[js8-unattended]", action, autoStateText);
+      console.info("[js8-unattended]", action, result.armed ? `${hours} h armed` : "disarmed");
       renderAutoState();
     })
     .catch(error => {
       // The switch stays where the operator put it; the firmware is the one that
       // did not confirm, and saying so is better than silently reverting.
-      autoStateText = `firmware did not confirm (${error.message})`;
+      autoStateError = `firmware did not confirm (${error.message})`;
       console.warn("[js8-unattended]", action, "failed:", error.message);
       renderAutoState();
     });
@@ -2626,16 +2685,42 @@ function applyUnattendedState(result) {
   state.autoExpiryAt = result && result.armed && Number(result.remainingMs) > 0
     ? Date.now() + Number(result.remainingMs)
     : null;
+  // A refusal stands until the arming it failed to create actually exists, so a
+  // 5 s poll cannot wipe the only explanation the operator gets.
+  if (state.autoExpiryAt) autoStateError = "";
+}
+
+// The firmware holds the arming window in RAM only, while the AUTO switch is a
+// browser setting that outlives both the tab and the ESP. Left alone the two
+// disagree after a restart: the pill reads AUTO on with no countdown at all,
+// and the operator has to switch AUTO off and on again to get one. So re-arm on
+// the two occasions where the window was *lost* rather than given up -- a page
+// load (an operator is right there, opening it) and a firmware restart. A window
+// that lapsed on its own, or one revoked from another device, leaves the ESP
+// running and armed==false, and neither is re-armed here: a forgotten tab still
+// switches itself off and a remote revoke still sticks.
+function reconcileUnattended(reason) {
+  if (!currentJs8().auto || state.autoExpiryAt) return;
+  console.info("[js8-unattended] arming after", reason);
+  return armUnattended("arm");
 }
 
 // Firmware is the source of truth for the arming window: it survives a page
 // reload and can be revoked/extended from any device, so poll it to keep the
 // AUTO countdown honest even when this browser did not start the timer.
+let unattendedUpMs = null;   // firmware millis() at the last poll
 async function pollUnattended() {
   try {
     const response = await fetch("/unattended", {cache: "no-store"});
     if (!response.ok) return;
-    applyUnattendedState(await response.json());
+    const result = await response.json();
+    // millis() only ever climbs while the ESP runs, so a drop means it rebooted
+    // (or wrapped after 49 days, which is harmless to treat the same way).
+    const upMs = Number(result.upMs);
+    const rebooted = unattendedUpMs !== null && Number.isFinite(upMs) && upMs < unattendedUpMs;
+    if (Number.isFinite(upMs)) unattendedUpMs = upMs;
+    applyUnattendedState(result);
+    if (rebooted) reconcileUnattended("firmware restart");
   } catch (_error) { /* transient; the last known expiry keeps ticking */ }
 }
 
@@ -3542,7 +3627,7 @@ async function init() {
   scheduler.every("txQueue",1000,()=>{drainTxQueue();renderTxQueue();});
   scheduler.every("heartbeat",5000,()=>{checkHeartbeat();renderHeartbeatState();});
   scheduler.every("cqRepeat",5000,checkCqRepeat);
-  pollUnattended(); scheduler.every("unattended",5000,pollUnattended);
+  pollUnattended().then(()=>reconcileUnattended("page load")); scheduler.every("unattended",5000,pollUnattended);
   renderTimetableButton(); scheduler.every("freqTimetable",5000,reconcileTimetable); reconcileTimetable();
   applyHeartbeatSettings();
   loadInbox();
@@ -3555,6 +3640,7 @@ async function init() {
     setAudioLive(live){state.lastAudioMs=live?performance.now():0;renderHeader();},
     activityCounts(){return {messages:state.activity.messages.length,calls:state.activity.calls.length};},
     setRadioMode(mode){state.radio.mode=mode;renderHeader();},
+    setRadioPower(rfPower,rfPowerSeen=true,radioName="IC-705"){state.radio.rfPower=Number(rfPower)||0;state.radio.rfPowerSeen=rfPowerSeen===true;state.radio.radioName=radioName;renderHeader();},
     setRadioTx(tx){state.radio.tx=Boolean(tx);renderHeader();},
     ttSlotNow(){return slotIndexNow();},
     ttSet(index,hz,band){setTimetableSlot(Number(index),Number(hz),band||null);},
@@ -3581,6 +3667,11 @@ async function init() {
     txCaptured(){return txCaptured.slice();},
     clearTxCaptured(){txCaptured.length=0;},
     renderInboxNow(){renderInbox();},
+    unattendedPoll(){return pollUnattended();},
+    autoExpiry(){return state.autoExpiryAt;},
+    // EMAIL has no entry in the Mode selector any more, so the composer can only
+    // be reached from here -- the module still ships and stays under test.
+    setTxSessionMode(mode){state.txSessionMode=mode;renderControls();},
     storeInboxDirect(rec){inboxStore.add({from:rec.from,to:rec.to,text:rec.text,atMs:0,delivered:false});renderInbox();},
     autoReplyState(){return {...autoReply.snapshot(),
       restrictions:restrictions.snapshot(js8Clock.now())};},

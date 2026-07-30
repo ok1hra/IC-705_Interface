@@ -46,17 +46,22 @@
     </button>
     <section id="freqTimetablePanel" class="freq-timetable-panel" hidden aria-label="Transmission schedule">
       <header>
-        <div><strong>Transmission schedule</strong><small>24-hour UTC, 30-min steps · an empty slot means silence</small></div>
+        <div><strong>Transmission schedule</strong><small>24-hour UTC, 30-min steps · several bands in one half hour take turns</small></div>
         <div class="tt-actions">
-          <label class="tt-period">every
+          <label class="tt-period" title="The shortest gap between two transmissions on the SAME band. Bands sharing a half hour rotate, so the radio may still key every frame.">gap
             <select id="periodFrames"></select>
           </label>
-          <label class="tt-random" title="Move the transmission to a different two-minute frame each half hour, so the beacon does not sit on the same frame for ever. The frame is derived from the date and the slot, so it is still known in advance."><input id="randomizeFrame" type="checkbox"> randomise</label>
+          <label class="tt-random" title="Draw the starting frame of the cycle from the date, so the beacon does not sit on the same frame for ever. Redrawn only where the set of bands changes, so a rotation runs unbroken."><input id="randomizeFrame" type="checkbox"> randomise</label>
           <button id="scheduleUndo" class="tt-clear" type="button" hidden
                   title="Undo the last bulk change to the schedule">UNDO</button>
-          <button id="scheduleClear" class="tt-clear" type="button">Clear</button>
+          <button id="scheduleClear" class="tt-clear" type="button"
+                  title="Take the band being drawn out of every half hour">Clear</button>
         </div>
       </header>
+      <!-- The schedule is one matrix, band x half hour. These chips pick which
+           row of it the grid below stands for; the number in a cell is how many
+           bands share that half hour. -->
+      <div id="scheduleBands" class="tt-bands-row"></div>
       <div id="scheduleGrid" class="tt-grid compact"></div>
       <div id="schedulePopover" class="tt-popover" hidden></div>
       <!-- What the schedule above will actually key, at the two-minute
@@ -198,6 +203,11 @@
           <span id="plannedLegend"><i class="swatch planned"></i>planned</span>
           <span id="activityTotals" class="activity-totals"></span>
         </div>
+        <!-- With bands rotating, a cell holds several of them and the worst
+             status wins its colour: one broken frame on 10 m would paint an hour
+             in which 40 m and 30 m were perfect. These narrow the grid to one
+             band, so a band that never works can be seen to never work. -->
+        <div id="activityBands" class="tt-bands-row activity-bands"></div>
         <!-- This section says what the beacon did; these say who heard it.
              External sites, so a new tab -- and nothing to see here when the
              browser is on the interface's own access point with no internet. -->
@@ -275,6 +285,6 @@
 <script src="/wspr-core.js?v=20260726a"></script>
 <script src="/wspr-tx.js?v=20260728a"></script>
 <script src="/wspr-log.js?v=20260726a"></script>
-<script src="/wspr.js?v=20260728a"></script>
+<script src="/wspr.js?v=20260730a"></script>
 </body>
 </html>

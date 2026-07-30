@@ -107,7 +107,7 @@ bool cwIpOnConnect  = true;       // announce WiFi IP via CW on first full-CAT r
 volatile bool cwIpSendPending = false;
 
 #define LOOP_WARN_MS 200
-#define REV 20260729
+#define REV 20260730
 #define WIFI
 #define UDP_TO_FSK
 #define WDT         // watchdog timer
@@ -411,6 +411,7 @@ struct LanRadioSnapshot {
   bool     tx = false;
   uint8_t  filter = 0;
   uint8_t  rfPower = 0;
+  bool     rfPowerSeen = false;   // false until the radio answered 14 0A at least once
   uint16_t smeterRaw = 0;
   uint16_t powerMeterRaw = 0;
   float    swr = 1.0f;
@@ -612,7 +613,12 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   uint8_t stateFilter = 1;
   uint8_t stateAfGain = 0;
   uint8_t stateKeySpeed = 138;
+  // 205 is a fabricated default, not a reading. Pages that turn the level into
+  // watts must not present it as one, so say plainly whether the radio has ever
+  // answered 14 0A -- the snapshot below carries the same flag for TRX2/TRX3,
+  // where the equally fabricated default is 0.
   uint8_t stateRfPower = 205;
+  bool stateRfPowerSeen = false;
   bool stateTx = false;
   uint8_t statePreampMode = 0;  // 0=OFF, 1=AMP, 2=ATT
   uint8_t stateAttOn = 0;       // internal: tracks ATT separately for combine logic
@@ -1724,6 +1730,7 @@ void buildStateJson(char *buf, size_t bufSize, bool lanView){
   unsigned viewSmeter = snapView ? lanRadioSnap.smeterRaw : stateSmeterRaw;
   unsigned viewPowerMeter = snapView ? lanRadioSnap.powerMeterRaw : statePowerMeterRaw;
   unsigned viewRfPower = snapView ? lanRadioSnap.rfPower : stateRfPower;
+  bool viewRfPowerSeen = snapView ? lanRadioSnap.rfPowerSeen : stateRfPowerSeen;
   float viewSupplyVolts = snapView ? lanRadioSnap.supplyVolts : stateSupplyVolts;
   float viewSwr = snapView ? lanRadioSnap.swr : stateSwr;
   const char *viewType = snapView ? (primaryTransport == RADIO_LAN ? "IC-705-LAN" : "TRXNET")
@@ -1741,7 +1748,7 @@ void buildStateJson(char *buf, size_t bufSize, bool lanView){
     "\"frequency\":%u,\"mode\":\"%s\",\"filter\":%u,"
     "\"radioAddress\":\"%s\",\"transceiverType\":\"%s\",\"radioName\":\"%s\",\"tx\":%s,\"ritRaw\":%u,"
     "\"smeterRaw\":%u,\"powerMeterRaw\":%u,"
-    "\"afGain\":%u,\"keySpeed\":%u,\"rfPower\":%u,"
+    "\"afGain\":%u,\"keySpeed\":%u,\"rfPower\":%u,\"rfPowerSeen\":%s,"
     "\"supplyVolts\":%.2f,\"swr\":%.2f,"
     "\"preamp\":%u,\"vox\":%u,"
     "\"lanDrops\":%u,\"lanStalls\":%u,\"lanFilled\":%u,"
@@ -1755,6 +1762,7 @@ void buildStateJson(char *buf, size_t bufSize, bool lanView){
     (unsigned)(snapView ? 0 : stateRitRaw),
     (unsigned)viewSmeter, (unsigned)viewPowerMeter,
     (unsigned)(snapView ? 0 : stateAfGain), (unsigned)(snapView ? 0 : stateKeySpeed), (unsigned)viewRfPower,
+    viewRfPowerSeen ? "true" : "false",
     viewSupplyVolts, viewSwr,
     (unsigned)(snapView ? 0 : statePreampMode), (unsigned)(snapView ? 0 : stateVoxMode),
     (unsigned)lanHealthDrops, (unsigned)lanHealthStalls, (unsigned)lanHealthFilled,
@@ -4463,7 +4471,7 @@ void processCivBuffer(uint8_t len) {
       if (pl[0] == 0x01) stateAfGain = (uint8_t)raw;
       else if (pl[0] == 0x02) stateRfGain = (uint8_t)raw;
       else if (pl[0] == 0x0C) stateKeySpeed = (uint8_t)raw;
-      else if (pl[0] == 0x0A) stateRfPower = (uint8_t)raw;
+      else if (pl[0] == 0x0A) { stateRfPower = (uint8_t)raw; stateRfPowerSeen = true; }
     }
     if (cmd == 0x21 && plLen >= 4 && pl[0] == 0x00) {
       stateRitRaw = decodeCivBcdBytesLsb(pl + 1, 3); // LSB-first, 3 bytes only, sign byte excluded
@@ -4554,8 +4562,10 @@ void lanRadioCivSnapshot(const uint8_t *frame, size_t len) {
     lanRadioSnap.tx = newTx;
     return;
   }
-  if (cmd == 0x14 && plLen >= 2 && pl[0] == 0x0A)
+  if (cmd == 0x14 && plLen >= 2 && pl[0] == 0x0A) {
     lanRadioSnap.rfPower = (uint8_t)decodeCivBcdBytes(pl + 1, plLen - 1);
+    lanRadioSnap.rfPowerSeen = true;
+  }
   if (cmd == 0x15 && plLen >= 2) {
     uint32_t raw = decodeCivBcdBytes(pl + 1, plLen - 1);
     if (pl[0] == 0x02) lanRadioSnap.smeterRaw = (uint16_t)raw;

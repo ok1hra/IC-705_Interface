@@ -51,6 +51,40 @@
 }
 .tt-grid.compact .tt-row { grid-template-columns: 20px 36px 36px; }
 .tt-grid.compact .tt-cell { padding: 3px 4px; }
+/* A half hour that runs bands, but not the one being drawn. Visible enough that
+   the operator does not paint over a busy slot by accident, faint enough that
+   the row in hand still reads as the subject of the grid. */
+.tt-grid.compact .tt-cell.other {
+  border-color: #1d4b41; color: var(--muted); background: #0b1a17;
+}
+
+/* The rotation: one chip per band, the current one being what the grid draws.
+   Adding a band here is one click instead of forty-eight in the grid, which is
+   the whole reason the matrix is edited by rows. */
+.tt-bands-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 0 0 7px;
+}
+.tt-chip-label { color: var(--muted); font-size: 10px; margin-right: 2px; }
+.tt-chip-hint { color: var(--muted); font-size: 10px; }
+.tt-chip {
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 3px 6px; border: 1px solid var(--line); border-radius: 4px; background: #081310;
+  color: var(--muted); font: 700 10px ui-monospace, monospace;
+}
+.tt-chip:hover { border-color: var(--cyan); color: var(--cyan); }
+.tt-chip.current { border-color: var(--cyan); background: #15332d; color: var(--cyan); }
+/* A band with no TUNE reference at the current power still transmits -- its
+   forward power simply is not checked, so its records cannot be told apart from
+   a verified one unless something says so here. */
+.tt-chip.unreferenced { border-style: dashed; border-color: var(--amber); }
+.tt-chip.unreferenced::after { content: "•"; color: var(--amber); }
+.tt-chip-drop { color: var(--muted); padding: 0 1px; }
+.tt-chip-drop:hover { color: var(--red, #ff6b6b); }
+.tt-chip-menu { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+/* The same chips narrow the activity grid to one band. Same shape on purpose:
+   one control to learn, in both places it appears. */
+.activity-bands { margin: 6px 0 4px; }
+.activity-bands:empty { display: none; }
 /* The slots a click is about to write, marked before it writes them: a "+6h"
    from 21:00 wraps past midnight, and that has to be visible in advance rather
    than discovered afterwards. */

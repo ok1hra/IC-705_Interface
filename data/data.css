@@ -104,6 +104,15 @@ button { color: inherit; cursor: pointer; }
 .chevron { color: var(--muted); }
 .trx-mode { min-width:48px; padding:6px 8px; border:1px solid transparent; border-radius:4px; background:#101b19; color:#b7cac4; font-weight:750; text-align:center; }
 .trx-mode.incompatible { border-color:var(--amber); background:#2b1d0d; color:var(--amber); box-shadow:0 0 7px #ffbf6933; }
+/* Ten segments over the timetable button's own height. `flex:1` divides what is
+   left after the gaps, so the bar keeps its ten discrete steps at 42 px and at
+   the 41 px the phone layout gives it. column-reverse puts segment 0 at the
+   bottom, which is what makes the markup order read low-to-high. */
+.trx-power { display:flex; align-items:center; gap:5px; }
+.trx-power .pwr-bar { display:flex; flex-direction:column-reverse; gap:1px; width:8px; height:42px; }
+.trx-power .pwr-bar i { flex:1; border-radius:1px; background:#14231f; }
+.trx-power .pwr-bar i.on { background:var(--cyan); }
+.trx-power b { font:800 13px/1.05 ui-monospace, SFMono-Regular, Consolas, monospace; color:#b7cac4; white-space:nowrap; }
 .trx-reconnect {
   padding:6px 10px; border:1px solid var(--amber); border-radius:4px;
   background:#2b1d0d; color:var(--amber); font-size:11px; font-weight:850;
@@ -578,6 +587,10 @@ button { color: inherit; cursor: pointer; }
   .trx-frequency { width: 100%; height: 41px; padding-inline: 7px; }
   .trx-frequency strong { font-size: 15px; }
   .trx-mode { min-width: 46px; font-size: 12px; }
+  /* The bar costs 8 px and carries the percentage; the watts cost ~33 px the
+     two flex controls beside it do not have. Keep the bar, drop the number. */
+  .trx-power .pwr-bar { height: 41px; }
+  .trx-power b { display: none; }
   .frequency-menu { position: fixed; top: 51px; left: 5px; right: 5px; width: auto; }
   .frequency-menu header { align-items: flex-start; flex-direction: column; gap: 1px; }
   .frequency-presets { grid-template-columns: repeat(2, minmax(0, 1fr)); }

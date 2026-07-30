@@ -16,7 +16,12 @@ const session={token:"",claims:0,refusals:0,releases:0,wsRefusals:0};
 function sessionOwns(token){return Boolean(session.token)&&session.token===token;}
 function sessionBody(req,res,handler){let body="";req.on("data",chunk=>body+=chunk);req.on("end",()=>{let parsed={};try{parsed=JSON.parse(body);}catch(_error){}handler(parsed,res);});}
 function sessionReply(res,status){res.writeHead(status,{"Content-Type":"application/json"});res.end(JSON.stringify({ok:status===200,owner:"192.168.1.99",ageMs:1200,leaseMs:15000}));}
-function unattendedState(){return{armed:true,remainingMs:43200000,clientLive:false,clientAgeMs:31000,clientSeen:true,blockedLiveness:2,blockedNotArmed:0,livenessTimeoutMs:5000,ptt:false,txState:0,txUsed:0,txCapacity:12288,rxPackets:5,lan:true,upMs:90500,choicesH:[1,6,12,24,168]};}
+// unaReboot fakes an ESP restart: the arming window is RAM-only, so it is gone
+// and millis() starts over. Any arm/extend brings the fixture back, exactly like
+// the firmware would; revoke leaves it as it was, so the revoke check below is
+// unaffected by this switch.
+let unaReboot=false;
+function unattendedState(){return{armed:!unaReboot,remainingMs:unaReboot?0:43200000,clientLive:false,clientAgeMs:31000,clientSeen:true,blockedLiveness:2,blockedNotArmed:0,livenessTimeoutMs:5000,ptt:false,txState:0,txUsed:0,txCapacity:12288,rxPackets:5,lan:true,upMs:unaReboot?1200:90500,choicesH:[1,6,12,24,168]};}
 let lanStateRequests=0, primaryStateRequests=0, primaryCommands=[];
 let chrome, finished=false, timer, sequence=0, firstSample=0, streamId=707, txPrepares=0, txPackets=0, wsConnections=0, earlyWsConnections=0, jscRequests=0, jscStartedAt=0, jscCompleteAt=0, wsOpenedAt=0, jscComplete=false, js8Gzip=0, js8Brotli=0, commands=[], setupSaveBody="", setupRestartRequests=0, lanReconnectRequests=0;
 const mime={".html":"text/html",".css":"text/css",".js":"application/javascript",".wasm":"application/wasm",".bin":"application/octet-stream"};
@@ -26,7 +31,7 @@ function readClientFrames(socket){let input=Buffer.alloc(0);return chunk=>{input
 // lanTargetPass: radio polling and tuning must address the LAN radio
 // (?radio=lan), which is TRX1 only when the operator put LAN there. Plain
 // /state is still expected -- fw-version.js reads the badge from it everywhere.
-function finish(ok,text){if(finished)return;finished=true;clearTimeout(timer);if(chrome)chrome.kill("SIGTERM");server.close();const encodingPass=js8Gzip>0&&js8Brotli===0;const frequencyPass=commands.some(command=>command.type==="setFrequency"&&Number(command.frequency)===14078000), setupArgs=new URLSearchParams(setupSaveBody), setupSavePass=setupArgs.get("trx1transport")==="lan"&&setupArgs.get("trx1lanip")==="192.168.1.60"&&setupArgs.get("trx1lanuser")==="operator"&&setupArgs.get("trx1lanpass")==="secret123"&&setupArgs.get("noRestart")==="1"&&setupRestartRequests===1;const unattendedRevokePass=unattendedPosts.some(post=>post.action==="revoke");const inboxWritePass=inboxWrites.length>0;const sessionPass=session.claims>0&&session.wsRefusals===0;const lanTargetPass=lanStateRequests>0&&primaryCommands.length===0;ok=ok&&encodingPass&&frequencyPass&&earlyWsConnections===0&&jscRequests===1&&setupSavePass&&lanReconnectRequests===1&&unattendedRevokePass&&inboxWritePass&&sessionPass&&lanTargetPass;const report=`${text} lanTarget=${lanTargetPass}(lanState=${lanStateRequests} primaryState=${primaryStateRequests} primaryCmds=${primaryCommands.length}) js8Gzip=${js8Gzip} js8Brotli=${js8Brotli} jscRequests=${jscRequests} jscMs=${jscCompleteAt-jscStartedAt} wsAfterJscMs=${wsOpenedAt-jscCompleteAt} ws=${wsConnections} earlyWs=${earlyWsConnections} setupSave=${setupSavePass} setupRestarts=${setupRestartRequests} unattendedRevoke=${unattendedRevokePass} session=${sessionPass}(claims=${session.claims} refusals=${session.refusals} wsRefusals=${session.wsRefusals}) inboxWrites=${inboxWrites.length} reconnects=${lanReconnectRequests} commands=${JSON.stringify(commands)} prepares=${txPrepares} packets=${txPackets}`;(ok?console.log:console.error)(report);if(!ok)process.exitCode=1;}
+function finish(ok,text){if(finished)return;finished=true;clearTimeout(timer);if(chrome)chrome.kill("SIGTERM");server.close();const encodingPass=js8Gzip>0&&js8Brotli===0;const frequencyPass=commands.some(command=>command.type==="setFrequency"&&Number(command.frequency)===14078000), setupArgs=new URLSearchParams(setupSaveBody), setupSavePass=setupArgs.get("trx1transport")==="lan"&&setupArgs.get("trx1lanip")==="192.168.1.60"&&setupArgs.get("trx1lanuser")==="operator"&&setupArgs.get("trx1lanpass")==="secret123"&&setupArgs.get("noRestart")==="1"&&setupRestartRequests===1;const unattendedRevokePass=unattendedPosts.some(post=>post.action==="revoke");const unattendedRearmPass=unattendedPosts.some(post=>post.action==="arm"&&post.afterReboot===true);const inboxWritePass=inboxWrites.length>0;const sessionPass=session.claims>0&&session.wsRefusals===0;const lanTargetPass=lanStateRequests>0&&primaryCommands.length===0;ok=ok&&encodingPass&&frequencyPass&&earlyWsConnections===0&&jscRequests===1&&setupSavePass&&lanReconnectRequests===1&&unattendedRevokePass&&unattendedRearmPass&&inboxWritePass&&sessionPass&&lanTargetPass;const report=`${text} lanTarget=${lanTargetPass}(lanState=${lanStateRequests} primaryState=${primaryStateRequests} primaryCmds=${primaryCommands.length}) js8Gzip=${js8Gzip} js8Brotli=${js8Brotli} jscRequests=${jscRequests} jscMs=${jscCompleteAt-jscStartedAt} wsAfterJscMs=${wsOpenedAt-jscCompleteAt} ws=${wsConnections} earlyWs=${earlyWsConnections} setupSave=${setupSavePass} setupRestarts=${setupRestartRequests} unattendedRevoke=${unattendedRevokePass} unattendedRearm=${unattendedRearmPass} session=${sessionPass}(claims=${session.claims} refusals=${session.refusals} wsRefusals=${session.wsRefusals}) inboxWrites=${inboxWrites.length} reconnects=${lanReconnectRequests} commands=${JSON.stringify(commands)} prepares=${txPrepares} packets=${txPackets}`;(ok?console.log:console.error)(report);if(!ok)process.exitCode=1;}
 const server=http.createServer((req,res)=>{
   const url=new URL(req.url,"http://fixture");
   if(url.pathname==="/result"&&req.method==="POST"){let body="";req.on("data",c=>body+=c);req.on("end",()=>{res.writeHead(204).end();const result=JSON.parse(body);finish(result.pass,result.text);});return;}
@@ -38,12 +43,13 @@ const server=http.createServer((req,res)=>{
   if(url.pathname==="/js8/session/claim"&&req.method==="POST"){return sessionBody(req,res,(body)=>{if(session.token&&!sessionOwns(body.token)&&!body.force){session.refusals++;return sessionReply(res,409);}session.token=body.token||"";session.claims++;sessionReply(res,200);});}
   if(url.pathname==="/js8/session/ping"&&req.method==="POST"){return sessionBody(req,res,(body)=>{if(session.token&&!sessionOwns(body.token))return sessionReply(res,409);session.token=body.token||"";sessionReply(res,200);});}
   if(url.pathname==="/js8/session/release"&&req.method==="POST"){return sessionBody(req,res,(body)=>{if(sessionOwns(body.token)){session.token="";session.releases++;}res.writeHead(200,{"Content-Type":"application/json"});res.end('{"ok":true}');});}
-  if(url.pathname==="/unattended"&&req.method==="POST"){let body="";req.on("data",c=>body+=c);req.on("end",()=>{try{unattendedPosts.push(JSON.parse(body));}catch(_error){}res.setHeader("Content-Type","application/json");res.end(JSON.stringify(unattendedState()));});return;}
+  if(url.pathname==="/fixture/unattended-reboot"&&req.method==="POST"){unaReboot=true;res.setHeader("Content-Type","application/json");res.end('{"ok":true}');return;}
+  if(url.pathname==="/unattended"&&req.method==="POST"){let body="";req.on("data",c=>body+=c);req.on("end",()=>{try{const post=JSON.parse(body);unattendedPosts.push({...post,afterReboot:unaReboot});if(post.action==="arm"||post.action==="extend")unaReboot=false;}catch(_error){}res.setHeader("Content-Type","application/json");res.end(JSON.stringify(unattendedState()));});return;}
   if(url.pathname==="/unattended"){res.setHeader("Content-Type","application/json");res.end(JSON.stringify(unattendedState()));return;}
   if(url.pathname==="/unattended/log"){res.setHeader("Content-Type","text/plain");res.end("1200 ARM 12 h\n90500 BLOCK liveness lost before keying\n");return;}
   // The JS8 page must ask for the LAN radio by name -- plain /state means TRX1,
   // which is a different radio whenever LAN sits on TRX2/TRX3.
-  if(url.pathname==="/state"){if(url.searchParams.get("radio")==="lan")lanStateRequests++;else primaryStateRequests++;/* fw-version.js badge, shared by every page */res.setHeader("Content-Type","application/json");res.end(JSON.stringify({connected:true,lanStatus:"linked",transceiverType:"IC-705-LAN",power:true,frequency:7078000,mode:"USB",tx:false,rfPower:128,fwRev:"20260718",wifiRssi:-51,bdSupported:true}));return;}
+  if(url.pathname==="/state"){if(url.searchParams.get("radio")==="lan")lanStateRequests++;else primaryStateRequests++;/* fw-version.js badge, shared by every page */res.setHeader("Content-Type","application/json");res.end(JSON.stringify({connected:true,lanStatus:"linked",transceiverType:"IC-705-LAN",power:true,frequency:7078000,mode:"USB",tx:false,rfPower:128,rfPowerSeen:true,radioName:"IC-705",fwRev:"20260718",wifiRssi:-51,bdSupported:true}));return;}
   // fixture=trx2 moves LAN to the second slot with one credential still blank:
   // the page must name TRX 2 and read that slot's fields, while staying gated so
   // it never competes with the main frame for the single-operator lease.
@@ -140,6 +146,9 @@ f.onload=()=>{
       const reconnectVisible=!reconnectButton.hidden&&reconnectButton.textContent.trim()==='Reconnect';
       reconnectButton.click();
       const reconnectRequested=reconnectButton.disabled&&reconnectButton.textContent.includes('Connecting');
+      // Offline the header already says OFFLINE; a power bar frozen on the last
+      // reading would be the one element still claiming to describe the radio.
+      const trxPowerHiddenOffline=d.querySelector('#trxPower').hidden===true;
       f.contentWindow.__dataTest.setRadioConnection(true,'linked');
       const checks={
         frequencyScopedActivity:originalBandActivity.messages===6&&originalBandActivity.calls===3&&otherBandStartsEmpty.messages===0&&otherBandStartsEmpty.calls===0&&otherBandActivity.messages===1&&otherBandActivity.calls===1&&restoredBandActivity.messages===6&&restoredBandActivity.calls===3&&withinToleranceActivity.messages===6&&withinToleranceActivity.calls===3,
@@ -159,6 +168,7 @@ f.onload=()=>{
         txGainSaved:savedTxGain===0.35,
         reconnectVisible,
         reconnectRequested,
+        trxPowerHiddenOffline,
         connectedWithoutAudioIsNotLive,
         english:d.body.textContent.includes('TX SESSION'),
         js8:d.querySelector('#modeSelect').value==='js8call',
@@ -183,7 +193,9 @@ f.onload=()=>{
         ownCallPanelsExpanded:d.querySelector('details[data-section="traffic"]').open&&d.querySelector('details[data-section="stations"]').open,
         ownCallTraffic:[...d.querySelectorAll('#traffic [data-own-call="true"]')].some(node=>node.textContent==='OK1HRA'&&getComputedStyle(node).color==='rgb(255, 107, 107)'),
         ownCallStation:(()=>{const node=d.querySelector('#stationRows tr[data-call="OK1HRA"] [data-own-call="true"]');return node?.textContent==='OK1HRA'&&getComputedStyle(node).color==='rgb(255, 107, 107)';})(),
-        txModes:[...d.querySelectorAll('#txSessionMode option')].map(option=>option.value).join(',')==='CHAT,EMAIL,BIN',
+        // EMAIL is deliberately absent from the selector; the composer itself is
+        // still shipped and still checked below through the test hook.
+        txModes:[...d.querySelectorAll('#txSessionMode option')].map(option=>option.value).join(',')==='CHAT,BIN',
         autoSpeed:d.querySelector('#txSpeedResolved')?.textContent.includes('A')===true,
         stationSpeed:(d.querySelector('#stationRows tr[data-call="K0OG"] td:nth-child(5)')?.textContent.trim()||'').startsWith('A')&&(d.querySelector('#stationRows tr[data-call="K0OG"] td:nth-child(5)')?.textContent.trim()||'').endsWith('15 s'),
         stationCountry:(()=>{const own=d.querySelector('#stationRows tr[data-call="OK1HRA"] td.station-country'),us=d.querySelector('#stationRows tr[data-call="K0OG"] td.station-country');return own?.textContent.trim()==='Czech Republic'&&own?.title==='Czech Republic'&&(us?.textContent.trim()||'').length>0&&d.querySelector('[data-station-sort="country"]')?.textContent.trim().startsWith('DXCC')===true;})(),
@@ -361,6 +373,15 @@ f.onload=()=>{
       checks.heartbeatSnrWiring=Boolean(advert);
       d.querySelector('#abortButton').click();
       await new Promise(resolve=>setTimeout(resolve,120));
+      // AUTO is on here, so this is the place to prove the arming window comes
+      // back by itself after the ESP restarts. The window is RAM-only firmware
+      // state; left alone the AUTO pill reads on with no countdown until the
+      // operator switches it off and on again. The fixture drops arming and
+      // rewinds uptime, one poll has to notice and re-arm.
+      await fetch('/fixture/unattended-reboot',{method:'POST'});
+      await dt.unattendedPoll();
+      await new Promise(resolve=>setTimeout(resolve,250));
+      checks.unattendedRearmAfterRestart=dt.autoExpiry()>Date.now();
       if(!hbEnabledWas){hbEnabled.click();}
       if(!hbAutoWas){hbAuto.click();}
       if(!hbSafetyWas){hbSafety.checked=false;hbSafety.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));}
@@ -508,6 +529,34 @@ f.onload=()=>{
       checks.modeHelp=d.querySelector('#trxHelpDialog').open===true&&d.querySelector('#trxHelpModeWarning').hidden===false;
       d.querySelector('#trxHelpDialog .trx-help-close').click();
       f.contentWindow.__dataTest.setRadioMode('USB');
+      // RF power bar: ten segments over the timetable button's height, one per
+      // 10 % of the radio's own 0..255 CI-V scale, with the watts beside them
+      // derived from the model's full scale exactly as the WSPR page does it.
+      const pwrLit=()=>Array.from(d.querySelectorAll('#trxPower .pwr-bar i')).filter(segment=>segment.classList.contains('on')).length;
+      const pwrText=()=>d.querySelector('#trxPowerWatts').textContent.trim();
+      f.contentWindow.__dataTest.setRadioPower(128,true,'IC-705');
+      // 128/255 is 50.2 %, and a part-filled segment lights: six of ten.
+      checks.trxPowerBar=pwrLit()===6&&pwrText()==='5.0 W';
+      // The bar is specified as the height of the TIMETABLE button beside it, and
+      // its ten segments divide whatever that height is. Both are in CSS, in two
+      // different rules, so nothing but a measurement keeps them equal.
+      const barBox=d.querySelector('#trxPower .pwr-bar').getBoundingClientRect();
+      const ttBox=d.querySelector('#freqTimetableButton').getBoundingClientRect();
+      checks.trxPowerBarHeight=Math.abs(barBox.height-ttBox.height)<1&&
+        d.querySelectorAll('#trxPower .pwr-bar i').length===10;
+      f.contentWindow.__dataTest.setRadioPower(3,true,'IC-705');
+      // A radio left where the WSPR beacon put it is not a dead radio: 1.2 %
+      // still lights one segment, and 118 mW must not be shown as "0 W".
+      checks.trxPowerMinSegment=pwrLit()===1&&pwrText()==='118 mW';
+      f.contentWindow.__dataTest.setRadioPower(128,true,'');
+      // Percent belongs to the level alone, so the bar survives a model we
+      // cannot convert; only the watts go unknown.
+      checks.trxPowerUnknownModel=pwrLit()===6&&pwrText()==='--';
+      f.contentWindow.__dataTest.setRadioPower(205,false,'IC-705');
+      // 205 is the firmware's fabricated default. Drawing it as a reading would
+      // put an invented 8 W in the header of a radio that has never answered.
+      checks.trxPowerUnseen=pwrLit()===0&&pwrText()==='--'&&d.querySelector('#trxPower').title.includes('has not reported');
+      f.contentWindow.__dataTest.setRadioPower(128,true,'IC-705');
       const change=id=>d.querySelector(id).dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));
       const callSort=d.querySelector('[data-station-sort="call"]');
       callSort.click();
@@ -530,7 +579,9 @@ f.onload=()=>{
       d.querySelector('#recipientClear')?.click();
       checks.recipientClear=d.querySelector('#recipient').value===''&&f.contentWindow.__dataTest.selectedCall()==='';
       const txSessionMode=d.querySelector('#txSessionMode');
-      if(txSessionMode){txSessionMode.value='EMAIL';change('#txSessionMode');}
+      // The Mode selector no longer offers EMAIL, so the composer is opened the
+      // only way that is left. Everything below it is unchanged: the module ships.
+      f.contentWindow.__dataTest.setTxSessionMode('EMAIL');
       d.querySelector('#emailGatewayAdd')?.click();
       const setEmailField=(selector,value)=>{const input=d.querySelector(selector);input.value=value;input.dispatchEvent(new f.contentWindow.Event('input',{bubbles:true}));};
       setEmailField('#emailGatewayName','Fixture APRS');setEmailField('#emailGatewayTarget','@APRSIS');setEmailField('#emailGatewayDial','7078000');setEmailField('#emailGatewayOffset','1500');

@@ -19,6 +19,17 @@
   const SESSION_PING_MS = 5000, SESSION_RETRY_MS = 3000, SESSION_PROBE_MS = 250;
   const SETTINGS_KEY = "ic705.wspr.v1";
   const PREPARE_LEAD_MS = 10000;    // must match WsprTx's window
+  // Back-to-back frames leave 9,4 s between the end of one WSPR signal (110,592 s
+  // of a 120 s frame) and the start of the next, and the band change has to fit
+  // inside it. The queue refuses anything later than leadMs/2, so the beacon
+  // hands WsprTx a shorter lead for those frames -- the prebuffer itself only
+  // needs 1,35 s. Nothing is allowed to key on an unconfirmed dial: a frame that
+  // is not ready by the cutoff is given up as missed instead.
+  const TIGHT_LEAD_MS = 4000, RETUNE_CUTOFF_MS = 2000, BAND_SETTLE_MS = 300;
+  // Three retunes that did not make the cutoff mean the link cannot sustain a
+  // change every frame; the schedule then leaves one frame free after each band
+  // change until a retune fits again.
+  const RETUNE_MISS_LIMIT = 3;
   // TUNE is a manual action, so it uses the shortest lead the TX path allows
   // (prebuffering starts 1.35 s before the slot) rather than the beacon's ten
   // seconds -- a button that does nothing for ten seconds reads as broken.
@@ -48,10 +59,12 @@
     "txGain", "txSafety", "tuneButton", "powerMeter", "swr", "tuneReference",
     "referenceCount", "referenceClear",
     "periodFrames", "periodHint", "randomizeFrame", "scheduleClear", "scheduleUndo",
-    "scheduleGrid", "schedulePopover", "previewTitle", "previewCount", "previewGrid",
+    "scheduleBands", "scheduleGrid", "schedulePopover",
+    "previewTitle", "previewCount", "previewGrid",
     "previewNext", "startStop", "beaconState", "nextSession", "liveSession",
     "sessionProgress", "ringFill", "packetCount", "pttState", "beaconError",
     "activityDays", "activityTotals", "activityGrid", "activityDetail", "plannedLegend",
+    "activityBands",
     // shell shared with the JS8Call page
     "waterfall", "waterfallCanvas", "waterfallOverlay", "spectrumSummary", "audioLevel",
     "aud1State", "lanHealth", "trxReconnect", "trxHelpButton", "trxHelpDialog",
@@ -78,7 +91,7 @@
 
   const state = {
     radio: {connected: false, transceiverType: "", radioName: "", mode: "", frequency: 0,
-            tx: false, powerMeterRaw: 0, swr: 0, rfPower: 0, supplyVolts: 0,
+            tx: false, powerMeterRaw: 0, swr: 0, rfPower: 0, rfPowerSeen: false, supplyVolts: 0,
             lanDrops: 0, lanStalls: 0, lanFilled: 0},
     beacon: "stopped",          // stopped | armed | tuning | transmitting | paused
     consecutiveBroken: 0,
@@ -88,6 +101,10 @@
     tuneEndsAtMs: 0,            // when the tune watchdog will cut the carrier
     lastError: "",
     pendingSlotUtcMs: 0,
+    lastRetuneMs: 0,          // how long the last band change took, measured
+    retuneMisses: 0,          // consecutive frames lost to a band change running late
+    spaceBandChanges: false,  // ... and the slower pace that follows three of them
+    bandFilter: "",           // which band the activity grid is showing ("" = all)
     currentSession: null,     // what the in-flight transmission will be logged as
     activity: [],             // records loaded from IndexedDB, newest first
     activityRange: "6h",
@@ -173,16 +190,21 @@
                  : `${minutes}:${pad(total % 60)}`;
   }
 
-  const SETTINGS_VERSION = 2;
+  const SETTINGS_VERSION = 3;
 
   // `powerDbm: null` means "the operator has never chosen", which is what lets
   // the 1 % rule apply exactly once. Version 1 wrote 30 into storage as its
   // default, so a saved number there proves nothing -- hence the migration below
   // throws it away rather than mistaking a default for a decision.
+  // `rotation` is the schedule: one row per band, 48 characters of "0"/"1" for
+  // the half hours it is on. Several rows may cover the same half hour -- they
+  // then take turns frame by frame (see wspr-core daySequence).
   const settingsDefaults = () => ({
     version: SETTINGS_VERSION, powerDbm: null, modelOverride: "",
-    powerReferences: {}, periodFrames: 5, randomizeFrame: true, slots: {},
+    powerReferences: {}, periodFrames: 5, randomizeFrame: true, rotation: [],
   });
+
+  const EMPTY_MASK = "0".repeat(WsprCore.SLOTS_PER_DAY);
 
   let settings = settingsDefaults();
 
@@ -199,7 +221,13 @@
     // already a lot, and every frame would simply sit on top of everyone else.
     settings.periodFrames =
       Math.min(15, Math.max(MIN_PERIOD_FRAMES, Number(settings.periodFrames) || 5));
-    if (!settings.slots || typeof settings.slots !== "object") settings.slots = {};
+    settings.rotation = (Array.isArray(settings.rotation) ? settings.rotation : [])
+      .map(row => ({
+        band: String((row && row.band) || ""), hz: Number((row && row.hz) || 0),
+        slots: `${(row && row.slots) || ""}`.replace(/[^01]/g, "0")
+          .slice(0, WsprCore.SLOTS_PER_DAY).padEnd(WsprCore.SLOTS_PER_DAY, "0"),
+      }))
+      .filter(row => row.band && row.hz);
     if (!settings.powerReferences || typeof settings.powerReferences !== "object")
       settings.powerReferences = {};
   }
@@ -208,12 +236,22 @@
   // cannot be converted honestly. `txGain` now lives in the shared blob, the
   // scalar reference has no band and so cannot be filed under one, and a saved
   // `powerDbm` cannot be told apart from v1's own default.
+  //
+  // v2 -> v3 loses nothing: `slots` held one band per half hour, which is a
+  // rotation of one, so each band becomes a row and the schedule keeps running
+  // exactly as it did. This is the only place that reads the old shape.
   function migrateSettings() {
     if (Number(settings.version) >= SETTINGS_VERSION) return;
-    delete settings.txGain;
-    delete settings.powerReferenceRaw;
-    settings.powerDbm = null;
-    settings.powerReferences = {};
+    if (Number(settings.version) < 2) {
+      delete settings.txGain;
+      delete settings.powerReferenceRaw;
+      settings.powerDbm = null;
+      settings.powerReferences = {};
+    }
+    if (settings.slots && typeof settings.slots === "object")
+      settings.rotation = WsprCore.rotationRows({slots: settings.slots})
+        .map(row => ({band: row.band, hz: row.hz, slots: row.mask}));
+    delete settings.slots;
     settings.version = SETTINGS_VERSION;
     saveSettings();
   }
@@ -359,6 +397,7 @@
         powerMeterRaw: Number(json.powerMeterRaw) || 0,
         swr: Number(json.swr) || 0,
         rfPower: Number(json.rfPower) || 0,
+        rfPowerSeen: json.rfPowerSeen === true,
         supplyVolts: Number(json.supplyVolts) || 0,
         lanDrops: Number(json.lanDrops) || 0,
         lanStalls: Number(json.lanStalls) || 0,
@@ -421,6 +460,11 @@
     let level;
     try { level = WsprCore.powerCommand(target, full).level; }
     catch (_error) { return null; }
+    // An unread level cannot agree with anything. Reporting a match here would
+    // be the worst outcome available: the fabricated 205 happening to land
+    // within tolerance of the target would tell the operator the radio is
+    // already set when nobody has ever asked it.
+    if (state.radio.rfPowerSeen !== true) return {target, level};
     return Math.abs(state.radio.rfPower - level) <= 2 ? null : {target, level};
   }
 
@@ -481,10 +525,21 @@
   // what the radio says it is set to. Writing it back before every slot would
   // silently undo the operator's own knob.
   async function tuneRadio(slot) {
+    // `state.radio.tx` comes off the 1 Hz /state poll, so it can still read
+    // "keyed" a second after the PTT dropped. Between two back-to-back frames
+    // there are only nine seconds, and throwing one of them away on a stale flag
+    // would book a missed slot for a radio that was already free -- so confirm
+    // rather than trust.
+    if (state.radio.tx) await pollState();
     if (state.radio.tx) throw new Error("the radio is transmitting");
+    const started = Date.now();
     if (state.radio.frequency !== slot.hz) {
       await command({type: "setFrequency", frequency: String(slot.hz)});
       await waitForState(radio => radio.frequency === slot.hz);
+      // The band-decoder outputs follow the dial, and the relays they drive need
+      // to have settled before the carrier arrives.
+      await new Promise(resolve => setTimeout(resolve, BAND_SETTLE_MS));
+      state.lastRetuneMs = Date.now() - started;
     }
     await ensureUsbDataMode();
   }
@@ -497,6 +552,11 @@
   function radioPower() {
     const full = fullPower().watts;
     if (!full) return {watts: null, dbm: null, errorDb: 0};
+    // Until the radio has answered 14 0A, rfPower is the firmware's fabricated
+    // default -- 205, which on an IC-705 reads as a confident and entirely
+    // invented 8.00 W. That number would go into the WSPR message and from
+    // there into everyone else's propagation data, so refuse it.
+    if (state.radio.rfPowerSeen !== true) return {watts: null, dbm: null, errorDb: 0};
     const watts = full * state.radio.rfPower / 255;
     const exact = WsprCore.wattsToDbm(watts);
     let dbm = WsprCore.POWER_LEVELS[0];
@@ -615,34 +675,118 @@
   // it lives in wspr-core and nothing here re-derives it: the countdown below, the
   // preview strip in the panel and the activity block's future all ask the same
   // function. A preview with its own copy of the rule is a preview that can lie.
+  //
+  // Everything that asks goes through scheduleView(), never `settings` directly:
+  // the beacon may be running at a reduced pace after three late band changes,
+  // and a preview that did not know about it would promise frames the beacon has
+  // already decided to skip.
+  const scheduleView = () => (state.spaceBandChanges
+    ? {...settings, spaceBandChanges: true} : settings);
   const nextTransmission = (fromUtcMs = utcNow()) =>
-    WsprCore.nextTransmission(fromUtcMs, settings);
+    WsprCore.nextTransmission(fromUtcMs, scheduleView());
 
   // Editing state for the panel: which slot's popover is open, which span the
   // next write covers, the slots that span is about to touch, and where the click
   // being handled started (see the capture-phase listener that fills it in).
   let editingSlot = null, spanChoice = "slot", pendingSlots = new Set();
   let clickOrigin = {timetable: false, popover: false};
+  // The band the grid is currently drawing. The schedule is a matrix, band x half
+  // hour, and this is which row of it the 48 cells stand for.
+  let editingBand = "";
 
   // Every write wider than one slot is undoable in one step -- including Clear,
   // which until now wiped all 48 slots with nothing to fall back on. The
   // snapshot is a JSON string and lives only while the panel is open.
   let scheduleUndo = null;
 
-  function writeSlots(targets, slot) {
-    if (targets.length > 1) scheduleUndo = JSON.stringify(settings.slots);
-    for (const index of targets) {
-      if (slot) settings.slots[index] = {band: slot.band, hz: slot.hz};
-      else delete settings.slots[index];
-    }
+  const rotationRow = band => settings.rotation.find(row => row.band === band) || null;
+  const bandsAt = index =>
+    settings.rotation.filter(row => row.slots[index] === "1").map(row => row.band);
+  // How many half hours have anything at all in them. A rotation row with an
+  // empty mask is a band the operator added and has not placed yet, which is not
+  // a schedule -- START has to refuse exactly as it did on an empty grid.
+  const scheduledSlots = () =>
+    Array.from({length: WsprCore.SLOTS_PER_DAY}, (_, index) => index)
+      .filter(index => bandsAt(index).length).length;
+
+  // Bands come out in PRESETS order -- by frequency -- wherever they are shown,
+  // because that is also the order they take turns in on the air.
+  function sortRotation() {
+    const rank = band => WsprCore.PRESETS.findIndex(preset => preset.band === band);
+    settings.rotation.sort((a, b) => rank(a.band) - rank(b.band));
+  }
+
+  function addBand(preset) {
+    if (rotationRow(preset.band)) return;
+    settings.rotation.push({band: preset.band, hz: preset.hz, slots: EMPTY_MASK});
+    sortRotation();
+    editingBand = preset.band;
+    saveSettings();
+  }
+
+  function removeBand(band) {
+    scheduleUndo = JSON.stringify(settings.rotation);
+    settings.rotation = settings.rotation.filter(row => row.band !== band);
+    if (editingBand === band) editingBand = (settings.rotation[0] || {}).band || "";
+    saveSettings();
+  }
+
+  // Writes the band being drawn into (or out of) every slot the span covers.
+  function writeSlots(targets, on) {
+    const row = rotationRow(editingBand);
+    if (!row) return;
+    if (targets.length > 1) scheduleUndo = JSON.stringify(settings.rotation);
+    const mask = row.slots.split("");
+    for (const index of targets) mask[index] = on ? "1" : "0";
+    row.slots = mask.join("");
     saveSettings();
   }
 
   function undoSchedule() {
     if (scheduleUndo === null) return;
-    try { settings.slots = JSON.parse(scheduleUndo); } catch (_error) { return; }
+    try { settings.rotation = JSON.parse(scheduleUndo); } catch (_error) { return; }
+    if (!rotationRow(editingBand)) editingBand = (settings.rotation[0] || {}).band || "";
     scheduleUndo = null;
     saveSettings(); closeSlotPopover(); renderSchedule(); render();
+  }
+
+  // The bands in rotation, and which of them the grid below is drawing. Adding a
+  // band is one click here instead of forty-eight in the grid, which is the whole
+  // reason the matrix is edited by rows.
+  let addingBand = false;
+
+  function renderBandChips() {
+    if (!dom.scheduleBands) return;
+    if (!rotationRow(editingBand)) editingBand = (settings.rotation[0] || {}).band || "";
+    const dbm = radioPower().dbm;
+    const chips = settings.rotation.map(row => {
+      // Amber, not blocked: a band with no TUNE reference still transmits, but
+      // its forward power is never checked, so its records cannot be told apart
+      // from a verified one unless the schedule says so.
+      const unreferenced = dbm !== null && !referenceFor(row.band, dbm);
+      const slots = row.slots.split("").filter(bit => bit === "1").length;
+      return `<button class="tt-chip${row.band === editingBand ? " current" : ""}` +
+             `${unreferenced ? " unreferenced" : ""}" type="button" data-chip-band="${row.band}"` +
+             ` title="${row.band} · ${slots ? `${slots} half hours` : "no half hour yet"}` +
+             `${unreferenced ? " · no TUNE reference at this power" : ""}">${row.band}` +
+             `<span class="tt-chip-drop" data-drop-band="${row.band}" title="Remove ${row.band}">×</span>` +
+             `</button>`;
+    }).join("");
+    const spare = WsprCore.PRESETS.filter(preset => !rotationRow(preset.band));
+    const adding = addingBand && spare.length
+      ? `<span class="tt-chip-menu">${spare.map(preset =>
+          `<button class="tt-chip spare" type="button" data-add-band="${preset.band}">` +
+          `${preset.band}</button>`).join("")}</span>`
+      : "";
+    dom.scheduleBands.innerHTML =
+      `<span class="tt-chip-label">bands</span>${chips}` +
+      (spare.length
+        ? `<button class="tt-chip add${addingBand ? " current" : ""}" type="button" data-add-toggle` +
+          ` title="Add a band to the rotation">+</button>`
+        : "") + adding +
+      (settings.rotation.length
+        ? ""
+        : `<small class="tt-chip-hint">add a band, then click the half hours it runs in</small>`);
   }
 
   // Same markup and classes as the JS8Call frequency timetable, so the shared
@@ -650,16 +794,22 @@
   // columns of six hours and the top-to-bottom order are the .compact modifier in
   // wspr.css doing it in CSS -- the rows here stay in plain time order.
   function renderSchedule() {
+    renderBandChips();
     const now = slotIndexNow();
     let html = "";
     for (let hour = 0; hour < 24; hour++) {
       html += `<div class="tt-row"><span class="tt-hour">${String(hour).padStart(2, "0")}</span>`;
       for (const index of [hour * 2, hour * 2 + 1]) {
-        const slot = settings.slots[index];
-        html += `<button class="tt-cell${slot ? " filled" : ""}${index === now ? " now" : ""}` +
+        // Two facts per cell, because both matter while drawing: whether the band
+        // in hand is on here (the colour) and how many bands share this half hour
+        // (the number). One band reads exactly like the old grid did.
+        const bands = bandsAt(index), mine = bands.includes(editingBand);
+        html += `<button class="tt-cell${mine ? " filled" : ""}` +
+                `${!mine && bands.length ? " other" : ""}${index === now ? " now" : ""}` +
                 `${pendingSlots.has(index) ? " pending" : ""}"` +
-                ` type="button" data-slot="${index}" title="${slotLabel(index)} UTC">` +
-                `${slot ? slot.band : "·"}</button>`;
+                ` type="button" data-slot="${index}"` +
+                ` title="${slotLabel(index)} UTC — ${bands.length ? bands.join(", ") : "silent"}">` +
+                `${bands.length ? bands.length : "·"}</button>`;
       }
       html += "</div>";
     }
@@ -689,7 +839,7 @@
     const now = utcNow();
     const firstHour = Math.floor(now / HOUR_MS) * HOUR_MS;
     const until = firstHour + PREVIEW_HOURS * HOUR_MS;
-    const planned = WsprCore.plannedFrames(now, (until - now) / HOUR_MS, settings);
+    const planned = WsprCore.plannedFrames(now, (until - now) / HOUR_MS, scheduleView());
 
     let html = "", edgeDrawn = false, marked = 0;
     for (let row = 0; row < PREVIEW_HOURS; row++) {
@@ -701,7 +851,7 @@
         const past = frameUtcMs + WsprCore.FRAME_MS <= now;
         const edge = !past && !edgeDrawn;
         if (edge) edgeDrawn = true;
-        const keys = past ? null : WsprCore.frameTransmission(frameUtcMs, settings);
+        const keys = past ? null : WsprCore.frameTransmission(frameUtcMs, scheduleView());
         if (keys) marked++;
         html += `<i class="tt-frame${keys ? " planned" : ""}${past ? " past" : ""}` +
                 `${edge ? " edge" : ""}" title="${new Date(frameUtcMs).toISOString().slice(11, 16)}` +
@@ -728,9 +878,9 @@
       ? `next ${planned.slice(0, 3).map(frame =>
           `${new Date(frame.slotUtcMs).toISOString().slice(11, 16)} ${frame.slot.band}`)
           .join(" · ")}`
-      : Object.keys(settings.slots).length
+      : scheduledSlots()
         ? `nothing in the next ${PREVIEW_HOURS} hours`
-        : "the schedule is empty — click a slot to give it a band";
+        : "the schedule is empty — add a band, then click the half hours it runs in";
   }
 
   // The topbar button carries the two things worth glancing at: which band the
@@ -742,7 +892,7 @@
     // transmission's. Showing the current half hour's band next to a countdown
     // aimed at a different slot said "20m" while it was about to key on 40.
     const upcoming = nextTransmission();
-    if (!Object.keys(settings.slots).length) {
+    if (!scheduledSlots()) {
       dom.freqTimetableValue.textContent = "NO SCHEDULE";
     } else if (upcoming) {
       const at = state.pendingSlotUtcMs || upcoming.slotUtcMs;
@@ -780,25 +930,29 @@
 
   function renderSlotPopover() {
     if (editingSlot === null) return;
-    const current = settings.slots[editingSlot];
     const targets = spanTargets();
     const spans = WsprCore.SPANS.map(span =>
       `<button class="tt-span${span.id === spanChoice ? " current" : ""}"` +
       ` type="button" data-span="${span.id}">${span.label}</button>`).join("");
-    const bands = WsprCore.PRESETS.map(preset =>
-      `<button class="tt-band${current && current.hz === preset.hz ? " current" : ""}"` +
-      ` type="button" data-band="${preset.band}" data-hz="${preset.hz}">${preset.band}</button>`).join("");
     // Spelling the reach out in clock times is what makes the wrap past midnight
     // honest: "+6h" from 21:00 reads 21:00-02:30, not "twelve slots".
     const reach = targets.length > 1
       ? `<small class="tt-span-reach">writes ${targets.length} slots, ` +
         `${slotLabel(targets[0])}–${slotLabel(targets[targets.length - 1])} UTC</small>`
       : "";
+    const here = bandsAt(editingSlot);
+    const body = editingBand
+      // The popover switches the band in hand on or off. Which band that is was
+      // chosen in the chip row, so this stays two buttons wide however many bands
+      // the rotation grows to.
+      ? `<div class="tt-bands"><button class="tt-band${here.includes(editingBand) ? " current" : ""}"` +
+        ` type="button" data-set-band="on">${editingBand} ON</button>` +
+        `<button class="tt-band" type="button" data-set-band="off">${editingBand} OFF</button></div>`
+      : `<small class="tt-span-reach">add a band above first</small>`;
     dom.schedulePopover.innerHTML =
       `<header><strong>${slotLabel(editingSlot)} UTC</strong>` +
-      `<small>WSPR dial frequency</small></header>` +
-      `<div class="tt-span-row"><span>apply to</span>${spans}</div>${reach}` +
-      `<div class="tt-bands">${bands}</div>` +
+      `<small>${here.length ? here.join(" · ") : "silent"}</small></header>` +
+      `<div class="tt-span-row"><span>apply to</span>${spans}</div>${reach}${body}` +
       `<button class="tt-clear-slot" type="button" data-clear-slot>` +
       `${targets.length > 1 ? `Clear ${targets.length} slots` : "Clear slot"}</button>`;
     markPending(targets);
@@ -1034,19 +1188,48 @@
   // it would add area and no information.
   const ACTIVITY_AHEAD_HOURS = 6;
 
+  // Records the grid is allowed to see. The filter is applied here rather than in
+  // WsprLog so the aggregation stays a pure function of what it is handed.
+  const filteredActivity = () => state.bandFilter
+    ? state.activity.filter(record => record.band === state.bandFilter) : state.activity;
+
   function activityCells() {
     const range = activityRange();
+    const records = filteredActivity();
     return range.hours
-      ? {slotView: true, ...WsprLog.summariseSlots(state.activity,
+      ? {slotView: true, ...WsprLog.summariseSlots(records,
           {hours: range.hours, aheadHours: ACTIVITY_AHEAD_HOURS, nowUtcMs: utcNow()})}
-      : {slotView: false, ...WsprLog.summarise(state.activity, {days: range.days, nowUtcMs: utcNow()})};
+      : {slotView: false, ...WsprLog.summarise(records, {days: range.days, nowUtcMs: utcNow()})};
+  }
+
+  // Every band that has either run or is scheduled, so a band can be inspected
+  // before its first transmission and after it has been taken out of rotation.
+  function activityBands() {
+    const bands = new Set(settings.rotation.map(row => row.band));
+    for (const record of state.activity) if (record.band) bands.add(record.band);
+    const rank = band => WsprCore.PRESETS.findIndex(preset => preset.band === band);
+    return [...bands].sort((a, b) => rank(a) - rank(b));
+  }
+
+  function renderActivityBands() {
+    if (!dom.activityBands) return;
+    const bands = activityBands();
+    if (state.bandFilter && !bands.includes(state.bandFilter)) state.bandFilter = "";
+    dom.activityBands.innerHTML = bands.length < 2 ? "" :
+      `<span class="tt-chip-label">show</span>` +
+      `<button class="tt-chip${state.bandFilter ? "" : " current"}" type="button"` +
+      ` data-filter-band="">ALL</button>` +
+      bands.map(band =>
+        `<button class="tt-chip${band === state.bandFilter ? " current" : ""}" type="button"` +
+        ` data-filter-band="${band}">${band}</button>`).join("");
   }
 
   function renderActivity() {
+    renderActivityBands();
     const range = activityRange();
     const view = activityCells();
     const now = utcNow();
-    const totals = WsprLog.totals(state.activity,
+    const totals = WsprLog.totals(filteredActivity(),
       range.hours ? {hours: range.hours, nowUtcMs: now} : {days: range.days, nowUtcMs: now});
 
     const stamp = utcMs => new Date(utcMs).toISOString().replace("T", " ").slice(0, 16);
@@ -1062,7 +1245,12 @@
         // A frame still running counts as present, not past, so the "now" mark
         // lands on the frame after it rather than inside it.
         const future = view.slotView && cell.slotUtcMs + WsprCore.FRAME_MS > now;
-        const keys = future ? WsprCore.frameTransmission(cell.slotUtcMs, settings) : null;
+        const frame = future ? WsprCore.frameTransmission(cell.slotUtcMs, scheduleView()) : null;
+        // While one band is being inspected, only its own future frames are drawn
+        // hollow -- otherwise the filtered grid would promise transmissions that
+        // belong to a band it is not showing.
+        const keys = frame && (!state.bandFilter || frame.slot.band === state.bandFilter)
+          ? frame : null;
         const edge = future && !edgeDrawn;
         if (edge) edgeDrawn = true;
         if (keys) planned++;
@@ -1154,7 +1342,12 @@
     state.pendingSlotUtcMs = next.slotUtcMs;
     const untilSlot = next.slotUtcMs - utcNow();
     if (untilSlot > PREPARE_LEAD_MS + 20000) return;      // still far away
-    if (untilSlot < PREPARE_LEAD_MS * 0.5) return;        // too late, wait for the next
+    // A frame that follows straight after one of ours has nine seconds of gap,
+    // not the beacon's usual ten-second lead, so it is prepared on a shorter one.
+    // Below the cutoff there is no longer room to confirm the dial, and keying on
+    // an unconfirmed band is the one thing this page will not do.
+    const leadMs = untilSlot < PREPARE_LEAD_MS ? TIGHT_LEAD_MS : PREPARE_LEAD_MS;
+    if (untilSlot < RETUNE_CUTOFF_MS) return;             // too late, wait for the next
 
     // Re-checked here rather than only at START: the operator can reach over and
     // turn the power up hours into an unattended run, and this slot must not go
@@ -1164,6 +1357,11 @@
     try {
       if (blocked) throw new Error(blocked);
       await tuneRadio(next.slot);
+      // The cutoff is checked AFTER the retune, because that is what it is about:
+      // a dial that arrived too late to leave room for the prebuffer.
+      const leftAfterTune = next.slotUtcMs - utcNow();
+      if (leftAfterTune < RETUNE_CUTOFF_MS)
+        throw new Error(`the band change left only ${(leftAfterTune / 1000).toFixed(1)} s`);
       const frame = WsprCore.encode({
         callsign: dom.callsign.value.trim().toUpperCase(),
         locator: sharedGrid(),
@@ -1179,8 +1377,12 @@
         powerSamples: [],
       };
       tx.queue({symbols: frame.symbols, slotUtcMs: next.slotUtcMs,
-                baseHz, amplitude: txGain()});
+                baseHz, amplitude: txGain(), leadMs});
       state.beacon = "transmitting";
+      // A frame that made it is proof the link can sustain the pace, so the
+      // spacing imposed after three failures is lifted again here.
+      state.retuneMisses = 0;
+      state.spaceBandChanges = false;
     } catch (error) {
       // Failing to tune means the slot passes with nothing radiated. That is a
       // missed slot, and the grid has to say so rather than showing a gap.
@@ -1193,6 +1395,17 @@
                            reason: String(error.message || error)});
       state.lastError = String(error.message || error);
       state.beacon = "armed";
+      // Only the deadline degrades the pace. A missing callsign or a power
+      // ceiling would fail just as reliably at half the rate, so treating those
+      // as "too fast" would hide a fault behind a quieter schedule.
+      if (untilSlot < PREPARE_LEAD_MS) {
+        state.retuneMisses += 1;
+        if (state.retuneMisses >= RETUNE_MISS_LIMIT && !state.spaceBandChanges) {
+          state.spaceBandChanges = true;
+          state.lastError = `${state.lastError} — leaving a frame free after each ` +
+            `band change until one fits again`;
+        }
+      }
     }
     render();
   }
@@ -1279,7 +1492,7 @@
       WsprCore.validate({callsign: dom.callsign.value, locator: sharedGrid(),
                          powerDbm: power.dbm});
     } catch (error) { return error.message; }
-    if (!Object.keys(settings.slots).length) return "the schedule is empty";
+    if (!scheduledSlots()) return "the schedule is empty";
     return "";
   }
 
@@ -1409,18 +1622,29 @@
     // The second sentence explains randomise in place rather than in yet another
     // pop-up: the answer an operator wants is why the frame moves and whether
     // the countdown can still be trusted, and both fit on one line.
+    // The period no longer says how often the station transmits -- with several
+    // bands sharing a half hour it says how long each ONE of them rests. What the
+    // operator still needs is the figure that used to be there, so it is derived
+    // from the busiest half hour and spelled out: bands, station duty, band duty.
     const perFrames = settings.periodFrames;
+    const widest = Math.max(0, ...Array.from({length: WsprCore.SLOTS_PER_DAY},
+      (_, index) => bandsAt(index).length));
+    const cycle = Math.max(widest, perFrames);
     dom.periodHint.textContent =
-      `One transmission every ${perFrames * 2} minutes — ` +
-      `${(100 / perFrames).toFixed(0)} % of the time — ` +
-      `${settings.randomizeFrame ? "in a frame picked differently each half hour"
-                                 : "always in the first frame of the period"}. ` +
+      `Each band waits ${perFrames * 2} minutes before it may key again. ` +
+      (widest
+        ? `The busiest half hour holds ${widest} band${widest > 1 ? "s" : ""}, so they take ` +
+          `turns over ${cycle} frames: the radio keys ` +
+          `${Math.round(100 * widest / cycle)} % of the time and each band comes round ` +
+          `every ${cycle * 2} minutes${widest >= perFrames
+            ? " — a continuous rotation, never twice running on the same band." : "."} `
+        : "Add a band and place it in the grid to see what that produces. ") +
       (settings.randomizeFrame
-        ? "randomise derives that frame from the date and the half-hour slot, so it is "
-          + "known in advance and the countdown stays exact, but it is never the same "
-          + "frame for long — which keeps the beacon off a permanent collision with "
-          + "another station on the same frame."
-        : "Without randomise the period is counted from 00:00 UTC, so the beacon keeps "
+        ? "randomise draws the starting frame from the date, and redraws it only where "
+          + "the set of bands changes — so the rotation runs unbroken through the half "
+          + "hours that share one, and the beacon still moves off any frame it would "
+          + "otherwise sit on for ever."
+        : "Without randomise the cycle is counted from 00:00 UTC, so the beacon keeps "
           + "the same frames day after day — simple to predict, but it will clash with "
           + "any other beacon that picked the same ones.");
     dom.scheduleUndo.hidden = scheduleUndo === null;
@@ -1456,8 +1680,15 @@
       ? Math.max(0, Math.round((next.slotUtcMs - utcNow()) / 1000)) : 0;
     // No countdown here any more: the timer beside START carries it, and two
     // clocks for one event disagree the moment one of them lags a render.
+    // The measured band change belongs next to the next slot: with a rotation it
+    // is the number that decides whether the following frame is reachable at all,
+    // and there are only nine seconds of gap to spend.
+    const retune = state.lastRetuneMs
+      ? ` · band change ${(state.lastRetuneMs / 1000).toFixed(1)} s` +
+        `${state.spaceBandChanges ? ", pacing reduced" : ""}`
+      : "";
     dom.nextSession.textContent = next
-      ? `next slot ${new Date(next.slotUtcMs).toISOString().slice(11, 19)} UTC`
+      ? `next slot ${new Date(next.slotUtcMs).toISOString().slice(11, 19)} UTC${retune}`
       : "no slot scheduled";
 
     const live = tx && ["prebuffering", "streaming"].includes(tx.state);
@@ -1621,17 +1852,51 @@
     dom.referenceClear.addEventListener("click", () => {
       settings.powerReferences = {}; saveSettings(); render();
     });
+    // renderSchedule(), not render(): the gap and randomise change WHICH frames
+    // key, so the preview strip and the activity block's predicted tail are both
+    // stale the moment they are touched. render() alone left the tail showing the
+    // previous setting until something unrelated redrew it.
     dom.periodFrames.addEventListener("change", () => {
-      settings.periodFrames = Number(dom.periodFrames.value); saveSettings(); render();
+      settings.periodFrames = Number(dom.periodFrames.value);
+      saveSettings(); renderSchedule(); render();
     });
     dom.randomizeFrame.addEventListener("change", () => {
-      settings.randomizeFrame = dom.randomizeFrame.checked; saveSettings(); render();
+      settings.randomizeFrame = dom.randomizeFrame.checked;
+      saveSettings(); renderSchedule(); render();
     });
+    // Clear empties the band in hand across the whole day; the rotation keeps the
+    // band, because dropping a row is what the chip's × is for.
     dom.scheduleClear.addEventListener("click", () => {
-      writeSlots(Array.from({length: WsprCore.SLOTS_PER_DAY}, (_, slot) => slot), null);
+      writeSlots(Array.from({length: WsprCore.SLOTS_PER_DAY}, (_, slot) => slot), false);
       closeSlotPopover(); renderSchedule(); render();
     });
     dom.scheduleUndo.addEventListener("click", undoSchedule);
+    dom.scheduleBands.addEventListener("click", event => {
+      const drop = event.target.closest("[data-drop-band]");
+      if (drop) {
+        removeBand(drop.dataset.dropBand);
+        closeSlotPopover(); renderSchedule(); render();
+        return;
+      }
+      const chip = event.target.closest("[data-chip-band]");
+      if (chip) {
+        editingBand = chip.dataset.chipBand; addingBand = false;
+        renderSchedule(); if (editingSlot !== null) renderSlotPopover();
+        return;
+      }
+      const add = event.target.closest("[data-add-band]");
+      if (add) {
+        const preset = WsprCore.PRESETS.find(entry => entry.band === add.dataset.addBand);
+        if (preset) addBand(preset);
+        addingBand = false;
+        renderSchedule(); render();
+        return;
+      }
+      if (event.target.closest("[data-add-toggle]")) {
+        addingBand = !addingBand;
+        renderBandChips();
+      }
+    });
     dom.scheduleGrid.addEventListener("click", event => {
       const cell = event.target.closest("[data-slot]");
       if (!cell) return;
@@ -1650,14 +1915,24 @@
         renderSlotPopover(); positionSlotPopover();
         return;
       }
-      const band = event.target.closest("[data-band]");
+      const band = event.target.closest("[data-set-band]");
       if (band) {
-        writeSlots(spanTargets(), {band: band.dataset.band, hz: Number(band.dataset.hz)});
+        writeSlots(spanTargets(), band.dataset.setBand === "on");
         closeSlotPopover(); renderSchedule(); render();
         return;
       }
+      // Clear takes every band out of these half hours, not just the one in hand:
+      // "clear this slot" has to mean the slot is silent afterwards.
       if (event.target.closest("[data-clear-slot]")) {
-        writeSlots(spanTargets(), null);
+        const targets = spanTargets();
+        if (targets.length > 1 || settings.rotation.length > 1)
+          scheduleUndo = JSON.stringify(settings.rotation);
+        for (const row of settings.rotation) {
+          const mask = row.slots.split("");
+          for (const index of targets) mask[index] = "0";
+          row.slots = mask.join("");
+        }
+        saveSettings();
         closeSlotPopover(); renderSchedule(); render();
       }
     });
@@ -1748,6 +2023,16 @@
       dom.activityDetail.hidden = true;
       renderActivity();
     });
+    dom.activityBands.addEventListener("click", event => {
+      const chip = event.target.closest("[data-filter-band]");
+      if (!chip) return;
+      state.bandFilter = chip.dataset.filterBand;
+      // The selection points at a cell of the grid being replaced, so it cannot
+      // survive the filter change.
+      state.selectedCell = null;
+      dom.activityDetail.hidden = true;
+      renderActivity();
+    });
     dom.activityGrid.addEventListener("click", event => {
       const cell = event.target.closest("[data-row]");
       if (!cell) return;
@@ -1818,6 +2103,9 @@
                          renderSchedule, clockCorrectionMs, waterfall,
                          targetDbm, defaultPowerDbm, powerMismatch,
                          referenceFor, storeReference, txGain,
+                         scheduleView, addBand, saveSettings,
+                         get editingBand() { return editingBand; },
+                         set editingBand(band) { editingBand = band; },
                          get tx() { return tx; },
                          get sessionHeld() { return sessionHeld && sessionConfirmed; }};
   });

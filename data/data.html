@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>JS8Call</title>
-  <link rel="stylesheet" href="/data.css?v=20260724a">
+  <link rel="stylesheet" href="/data.css?v=20260730a">
 </head>
 <body class="startup-pending lan-gate-checking">
   <header class="site-topbar">
@@ -48,6 +48,15 @@
       </section>
     </div>
     <span id="trxMode" class="trx-mode">---</span>
+    <!-- RF power as the radio itself scales it: ten segments, one per 10 %, so
+         the count reads back as the percentage. The watts beside it are that
+         percentage against the model's full scale, exactly as the WSPR page
+         computes it. Segments are static markup because renderHeader() runs
+         twice a second and must only toggle a class. -->
+    <span id="trxPower" class="trx-power" hidden>
+      <span class="pwr-bar" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+      <b id="trxPowerWatts">--</b>
+    </span>
     <span id="linkState" class="live">● OFFLINE</span>
     <button id="trxReconnect" class="trx-reconnect" type="button" hidden>Reconnect</button>
     <span id="operatorState" class="operator"></span>
@@ -219,7 +228,10 @@
       <details class="compact-section" data-section="reply" open>
         <summary><span>TX SESSION</span><span id="txSummary" class="summary-status">Idle</span></summary>
         <div class="tx-session-toolbar">
-          <label>Mode <select id="txSessionMode"><option>CHAT</option><option>EMAIL</option><option>BIN</option></select></label>
+          <!-- EMAIL is not offered here: the gateway composer, its dialogs and js8-email.js
+               all stay in place, only the operator-facing choice is gone. Restore the option
+               to bring the mode back. -->
+          <label>Mode <select id="txSessionMode"><option>CHAT</option><option>BIN</option></select></label>
           <small id="txSessionModeHint">Keyboard-to-keyboard messages</small>
         </div>
         <div id="txPayload" class="tx-payload" hidden></div>
@@ -387,8 +399,11 @@
   <script src="/js8-tx.js?v=20260724b"></script>
   <script src="/js8-core.js?v=20260719d"></script>
   <script src="/js8-adapter.js?v=20260719d"></script>
+  <!-- Only for RADIO_FULL_POWER_W / fullPowerWatts: the header turns the CI-V
+       level into watts and must never disagree with the WSPR page about how. -->
+  <script src="/wspr-core.js?v=20260726a"></script>
   <script src="/dxcc.js?v=20260719d"></script>
   <script src="/log-db.js?v=20260720a"></script>
-  <script src="/data.js?v=20260724c"></script>
+  <script src="/data.js?v=20260730a"></script>
 </body>
 </html>
