@@ -14,6 +14,10 @@ uint32_t testMillis = 0;
 static int parsedFrames = 0;
 void lanCivFrameHandler(const uint8_t*, size_t) { parsedFrames++; }
 void lanSecondaryCivFrameHandler(uint8_t, const uint8_t*, size_t) { parsedFrames++; }
+void lanCivFrameRoute(uint8_t slot, const uint8_t* frame, size_t length) {
+  if (slot == 0) lanCivFrameHandler(frame, length);
+  else lanSecondaryCivFrameHandler(slot, frame, length);
+}
 void lanAudioHandler(const uint8_t*, size_t, uint16_t) {}
 
 static void putLE16(std::vector<uint8_t>& packet, size_t offset, uint16_t value) {
@@ -661,6 +665,88 @@ int main() {
     if (client.audioReady()) {
       std::fprintf(stderr, "audioReady stayed true through long payload silence\n");
       ok = false;
+    }
+  }
+
+  {
+    // All external CI-V commands cross one priority scheduler. A safety PTT OFF
+    // preempts a stale telemetry request and an older user command, while the
+    // user command remains queued for the next addressed reply.
+    IcomLanClient client;
+    client.state = IcomLanClient::LAN_CONNECTED;
+    client.civPort = 50002;
+    client.civGotHere = client.civGotReady = client.civOpenSent = client.civGotData = true;
+    client.civRequestPending = true;
+    client.civRequestSentMs = testMillis - 100;
+    client.lastCtrlRxMs = testMillis;
+    const uint8_t user[] = {0x03};
+    const uint8_t off[] = {0x1c, 0x00, 0x00};
+    if (!client.sendCommand(user, sizeof(user)) ||
+        !client.sendPriorityCommand(off, sizeof(off), IcomLanClient::CIV_SAFETY)) {
+      std::fprintf(stderr, "CI-V scheduler rejected a valid command\n");
+      ok = false;
+    }
+    const std::vector<uint8_t> pttOff = {
+        0xFE, 0xFE, 0xA4, 0xE1, 0x1C, 0x00, 0x00, 0xFD};
+    bool sentOff = false;
+    bool sentUserFirst = false;
+    for (const auto& packet : client.civUdp.writes) {
+      if (std::search(packet.begin(), packet.end(), pttOff.begin(), pttOff.end()) != packet.end())
+        sentOff = true;
+      const std::vector<uint8_t> frequency = {0xFE, 0xFE, 0xA4, 0xE1, 0x03, 0xFD};
+      if (std::search(packet.begin(), packet.end(), frequency.begin(), frequency.end()) != packet.end())
+        sentUserFirst = true;
+    }
+    if (!sentOff || sentUserFirst) {
+      std::fprintf(stderr, "PTT OFF did not preempt lower-priority CI-V work\n");
+      ok = false;
+    }
+    client.civRequestPending = false;
+    client.civUdp.writes.clear();
+    client.serviceCivCommands(testMillis);
+    bool sentQueuedUser = false;
+    const std::vector<uint8_t> frequency = {0xFE, 0xFE, 0xA4, 0xE1, 0x03, 0xFD};
+    for (const auto& packet : client.civUdp.writes)
+      if (std::search(packet.begin(), packet.end(), frequency.begin(), frequency.end()) != packet.end())
+        sentQueuedUser = true;
+    if (!sentQueuedUser) {
+      std::fprintf(stderr, "queued CI-V user command did not resume after safety work\n");
+      ok = false;
+    }
+
+    // PTT level commands are coalesced. An OFF replacing an unsent ON must
+    // never leave that ON behind to key the radio after the abort.
+    client.clearCivCommands();
+    const uint8_t on[] = {0x1c, 0x00, 0x01};
+    client.enqueueCivCommand(on, sizeof(on), IcomLanClient::CIV_CONTROL);
+    client.enqueueCivCommand(off, sizeof(off), IcomLanClient::CIV_SAFETY);
+    int queuedPtt = 0;
+    bool queuedOff = false;
+    for (const auto& command : client.civCommands) {
+      if (!command.valid || command.length < 3 ||
+          command.body[0] != 0x1c || command.body[1] != 0x00) continue;
+      queuedPtt++;
+      queuedOff = command.body[2] == 0;
+    }
+    if (queuedPtt != 1 || !queuedOff) {
+      std::fprintf(stderr, "CI-V scheduler retained a stale queued PTT ON\n");
+      ok = false;
+    }
+
+    // A recovering CAT stream rejects priority state instead of queuing a
+    // latent PTT ON whose eventual timing the caller can no longer control.
+    client.clearCivCommands();
+    client.civGotData = false;
+    if (client.sendPriorityCommand(on, sizeof(on), IcomLanClient::CIV_CONTROL)) {
+      std::fprintf(stderr, "recovering CI-V accepted PTT ON as if it was sent\n");
+      ok = false;
+    }
+    for (const auto& command : client.civCommands) {
+      if (command.valid && command.length >= 2 &&
+          command.body[0] == 0x1c && command.body[1] == 0x00) {
+        std::fprintf(stderr, "recovering CI-V queued a latent PTT command\n");
+        ok = false;
+      }
     }
   }
 

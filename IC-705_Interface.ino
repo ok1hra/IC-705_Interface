@@ -460,6 +460,8 @@ int incomingByte = 0;   // for incoming serial data
   uint8_t* wsOut = nullptr;
   size_t   wsOutHead = 0, wsOutTail = 0, wsOutLen = 0;
   bool     audioTxKeyed = false;       // M3: PTT keyed for browser-sourced TX audio
+  bool     audioPttOffPending = false; // desired OFF not yet submitted to healthy CI-V
+  uint32_t audioPttRetryAt = 0;
   uint32_t audioTxLastMs = 0;          // last TX audio/keep-alive — dead-man un-key timer
   uint32_t audioStreamId = 0;          // changes for every WebSocket media epoch
   uint32_t audioRxSequence = 0;
@@ -470,11 +472,10 @@ int incomingByte = 0;   // for incoming serial data
   uint16_t audioRadioExpectedSequence = 0;
 
   Aud1TxState aud1TxState = AUD1_TX_IDLE;
-  static const size_t AUD1_TX_RING_SIZE = 12288; // 1.536 s of radio uLaw at 8 kHz
-  uint8_t aud1TxRing[AUD1_TX_RING_SIZE];
-  size_t aud1TxRead = 0, aud1TxWrite = 0, aud1TxUsed = 0;
+  static const size_t AUD1_TX_RING_SIZE = IcomLanAudioTx::QUEUE_CAPACITY;
+  size_t aud1TxUsed = 0;                    // atomic snapshot mirror for UI/state JSON
   uint32_t aud1TxId = 0, aud1TxExpectedSequence = 0, aud1TxExpectedPackets = 0;
-  uint32_t aud1TxReceivedPackets = 0, aud1TxTargetMs = 0, aud1TxNextDrainMs = 0;
+  uint32_t aud1TxReceivedPackets = 0, aud1TxTargetMs = 0;
   uint32_t aud1TxDeadlineMs = 0, aud1TxPrebufferSamples = 0;
   uint64_t aud1TxExpectedSample = 0, aud1TxTotalSamples = 0, aud1TxConsumedUlaw = 0;
   bool aud1TxLastSeen = false;
@@ -487,7 +488,8 @@ int incomingByte = 0;   // for incoming serial data
   // append+rotate there is a multi-100 ms flash stall that can miss the very next
   // JS8 slot. Events are formatted into this RAM ring instead and flushed to flash
   // only from loop() while no TX is imminent (unattendedLogFlush). Heap-allocated
-  // like wsOut; if malloc fails, unattendedLogEnqueue degrades to a sync write.
+  // like wsOut; if malloc fails, the hot path records an overflow marker and
+  // still never falls back to a synchronous flash write during TX.
   static const size_t UNA_LOG_QUEUE_SIZE = 2048;   // ~17 lines of <=120 B
   uint8_t* unaLogQueue = nullptr;
   size_t   unaLogHead = 0, unaLogTail = 0, unaLogLen = 0;
@@ -654,6 +656,7 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   IcomLanClient* lanRadioClient(void);
   bool lanRadioConnected(void);
   bool lanRadioSendCommand(const uint8_t *body, size_t len);
+  bool lanRadioSendPriorityCommand(const uint8_t *body, size_t len, IcomLanClient::CivPriority priority);
   void lanRadioAudioService(IcomLanClient *client);
   void lanRadioCivSnapshot(const uint8_t *frame, size_t len);
   void lanCivFrameRoute(uint8_t slot, const uint8_t *frame, size_t len);
@@ -733,10 +736,12 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   void audioPttOn(void);
   void audioPttOff(void);
   void audioPttSafetyOnLink(void);
+  void audioPttSafetyRetryTick(void);
   void unattendedLogEvent(uint8_t type, const String& detail);
   void unattendedLogEnqueue(const char* line, size_t n);
   void unattendedLogFlush(void);
   bool txCriticalNow(void);
+  bool txRealtimeNow(void);
   void handleUnattendedGet(void);
   void handleUnattendedPost(void);
   void handleUnattendedLog(void);
@@ -1719,6 +1724,9 @@ void buildStateJson(char *buf, size_t bufSize, bool lanView){
   bool lanCatHealthy = client ? client->catHealthy()
                               : (primaryTransport == RADIO_CIV && radioLinked);
   bool lanAudioReady = client && client->audioReady();
+  bool lanAudioTxReady = client && client->audioTxReady();
+  IcomLanAudioTx::Snapshot lanAudioTx = {};
+  if(client) lanAudioTx = client->audioTxSnapshot();
   bool fullCat = radioHasCapability(slot, primaryTransport, RADIO_CAP_FULL_CAT);
   // Values that live in the shared globals for TRX1 and in the snapshot for a
   // LAN radio in another slot. AF gain, RIT, key speed, preamp and VOX have no
@@ -1741,7 +1749,7 @@ void buildStateJson(char *buf, size_t bufSize, bool lanView){
   // dropping. Keep comments out of the snprintf call itself -- the argument
   // bounds in tools/state-json-budget-smoke.js are parsed straight from it.
   snprintf(buf, bufSize,
-    "{\"connected\":%s,\"catHealthy\":%s,\"audioReady\":%s,"
+    "{\"connected\":%s,\"catHealthy\":%s,\"audioReady\":%s,\"audioTxReady\":%s,"
     "\"lanStatus\":\"%s\",\"btStatus\":\"%s\",\"wifiStatus\":\"%s\","
     "\"radioTransport\":\"%s\",\"fullCat\":%s,\"tuneSupported\":true,"
     "\"wifiRssi\":%d,\"fwRev\":\"%u\",\"bdSupported\":%s,\"power\":%s,"
@@ -1752,9 +1760,13 @@ void buildStateJson(char *buf, size_t bufSize, bool lanView){
     "\"supplyVolts\":%.2f,\"swr\":%.2f,"
     "\"preamp\":%u,\"vox\":%u,"
     "\"lanDrops\":%u,\"lanStalls\":%u,\"lanFilled\":%u,"
+    "\"audioTxQueued\":%u,\"audioTxPackets\":%u,\"audioTxReplays\":%u,"
+    "\"audioTxReplayMisses\":%u,\"audioTxSendFailures\":%u,\"audioTxMaxLateMs\":%u,"
+    "\"audioRxDropped\":%u,\"audioMaxSendUs\":%u,"
     "\"dxcConnected\":%s}",
     radioLinked ? "true" : "false", lanCatHealthy ? "true" : "false",
-    lanAudioReady ? "true" : "false", lanStatus, btStat, wifiStat,
+    lanAudioReady ? "true" : "false", lanAudioTxReady ? "true" : "false",
+    lanStatus, btStat, wifiStat,
     radioTransportName(primaryTransport), fullCat ? "true" : "false",
     rssi, (unsigned)REV, bdEnabled ? "true" : "false", viewPower ? "true" : "false",
     (unsigned)viewFrequency, modesSnapshot, (unsigned)viewFilter,
@@ -1766,6 +1778,11 @@ void buildStateJson(char *buf, size_t bufSize, bool lanView){
     viewSupplyVolts, viewSwr,
     (unsigned)(snapView ? 0 : statePreampMode), (unsigned)(snapView ? 0 : stateVoxMode),
     (unsigned)lanHealthDrops, (unsigned)lanHealthStalls, (unsigned)lanHealthFilled,
+    (unsigned)lanAudioTx.queued, (unsigned)lanAudioTx.sentPackets,
+    (unsigned)lanAudioTx.replayedPackets, (unsigned)lanAudioTx.replayMisses,
+    (unsigned)lanAudioTx.sendFailures, (unsigned)lanAudioTx.maxLatenessMs,
+    (unsigned)(client ? client->audioRxDropped() : 0),
+    (unsigned)(client ? client->audioMaxSendUs() : 0),
     DxcTelnetStatus ? "true" : "false"
   );
 }
@@ -1773,7 +1790,7 @@ void buildStateJson(char *buf, size_t bufSize, bool lanView){
 void handleGetState(){
   // CAT page polls /state?fast=1 — hold the fast BT poll cadence while it's open
   if (webServer.arg("fast") == "1") catFastUntil = millis() + CAT_FAST_HOLD_MS;
-  static char stateBuf[900];
+  static char stateBuf[1100];
   // ?radio=lan -> the radio JS8 drives; anything else keeps meaning TRX1.
   buildStateJson(stateBuf, sizeof(stateBuf), webServer.arg("radio") == "lan");
   webServer.sendHeader("Cache-Control", "no-cache");
@@ -1841,6 +1858,14 @@ void handlePairingReject() {
 }
 
 bool handleFileFromSPIFFS(const String &path){
+  // Keep lightweight /state and session heartbeats alive during long WSPR TX,
+  // but reject flash-backed asset transfers. Flash cache stalls can pause both
+  // cores, including the dedicated audio task.
+  if(txRealtimeNow()){
+    webServer.sendHeader("Connection", "close");
+    webServer.send(503, "text/plain", "asset transfer deferred during TX");
+    return true;
+  }
   webQuietUntil = millis() + 1500;
   String contentType = "text/plain";
   bool isStatic = false;
@@ -2288,6 +2313,12 @@ bool lanRadioConnected(void) {
 bool lanRadioSendCommand(const uint8_t *body, size_t len) {
   IcomLanClient* client = lanRadioClient();
   return client && client->connected() && client->sendCommand(body, len);
+}
+
+bool lanRadioSendPriorityCommand(const uint8_t *body, size_t len,
+                                 IcomLanClient::CivPriority priority) {
+  IcomLanClient* client = lanRadioClient();
+  return client && client->connected() && client->sendPriorityCommand(body, len, priority);
 }
 
 bool beginRadioLanClient(uint8_t slot) {
@@ -3618,6 +3649,11 @@ void loop(){
   #define _TIMED(name, call) { unsigned long _t = millis(); call; unsigned long _d = millis()-_t; if(_d > LOOP_WARN_MS) { Serial.print("LOOP| slow: " name " "); Serial.print(_d); Serial.println("ms"); } }
   _TIMED("Watchdog",        Watchdog())
   _TIMED("LanClient",       lanClientLoop())
+  audioPttSafetyRetryTick();
+  // PTT release is checked immediately after the two radio Interfaces. The
+  // dedicated audio owner advances playout independently; this early check
+  // prevents unrelated CLI/web work from extending the keyed tail.
+  if(aud1TxState == AUD1_TX_STREAM) aud1TxTick(false);
   _TIMED("CLI",             serialPump())
   _TIMED("CIV",             civPollTick())
   #if defined(RTLE)
@@ -3631,7 +3667,7 @@ void loop(){
   _TIMED("audioWs",         AudioHandleWsClient())
   // Persist queued unattended-log events to flash only when no slot key is near,
   // so the append/rotate never stalls the loop across a JS8 slot boundary.
-  if(!txCriticalNow()) unattendedLogFlush();
+  if(!txRealtimeNow()) unattendedLogFlush();
 
   // TrxNet: process pending /s-hz command (set TRX1 VFO via CI-V)
   if (trxFreqPending) {
@@ -6281,7 +6317,7 @@ void DxcLoop(){
   // Never start it while a slot key is imminent; an established connection keeps
   // being read below.
   if(!DxcTelnetClient.connected() && DxcConfigReady() && millis() >= DxcReconnectTimer &&
-     !txCriticalNow()) DxcConnectTelnet();
+     !txRealtimeNow()) DxcConnectTelnet();
   DxcHandleTelnetClient();
 }
 
@@ -6511,10 +6547,16 @@ static bool unattendedLogWriteToFlash(const uint8_t* data1, size_t n1,
 }
 
 // Append one formatted line to the RAM ring. On a full ring drop whole oldest
-// lines (never a fragment) and flag the overflow so the flush records it. Falls
-// back to a synchronous flash write only when the ring could not be allocated.
+// lines (never a fragment) and flag the overflow so the flush records it. If the
+// ring allocation failed, non-realtime calls may write synchronously, but TX
+// only records the loss marker and leaves flash untouched.
 void unattendedLogEnqueue(const char* line, size_t n){
-  if(!unaLogQueue){ unattendedLogWriteToFlash((const uint8_t*)line, n, nullptr, 0, false); return; }
+  if(!unaLogQueue){
+    if(txRealtimeNow()){ unaLogOverflow = true; return; }
+    if(unattendedLogWriteToFlash((const uint8_t*)line, n, nullptr, 0, unaLogOverflow))
+      unaLogOverflow = false;
+    return;
+  }
   if(n == 0 || n > UNA_LOG_QUEUE_SIZE) return;
   while(UNA_LOG_QUEUE_SIZE - unaLogLen < n){
     size_t dropped = 0;
@@ -6642,6 +6684,9 @@ void handleJs8SessionRelease(){
 void handleUnattendedGet(){
   uint32_t now = millis();
   bool live = unattendedLivenessFresh(unattendedGuard, now);
+  IcomLanClient *audioClient = lanRadioClient();
+  IcomLanAudioTx::Snapshot audioTx = audioClient
+      ? audioClient->audioTxSnapshot() : IcomLanAudioTx::Snapshot();
   String json = "{\"armed\":" + String(unattendedArmActive(unattendedGuard, now) ? "true" : "false");
   json += ",\"remainingMs\":" + String((unsigned long)unattendedRemainingMs(unattendedGuard, now));
   json += ",\"clientLive\":" + String(live ? "true" : "false");
@@ -6655,6 +6700,13 @@ void handleUnattendedGet(){
   json += ",\"txState\":" + String((int)aud1TxState);
   json += ",\"txUsed\":" + String((unsigned long)aud1TxUsed);
   json += ",\"txCapacity\":" + String((unsigned long)AUD1_TX_RING_SIZE);
+  json += ",\"txPackets\":" + String((unsigned long)audioTx.sentPackets);
+  json += ",\"txReplays\":" + String((unsigned long)audioTx.replayedPackets);
+  json += ",\"txReplayMisses\":" + String((unsigned long)audioTx.replayMisses);
+  json += ",\"txSendFailures\":" + String((unsigned long)audioTx.sendFailures);
+  json += ",\"txMaxLateMs\":" + String((unsigned long)audioTx.maxLatenessMs);
+  json += ",\"audioRxDropped\":" + String((unsigned long)(audioClient ? audioClient->audioRxDropped() : 0));
+  json += ",\"audioMaxSendUs\":" + String((unsigned long)(audioClient ? audioClient->audioMaxSendUs() : 0));
   json += ",\"rxPackets\":" + String((unsigned long)audioRxPackets);
   json += ",\"lan\":" + String(lanRadioConnected() ? "true" : "false");
   json += ",\"upMs\":" + String((unsigned long)now);
@@ -6712,22 +6764,29 @@ void handleUnattendedPost(){
 // ── M3 TX: key/un-key PTT via CI-V (LAN); dead-man safety un-keys on loss ──────
 void audioPttOn(){
   if(audioTxKeyed) { audioTxLastMs = millis(); return; }
+  if(audioPttOffPending){
+    audioPttOff();
+    Serial.println("AUD | PTT ON skipped (safety OFF was pending)");
+    return;
+  }
   if(!lanRadioConnected()){ Serial.println("AUD | PTT ON skipped (LAN not connected)"); return; }
   uint8_t f[] = {0x1C, 0x00, 0x01};          // TX ON (same CI-V as CAT-page PTT)
-  bool ok = lanRadioSendCommand(f, 3);
-  uint8_t rd[] = {0x1C, 0x00};               // read back -> "CIV | radio TX state" log
-  lanRadioSendCommand(rd, 2);
+  bool ok = lanRadioSendPriorityCommand(f, 3, IcomLanClient::CIV_CONTROL);
   audioTxKeyed = ok; audioTxLastMs = millis();
-  if(ok) rtcPttWasKeyed = 1;   // cleared again only by a confirmed PTT OFF
+  if(ok){ rtcPttWasKeyed = 1; audioPttOffPending = false; }
   Serial.print("AUD | PTT ON (TX audio) sendCommand="); Serial.println(ok ? "ok" : "FAIL");
 }
 void audioPttOff(){
-  if(!audioTxKeyed) return;
+  if(!audioTxKeyed && rtcPttWasKeyed != 1 && !audioPttOffPending) return;
   audioTxKeyed = false;
   uint8_t f[] = {0x1C, 0x00, 0x00};          // TX OFF
-  lanRadioSendCommand(f, 3);
-  rtcPttWasKeyed = 0;
-  Serial.println("AUD | PTT OFF");
+  bool ok = lanRadioSendPriorityCommand(f, 3, IcomLanClient::CIV_SAFETY);
+  // Failed submission means the radio may still be keyed. Preserve both the
+  // RTC evidence and a live retry until the CI-V Interface is healthy again.
+  audioPttOffPending = !ok;
+  audioPttRetryAt = millis() + 250;
+  if(ok) rtcPttWasKeyed = 0;
+  Serial.print("AUD | PTT OFF sendCommand="); Serial.println(ok ? "ok" : "FAIL (pending reconnect)");
 }
 
 // PTT in LAN mode is a state held by the radio, so it outlives the ESP32.
@@ -6740,8 +6799,10 @@ void audioPttSafetyOnLink(){
     return;
   }
   uint8_t f[] = {0x1C, 0x00, 0x00};
-  bool ok = lanRadioSendCommand(f, 3);
+  bool ok = lanRadioSendPriorityCommand(f, 3, IcomLanClient::CIV_SAFETY);
   audioTxKeyed = false;
+  audioPttOffPending = !ok;
+  audioPttRetryAt = millis() + 250;
   // Always log: without a radio on the bench this line is the only evidence the
   // safety un-key ran at all, and its absence is itself the symptom to look for.
   Serial.print("AUD | SAFETY: TX OFF on link-up sendCommand=");
@@ -6750,20 +6811,27 @@ void audioPttSafetyOnLink(){
   Serial.println(rtcPttWasKeyed == 1 ? "yes" : "no");
   if(rtcPttWasKeyed == 1)
     unattendedLogEvent(UEV_PTT_SAFETY, String("reset while keyed; TX OFF ") + (ok ? "sent" : "FAILED"));
-  rtcPttWasKeyed = 0;
+  if(ok) rtcPttWasKeyed = 0;
+}
+
+void audioPttSafetyRetryTick(){
+  if(!audioPttOffPending || (int32_t)(millis() - audioPttRetryAt) < 0) return;
+  audioPttOff();
 }
 
 static void aud1TxResetState(Aud1TxState next = AUD1_TX_IDLE){
-  aud1TxState=next; aud1TxRead=aud1TxWrite=aud1TxUsed=0;
+  if(IcomLanClient *client = lanRadioClient()) client->cancelAudioTx();
+  aud1TxState=next; aud1TxUsed=0;
   aud1TxExpectedSequence=aud1TxExpectedPackets=aud1TxReceivedPackets=0;
   aud1TxExpectedSample=aud1TxTotalSamples=aud1TxConsumedUlaw=0;
-  aud1TxTargetMs=aud1TxNextDrainMs=aud1TxDeadlineMs=aud1TxPrebufferSamples=0;
+  aud1TxTargetMs=aud1TxDeadlineMs=aud1TxPrebufferSamples=0;
   aud1TxLevelNextMs=0;
   aud1TxLastSeen=false;
 }
 
 void aud1TxAbort(const String& reason, bool notify){
   uint32_t txId = aud1TxId;
+  if(IcomLanClient *client = lanRadioClient()) client->setTxTrafficActive(false);
   audioPttOff(); aud1TxResetState(reason.length() ? AUD1_TX_FAULT : AUD1_TX_IDLE);
   if(notify && AudioWsClient.connected()){
     String json = "{\"type\":\"tx-error\",\"txId\":" + String(txId) +
@@ -6776,23 +6844,12 @@ void aud1TxAbort(const String& reason, bool notify){
   }
 }
 
-static bool aud1RingWrite(uint8_t value){
-  if(aud1TxUsed >= AUD1_TX_RING_SIZE) return false;
-  aud1TxRing[aud1TxWrite] = value; aud1TxWrite = (aud1TxWrite + 1) % AUD1_TX_RING_SIZE; aud1TxUsed++; return true;
-}
-
-static size_t aud1RingRead(uint8_t* output, size_t count){
-  size_t read = 0;
-  while(read < count && aud1TxUsed){ output[read++] = aud1TxRing[aud1TxRead]; aud1TxRead=(aud1TxRead+1)%AUD1_TX_RING_SIZE; aud1TxUsed--; }
-  return read;
-}
-
 // True while a JS8 slot key is imminent: the whole prebuffer fill (PREBUFFER) and
 // the last stretch of the wait before the slot (READY within the guard lead). The
 // cooperative loop skips blocking best-effort work (port-80 handlers, DXC connect)
 // during this window so a flash/DNS/connect stall cannot push PTT past the slot.
-// Deliberately excludes STREAM (the ring absorbs stalls once keyed) and the long
-// early part of READY (excluding it would otherwise starve the UI for ~14 s).
+// Deliberately excludes STREAM: realtime playout has its own owner, while this
+// guard controls cooperative-loop work around the key instant and prebuffer.
 static const uint32_t TX_GUARD_LEAD_MS  = 1300;   // > prebufferMs, covers the fill
 static const uint32_t TX_GUARD_TRAIL_MS = 150;    // covers the key instant itself
 bool txCriticalNow(){
@@ -6804,8 +6861,26 @@ bool txCriticalNow(){
   return false;
 }
 
+// Work which can stall flash/DNS/connect is forbidden for the full keyed
+// interval. Port-80 as a whole is not blocked: WSPR /state and JS8 session
+// heartbeats must remain live through a 110-second transmission.
+bool txRealtimeNow(){
+  return aud1TxState == AUD1_TX_STREAM || txCriticalNow();
+}
+
 void aud1TxTick(bool deferPrebufferMiss){
   uint32_t now = millis();
+  IcomLanClient *txClient = lanRadioClient();
+  if(!txClient && (aud1TxState == AUD1_TX_READY || aud1TxState == AUD1_TX_PREBUFFER ||
+                   aud1TxState == AUD1_TX_STREAM)){
+    aud1TxAbort("LAN radio gone"); return;
+  }
+  IcomLanAudioTx::Snapshot txSnapshot = {};
+  if(txClient){
+    txSnapshot = txClient->audioTxSnapshot();
+    aud1TxUsed = txSnapshot.queued;
+    aud1TxConsumedUlaw = txSnapshot.consumed;
+  }
   if(aud1TxState == AUD1_TX_READY || aud1TxState == AUD1_TX_PREBUFFER){
     if((int32_t)(now - aud1TxTargetMs) < 0) return;
     size_t required = (aud1TxPrebufferSamples + 5) / 6;
@@ -6829,10 +6904,29 @@ void aud1TxTick(bool deferPrebufferMiss){
     }
     audioPttOn();
     if(!audioTxKeyed){ aud1TxAbort("PTT command failed"); return; }
-    aud1TxState = AUD1_TX_STREAM; aud1TxNextDrainMs = now;
+    uint64_t totalUlaw = (aud1TxTotalSamples + 5) / 6;
+    if(!txClient->startAudioTx(totalUlaw, now)){
+      aud1TxAbort("audio scheduler did not start"); return;
+    }
+    txClient->setTxTrafficActive(true);
+    aud1TxState = AUD1_TX_STREAM;
     AudioSendText("{\"type\":\"tx-state\",\"txId\":" + String(aud1TxId) + ",\"ptt\":true}");
+    txSnapshot = txClient->audioTxSnapshot();
   }
   if(aud1TxState != AUD1_TX_STREAM) return;
+  txSnapshot = txClient->audioTxSnapshot();
+  aud1TxUsed = txSnapshot.queued;
+  aud1TxConsumedUlaw = txSnapshot.consumed;
+  if(txSnapshot.fault != IcomLanAudioTx::FAULT_NONE){
+    aud1TxAbort(txClient->audioTxFaultName(txSnapshot.fault)); return;
+  }
+  if(txSnapshot.drained){
+    txClient->setTxTrafficActive(false);
+    audioPttOff(); aud1TxState = AUD1_TX_DRAINED;
+    AudioSendText("{\"type\":\"tx-drained\",\"txId\":" + String(aud1TxId) + ",\"ptt\":false}");
+    Serial.println("AUD1 | TX drained, PTT OFF");
+    return;
+  }
   if((int32_t)(now - aud1TxDeadlineMs) > 0){ aud1TxAbort("TX watchdog"); return; }
   if((int32_t)(now - aud1TxLevelNextMs) >= 0){
     aud1TxLevelNextMs = now + 200;   // ~5/s
@@ -6840,29 +6934,14 @@ void aud1TxTick(bool deferPrebufferMiss){
                   ",\"used\":" + String((unsigned long)aud1TxUsed) +
                   ",\"capacity\":" + String((unsigned long)AUD1_TX_RING_SIZE) +
                   ",\"consumed\":" + String((unsigned long long)aud1TxConsumedUlaw) +
+                  ",\"udpPackets\":" + String((unsigned long)txSnapshot.sentPackets) +
+                  ",\"maxLateMs\":" + String((unsigned long)txSnapshot.maxLatenessMs) +
+                  ",\"replays\":" + String((unsigned long)txSnapshot.replayedPackets) +
+                  ",\"sendFailures\":" + String((unsigned long)txSnapshot.sendFailures) +
+                  ",\"rxDropped\":" + String((unsigned long)txClient->audioRxDropped()) +
                   ",\"ptt\":true}");
   }
-  uint8_t packet[160]; int bursts = 0;
-  // Resolved once: this drains on a 20 ms budget and the LAN radio cannot move
-  // slots mid-transmission.
-  IcomLanClient *txClient = lanRadioClient();
-  if(!txClient){ aud1TxAbort("LAN radio gone"); return; }
-  while((int32_t)(now - aud1TxNextDrainMs) >= 0 && bursts++ < 3){
-    uint64_t totalUlaw = (aud1TxTotalSamples + 5) / 6;
-    uint64_t remaining = totalUlaw - aud1TxConsumedUlaw;
-    size_t wanted = size_t(remaining < 160 ? remaining : 160);
-    if(wanted == 0) break;
-    if(aud1TxUsed < wanted){ aud1TxAbort("TX buffer underrun"); return; }
-    if(aud1RingRead(packet, wanted) != wanted){ aud1TxAbort("TX ring failure"); return; }
-    txClient->sendAudioPacket(packet, wanted);
-    aud1TxConsumedUlaw += wanted; aud1TxNextDrainMs += 20; audioTxLastMs = now;
-  }
-  uint64_t totalUlaw = (aud1TxTotalSamples + 5) / 6;
-  if(aud1TxLastSeen && aud1TxConsumedUlaw >= totalUlaw){
-    audioPttOff(); aud1TxState = AUD1_TX_DRAINED;
-    AudioSendText("{\"type\":\"tx-drained\",\"txId\":" + String(aud1TxId) + ",\"ptt\":false}");
-    Serial.println("AUD1 | TX drained, PTT OFF");
-  }
+  audioTxLastMs = now;
 }
 
 void AudioDisconnectWs(){
@@ -6949,12 +7028,15 @@ static void aud1HandleControl(const String& json){
   if(txId == 0 || sampleRate != 48000 || packetMs != 20 || totalSamples == 0 ||
      packets == 0 || prebuffer == 0 || prebuffer > totalSamples ||
      prebuffer > AUD1_TX_RING_SIZE * 6 || delayMs < 100 || delayMs > 35000 ||
-     !lanRadioConnected()){
+     !lanRadioConnected() || !lanRadioClient() || !lanRadioClient()->audioTxReady()){
     aud1TxId = txId; aud1TxAbort("invalid tx.prepare"); return;
   }
   if(aud1TxState != AUD1_TX_IDLE && aud1TxState != AUD1_TX_DRAINED && aud1TxState != AUD1_TX_FAULT)
     aud1TxAbort("new TX replaced active TX", false);
   aud1TxResetState(AUD1_TX_READY);
+  if(!lanRadioClient()->prepareAudioTx()){
+    aud1TxId = txId; aud1TxAbort("audio channel not ready"); return;
+  }
   aud1TxId = txId; aud1TxTotalSamples = totalSamples; aud1TxExpectedPackets = packets;
   aud1TxPrebufferSamples = prebuffer; aud1TxTargetMs = millis() + uint32_t(delayMs);
   aud1TxDeadlineMs = aud1TxTargetMs + uint32_t(totalSamples / 48) + 2500;
@@ -6983,7 +7065,11 @@ static bool aud1AcceptTxPacket(const uint8_t* wire, size_t length){
   uint16_t flags = aud1GetBE16(wire+6);
   bool first = (flags & 0x0001) != 0, last = (flags & 0x0002) != 0;
   size_t samples = (length-40)/2, ulawSamples = samples/6;
-  if(aud1TxUsed + ulawSamples > AUD1_TX_RING_SIZE){
+  IcomLanClient *txClient = lanRadioClient();
+  if(!txClient){ aud1TxAbort("LAN radio gone"); return false; }
+  IcomLanAudioTx::Snapshot snapshot = txClient->audioTxSnapshot();
+  aud1TxUsed = snapshot.queued;
+  if(aud1TxUsed + ulawSamples > AUD1_TX_RING_SIZE || ulawSamples > 192){
     aud1TxAbort("TX ring overflow before write"); return false;
   }
   if((aud1TxExpectedSequence == 0) != first || (flags & ~0x0003) != 0 ||
@@ -6994,11 +7080,17 @@ static bool aud1AcceptTxPacket(const uint8_t* wire, size_t length){
      (!last && aud1TxReceivedPackets + 1 == aud1TxExpectedPackets)){
     aud1TxAbort("TX FIRST/LAST/length/buffer failure"); return false;
   }
+  uint8_t converted[192];
+  size_t convertedLength = 0;
   for(size_t i=0; i<samples; i+=6){
     size_t at = 40 + i*2;
     int16_t pcm = int16_t(uint16_t(wire[at]) | (uint16_t(wire[at+1]) << 8));
-    if(!aud1RingWrite(aud1Pcm16ToUlaw(pcm))){ aud1TxAbort("TX ring overflow"); return false; }
+    converted[convertedLength++] = aud1Pcm16ToUlaw(pcm);
   }
+  if(!txClient->queueAudioTx(converted, convertedLength)){
+    aud1TxAbort("TX ring overflow"); return false;
+  }
+  aud1TxUsed = txClient->audioTxSnapshot().queued;
   aud1TxExpectedSample += samples; aud1TxExpectedSequence++; aud1TxReceivedPackets++;
   aud1TxLastSeen = last;
   if(aud1TxState == AUD1_TX_READY) aud1TxState = AUD1_TX_PREBUFFER;

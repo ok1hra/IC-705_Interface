@@ -16,7 +16,17 @@
 #pragma once
 #include <WiFi.h>
 #include <WiFiUdp.h>
+#include <new>
+#include "icom_lan_audio_tx.h"
 #include "icom_lan_tx_history.h"
+
+#ifdef ARDUINO
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <lwip/sockets.h>
+#include <fcntl.h>
+#include <errno.h>
+#endif
 
 // Implemented in the .ino — routes a received CI-V frame (FE FE..FD) through the
 // shared parser so LAN gets the same full CAT state (freq, mode, meters, TX...).
@@ -61,6 +71,11 @@ public:
     LAN_IDLE, LAN_AYT, LAN_LOGIN, LAN_AUTH, LAN_STREAM,   // control channel
     LAN_CIV_AYT, LAN_CIV_OPEN, LAN_CONNECTED, LAN_FAILED
   };
+  enum CivPriority : uint8_t {
+    CIV_USER = 1,
+    CIV_CONTROL = 2,
+    CIV_SAFETY = 3
+  };
 
   // civAddr = radio CI-V address (IC-705 = 0xA4). name is filled from caps.
   void begin(IPAddress radioIp, uint16_t controlPort,
@@ -68,6 +83,17 @@ public:
              uint8_t slot = 0, uint16_t localControlPort = 50001,
              bool enableAudio = true) {
     stop();
+#ifdef ARDUINO
+    // stopRxAudio() is bounded. If the previous owner did not actually leave,
+    // never start a second owner over its storage/socket; a later reconnect can
+    // retry once the old task has reached its exit path.
+    if (audioRuntime && audioRuntime->task) {
+      state = LAN_FAILED;
+      Serial.println("LAN | audio task still stopping, reconnect deferred");
+      return;
+    }
+    if (audioRuntime) audioRuntime->detached = false;
+#endif
     radioIP = radioIp;
     ctrlPort = controlPort ? controlPort : 50001;
     radioSlot = slot;
@@ -85,12 +111,21 @@ public:
     ctrlRemoteId = 0;
     ctrlSendSeq = 1;
     ctrlTxHistory.clear();
+    clearCivCommands();
     authInnerSeq = 0x30;
     tokRequest = (uint16_t)esp_random();
     token = 0;
     haveCaps = false; authOk = false; authAnnounced = false; streamReqSent = false; streamOpened = false;
     civPort = 0;
-    audioPort = 0; audioOpened = false; audioGotHere = false;
+    audioPort = 0; audioOpened = false; audioGotHere = false; audioGotReady = false;
+    civTxTrafficActive = false;
+    if (audioRuntime) {
+      audioLock();
+      audioRuntime->txEpoch++;
+      audioRuntime->tx.reset();
+      audioRuntime->rxRead = audioRuntime->rxWrite = audioRuntime->rxCount = 0;
+      audioUnlock();
+    }
 
     state = LAN_AYT;
     stateSince = millis();
@@ -102,8 +137,9 @@ public:
   }
 
   void stop() {
-    if (state == LAN_IDLE) return;
-    if (audioOpened) { sendCtrl(audioUdp, audioMyId, audioRemoteId, 0x05, 0); audioUdp.stop(); audioOpened = false; }
+    bool sessionWasActive = state != LAN_IDLE;
+    stopRxAudio();
+    if (!sessionWasActive) return;
     if (streamOpened) sendCivOpenClose(true);
     if (token) sendToken(0x01);        // release
     sendCtrl(ctrlUdp, ctrlMyId, ctrlRemoteId, 0x05, 0);  // disconnect
@@ -111,6 +147,7 @@ public:
     ctrlUdp.stop();
     state = LAN_IDLE;
     lastServiceMs = 0;
+    clearCivCommands();
   }
 
   // connected() = authenticated session is up. It deliberately stays true while
@@ -125,6 +162,12 @@ public:
   // Audio sub-stream linked and delivering fresh payload (firmware-side RX-live).
   bool audioReady() const {
     return audioOpened && audioGotHere && (millis() - audioLastDataMs) < LAN_AUDIO_FRESH_MS;
+  }
+  // TX readiness is deliberately distinct from RX freshness. A quiet/squelched
+  // radio may have no recent payload while its audio command channel is fully
+  // handshaken and safe to transmit on.
+  bool audioTxReady() const {
+    return audioOpened && audioGotHere && audioGotReady && audioRuntime != nullptr;
   }
 
   // Model name the radio reports in its capabilities packet, and the CI-V
@@ -144,8 +187,22 @@ public:
   // catWriteFrame so CW/tune/set-freq/set-mode all work over LAN.
   bool sendCommand(const uint8_t* body, size_t len) {
     if (state != LAN_CONNECTED || civPort == 0) return false;
-    sendCiv(body, len);
-    return true;
+    bool accepted = enqueueCivCommand(body, len, CIV_USER);
+    serviceCivCommands(millis());
+    return accepted;
+  }
+
+  bool sendPriorityCommand(const uint8_t* body, size_t len, CivPriority priority) {
+    // CONTROL/SAFETY callers use the return value to decide whether PTT really
+    // crossed the CI-V Seam. Never leave a latent PTT ON in a recovering stream.
+    if (state != LAN_CONNECTED || civPort == 0 || !civGotReady ||
+        !civOpenSent || !civGotData) return false;
+    bool accepted = enqueueCivCommand(body, len, priority);
+    if (accepted && priority >= CIV_CONTROL) {
+      // A stale meter/frequency request must never hold PTT ON/OFF for 500 ms.
+      civRequestPending = false;
+    }
+    return accepted && serviceCivCommands(millis());
   }
 
   // RX audio channel (DATA-page waterfall). The stream request already advertised
@@ -158,32 +215,106 @@ public:
   }
   void stopRxAudio() {
     if (!audioOpened) return;
-    sendCtrl(audioUdp, audioMyId, audioRemoteId, 0x05, 0);  // disconnect
+#ifdef ARDUINO
+    if (audioRuntime && audioRuntime->task) {
+      audioRuntime->stopRequested = true;
+      xTaskNotifyGive(audioRuntime->task);
+      uint32_t until = millis() + AUDIO_TASK_STOP_TIMEOUT_MS;
+      while (audioRuntime->task && (int32_t)(millis() - until) < 0) delay(1);
+    }
+    // A wedged socket task must never be reused by a reconnect. The task owns
+    // and closes its fd; if it missed the bounded stop window, mark the channel
+    // unusable and let the session reconnect rather than sharing the socket.
+    if (audioRuntime && audioRuntime->task) {
+      audioRuntime->tx.fail(IcomLanAudioTx::FAULT_LINK);
+      audioRuntime->detached = true;
+    }
+#else
+    sendCtrl(audioUdp, audioMyId, audioRemoteId, 0x05, 0);
     audioUdp.stop();
-    audioOpened = false; audioGotHere = false;
+#endif
+    audioOpened = false; audioGotHere = false; audioGotReady = false;
     Serial.println("LAN | audio channel closed");
   }
   bool rxAudioActive() const { return audioOpened; }
 
-  // Send one TX audio chunk (uLaw payload) to the radio on the audio channel.
-  // Header layout per wfview packettypes.h audio_packet (24 B header + payload).
-  void sendAudioPacket(const uint8_t* payload, size_t plen) {
-    if (!audioOpened || !audioGotHere || plen == 0 || plen > 512) return;
-    uint8_t pk[0x18 + 512];
-    size_t total = 0x18 + plen;
-    memset(pk, 0, 0x18);
-    putLE32(pk+0x00, total);                            // len
-    putLE16(pk+0x06, audioSendSeq++);                   // tracked seq (shared with idles)
-    putLE32(pk+0x08, audioMyId);                        // sentid
-    putLE32(pk+0x0C, audioRemoteId);                    // rcvdid
-    putLE16(pk+0x10, (plen == 0xA0) ? 0x9781 : 0x0080); // ident (0x9781 for 160 B chunks)
-    putBE16(pk+0x12, audioTxSeq++);                     // audio sendseq (BE)
-    putBE16(pk+0x16, (uint16_t)plen);                   // datalen (BE)
-    memcpy(pk+0x18, payload, plen);
-    audioUdp.beginPacket(radioIP, audioPort);
-    audioUdp.write(pk, total);
-    audioUdp.endPacket();
-    audioLastIdle = millis();
+  bool prepareAudioTx() {
+    if (!audioTxReady() || !audioRuntime) return false;
+    audioLock();
+    audioRuntime->txEpoch++;
+    audioRuntime->tx.clearTx();
+    audioUnlock();
+    return true;
+  }
+
+  bool queueAudioTx(const uint8_t* payload, size_t length) {
+    if (!audioRuntime || !audioOpened) return false;
+    audioLock();
+    bool ok = audioRuntime->tx.enqueue(payload, length);
+    audioUnlock();
+#ifdef ARDUINO
+    if (ok && audioRuntime->task) xTaskNotifyGive(audioRuntime->task);
+#endif
+    return ok;
+  }
+
+  bool startAudioTx(uint64_t totalBytes, uint32_t startMs) {
+    if (!audioTxReady() || !audioRuntime) return false;
+    audioLock();
+    audioRuntime->txEpoch++;
+    bool ok = audioRuntime->tx.arm(totalBytes, startMs);
+    audioUnlock();
+#ifdef ARDUINO
+    if (ok && audioRuntime->task) xTaskNotifyGive(audioRuntime->task);
+#endif
+    return ok;
+  }
+
+  void cancelAudioTx(IcomLanAudioTx::Fault fault = IcomLanAudioTx::FAULT_NONE) {
+    if (!audioRuntime) return;
+    audioLock();
+    audioRuntime->txEpoch++;
+    if (fault == IcomLanAudioTx::FAULT_NONE) audioRuntime->tx.clearTx();
+    else audioRuntime->tx.fail(fault);
+    audioUnlock();
+#ifdef ARDUINO
+    if (audioRuntime->task) xTaskNotifyGive(audioRuntime->task);
+#endif
+  }
+
+  IcomLanAudioTx::Snapshot audioTxSnapshot() const {
+    IcomLanAudioTx::Snapshot result = {};
+    result.capacity = IcomLanAudioTx::QUEUE_CAPACITY;
+    if (!audioRuntime) {
+      result.fault = IcomLanAudioTx::FAULT_NOT_READY;
+      return result;
+    }
+    const_cast<IcomLanClient*>(this)->audioLock();
+    result = audioRuntime->tx.snapshot();
+    const_cast<IcomLanClient*>(this)->audioUnlock();
+    return result;
+  }
+
+  uint32_t audioRxDropped() const {
+    return audioRuntime ? audioRuntime->rxDropped : 0;
+  }
+  uint32_t audioMaxSendUs() const {
+    return audioRuntime ? audioRuntime->maxSendUs : 0;
+  }
+  bool txTrafficActive() const { return civTxTrafficActive; }
+  void setTxTrafficActive(bool active) { civTxTrafficActive = active; }
+
+  static const char* audioTxFaultName(IcomLanAudioTx::Fault fault) {
+    switch (fault) {
+      case IcomLanAudioTx::FAULT_NONE: return "";
+      case IcomLanAudioTx::FAULT_NOT_READY: return "audio channel not ready";
+      case IcomLanAudioTx::FAULT_OVERFLOW: return "TX buffer overflow";
+      case IcomLanAudioTx::FAULT_UNDERRUN: return "TX buffer underrun";
+      case IcomLanAudioTx::FAULT_DEADLINE: return "TX audio deadline missed";
+      case IcomLanAudioTx::FAULT_SEND: return "TX UDP send failed";
+      case IcomLanAudioTx::FAULT_LINK: return "LAN audio link lost";
+    }
+    return "TX audio fault";
   }
 
   void loop() {
@@ -228,7 +359,12 @@ public:
     pumpControl();
     if (state == LAN_FAILED) return;
     if (civPort) pumpCiv();
+    serviceCivCommands(now);
+#ifdef ARDUINO
+    drainAudioRx();
+#else
     if (audioOpened) pumpAudio();
+#endif
 
     if (rtxResent || rtxFilled || rtxDeferred) {
       Serial.print("LAN | retransmit resent="); Serial.print(rtxResent);
@@ -314,24 +450,36 @@ public:
         // CI-V remains a serial command stream even when transported over UDP.
         // Pace one request per tick; sending freq+mode+telemetry as a burst made
         // the IC-705 commonly answer the first (frequency) and drop read-mode.
+        uint32_t pollPeriod = civTxTrafficActive ? 250 : 100;
         if (civGotReady && civOpenSent && civGotData && !civHealthProbePending
-            && scopeOff && now - lastFreqPoll >= 100
+            && scopeOff && now - lastFreqPoll >= pollPeriod
             && civCanSendRequest(now)) {
-          switch (auxRot) {
-            case 0: { uint8_t b[]={0x03};       sendCiv(b,1); break; } // frequency
-            case 1: { uint8_t b[]={0x26,0x00};  sendCiv(b,2); break; } // selected mode+data+filter
-            case 2: {
-              // Legacy fallback for radios/configurations that do not answer
-              // 26 00. Once selected-mode works, avoid overwriting USB-D with
-              // the data-mode-blind 04 response.
-              if (!civSelectedModeSeen) { uint8_t b[]={0x04}; sendCiv(b,1); }
-              break;
+          if (civTxTrafficActive) {
+            // During browser TX retain only state/safety metering. Frequency,
+            // mode and slow station telemetry cannot change without ending the
+            // protected TX session, so they do not compete with audio/WiFi.
+            switch (txAuxRot++ % 3) {
+              case 0: { uint8_t b[]={0x1C,0x00}; sendCiv(b,2); break; } // PTT
+              case 1: { uint8_t b[]={0x15,0x11}; sendCiv(b,2); break; } // power
+              default:{ uint8_t b[]={0x15,0x12}; sendCiv(b,2); break; } // SWR
             }
-            case 3: { uint8_t b[]={0x15,0x02};  sendCiv(b,2); break; } // S-meter
-            case 4: { uint8_t b[]={0x15,0x11};  sendCiv(b,2); break; } // power meter
-            default: sendAuxRot(auxRot - 5); break;
+          } else {
+            switch (auxRot) {
+              case 0: { uint8_t b[]={0x03};       sendCiv(b,1); break; } // frequency
+              case 1: { uint8_t b[]={0x26,0x00};  sendCiv(b,2); break; } // selected mode+data+filter
+              case 2: {
+                // Legacy fallback for radios/configurations that do not answer
+                // 26 00. Once selected-mode works, avoid overwriting USB-D with
+                // the data-mode-blind 04 response.
+                if (!civSelectedModeSeen) { uint8_t b[]={0x04}; sendCiv(b,1); }
+                break;
+              }
+              case 3: { uint8_t b[]={0x15,0x02};  sendCiv(b,2); break; } // S-meter
+              case 4: { uint8_t b[]={0x15,0x11};  sendCiv(b,2); break; } // power meter
+              default: sendAuxRot(auxRot - 5); break;
+            }
+            auxRot = (auxRot + 1) % 15;
           }
-          auxRot = (auxRot + 1) % 15;
           lastFreqPoll = now;
         }
         // sendTracked() resets civLastIdle. Put the idle check after open/data
@@ -340,18 +488,27 @@ public:
       }
     }
 
+    // On ESP32 the dedicated audio task owns this whole channel. The native
+    // harness keeps the synchronous implementation so protocol state can be
+    // fault-injected without FreeRTOS.
+#ifndef ARDUINO
     // audio channel periodic sends (same handshake/keepalive as CI-V; no open/data)
     if (audioOpened) {
       if (!audioGotHere) {
         if (now - audioLastAyt >= 500) { sendCtrl(audioUdp, audioMyId, audioRemoteId, 0x03, 0); audioLastAyt = now; }
       } else {
         if (now - audioLastPing >= 500) { sendPing(audioUdp, audioMyId, audioRemoteId, audioPingSeq++); audioLastPing = now; }
+        if (!audioGotReady && now - audioLastReady >= 500) {
+          sendCtrl(audioUdp, audioMyId, audioRemoteId, 0x06, 1);
+          audioLastReady = now;
+        }
         if (now - audioLastIdle >= 100) { sendTracked(audioUdp, audioPkt0(0x00), 0x10); audioLastIdle = now; }
         // No automatic reopen on payload silence: the radio legitimately streams
         // nothing on a quiet/squelched channel, and reopening the sub-stream stops
         // it resuming. audioLastDataMs only feeds audioReady()/the RX-live status.
       }
     }
+#endif
 
     if (state != LAN_CONNECTED && millis() - stateSince > 12000) {
       Serial.println("LAN | timeout in state, giving up");
@@ -379,7 +536,7 @@ private:
   uint8_t radioSlot = 0;
   bool audioAllowed = true;
 
-  WiFiUDP ctrlUdp, civUdp, audioUdp;
+  WiFiUDP ctrlUdp, civUdp, audioUdp;  // audioUdp is native-harness only on ESP32
   uint32_t ctrlMyId = 0, ctrlRemoteId = 0;
   uint32_t civMyId = 0, civRemoteId = 0;
   uint16_t ctrlSendSeq = 1, civSendSeq = 1;
@@ -409,6 +566,20 @@ private:
   uint32_t civLastAyt = 0, civLastReady = 0, civLastPing = 0, civLastIdle = 0;
   uint32_t civRequestSentMs = 0, civHealthProbeSentMs = 0, civRecoveryStartedMs = 0;
   uint8_t auxRot = 0;
+  uint8_t txAuxRot = 0;
+  bool civTxTrafficActive = false;
+
+  static const size_t CIV_COMMAND_MAX_BYTES = 32;
+  static const size_t CIV_COMMAND_QUEUE_SIZE = 12;
+  struct CivCommand {
+    uint8_t body[CIV_COMMAND_MAX_BYTES];
+    uint8_t length;
+    CivPriority priority;
+    uint32_t order;
+    bool valid;
+  };
+  CivCommand civCommands[CIV_COMMAND_QUEUE_SIZE] = {};
+  uint32_t civCommandOrder = 0;
 
   // ---- RX audio channel ----
   // Codec byte per RS-BA1: 0x01 = uLaw 8-bit 1ch (PCMU, lightest — ~8 kB/s @ 8 kHz,
@@ -423,11 +594,44 @@ private:
   // is AF (nothing on a quiet/squelched channel), so this is a "recently flowing"
   // threshold for the RX-live status, NOT a wedge/reopen trigger.
   static const uint32_t LAN_AUDIO_FRESH_MS = 5000;
-  bool audioOpened = false, audioGotHere = false;
+  volatile bool audioOpened = false, audioGotHere = false, audioGotReady = false;
   uint32_t audioMyId = 0, audioRemoteId = 0;
   uint16_t audioSendSeq = 1, audioPingSeq = 0, audioTxSeq = 0;
-  uint32_t audioHereTime = 0, audioLastPing = 0, audioLastIdle = 0, audioLastAyt = 0;
-  uint32_t audioLastDataMs = 0;
+  volatile uint32_t audioHereTime = 0, audioLastPing = 0, audioLastIdle = 0, audioLastAyt = 0;
+  volatile uint32_t audioLastReady = 0;
+  volatile uint32_t audioLastDataMs = 0;
+
+  static const size_t AUDIO_RX_PACKET_BYTES = 160;
+  static const size_t AUDIO_RX_QUEUE_PACKETS = 64;
+  static const uint32_t AUDIO_TASK_STOP_TIMEOUT_MS = 750;
+
+  struct AudioRxPacket {
+    uint16_t sequence;
+    uint16_t length;
+    uint8_t payload[AUDIO_RX_PACKET_BYTES];
+  };
+
+  // Allocated only for the unique LAN slot that owns audio. Embedding this in
+  // all three IcomLanClient instances would waste ~30 kB per secondary radio.
+  struct AudioRuntime {
+    IcomLanAudioTx tx;
+    AudioRxPacket rx[AUDIO_RX_QUEUE_PACKETS];
+    size_t rxRead = 0, rxWrite = 0, rxCount = 0;
+    volatile uint32_t rxDropped = 0;
+    volatile uint32_t maxSendUs = 0;
+    volatile uint32_t txEpoch = 1;
+#ifdef ARDUINO
+    TaskHandle_t task = nullptr;
+    volatile bool stopRequested = false;
+    volatile bool detached = false;
+    int socketFd = -1;
+#endif
+  };
+
+  AudioRuntime* audioRuntime = nullptr;
+#ifdef ARDUINO
+  portMUX_TYPE audioMux = portMUX_INITIALIZER_UNLOCKED;
+#endif
 
   State state = LAN_IDLE;
   uint32_t stateSince = 0, lastAyt = 0, lastPing = 0, lastIdle = 0, lastReauth = 0;
@@ -678,6 +882,68 @@ private:
     sendTracked(civUdp, 0x16, 0x16);
   }
 
+  void clearCivCommands() {
+    for (size_t i = 0; i < CIV_COMMAND_QUEUE_SIZE; ++i) civCommands[i].valid = false;
+    civCommandOrder = 0;
+  }
+
+  bool enqueueCivCommand(const uint8_t* body, size_t length, CivPriority priority) {
+    if (!body || length == 0 || length > CIV_COMMAND_MAX_BYTES) return false;
+    // PTT is level state, not an event stream. Keeping an older queued PTT body
+    // can key the radio after a newer abort/un-key, so coalesce it before adding
+    // the current desired level.
+    if (length >= 3 && body[0] == 0x1C && body[1] == 0x00) {
+      for (size_t i = 0; i < CIV_COMMAND_QUEUE_SIZE; ++i)
+        if (civCommands[i].valid && civCommands[i].length >= 3 &&
+            civCommands[i].body[0] == 0x1C && civCommands[i].body[1] == 0x00)
+          civCommands[i].valid = false;
+    }
+    int target = -1;
+    for (size_t i = 0; i < CIV_COMMAND_QUEUE_SIZE; ++i) {
+      if (!civCommands[i].valid) { target = int(i); break; }
+    }
+    if (target < 0 && priority >= CIV_CONTROL) {
+      // Preserve safety/control by evicting the oldest strictly lower-priority
+      // command. Never evict an equally urgent PTT OFF with a later command.
+      for (size_t i = 0; i < CIV_COMMAND_QUEUE_SIZE; ++i) {
+        if (civCommands[i].priority >= priority) continue;
+        if (target < 0 || civCommands[i].order < civCommands[target].order)
+          target = int(i);
+      }
+    }
+    if (target < 0) return false;
+    CivCommand& command = civCommands[target];
+    memcpy(command.body, body, length);
+    command.length = uint8_t(length);
+    command.priority = priority;
+    command.order = ++civCommandOrder;
+    command.valid = true;
+    return true;
+  }
+
+  bool serviceCivCommands(uint32_t now) {
+    if (state != LAN_CONNECTED || civPort == 0 || !civGotReady || !civOpenSent ||
+        !civGotData) return false;
+    int selected = -1;
+    for (size_t i = 0; i < CIV_COMMAND_QUEUE_SIZE; ++i) {
+      if (!civCommands[i].valid) continue;
+      if (selected < 0 || civCommands[i].priority > civCommands[selected].priority ||
+          (civCommands[i].priority == civCommands[selected].priority &&
+           civCommands[i].order < civCommands[selected].order))
+        selected = int(i);
+    }
+    if (selected < 0) return false;
+    CivCommand command = civCommands[selected];
+    if (civRequestPending) {
+      if (command.priority < CIV_CONTROL || now - civRequestSentMs < 20) return false;
+      civRequestPending = false;
+      civHealthProbePending = false;
+    }
+    civCommands[selected].valid = false;
+    sendCiv(command.body, command.length);
+    return true;
+  }
+
   // send a CI-V frame (payload only, without FE FE .. FD wrapper) to the radio
   void sendCiv(const uint8_t* civBody, size_t bodyLen) {
     // full CI-V frame: FE FE <radio> E1 <body...> FD
@@ -748,6 +1014,11 @@ private:
   static inline void forgiveClock(uint32_t& ts, uint32_t now, uint32_t amount) {
     uint32_t age = now - ts;
     ts += (age > amount) ? amount : age;
+  }
+  static inline void forgiveClock(volatile uint32_t& ts, uint32_t now, uint32_t amount) {
+    uint32_t value = ts;
+    uint32_t age = now - value;
+    ts = value + ((age > amount) ? amount : age);
   }
 
   // ---- receive ----
@@ -886,16 +1157,357 @@ private:
 
   void openAudioChannel() {
     if (!audioAllowed) return;
+#ifdef ARDUINO
+    if (!audioRuntime) {
+      audioRuntime = new (std::nothrow) AudioRuntime();
+      if (!audioRuntime) {
+        Serial.println("LAN | audio allocation failed");
+        return;
+      }
+    }
+    if (audioRuntime->task || audioRuntime->detached) return;
+    audioLock();
+    audioRuntime->txEpoch++;
+    audioRuntime->tx.reset();
+    audioRuntime->rxRead = audioRuntime->rxWrite = audioRuntime->rxCount = 0;
+    audioRuntime->stopRequested = false;
+    audioRuntime->socketFd = -1;
+    audioUnlock();
+    audioMyId = mkId(audioLocalPort);
+    audioRemoteId = 0;
+    audioGotHere = audioGotReady = false;
+    audioHereTime = audioLastPing = audioLastIdle = audioLastAyt = audioLastReady = 0;
+    audioLastDataMs = millis();
+    audioOpened = true;  // includes the bounded opening/handshake state
+    BaseType_t made = xTaskCreatePinnedToCore(
+        audioTaskEntry, "icom-audio", 6144, this, 3, &audioRuntime->task,
+        ARDUINO_RUNNING_CORE);
+    if (made != pdPASS) {
+      audioRuntime->task = nullptr;
+      audioOpened = false;
+      audioLock();
+      audioRuntime->tx.fail(IcomLanAudioTx::FAULT_NOT_READY);
+      audioUnlock();
+      Serial.println("LAN | audio task allocation failed");
+      return;
+    }
+#else
+    if (!audioRuntime) audioRuntime = new (std::nothrow) AudioRuntime();
+    if (!audioRuntime) return;
     audioUdp.begin(audioLocalPort);
     audioMyId = mkId(audioLocalPort);
     audioRemoteId = 0;
-    audioGotHere = false;
+    audioGotHere = audioGotReady = false;
     audioSendSeq = 1; audioPingSeq = 0; audioTxSeq = 0;
-    audioHereTime = 0; audioLastPing = audioLastIdle = audioLastAyt = 0;
+    audioHereTime = 0; audioLastPing = audioLastIdle = audioLastAyt = audioLastReady = 0;
     audioLastDataMs = millis();   // start the no-data watchdog from channel open
+    audioRuntime->tx.reset();
     audioOpened = true;
+#endif
     Serial.print("LAN | audio channel open, remote port="); Serial.println(audioPort);
   }
+
+#ifdef ARDUINO
+  void audioLock() { portENTER_CRITICAL(&audioMux); }
+  void audioUnlock() { portEXIT_CRITICAL(&audioMux); }
+
+  static void audioTaskEntry(void* context) {
+    static_cast<IcomLanClient*>(context)->audioTaskMain();
+  }
+
+  static void buildAudioCtrl(uint8_t* packet, uint16_t length, uint16_t type,
+                             uint16_t sequence, uint32_t myId, uint32_t remoteId) {
+    memset(packet, 0, length);
+    putLE32(packet + 0x00, length);
+    putLE16(packet + 0x04, type);
+    putLE16(packet + 0x06, sequence);
+    putLE32(packet + 0x08, myId);
+    putLE32(packet + 0x0C, remoteId);
+  }
+
+  int audioSendDatagram(const uint8_t* packet, size_t length) {
+    if (!audioRuntime || audioRuntime->socketFd < 0) return -1;
+    sockaddr_in destination = {};
+    destination.sin_family = AF_INET;
+    destination.sin_port = htons(audioPort);
+    destination.sin_addr.s_addr = uint32_t(radioIP);
+    uint32_t started = micros();
+    int sent = sendto(audioRuntime->socketFd, packet, length, MSG_DONTWAIT,
+                      reinterpret_cast<sockaddr*>(&destination), sizeof(destination));
+    uint32_t elapsed = micros() - started;
+    if (elapsed > audioRuntime->maxSendUs) audioRuntime->maxSendUs = elapsed;
+    if (sent == int(length)) return 1;
+    if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == ENOMEM))
+      return 0;
+    return -1;
+  }
+
+  void audioRememberTracked(uint16_t sequence, const uint8_t* packet, size_t length) {
+    audioLock();
+    audioRuntime->tx.rememberTracked(sequence, packet, length);
+    audioUnlock();
+  }
+
+  void audioSendTrackedControl(uint16_t type) {
+    uint8_t packet[0x10];
+    audioLock();
+    uint16_t sequence = audioRuntime->tx.nextTrackedSequence();
+    audioUnlock();
+    buildAudioCtrl(packet, sizeof(packet), type, sequence, audioMyId, audioRemoteId);
+    int result = audioSendDatagram(packet, sizeof(packet));
+    if (result > 0) {
+      audioRememberTracked(sequence, packet, sizeof(packet));
+      audioLastIdle = millis();
+    }
+  }
+
+  void audioSendControl(uint16_t type, uint16_t sequence) {
+    uint8_t packet[0x10];
+    buildAudioCtrl(packet, sizeof(packet), type, sequence, audioMyId, audioRemoteId);
+    audioSendDatagram(packet, sizeof(packet));
+  }
+
+  void audioSendPing(bool reply, uint16_t sequence, uint32_t timestamp) {
+    uint8_t packet[0x15];
+    buildAudioCtrl(packet, sizeof(packet), 0x07, sequence, audioMyId, audioRemoteId);
+    packet[0x10] = reply ? 0x01 : 0x00;
+    putLE32(packet + 0x11, timestamp);
+    audioSendDatagram(packet, sizeof(packet));
+  }
+
+  void audioServiceTx(uint32_t now) {
+    for (int burst = 0; burst < 3; ++burst) {
+      uint8_t packet[IcomLanAudioTx::MAX_PACKET];
+      size_t length = 0;
+      uint32_t epoch = 0;
+      IcomLanAudioTx::PollResult result;
+      audioLock();
+      const uint8_t* prepared = nullptr;
+      result = audioRuntime->tx.poll(now, prepared, length);
+      epoch = audioRuntime->txEpoch;
+      if (result == IcomLanAudioTx::PACKET && prepared && length <= sizeof(packet))
+        memcpy(packet, prepared, length);
+      audioUnlock();
+      if (result != IcomLanAudioTx::PACKET) return;
+
+      int sent = audioSendDatagram(packet, length);
+      if (sent == 0) return;  // nonblocking socket backpressure; retry next wake
+      audioLock();
+      if (epoch == audioRuntime->txEpoch)
+        audioRuntime->tx.commitSend(sent > 0, now);
+      audioUnlock();
+      if (sent < 0) return;
+      audioLastIdle = now;
+    }
+  }
+
+  void audioReplayOne(uint16_t sequence) {
+    uint8_t packet[IcomLanAudioTx::MAX_PACKET];
+    size_t length = 0;
+    bool found = false;
+    audioLock();
+    const uint8_t* remembered = audioRuntime->tx.replay(sequence, length);
+    if (remembered && length <= sizeof(packet)) {
+      memcpy(packet, remembered, length);
+      found = true;
+    }
+    audioUnlock();
+    int sent = 0;
+    if (found) {
+      sent = audioSendDatagram(packet, length);
+    } else {
+      buildAudioCtrl(packet, 0x10, 0x00, sequence, audioMyId, audioRemoteId);
+      sent = audioSendDatagram(packet, 0x10);
+    }
+    // Transient nonblocking backpressure is not a broken TX. The radio can ask
+    // for this sequence again; only a hard socket failure enters the fault path.
+    if (sent != 0) {
+      audioLock();
+      audioRuntime->tx.noteReplaySent(sent > 0);
+      audioUnlock();
+    }
+  }
+
+  void audioHandleRetransmit(const uint8_t* packet, int length) {
+    static const int MAX_AUDIO_REPLAY_PER_WAKE = 8;
+    int budget = MAX_AUDIO_REPLAY_PER_WAKE;
+    if (length == 0x10) {
+      audioReplayOne(getLE16(packet + 6));
+      return;
+    }
+    for (int at = 0x10; at + 3 < length && budget > 0; at += 4) {
+      uint16_t first = getLE16(packet + at);
+      uint16_t last = getLE16(packet + at + 2);
+      uint16_t count = uint16_t(last - first) + 1;
+      if (count == 0 || count > 50) continue;
+      for (uint16_t offset = 0; offset < count && budget > 0; ++offset, --budget)
+        audioReplayOne(uint16_t(first + offset));
+    }
+  }
+
+  void audioEnqueueRx(const uint8_t* payload, size_t length, uint16_t sequence) {
+    if (!audioRuntime || length != AUDIO_RX_PACKET_BYTES) {
+      if (audioRuntime) audioRuntime->rxDropped++;
+      return;
+    }
+    audioLock();
+    if (audioRuntime->rxCount == AUDIO_RX_QUEUE_PACKETS) {
+      audioRuntime->rxRead = (audioRuntime->rxRead + 1) % AUDIO_RX_QUEUE_PACKETS;
+      audioRuntime->rxCount--;
+      audioRuntime->rxDropped++;
+    }
+    AudioRxPacket& target = audioRuntime->rx[audioRuntime->rxWrite];
+    target.sequence = sequence;
+    target.length = uint16_t(length);
+    memcpy(target.payload, payload, length);
+    audioRuntime->rxWrite = (audioRuntime->rxWrite + 1) % AUDIO_RX_QUEUE_PACKETS;
+    audioRuntime->rxCount++;
+    audioUnlock();
+  }
+
+  void audioHandleDatagram(uint8_t* packet, int length) {
+    if (length < 0x10) return;
+    uint16_t type = getLE16(packet + 4);
+    if (length == 0x15 && type == 0x07 && packet[0x10] == 0x00) {
+      audioSendPing(true, getLE16(packet + 6), getLE32(packet + 0x11));
+      return;
+    }
+    if (type == 0x01) {
+      audioHandleRetransmit(packet, length);
+      return;
+    }
+    if (length == 0x10) {
+      if (type == 0x04) {
+        audioRemoteId = getLE32(packet + 8);
+        audioGotHere = true;
+        audioHereTime = millis();
+        audioLock();
+        audioRuntime->tx.configure(audioMyId, audioRemoteId);
+        audioUnlock();
+        audioSendControl(0x06, 1);
+        audioLastReady = millis();
+      } else if (type == 0x06) {
+        audioRemoteId = getLE32(packet + 8);
+        audioGotReady = true;
+        audioLock();
+        audioRuntime->tx.configure(audioMyId, audioRemoteId);
+        audioUnlock();
+      }
+      return;
+    }
+    uint32_t declared = getLE32(packet + 0);
+    if (type != 0x01 && declared == uint32_t(length) && length > 0x18) {
+      size_t payloadLength = size_t(length - 0x18);
+      audioLastDataMs = millis();
+      audioEnqueueRx(packet + 0x18, payloadLength, getBE16(packet + 0x12));
+    }
+  }
+
+  void audioPumpSocket(int budget) {
+    if (!audioRuntime || audioRuntime->socketFd < 0) return;
+    while (budget-- > 0) {
+      uint8_t packet[1500];
+      sockaddr_in source = {};
+      socklen_t sourceLength = sizeof(source);
+      int received = recvfrom(audioRuntime->socketFd, packet, sizeof(packet), MSG_DONTWAIT,
+                              reinterpret_cast<sockaddr*>(&source), &sourceLength);
+      if (received < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return;
+        return;
+      }
+      if (received == 0 || source.sin_addr.s_addr != uint32_t(radioIP)) continue;
+      audioHandleDatagram(packet, received);
+      audioServiceTx(millis());  // replay/RX bursts never own the next TX deadline
+    }
+  }
+
+  void audioPeriodic(uint32_t now) {
+    if (!audioGotHere) {
+      if (now - audioLastAyt >= 500) {
+        audioSendControl(0x03, 0);
+        audioLastAyt = now;
+      }
+      return;
+    }
+    if (!audioGotReady && now - audioLastReady >= 500) {
+      audioSendControl(0x06, 1);
+      audioLastReady = now;
+    }
+    if (now - audioLastPing >= 500) {
+      audioSendPing(false, audioPingSeq++, now);
+      audioLastPing = now;
+    }
+    if (now - audioLastIdle >= 100) audioSendTrackedControl(0x00);
+  }
+
+  void audioTaskMain() {
+    AudioRuntime* runtime = audioRuntime;
+    runtime->socketFd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (runtime->socketFd >= 0) {
+      int flags = fcntl(runtime->socketFd, F_GETFL, 0);
+      if (flags >= 0) fcntl(runtime->socketFd, F_SETFL, flags | O_NONBLOCK);
+      sockaddr_in local = {};
+      local.sin_family = AF_INET;
+      local.sin_port = htons(audioLocalPort);
+      local.sin_addr.s_addr = htonl(INADDR_ANY);
+      if (bind(runtime->socketFd, reinterpret_cast<sockaddr*>(&local), sizeof(local)) < 0) {
+        close(runtime->socketFd);
+        runtime->socketFd = -1;
+      }
+    }
+    if (runtime->socketFd < 0) {
+      audioLock();
+      runtime->tx.fail(IcomLanAudioTx::FAULT_NOT_READY);
+      audioUnlock();
+      audioOpened = false;
+    }
+
+    while (runtime->socketFd >= 0 && !runtime->stopRequested) {
+      uint32_t now = millis();
+      audioServiceTx(now);
+      audioPumpSocket(12);
+      audioServiceTx(millis());
+      audioPeriodic(millis());
+      ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1));
+    }
+
+    if (runtime->socketFd >= 0) {
+      uint8_t disconnect[0x10];
+      buildAudioCtrl(disconnect, sizeof(disconnect), 0x05, 0, audioMyId, audioRemoteId);
+      audioSendDatagram(disconnect, sizeof(disconnect));
+      close(runtime->socketFd);
+      runtime->socketFd = -1;
+    }
+    audioLock();
+    if (runtime->tx.active()) runtime->tx.fail(IcomLanAudioTx::FAULT_LINK);
+    audioUnlock();
+    audioOpened = false;
+    audioGotHere = audioGotReady = false;
+    runtime->task = nullptr;
+    vTaskDelete(nullptr);
+  }
+
+  void drainAudioRx() {
+    if (!audioRuntime) return;
+    for (int budget = 0; budget < 16; ++budget) {
+      AudioRxPacket packet;
+      bool have = false;
+      audioLock();
+      if (audioRuntime->rxCount) {
+        packet = audioRuntime->rx[audioRuntime->rxRead];
+        audioRuntime->rxRead = (audioRuntime->rxRead + 1) % AUDIO_RX_QUEUE_PACKETS;
+        audioRuntime->rxCount--;
+        have = true;
+      }
+      audioUnlock();
+      if (!have) break;
+      lanAudioHandler(packet.payload, packet.length, packet.sequence);
+    }
+  }
+#else
+  void audioLock() {}
+  void audioUnlock() {}
+  void drainAudioRx() {}
 
   void pumpAudio() {
     int n;
@@ -917,9 +1529,11 @@ private:
         audioGotHere = true; audioRemoteId = getLE32(r+8); audioHereTime = millis();
         audioLastDataMs = millis();   // restart the no-data window once linked
         sendCtrl(audioUdp, audioMyId, audioRemoteId, 0x06, 1);   // AreYouReady
+        audioLastReady = millis();
         Serial.println("LAN | audio: I am here");
       } else if (type == 0x06) {                                 // Ready (rare)
         audioRemoteId = getLE32(r+8);
+        audioGotReady = true;
       }
       return;
     }
@@ -932,6 +1546,7 @@ private:
         lanAudioHandler(r + 0x18, (size_t)(n - 0x18), getBE16(r + 0x12));
     }
   }
+#endif
 
   void handleCiv(uint8_t* r, int n) {
     uint16_t type = getLE16(r+4);

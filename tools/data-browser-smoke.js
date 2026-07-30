@@ -136,7 +136,14 @@ f.onload=()=>{
       const spectrumBeforeTx=f.contentWindow.__dataTest.spectrumState();
       f.contentWindow.__dataTest.setRadioTx(true);
       const txContamination=Float32Array.from({length:8192},(_,i)=>(((i*73)%257)/128-1)*.9);
-      f.contentWindow.__dataTest.feedSpectrum(txContamination);
+      const decoderBeforeTx=f.contentWindow.__dataTest.decoderPushes();
+      const testAud1=new Uint8Array(200);testAud1.fill(0xff,40);testAud1.set([65,85,68,49,1,1],0);
+      const testAud1View=new DataView(testAud1.buffer);testAud1View.setUint16(6,1);testAud1View.setUint16(8,40);
+      testAud1View.setUint32(12,1);testAud1View.setUint32(16,0);testAud1View.setUint32(20,8000);
+      testAud1View.setBigUint64(24,0n);testAud1View.setUint32(36,160);
+      f.contentWindow.__dataTest.feedAudio(txContamination,{aud1Wire:testAud1,streamId:1,
+        mediaEpoch:99,anchorUtcMs:Date.now(),arrivalMs:f.contentWindow.performance.now()});
+      const decoderDuringTx=f.contentWindow.__dataTest.decoderPushes();
       const spectrumDuringTx=f.contentWindow.__dataTest.spectrumState();
       f.contentWindow.__dataTest.setRadioTx(false);
       f.contentWindow.__dataTest.feedSpectrum(cleanSpectrum);
@@ -182,6 +189,7 @@ f.onload=()=>{
         heartbeatOutsideClear:outside[3]===0,
         heartbeatRangeLabel:d.querySelector('#waterfall').title.includes('500')&&d.querySelector('#waterfall').title.includes('1000')&&d.querySelector('#waterfall').title.includes('Heartbeat'),
         waterfallTxIsolation:spectrumDuringTx.rows===spectrumBeforeTx.rows&&spectrumDuringTx.agcLow===spectrumBeforeTx.agcLow&&spectrumDuringTx.agcHigh===spectrumBeforeTx.agcHigh&&spectrumAfterTx.rows>spectrumDuringTx.rows&&spectrumAfterTx.agcReady===true&&spectrumAfterTx.agcHigh-spectrumAfterTx.agcLow>=22,
+        decoderRxDuringTx:decoderDuringTx===decoderBeforeTx+1,
         presets:d.querySelectorAll('[data-frequency]').length===12,
         presetStable:originalPreset===currentPreset,
         recipientInSession:!!d.querySelector('#composer #recipient'),

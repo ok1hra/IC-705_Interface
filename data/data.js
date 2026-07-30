@@ -749,6 +749,7 @@ function onAudioStatus(status) {
 }
 
 let lastSlotIndex = null, lastSlotPeriod = 0;
+let testDecoderPushes = 0;
 
 // The FFT, ring, AGC and canvas scrolling live in data/spectrum.js, shared with
 // the WSPR-Beacon page. What stays here is JS8-specific: the slot ruler burnt
@@ -777,8 +778,9 @@ function radioTransmitting() { return Boolean(state.radio.tx || sinkProxy.ptt); 
 
 function resetSpectrumAnalyzer() { waterfall.reset(); lastSlotIndex=null; }
 
-// JS8Call stops the analyser while transmitting: the decoder is deaf then
-// anyway, and a monitored carrier would poison the AGC for the next slot.
+// Pause only the visual analyser while transmitting: a monitored carrier would
+// poison its AGC. RX samples must still reach the JS8 decoder because the radio
+// and UI can report the RX transition late after PTT release.
 function ingestSpectrum(samples) {
   if(radioTransmitting())return;
   waterfall.ingest(samples);
@@ -792,7 +794,10 @@ function onSamples(samples, rate, metadata) {
   const rms = Math.sqrt(sum / Math.max(1, samples.length));
   state.audioDb=20*Math.log10(rms + 1e-9);
   dom.audioLevel.textContent = `${Math.round(state.audioDb)} dBFS`;
-  if (activeDecoder) activeDecoder.pushSamples(samples, metadata);
+  if (activeDecoder) {
+    activeDecoder.pushSamples(samples, metadata);
+    if(TEST_MODE)testDecoderPushes++;
+  }
 }
 
 function resizeWaterfall() { waterfall.resize(); }
@@ -3650,6 +3655,8 @@ async function init() {
     ttButton(){return {text:dom.freqTimetableValue.textContent,active:dom.freqTimetableButton.classList.contains("active")};},
     ttReset(){const tt=timetable();tt.slots={};tt.enabled=false;ttRuntime.appliedSlotIndex=null;ttRuntime.appliedHz=null;ttRuntime.appliedBand=null;state.pendingFrequency=null;persistTimetable();renderTimetableButton();renderHeader();},
     feedSpectrum(samples){ingestSpectrum(samples);},
+    feedAudio(samples,metadata={}){onSamples(samples,AUDIO_RATE,metadata);},
+    decoderPushes(){return testDecoderPushes;},
     spectrumState(){return waterfall.state();},
     selectedCall(){return state.selectedCall;},
     feedDirected(frame){handleDirectedFrame({kind:"directed",...frame});},
