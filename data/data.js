@@ -70,6 +70,8 @@ const dom = {
   trxFrequencyValue:$("trxFrequencyValue"), trxSlotLabel:$("trxSlotLabel"),
   trxMode:$("trxMode"), trxDot:$("trxDot"),
   trxPower:$("trxPower"), trxPowerWatts:$("trxPowerWatts"),
+  rfPowerField:$("rfPowerField"), rfPercent:$("rfPercent"), rfPercentWatts:$("rfPercentWatts"),
+  rfPercentSet:$("rfPercentSet"), rfPercentState:$("rfPercentState"),
   trxPowerSegments:Array.from(document.querySelectorAll("#trxPower .pwr-bar i")),
   trxHelpButton:$("trxHelpButton"), trxHelpDialog:$("trxHelpDialog"),
   trxHelpModeWarning:$("trxHelpModeWarning"),
@@ -126,6 +128,11 @@ const dom = {
   binIncomingPeer:$("binIncomingPeer"), binIncomingFile:$("binIncomingFile"),
   binIncomingSize:$("binIncomingSize"), binIncomingHash:$("binIncomingHash"),
   messagePresetsButton:$("messagePresetsButton"), messagePresetsMenu:$("messagePresetsMenu"),
+  sendHint:$("sendHint"), aprsParamDialog:$("aprsParamDialog"), aprsParamForm:$("aprsParamForm"),
+  aprsParamTitle:$("aprsParamTitle"), aprsParamGrid:$("aprsParamGrid"),
+  aprsParamError:$("aprsParamError"), aprsParamPreview:$("aprsParamPreview"),
+  aprsParamCost:$("aprsParamCost"), aprsParamInsert:$("aprsParamInsert"),
+  aprsRecentCalls:$("aprsRecentCalls"),
   traffic:$("traffic"), trafficSummary:$("trafficSummary"), stationRows:$("stationRows"),
   trafficSection:document.querySelector('[data-section="traffic"]'),
   trafficFilter:document.querySelector(".traffic-filter"),
@@ -216,6 +223,7 @@ const txCaptured = [];
 const txQueue = new Js8TxQueue.Js8TxQueue({
   onEvent: event => {
     if (event.type === "queued") txCaptured.push({source: event.source, to: event.to, text: event.text});
+    if (event.type === "expired") noteTxQueueExpiry(event);
     console.info("[js8-txqueue]", event.type, event.source || "",
       event.to || "", event.detail || "");
   }});
@@ -244,7 +252,7 @@ const state = {
   activityFrequency:0, activitySessions:[],
   conversations:{}, audioStatus:"stopped", decoderStatus:"loading", txStatus:"idle",
   txState:null, txWasmReady:false, pendingFrequency:null, lastAudioMs:0,
-  startup:{ready:false, failed:false, progress:0, label:"Loading JS8Call modem",
+  startup:{ready:false, failed:false, progress:0, label:"Loading JS8Call-ICOM modem",
     detail:"Preparing modem components…"},
   stationSort:{key:"lastSlotUtcMs", direction:"desc"}, trafficFilter:"all", testActivityLocked:false,
   hearingLinksVisible:true,
@@ -390,8 +398,13 @@ function restoreSession() {
       state.stationSort = {key: snapshot.stationSort.key, direction: snapshot.stationSort.direction === "asc" ? "asc" : "desc"};
     if (typeof snapshot.hearingLinksVisible === "boolean") state.hearingLinksVisible = snapshot.hearingLinksVisible;
     if (snapshot.lastOutgoing && typeof snapshot.lastOutgoing === "object") state.lastOutgoing = {...snapshot.lastOutgoing};
-    if (Array.isArray(snapshot.outgoingLog))
+    if (Array.isArray(snapshot.outgoingLog)) {
       state.outgoingLog = snapshot.outgoingLog.map(item => ({...item, restored: true}));
+      // Ids identify a row for RESEND and are carried through the snapshot, so the
+      // counter has to resume above the restored ones or a new send would claim an id
+      // that already belongs to a row on screen.
+      outgoingSequence = state.outgoingLog.reduce((max, item) => Math.max(max, Number(item.id) || 0), outgoingSequence);
+    }
     // Select the bucket for the restored frequency now so history is visible
     // immediately, before pollRadio confirms the live frequency.
     const frequency = Number(snapshot.activityFrequency) || 0;
@@ -428,8 +441,12 @@ function currentJs8() { return settings.modems.js8call; }
 function sameCall(left,right) {
   return Boolean(right) && String(left||"").toUpperCase()===String(right).toUpperCase();
 }
+// An IGate relays an APRS reply back as "@APRSIS MSG to:<US> ... DE <ROBOT>"
+// (AprsInboundRelay.cpp:192), addressed to the group rather than to us, so the
+// callsign list alone would hide our own WHO-IS and WXBOT answers under MYCALL.
 function messageMentionsCall(message,call) {
-  return Boolean(call) && (message.callsigns||[]).some(value=>sameCall(value,call));
+  return Boolean(call) && ((message.callsigns||[]).some(value=>sameCall(value,call)) ||
+    Js8Aprs.replyForMe(message,call));
 }
 function ownCallText(text,call) {
   const html=esc(text);
@@ -525,7 +542,7 @@ function persistSettings(label = true) {
 function applyHeartbeatSettings() {
   const js8 = currentJs8();
   heartbeat.configure({enabled: js8.hb === true, ackEnabled: js8.hbAck !== false,
-    intervalMs: (Number(js8.hbMinutes) || 15) * 60000}, js8Clock.now());
+    intervalMs: (Number(js8.hbMinutes) || 60) * 60000}, js8Clock.now());
   renderHeartbeatState();
 }
 
@@ -657,7 +674,7 @@ function handleDecoderEvent(event) {
   if (event.type === "loading") {
     state.decoderStatus = "loading";
     state.startup.progress = Number(event.progress) || 0;
-    state.startup.label = event.label || "Loading JS8Call modem";
+    state.startup.label = event.label || "Loading JS8Call-ICOM modem";
     state.startup.detail = event.total > 0
       ? `${Math.round(event.loaded / 1024)} / ${Math.round(event.total / 1024)} KiB`
       : "Initializing modem components…";
@@ -666,7 +683,7 @@ function handleDecoderEvent(event) {
     state.decoderStatus = event.status;
     if (event.status === "ready") {
       state.startup.ready = true; state.startup.failed = false;
-      state.startup.progress = 100; state.startup.label = "JS8Call modem ready";
+      state.startup.progress = 100; state.startup.label = "JS8Call-ICOM modem ready";
       ensureAudio();
     }
   }
@@ -831,6 +848,18 @@ function renderRhythm() {
 }
 
 // ---- UI projection ----------------------------------------------------------
+
+// A dial on none of the presets the menu offers is a band nobody is listening
+// on. The menu already answers half of that by highlighting the matching preset;
+// this is the other half, for the button that is on screen when the menu is not.
+// Exact equality on purpose -- the same test as the `current` class below, so
+// the two can never disagree about which preset the radio is on. A preset still
+// being written counts as arrived: pendingFrequency is only ever one of them.
+function offDialFrequency() {
+  const hz=state.pendingFrequency || state.radio.frequency;
+  if(!hz)return false;
+  return !Js8TrxPresets.PRESETS.some(item => item.frequencyHz===hz);
+}
 
 function renderFrequencyMenu() {
   const selected=state.pendingFrequency || state.radio.frequency;
@@ -1027,8 +1056,11 @@ function formatWatts(watts) {
 // rfPower is the 0..255 CI-V level. Percent is a property of the level alone, so
 // the bar stays honest for a radio whose model we cannot turn into watts --
 // only the number beside it goes to "--".
-function renderTrxPower(connected) {
+function renderTrxPower(connected,mismatch=false) {
   dom.trxPower.hidden=!connected;
+  // The settings panel opens collapsed, so the bar carries the same state: it is
+  // always on screen and it is where anyone looks for power in the first place.
+  dom.trxPower.classList.toggle("mismatch",connected && mismatch);
   if(!connected)return;
   // Before the radio has answered 14 0A the firmware is reporting a fabricated
   // default (205 on TRX1, 0 in the LAN snapshot). Show nothing rather than that.
@@ -1047,6 +1079,146 @@ function renderTrxPower(connected) {
     : `TRX power ${Math.round(percent)} % · ${formatWatts(watts)} of ${scale.watts} W (${scale.source})`;
 }
 
+// ---- RF power ---------------------------------------------------------------
+//
+// Same machinery as the WSPR page, one deliberate difference: there the target
+// is a legal WSPR dBm level, because that number goes into the message. JS8
+// announces no power at all, so the unit here is percent -- the radio's own
+// display unit and its actual resolution, which also means every value that can
+// be typed is one the radio can be set to, without needing the model table.
+//
+// The other difference is the direction. WSPR's automatic value is always the
+// minimum, so its write goes down; this one can go UP, into whatever load the
+// operator happens to have on the antenna socket. That is why it writes only a
+// level the operator chose themselves, and only once "Enable radio TX" is
+// ticked -- the one place on this page where they said the antenna is fine.
+let rfAppliedPercent=null;   // last percent written AND confirmed by readback
+let rfKnobTouched=false;     // operator moved it; the automation stands down
+let rfAutoArmed=true;        // a write is owed: page load, or the link returned
+let rfAutoBusy=false, rfAutoRetryMs=0, rfLinkWasUp=false, rfLastError="";
+// What the operator has typed but not yet written. null means "not editing",
+// and only then may a render put the stored target back into the box. Without
+// it the number is lost the moment focus leaves the field -- which is exactly
+// what happens on the way to the SET button beside it. Same shape as the
+// txGain draft a few settings further down.
+let rfDraft=null;
+
+// Only for a reply that actually arrived, so it is the radio's link being
+// judged and not the browser's.
+function noteRadioLink(next) {
+  const up=Boolean(next.connected);
+  if(up && !rfLinkWasUp)rfAutoArmed=true;
+  rfLinkWasUp=up;
+}
+
+// Meaningful only when no write is owed: just after the link returns the reading
+// disagrees precisely because the radio may have forgotten, which is the case
+// the automation is for -- not evidence of a hand on the front panel.
+function noteRfKnob() {
+  if(rfAutoArmed || rfAppliedPercent===null)return;
+  if(!state.radio.connected || state.radio.rfPowerSeen!==true)return;
+  if(WsprCore.civPercent(state.radio.rfPower)!==rfAppliedPercent)rfKnobTouched=true;
+}
+
+function rfTargetPercent() {
+  const stored=currentJs8().rfPercent;
+  return Number.isFinite(Number(stored)) && Number(stored)>=1 ? Number(stored) : null;
+}
+
+// Every write goes through here, so SET and the automation cannot drift apart.
+async function writeRfPercent(percent) {
+  const command=WsprCore.civLevelCommand(WsprCore.percentToLevel(percent));
+  const wanted=WsprCore.civPercent(command.level);
+  await fetch(RADIO_CMD_URL,{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({type:"civ.raw",data:command.data})});
+  // Confirmed in whole percent, never on the raw level: the radio quantises to
+  // its own step, so demanding an exact echo would fail a write that landed
+  // exactly where it was asked to.
+  await new Promise((resolve,reject)=>{
+    const started=Date.now();
+    const timer=setInterval(()=>{
+      if(state.radio.rfPowerSeen===true &&
+         WsprCore.civPercent(state.radio.rfPower)===wanted){clearInterval(timer);resolve();}
+      else if(Date.now()-started>=6000){clearInterval(timer);
+        reject(new Error("the radio did not confirm the power level"));}
+    },100);
+  });
+  rfAppliedPercent=wanted;
+  return wanted;
+}
+
+async function applyAutoRfPower() {
+  if(rfAutoBusy || !rfAutoArmed || rfKnobTouched)return;
+  if(Date.now()<rfAutoRetryMs)return;
+  const target=rfTargetPercent();
+  // Nothing chosen, nothing to apply. There is no safe value to invent for a
+  // QSO mode, so a page nobody has configured leaves the radio alone.
+  if(target===null){rfAutoArmed=false;return;}
+  if(!currentJs8().txSafetyAccepted)return;
+  if(!state.radio.connected || state.radio.transceiverType!=="IC-705-LAN")return;
+  // Never mid-transmission: LAN drops on this setup happen under audio load,
+  // which is exactly when something is on the air.
+  if(radioTransmitting())return;
+  if(state.radio.rfPowerSeen===true &&
+     WsprCore.civPercent(state.radio.rfPower)===WsprCore.civPercent(WsprCore.percentToLevel(target))){
+    // Already there. Record it so the knob detector has a baseline without
+    // spending a CI-V round trip to establish one.
+    rfAppliedPercent=WsprCore.civPercent(WsprCore.percentToLevel(target));
+    rfAutoArmed=false; return;
+  }
+  rfAutoBusy=true;
+  try { await writeRfPercent(target); rfAutoArmed=false; }
+  catch (_error) { rfAutoRetryMs=Date.now()+5000; }   // stays armed, backs off
+  finally { rfAutoBusy=false; renderHeader(); renderControls(); }
+}
+
+// The operator's own write. Still the only thing that turns a number in the box
+// into a stored choice -- the automation applies a target, it never decides one.
+async function setRfPowerFromField() {
+  const percent=Math.max(1,Math.min(100,Math.round(Number(rfDraft ?? dom.rfPercent.value)||0)));
+  dom.rfPercent.value=String(percent);
+  dom.rfPercentSet.disabled=true;
+  try {
+    await writeRfPercent(percent);
+    setJs8Setting("rfPercent",percent);
+    // A fresh decision stands the automation back up after a turn of the knob.
+    rfKnobTouched=false; rfAutoArmed=false; rfAutoRetryMs=0; rfLastError="";
+    rfDraft=null;                       // written; the box may follow the target again
+  } catch (error) {
+    rfLastError=error.message;
+  }
+  dom.rfPercentSet.disabled=false;
+  renderHeader(); renderControls();
+}
+
+function renderRfPowerField() {
+  const scale=fullPowerScale();
+  const seen=state.radio.rfPowerSeen===true;
+  const radioPercent=seen ? WsprCore.civPercent(state.radio.rfPower) : null;
+  const target=rfTargetPercent();
+  // Nothing stored yet: show what the radio is on, so SET means "adopt this"
+  // rather than making the operator guess a number to type.
+  if(rfDraft===null && document.activeElement!==dom.rfPercent)
+    dom.rfPercent.value=String(target ?? radioPercent ?? "");
+  const shown=Number(rfDraft ?? dom.rfPercent.value)||0;
+  dom.rfPercentWatts.textContent=scale.watts && shown>=1
+    ? formatWatts(scale.watts*WsprCore.percentToLevel(shown)/255) : "--";
+  const mismatch=Boolean(target!==null && radioPercent!==null && radioPercent!==target);
+  dom.rfPowerField.classList.toggle("mismatch",mismatch);
+  // One line, one source of truth: a failed write outranks everything, then the
+  // disagreement, then nothing. Written as a single assignment so the line can
+  // never keep saying something that stopped being true two renders ago.
+  const message=rfLastError ? rfLastError
+    : !mismatch ? ""
+    : `The radio is on ${radioPercent} %, not the ${target} % set here` +
+      (rfKnobTouched
+        ? " — changed on the radio, so it is not written automatically until you press SET."
+        : " — press SET to write it.");
+  dom.rfPercentState.hidden=!message;
+  dom.rfPercentState.textContent=message;
+  return mismatch;
+}
+
 function renderHeader() {
   const connected=state.radio.connected && state.radio.transceiverType === "IC-705-LAN";
   const transmitting=radioTransmitting();
@@ -1056,11 +1228,14 @@ function renderHeader() {
   const modeCompatible=["USB","USB-D"].includes(state.radio.mode);
   dom.trxFrequencyValue.textContent=formatFrequency(state.pendingFrequency || state.radio.frequency);
   dom.trxFrequency.classList.toggle("pending",Boolean(state.pendingFrequency));
+  const offDial=offDialFrequency();
+  dom.trxFrequency.classList.toggle("off-dial",offDial);
+  dom.trxFrequency.title=offDial ? "Not a JS8 dial frequency — choose a band from the menu" : "";
   renderTrxSlotLabel();
   dom.trxMode.textContent=state.radio.mode || "---";
   dom.trxMode.classList.toggle("incompatible",connected && !modeCompatible);
-  dom.trxMode.title=connected && !modeCompatible ? "JS8Call requires USB or USB-D" : "TRX mode";
-  renderTrxPower(connected);
+  dom.trxMode.title=connected && !modeCompatible ? "JS8Call-ICOM requires USB or USB-D" : "TRX mode";
+  renderTrxPower(connected,renderRfPowerField());
   const incompatible=connected && Boolean(state.radio.mode) && !modeCompatible;
   if(incompatible && !state.help.incompatibleActive)openTrxHelp("mode");
   state.help.incompatibleActive=incompatible;
@@ -1386,8 +1561,18 @@ function renderControls() {
   dom.settingsSummary.textContent=`${js8.myCall} · ${js8.grid} · ${js8.speed}`;
   renderSettingsFlags(js8);
   const busy=!["idle","completed","aborted","fault"].includes(state.txStatus);
-  const txBlocks=txBlockReasons(!cqType(dom.message.value)), heartbeatBlocks=txBlockReasons(false), tuneBlocks=txBlockReasons(false);
+  // CQ carries its own recipient in the frame and an @APRSIS command carries its
+  // own group call, so neither needs a station selected in the composer.
+  const aprsDraft=Js8Aprs.isDraft(dom.message.value);
+  const txBlocks=txBlockReasons(!cqType(dom.message.value)&&!aprsDraft), heartbeatBlocks=txBlockReasons(false), tuneBlocks=txBlockReasons(false);
   if(state.txSessionMode!=="CHAT")txBlocks.push(`${state.txSessionMode} uses its own form`);
+  // A half-built command costs the same airtime as a whole one and the gateway
+  // has nothing to do with it, so it never reaches the encoder.
+  if(aprsDraft){
+    const check=Js8Aprs.validate(dom.message.value);
+    if(!check.ok)txBlocks.push(check.reason);
+  }
+  renderSendHint(aprsDraft);
   dom.send.disabled=txBlocks.length>0; dom.send.title=txBlocks.join("; ");
   dom.heartbeat.disabled=heartbeatBlocks.length>0; dom.heartbeat.title=heartbeatBlocks.join("; ");
   dom.heartbeatOffset.textContent=`${js8.txOffsetHz} Hz`;
@@ -1396,12 +1581,7 @@ function renderControls() {
   dom.tune.classList.toggle("active",state.tuneActive);
   dom.tuneLabel.textContent=state.tuneActive?"STOP":"TUNE";
   dom.tuneOffset.textContent=`${js8.txOffsetHz} Hz`;
-  const snrPreset=dom.messagePresetsMenu.querySelector('[data-message-preset="snr"]');
-  // Only a station decoded here has an SNR to report back; one we were merely told about
-  // would insert somebody else's signal report.
-  const snrStation=state.activity.calls.find(item=>item.call===state.selectedCall && item.heardDirectly!==false);
-  snrPreset.disabled=!snrStation;
-  snrPreset.title=snrStation ? `Insert SNR ${formatJs8Snr(snrStation.snr)}` : "Select a heard station first";
+  renderMessagePresets();
   // A value with no matching <option> blanks the selector, and EMAIL no longer has
   // one; keep the last real choice on screen instead of an empty box.
   if([...dom.txSessionMode.options].some(option=>option.value===state.txSessionMode))
@@ -1412,7 +1592,7 @@ function renderControls() {
   dom.txSessionModeHint.textContent=({CHAT:"Keyboard-to-keyboard messages",EMAIL:"Short radio email via a configured JS8 gateway",BIN:"Reliable store-and-resume transfer for small files"})[state.txSessionMode];
   dom.send.textContent=busy ? "QUEUED" : "SEND";
   dom.txSummary.textContent=state.txState ? `${state.txState.status}${state.txState.frameCount ? ` · frame ${Math.min(state.txState.frameIndex+1,state.txState.frameCount)}/${state.txState.frameCount}` : ""}${state.txState.error ? ` · ${state.txState.error}` : ""}` : "Idle";
-  dom.modemState.textContent=state.decoderStatus === "ready" ? "JS8Call ready · auto speed RX" : state.decoderStatus;
+  dom.modemState.textContent=state.decoderStatus === "ready" ? "JS8Call-ICOM ready · auto speed RX" : state.decoderStatus;
   dom.modemState.className=`modem-state ${state.decoderStatus === "ready" ? "available" : state.decoderStatus.includes("error") ? "error" : ""}`;
   renderEmailControls(); renderBinControls(); renderTxPayload(); waterfall.paintOverlay(); renderHeader();
 }
@@ -1549,11 +1729,13 @@ const TRAFFIC_WINDOWS={"5m":5*60*1000};
 function messageTimeMs(message){return Number(message.lastSlotUtcMs || message.firstSlotUtcMs || 0);}
 // Recent-traffic filter: one active mode at a time. Time windows are rolling (recomputed
 // each render against Date.now()); MYCALL keeps only frames mentioning the operator's call;
-// TX keeps only own transmissions that actually went on air (the red tx-emitted rows).
+// TX keeps every own transmission. It used to keep only the ones that went on air, which
+// stopped making sense once a failed row carries a RESEND button: TX is where an operator
+// comes back to sort out what did not get out, and that view must not hide the failures.
 function filterTraffic(messages,own){
   const filter=state.trafficFilter;
   if(filter==="mycall")return own ? messages.filter(message=>messageMentionsCall(message,own)) : messages;
-  if(filter==="tx")return messages.filter(message=>message.outgoing && message.emitted);
+  if(filter==="tx")return messages.filter(message=>message.outgoing);
   const windowMs=TRAFFIC_WINDOWS[filter];
   if(!windowMs)return messages;
   const cutoff=Date.now()-windowMs;
@@ -1585,14 +1767,27 @@ function clearRecentTraffic(){
 // Own transmissions (manual and automatic) as recent-traffic feed items. Colour is
 // LOCAL transmit state only — JS8 has no delivery ACK: "completed" means the frames
 // went on air (rendered red, matching the radio's TX colour), anything else means a
-// link/TX failure kept them off air (rendered grey). Shaped like a decoded message
+// link/TX failure kept them off air (rendered grey). "unconfirmed" counts as on air:
+// only the drain answer was lost, the carrier was not. Shaped like a decoded message
 // so the existing filters and sort apply unchanged.
 function outgoingTrafficItems(){
   const own=currentJs8().myCall;
-  return state.outgoingLog.map(item=>({
-    outgoing:true, status:item.status, emitted:item.status==="completed",
+  const tuned=Number(state.activityFrequency)||0;
+  // Own TX belongs to the band it was sent on. Heard traffic is bucketed per frequency
+  // while this log is global, so without the filter a 40 m transmission surfaces in the
+  // 20 m feed — and its RESEND button would key the radio on the wrong band.
+  return state.outgoingLog.filter(item=>onTunedBand(item.frequencyHz,tuned)).map(item=>({
+    outgoing:true, status:item.status, emitted:["completed","unconfirmed"].includes(item.status),
     to:item.to||"", text:item.text, lastSlotUtcMs:Number(item.utcMs)||0,
-    restored:Boolean(item.restored), callsigns:[own,item.to].filter(Boolean)}));
+    restored:Boolean(item.restored), item,
+    callsigns:[own,item.to].filter(Boolean)}));
+}
+
+// An item with no recorded frequency predates the field (or was restored from an older
+// snapshot); showing it everywhere is better than hiding history the operator wrote.
+function onTunedBand(frequencyHz,tunedHz){
+  const band=Number(frequencyHz)||0, tuned=Number(tunedHz)||0;
+  return !band || !tuned || Math.abs(band-tuned)<=ACTIVITY_FREQUENCY_TOLERANCE_HZ;
 }
 
 function renderActivity() {
@@ -1625,16 +1820,29 @@ function renderActivity() {
     }
     const when=new Date(message.lastSlotUtcMs || message.firstSlotUtcMs || 0).toISOString().slice(11,19);
     if(message.outgoing){
-      // Red = went on air (completed), grey = a failure kept it off air.
+      // Red = went on air, grey = a failure kept it off air. A partially transmitted
+      // message is neither: renderOutgoingText() keeps the frames that did radiate red
+      // and strikes through only the rest, because claiming nothing went out when two
+      // of five frames were keyed is a lie the operator would act on.
+      const item=message.item;
       const cls=message.emitted?"tx-emitted":"tx-unsent";
       const target=message.to?esc(message.to):"CQ/HB";
-      return divider+`<article class="message message-tx ${cls}" data-tx-status="${esc(message.status)}"><span class="message-meta"><span>${when}</span><span>TX</span><span>${esc(message.status)}</span></span><strong>${target}</strong><span class="message-text">${esc(message.text)}</span></article>`;
+      const attempts=Number(item&&item.attempts)||1;
+      const retryUntil=Number(item&&item.retryUntilMs)||0;
+      const resend=txResendable(item)
+        ? `<button type="button" class="tx-resend" data-resend-id="${esc(String(item.id))}" title="${esc(resendTitle(item))}">↻ RESEND</button>` : "";
+      return divider+`<article class="message message-tx ${cls}" data-tx-status="${esc(message.status)}" data-tx-attempts="${attempts}"><span class="message-meta"><span>${when}</span><span>TX</span><span>${esc(message.status)}${attempts>1?` ×${attempts}`:""}</span><span class="tx-retry" data-retry-until="${retryUntil}"></span></span><strong>${target}</strong><span class="message-text">${item?renderOutgoingText(item):esc(message.text)}</span>${resend}</article>`;
     }
     const call=callOf(message);
     const operational=Array.isArray(message.kinds) && !message.kinds.includes("data");
     const ownCall=sameCall(call,currentJs8().myCall);
-    return divider+`<article class="message${operational?" operational":""}"><span class="message-meta"><span>${when}</span><span>${MODE_TO_SPEED[message.submode]||"?"}</span><span>${Math.round(message.offsetHz)} Hz</span></span><strong data-call="${esc(call)}"${ownCall?' class="own-callsign" data-own-call="true"':""}>${esc(call || "JS8")}</strong><span class="message-text">${ownCallText(message.text,currentJs8().myCall)}</span></article>`;
+    // An APRS-IS answer to one of our own commands is addressed to the group, so
+    // nothing else in the row would tell the operator it came back for them.
+    const aprsReply=Js8Aprs.replyForMe(message,currentJs8().myCall)
+      ? '<span class="aprs-badge" title="APRS-IS reply to your command">APRS</span>' : "";
+    return divider+`<article class="message${operational?" operational":""}${aprsReply?" aprs-reply":""}"><span class="message-meta"><span>${when}</span><span>${MODE_TO_SPEED[message.submode]||"?"}</span><span>${Math.round(message.offsetHz)} Hz</span></span><strong data-call="${esc(call)}"${ownCall?' class="own-callsign" data-own-call="true"':""}>${esc(call || "JS8")}</strong><span class="message-text">${aprsReply}${ownCallText(message.text,currentJs8().myCall)}</span></article>`;
   }).join("") : '<div class="empty-row">Waiting for JS8 activity…</div>';
+  renderRetryCountdowns();   // the 1 s tick owns it afterwards; this fills the first second
   dom.stationRows.innerHTML=sortedStations(calls).map(item=>{
     const direction=stationDirection(item);
     const directionHtml=direction ? `<span title="${esc(direction.source)} · ${direction.qrbKm} km · ${direction.azimuthDeg}°"><span class="station-bearing" style="transform:rotate(${direction.azimuthDeg}deg)">↑</span><span class="station-distance">${(direction.qrbKm/1000).toFixed(1)}</span></span>` : "—";
@@ -1875,7 +2083,9 @@ function conversationItems() {
 function renderOutgoingText(item) {
   const length=item.text.length;
   const sent=Math.max(0,Math.min(length,Number(item.sentChars)||0));
-  const failed=["aborted","fault"].includes(item.status);
+  // "unconfirmed" is deliberately absent: the carrier went out, only the drain answer
+  // was lost, so striking the text through would claim a failure that did not happen.
+  const failed=["aborted","fault","expired","interrupted"].includes(item.status);
   const active=!failed&&sent<length&&Number(item.activeFraction)>0;
   const pendingStart=Math.min(length,sent+(active?1:0));
   let html="";
@@ -1908,8 +2118,12 @@ function renderConversation() {
   const items=state.selectedCall ? conversationItems() : [];
   dom.chat.innerHTML=items.length ? items.map(item=>{
     if(item.direction==="system")return `<div class="chat-row system"><div class="chat-system">${esc(item.text)}</div></div>`;
-    const resend=item.direction==="outgoing"&&item.status==="interrupted"
-      ? `<button type="button" class="chat-resend" data-resend-text="${esc(item.sourceText||item.text)}">↻ resend</button>` : "";
+    // Same word, same meaning as in the traffic feed: it sends. A conversation restored
+    // from a snapshot is detached from the outgoing log, so those rows keep the older
+    // behaviour of restaging the text in the composer rather than offering a dead button.
+    const resend=item.direction!=="outgoing" ? ""
+      : txResendable(item) ? `<button type="button" class="chat-resend" data-resend-id="${esc(String(item.id))}">↻ resend</button>`
+      : item.status==="interrupted" ? `<button type="button" class="chat-resend" data-resend-text="${esc(item.sourceText||item.text)}">↻ resend</button>` : "";
     return `<div class="chat-row ${item.direction}"><article class="chat-bubble" data-message-status="${esc(item.status)}"><header><strong>${item.direction==="incoming"?esc(state.selectedCall):esc(currentJs8().myCall)}</strong><time>${esc(item.time)}</time></header><div class="chat-message">${item.direction==="outgoing"?renderOutgoingText(item):esc(item.text)}</div><footer>${esc(item.status)}${resend}</footer></article></div>`;
   }).join("") : '<div class="chat-empty">No messages in this session.</div>';
   dom.chat.scrollTop=dom.chat.scrollHeight;
@@ -2793,7 +3007,7 @@ function renderInbox() {
 // (YES MSG ID <id> or NO) comes back through the normal decode path.
 // Repeat CQ on an interval until somebody replies. Purely operator-driven and
 // independent of unattended mode: calling CQ is not answering queries.
-let lastCqMs = 0;
+let lastCqMs = 0, cqPreviousMs = 0, cqRetryPending = false;
 function renderCqState() {
   if (!dom.cqState) return;
   const min = Number(currentJs8().cqRepeatMin) || 0;
@@ -2803,11 +3017,24 @@ function checkCqRepeat() {
   const js8 = currentJs8();
   const min = Number(js8.cqRepeatMin) || 0;
   if (!min || !js8.txSafetyAccepted || !activeEncoder) return;
-  if (!["idle", "completed", "aborted", "fault"].includes(state.txStatus)) return;
+  // The whole gate, not just a free TX state: calling into a link that is down would
+  // burn the interval on a transmission that never leaves the browser.
+  if (txBlockReasons(false).length) return;
   const now = js8Clock.now();
   if (now - lastCqMs < min * 60000) return;
+  cqPreviousMs = lastCqMs;
   lastCqMs = now;
-  startTx("CQ CQ CQ");
+  beginOutgoing({kind:"cq",cq:cqType("CQ CQ CQ"),to:"",text:"CQ CQ CQ",
+    sourceText:"CQ CQ CQ",meta:{cqAuto:true},source:"operator"});
+}
+// The schedule moves BEFORE the send, so without rolling it back a single lost packet
+// silences the station for the whole cqRepeatMin interval -- ten minutes of nothing for
+// one dropped frame. Rolled back once per interval, which is the same "exactly one more
+// attempt" every other source gets from the queue.
+function noteCqFault() {
+  if (cqRetryPending) return;
+  cqRetryPending = true;
+  lastCqMs = cqPreviousMs;
 }
 // A directed message to us means somebody answered; stop calling into a QSO.
 function noteCqReply(decoded) {
@@ -3065,21 +3292,23 @@ function renderTxQueue() {
 function drainTxQueue() {
   const now = js8Clock.now();
   if (!activeEncoder || !currentJs8().txSafetyAccepted) { txQueue.prune(now); return; }
-  if (!["idle", "completed", "aborted", "fault"].includes(state.txStatus)) {
-    txQueue.prune(now);
-    return;
-  }
-  const item = txQueue.take(now);
-  if (!item) return;
+  // The real precondition for keying is the whole gate -- LAN up, TRX in USB, timebase
+  // locked, PTT free -- not merely a free TX state. Without it the queue fires into a
+  // link that is down, which for a retry means spending its one attempt on nothing.
+  if (txBlockReasons(false).length) { txQueue.prune(now); return; }
+  const entry = txQueue.take(now);
+  if (!entry) return;
   // Last line of defence: nothing addressed to a blocked entity leaves the queue,
   // regardless of which decision layer enqueued it.
-  if (item.to && isBlockedCall(item.to)) {
-    console.info("[js8-txqueue] drop: blocked recipient", item.to);
+  if (entry.to && isBlockedCall(entry.to)) {
+    console.info("[js8-txqueue] drop: blocked recipient", entry.to);
     return;
   }
-  if (item.to) autoReply.noteSent(item.to, item.text);
-  if (item.to) startTxTo(item.to, item.text, item.meta);
-  else startTx(item.text);
+  // A repeat attaches to the row it came from instead of opening a new one.
+  if (entry.meta && entry.meta.resendItem) { releaseTxRetry(entry.meta.resendItem, entry); return; }
+  if (entry.to) autoReply.noteSent(entry.to, entry.text);
+  if (entry.to) startTxTo(entry.to, entry.text, entry.meta, entry.text, entry.source);
+  else startTx(entry.text, entry.source);
 }
 
 function stopTxTicking() {
@@ -3095,11 +3324,189 @@ function driveEncoder(prepared, onError) {
   }).catch(onError);
 }
 
+// ---- Failed transmissions: RESEND and one automatic retry -------------------
+// docs/js8-tx-resend-plan.md. "Failed" here is always LOCAL — JS8 has no delivery ACK,
+// so the only thing we can ever know is whether the frames reached the antenna. Every
+// rule below is one line drawn twice: a machine may repeat a transmission only where a
+// repeat cannot do harm, and a human may repeat anything as long as the row tells the
+// truth about what already went out.
+
+// Whitelist of transport failures. Anything unlisted counts as permanent: it keeps the
+// button (the operator may have fixed the cause) but never earns an automatic attempt,
+// because a failure that repeats identically only produces a second grey row.
+const TX_RETRYABLE_REASONS=["tx-ready timeout","ptt confirmation timeout",
+  "prebuffer missed slot","packet pacing missed","audio incomplete",
+  "sink did not become ready","websocket lost","websocket is not open",
+  "hello not received","ring overflow"];
+const TX_MAX_ATTEMPTS=2;   // the original send plus exactly one machine retry
+
+// `drain watchdog` is not the same kind of failure. Draining starts only after the slot
+// plus the whole audio length, every packet was written and PTT is already down, so the
+// frame almost certainly radiated and only the tx-drained answer was lost. Repeating it
+// would key the radio twice for one message, which is why it gets its own state and no
+// automatic attempt — that call belongs to a human.
+function txOutcome(status,reason){
+  const text=String(reason||"").toLowerCase();
+  if(status==="completed")return "completed";
+  if(text.includes("drain watchdog"))return "unconfirmed";
+  if(status==="aborted")return text.includes("websocket lost")?"retryable":"operator";
+  return TX_RETRYABLE_REASONS.some(entry=>text.includes(entry))?"retryable":"permanent";
+}
+
+// Which rows offer the button. An operator STOP is a decision, not a failure; the BIN
+// protocol repeats its own blocks and a hand-sent duplicate would desync the sequence;
+// a missed beacon is not worth resending because the next one is already due.
+function txResendable(item){
+  if(!item||!item.recipe||!item.id)return false;
+  if(item.fileTransfer||item.recipe.kind==="heartbeat")return false;
+  if(item.outcome==="operator")return false;
+  return ["fault","aborted","interrupted","unconfirmed","expired"].includes(item.status);
+}
+
+function resendTitle(item){
+  const band=Number(item.frequencyHz)||0, tuned=Number(state.activityFrequency)||0;
+  const detail=item.txError?` (${item.txError})`:"";
+  return onTunedBand(band,tuned) ? `Send this message again${detail}`
+    : `Sent on ${formatFrequency(band)} — resending will transmit on the current frequency${detail}`;
+}
+
+// One place decides what a badly finished transmission earns, so the two fault paths --
+// an encoder rejection before the air and a TxController fault during it -- cannot
+// disagree about the same failure.
+function noteTxOutcome(item,status,reason){
+  const outcome=txOutcome(status,reason);
+  item.txError=String(reason||"");
+  item.outcome=outcome;
+  if(outcome==="unconfirmed")item.status="unconfirmed";
+  if(outcome!=="retryable")return;
+  // Periodic traffic never queues a repeat: it moves its own schedule back instead, so
+  // a lost packet costs one interval's silence rather than stacking beacons.
+  const kind=item.recipe&&item.recipe.kind;
+  if(kind==="heartbeat"){
+    if(item.txMeta&&item.txMeta.heartbeatAuto)heartbeat.noteFault(js8Clock.now());
+    return;
+  }
+  if(kind==="cq"){ if(item.txMeta&&item.txMeta.cqAuto)noteCqFault(); return; }
+  if(item.fileTransfer)return;
+  if(item.manualResend)return;   // a hand-sent copy puts the human back in the loop
+  if((Number(item.attempts)||1)>=TX_MAX_ATTEMPTS)return;
+  armTxRetry(item);
+}
+
+// Armed, not fired. After a WebSocket loss `hello` is null and the next prepare() is
+// rejected within milliseconds, so an immediate retry would spend the single attempt on
+// a link that is still down. drainTxQueue() releases it once the gate is open again.
+function armTxRetry(item){
+  if(item.retryQueueId)return;   // a terminal state may be reported more than once
+  const now=js8Clock.now();
+  const source=(item.recipe&&item.recipe.source)||"operator";
+  // relay/inbox are store-and-forward and keep their own 30 min: a message for an absent
+  // station does not go stale. Everything else is live dialogue and is worth nothing a
+  // few slots later.
+  const ttlMs=["relay","inbox"].includes(source)?undefined:Js8TxQueue.resendTtlMs(selectedMode());
+  const queued=txQueue.push({source,text:item.text,to:(item.recipe&&item.recipe.to)||"",
+    nowMs:now,submode:selectedMode(),ttlMs,
+    meta:{...(item.recipe&&item.recipe.meta||{}),resendItem:item}});
+  if(!queued.queued)return;
+  item.retryQueueId=queued.id;
+  item.retryUntilMs=ttlMs===undefined?0:now+ttlMs;
+  renderActivity();
+}
+
+// Two gates the queue cannot check for us, tested at the moment of firing rather than
+// when the entry was made -- minutes may pass in between.
+function releaseTxRetry(item,entry){
+  const tuned=Number(state.activityFrequency)||Number(state.radio.frequency)||0;
+  // A machine never moves a message to another band: it has no way of knowing that the
+  // station, or the message, still means anything there. A human may -- calling the same
+  // station on another band is ordinary operating -- so the check is on the ENTRY, not on
+  // the row: a hand-pressed resend carries its own permission and later automatic
+  // attempts at the same row are still refused.
+  if(!entry.meta?.manualResend&&!onTunedBand(item.frequencyHz,tuned))
+    return expireTxRetry(item,`band changed to ${formatFrequency(tuned)}`);
+  // Auto replies, relay hops and inbox deliveries only exist while unattended mode is
+  // armed. If the arming lapsed while the retry waited, the message must not go out
+  // behind the operator's back -- that is the whole point of the expiry.
+  if(entry.source!=="operator"&&!currentJs8().auto)
+    return expireTxRetry(item,"unattended mode disarmed");
+  if(entry.to)autoReply.noteSent(entry.to,entry.text);
+  restartOutgoing(item);
+}
+
+function expireTxRetry(item,reason){
+  item.status="expired"; item.outcome="expired"; item.txError=reason;
+  item.retryUntilMs=0; item.retryQueueId=0;
+  console.info("[js8-resend] dropped:",reason);
+  renderActivity(); persistSession();
+}
+
+function outgoingItemById(id){
+  return state.outgoingLog.find(item=>String(item.id)===String(id)) || null;
+}
+
+// A retry that ran out of time must not disappear without a word: the row says so, and a
+// resend the operator asked for by hand hands its text back to the composer, because
+// otherwise a minute of waiting quietly eats what they typed.
+function noteTxQueueExpiry(event){
+  const item=state.outgoingLog.find(entry=>entry.retryQueueId===event.id);
+  if(!item)return;
+  expireTxRetry(item,event.detail||"waited too long");
+  if(item.manualResend&&dom.message&&!dom.message.value.trim()){
+    dom.message.value=item.sourceText||(item.recipe&&item.recipe.text)||"";
+    renderControls();
+  }
+}
+
+// The operator asked for it, so it goes through the queue rather than straight at the
+// encoder: mid-frame TxController.queue() throws "TX queue is busy" and would turn one
+// click into a second fault. The queue also re-checks the recipient on the way out.
+function resendOutgoing(id){
+  const item=outgoingItemById(id);
+  if(!item||!item.recipe)return false;
+  if(item.retryQueueId)txQueue.remove(item.retryQueueId);
+  item.manualResend=true;
+  item.status="queued"; item.outcome=""; item.retryUntilMs=0;
+  const source=(item.recipe.source==="relay"||item.recipe.source==="inbox")?item.recipe.source:"operator";
+  const queued=txQueue.push({source,text:item.text,to:item.recipe.to||"",
+    nowMs:js8Clock.now(),submode:selectedMode(),ttlMs:Js8TxQueue.resendTtlMs(selectedMode()),
+    meta:{...(item.recipe.meta||{}),resendItem:item,manualResend:true}});
+  if(!queued.queued){ item.status="fault"; item.txError=`resend refused (${queued.reason})`; renderActivity(); return false; }
+  item.retryQueueId=queued.id;
+  item.retryUntilMs=js8Clock.now()+Js8TxQueue.resendTtlMs(selectedMode());
+  renderActivity(); persistSession();
+  drainTxQueue(); renderTxQueue();
+  return true;
+}
+
+// The countdown has to move without redrawing the stations, the map and every decode
+// once a second, so the row renders an empty span and only its text is refreshed here.
+function renderRetryCountdowns(){
+  if(!dom.traffic)return;
+  // Cheap exit on the ordinary path. This runs from renderActivity(), which fires on
+  // every decode, so walking the feed when nothing is waiting would add DOM work to the
+  // one second per slot in which the encoder cannot afford to be late.
+  if(!state.outgoingLog.some(item=>Number(item.retryUntilMs)>0))return;
+  const now=Date.now();
+  for(const node of dom.traffic.querySelectorAll("[data-retry-until]")){
+    const until=Number(node.dataset.retryUntil)||0;
+    node.textContent=until>now?`retry ${Math.ceil((until-now)/1000)} s`:"";
+  }
+}
+
 const OUTGOING_LOG_MAX=200;
-function queueOutgoing(messageText, conversationCall="") {
+let outgoingSequence=0;
+// conversationCall routes the item into a chat thread; displayCall is only the
+// label the recent-traffic feed shows. They differ for a group call such as
+// @APRSIS, which is a real recipient but never a conversation.
+// `recipe` is what a RESEND replays: the rendered text is a frame, not an intent, and a
+// CQ row could never be rebuilt from it.
+function queueOutgoing(messageText, conversationCall="", displayCall=conversationCall, recipe=null) {
   const item={direction:"outgoing",time:new Date().toISOString().slice(11,19),
-    utcMs:Date.now(),to:conversationCall,
-    text:messageText,status:"queued",sentChars:0,activeFraction:0,txRenderKey:""};
+    utcMs:Date.now(),to:displayCall,
+    text:messageText,status:"queued",sentChars:0,activeFraction:0,txRenderKey:"",
+    id:++outgoingSequence,recipe,attempts:1,txError:"",outcome:"",
+    framesSent:0,frameCount:0,retryQueueId:0,retryUntilMs:0,
+    frequencyHz:Number(state.activityFrequency)||Number(state.radio.frequency)||0};
   if(conversationCall){
     if(!state.conversations[conversationCall])state.conversations[conversationCall]=[];
     state.conversations[conversationCall].push(item);
@@ -3125,6 +3532,7 @@ function failOutgoing(item,error) {
   dom.modemState.className="modem-state error";
   item.status="fault";
   item.activeFraction=0;
+  noteTxOutcome(item,"fault",error.message);
   if(state.activeOutgoing===item)state.activeOutgoing=null;
   renderControls();
   renderConversation();
@@ -3132,40 +3540,102 @@ function failOutgoing(item,error) {
   persistSession();
 }
 
-function startTx(text) { startTxTo(state.selectedCall, text); }
+// A draft opening with @APRSIS carries its own recipient, so the group call is
+// peeled off here instead of going through the Recipient field -- that field
+// feeds state.selectedCall, which drives the chat thread, LOG QSO, the SNR
+// preset and followSpeed, none of which a group call can serve.
+function startTx(text, source="operator") {
+  const aprs=Js8Aprs.splitForTx(text);
+  if(aprs)return startTxTo(aprs.toCall, aprs.text, null, Js8Aprs.normalize(text), source);
+  startTxTo(state.selectedCall, text, null, text, source);
+}
+
+// The rendered first-frame text for a recipe, rebuilt from the CURRENT settings on every
+// attempt. That is the whole reason a recipe stores intent instead of frames: a message
+// that failed because "My callsign" or the speed was wrong goes out corrected, not
+// replayed with the same mistake.
+function outgoingTextFor(recipe){
+  const js8=currentJs8();
+  if(recipe.kind==="cq")
+    return Js8Protocol.buildCqFrames({myCall:js8.myCall,grid:js8.grid,cq:recipe.cq})[0].messageText;
+  if(recipe.kind==="heartbeat")
+    return Js8Protocol.buildHeartbeatFrames({myCall:js8.myCall,grid:js8.grid})[0].messageText;
+  return Js8Protocol.formatDirectedMessage({myCall:js8.myCall,toCall:recipe.to,text:recipe.text});
+}
+
+function encodeForRecipe(recipe,item){
+  const js8=currentJs8();
+  if(recipe.kind==="cq"){
+    activeEncoder.setToneOffset(js8.txOffsetHz).configure({myCall:js8.myCall,toCall:"",mode:selectedMode(),clockCorrectionMs:js8.clockCorrectionMs});
+    driveEncoder(activeEncoder.encode("",{kind:"cq",cq:recipe.cq,grid:js8.grid,toneHz:js8.txOffsetHz}),error=>failOutgoing(item,error));
+    return;
+  }
+  if(recipe.kind==="heartbeat"){
+    const tone=Number.isFinite(recipe.toneHz)?recipe.toneHz:js8.txOffsetHz;
+    activeEncoder.setToneOffset(tone).configure({myCall:js8.myCall,toCall:"",mode:selectedMode(),clockCorrectionMs:js8.clockCorrectionMs});
+    driveEncoder(activeEncoder.encode("",{kind:"heartbeat",grid:js8.grid,toneHz:tone}),error=>failOutgoing(item,error));
+    return;
+  }
+  activeEncoder.setToneOffset(js8.txOffsetHz).configure({myCall:js8.myCall,toCall:recipe.to,mode:selectedMode(),clockCorrectionMs:js8.clockCorrectionMs});
+  driveEncoder(activeEncoder.encode(recipe.text),error=>failOutgoing(item,error));
+}
+
+// First attempt: a new row in the feed.
+function beginOutgoing(recipe){
+  // A group call has no conversation of its own: @APRSIS traffic belongs in the
+  // recent-traffic feed, like CQ and HB, not in a chat thread that would then
+  // claim a LOG QSO button and an SNR history.
+  const conversationCall=recipe.kind==="directed"&&!String(recipe.to).startsWith("@")?recipe.to:"";
+  const item=queueOutgoing(outgoingTextFor(recipe),conversationCall,recipe.to||"",recipe);
+  item.sourceText=recipe.sourceText||recipe.text; // raw operator text, replayed verbatim by a resend
+  item.txMeta=recipe.meta||null;
+  encodeForRecipe(recipe,item);
+  return item;
+}
+
+// Another attempt at the SAME row. One message never occupies more than one line
+// whatever it takes to get it out: a flapping link would otherwise triple the own-TX
+// rows and push real decodes out of the hundred the feed renders. The row's time moves
+// to this attempt so a late success surfaces at the top instead of hiding in history.
+function restartOutgoing(item,{manual=false}={}){
+  const recipe=item.recipe;
+  if(!recipe||!activeEncoder)return false;
+  if(manual)item.manualResend=true;
+  if(!item.firstUtcMs)item.firstUtcMs=Number(item.utcMs)||Date.now();
+  item.attempts=(Number(item.attempts)||1)+1;
+  item.utcMs=Date.now();
+  item.time=new Date().toISOString().slice(11,19);
+  item.text=outgoingTextFor(recipe);
+  item.status="queued"; item.sentChars=0; item.activeFraction=0; item.txRenderKey="";
+  item.txError=""; item.outcome=""; item.restored=false;
+  item.retryQueueId=0; item.retryUntilMs=0;
+  item.frequencyHz=Number(state.activityFrequency)||Number(state.radio.frequency)||0;
+  state.activeOutgoing=item; state.lastOutgoing=item;
+  encodeForRecipe(recipe,item);
+  renderConversation(); renderTxPayload(); renderActivity(); persistSession();
+  return true;
+}
 
 // Explicit recipient. An automatic answer goes to whoever asked, which is not
 // necessarily the station the operator happens to have selected -- addressing it
 // to the selection would send the reply to the wrong station, or fail outright
 // when nothing is selected.
-function startTxTo(toCall, text, txMeta = null) {
-  const js8=currentJs8();
+// sourceText is what a resend puts back in the composer. It defaults to the
+// transmitted text, but an APRS command is split before it gets here, so the
+// caller passes the whole draft to keep "@APRSIS " on the front.
+function startTxTo(toCall, text, txMeta = null, sourceText = text, source = "operator") {
   const cq=cqType(text);
-  if(cq){
-    const preview=Js8Protocol.buildCqFrames({myCall:js8.myCall,grid:js8.grid,cq});
-    const item=queueOutgoing(preview[0].messageText);
-    activeEncoder.setToneOffset(js8.txOffsetHz).configure({myCall:js8.myCall,toCall:"",mode:selectedMode(),clockCorrectionMs:js8.clockCorrectionMs});
-    driveEncoder(activeEncoder.encode("",{kind:"cq",cq,grid:js8.grid,toneHz:js8.txOffsetHz}),error=>failOutgoing(item,error));
-    return;
-  }
-  activeEncoder.setToneOffset(js8.txOffsetHz).configure({myCall:js8.myCall,toCall,mode:selectedMode(),clockCorrectionMs:js8.clockCorrectionMs});
-  const item=queueOutgoing(Js8Protocol.formatDirectedMessage({myCall:js8.myCall,
-    toCall,text}),toCall);
-  item.sourceText=text; // raw operator text, replayed verbatim by a resend after an interrupt
-  item.txMeta=txMeta;
-  driveEncoder(activeEncoder.encode(text),error=>failOutgoing(item,error));
+  if(cq)return beginOutgoing({kind:"cq",cq,to:"",text,sourceText,meta:txMeta,source});
+  beginOutgoing({kind:"directed",to:toCall,text,sourceText,meta:txMeta,source});
 }
 
 function startHeartbeat(offsetHz, auto=false) {
   // Automatic beacons pick a random offset in the narrow HB band; the manual
   // button keeps using the operator's own TX offset.
-  const js8=currentJs8(), tone=Number.isFinite(offsetHz)?offsetHz:js8.txOffsetHz;
-  const preview=Js8Protocol.buildHeartbeatFrames({myCall:js8.myCall,grid:js8.grid});
-  const item=queueOutgoing(preview[0].messageText);
+  const tone=Number.isFinite(offsetHz)?offsetHz:currentJs8().txOffsetHz;
   // Only the scheduled beacon auto-retries on a fault; a manual button press does not.
-  if(auto)item.txMeta={heartbeatAuto:true};
-  activeEncoder.setToneOffset(tone).configure({myCall:js8.myCall,toCall:"",mode:selectedMode(),clockCorrectionMs:js8.clockCorrectionMs});
-  driveEncoder(activeEncoder.encode("",{kind:"heartbeat",grid:js8.grid,toneHz:tone}),error=>failOutgoing(item,error));
+  beginOutgoing({kind:"heartbeat",to:"",text:"",toneHz:tone,
+    meta:auto?{heartbeatAuto:true}:null,source:"heartbeat"});
 }
 
 function toggleTune() {
@@ -3191,17 +3661,197 @@ function messagePresetValue(key) {
     "snr-query":"SNR?","copy-query":"HW CPY?",rr:"RR",fb:"FB",qsl:"QSL",
     "qsl-query":"QSL?",yes:"YES",no:"NO",tu:"TU","dit-dit":"DIT DIT",
     "grid-query":"GRID?","info-query":"INFO?","status-query":"STATUS?",
-    again:"AGN?","73":"73",sk:"SK"})[key] || "";
+    again:"AGN?","73":"73",sk:"SK",aprsis:`${Js8Aprs.GROUP} `})[key] || "";
+}
+
+// ---- @APRSIS command builder ------------------------------------------------
+// docs/aprsis-implementace.md. The menu is a pure function of the composer text:
+// on every render it re-derives which branch of the catalogue the draft is in,
+// so a hand-edited command can never disagree with the menu that built it.
+
+const aprsState={node:null,recent:Js8Aprs.loadRecent(localStorage)};
+// Six frames is a minute and a half at NORMAL speed -- past that the operator is
+// warned, never refused. The 67-character APRS limit is the only hard stop.
+const APRS_FRAME_WARNING=6;
+let presetMenuBase="";
+
+function aprsDuration(seconds) {
+  const whole=Math.round(seconds);
+  return `${Math.floor(whole/60)}:${String(whole%60).padStart(2,"0")}`;
+}
+
+// buildReplyFrames() throws on an unpackable callsign, which is exactly the
+// state a station has before My callsign is set. The cost line is advisory, so
+// fall back to nothing rather than breaking the render.
+function aprsFrameCount(payload) {
+  const transport=Js8Aprs.splitForTx(payload);
+  if(!transport)return 0;
+  try {
+    return Js8Protocol.buildReplyFrames({myCall:currentJs8().myCall,
+      toCall:transport.toCall,text:transport.text}).length;
+  } catch(_error) { return 0; }
+}
+
+function aprsCostText(payload,textLength) {
+  const frames=aprsFrameCount(payload);
+  if(!frames)return {text:"",long:false};
+  const seconds=Js8Aprs.airtimeSeconds(frames,selectedMode());
+  const long=frames>APRS_FRAME_WARNING;
+  const size=textLength ? `${textLength}/${Js8Aprs.MESSAGE_TEXT_LIMIT} characters · ` : "";
+  return {long, text:`${size}${frames} frame${frames===1?"":"s"} · ${aprsDuration(seconds)} at ${MODE_TO_SPEED[selectedMode()]||"?"}`+
+    (long?" · long transmission, consider a faster speed":"")};
+}
+
+function renderSendHint(aprsDraft) {
+  if(!aprsDraft){
+    dom.sendHint.textContent="Enter sends";
+    dom.sendHint.classList.remove("warn");
+    return;
+  }
+  // The operator keeps their selected station through an APRS spot, so say out
+  // loud that this particular message is not going to them.
+  const where=state.selectedCall
+    ? `Enter sends to ${Js8Aprs.GROUP}, not ${state.selectedCall}`
+    : `Enter sends to ${Js8Aprs.GROUP}`;
+  const check=Js8Aprs.validate(dom.message.value);
+  const cost=check.ok?aprsCostText(dom.message.value,check.textLength):{text:"",long:false};
+  dom.sendHint.textContent=cost.text?`${where} · ${cost.text}`:where;
+  dom.sendHint.classList.toggle("warn",cost.long);
+}
+
+function aprsNodeById(id) {
+  return [...Js8Aprs.COMMANDS,...Js8Aprs.MENU].find(node=>node.id===id) || null;
+}
+
+function aprsMenuHtml(aprs) {
+  const crumbs=[{id:"root",label:"all"},...aprs.path].map(step=>
+    `<button type="button" class="aprs-crumb" data-aprs-crumb="${esc(step.id)}">${esc(step.label)}</button>`)
+    .join('<span class="aprs-crumb-sep">/</span>');
+  const items=aprs.children.map(node=>
+    `<button type="button" role="menuitem" data-aprs-node="${esc(node.id)}"><strong>${esc(node.label)}</strong><small>${esc(node.hint)}</small></button>`).join("");
+  if(items)return `<header class="aprs-crumbs">${crumbs}</header>${items}`;
+  // A finished leaf has nothing left to offer, so show what it will cost and
+  // the way back into its parameters.
+  const node=aprs.service || aprs.command;
+  const check=Js8Aprs.validate(dom.message.value);
+  const cost=check.ok?aprsCostText(dom.message.value,check.textLength):{text:check.reason,long:false};
+  const edit=node&&node.params.length
+    ? `<button type="button" role="menuitem" data-aprs-edit="${esc(node.id)}"><strong>EDIT</strong><small>Change the parameters</small></button>` : "";
+  return `<header class="aprs-crumbs">${crumbs}</header>${edit}`+
+    `<p class="aprs-status${cost.long||!check.ok?" warn":""}">${esc(cost.text)}</p>`;
+}
+
+// Swapping innerHTML detaches whatever was clicked, so every handler reads its
+// dataset before calling this.
+function renderMessagePresets() {
+  const aprs=Js8Aprs.parse(dom.message.value);
+  if(aprs){
+    dom.messagePresetsMenu.dataset.mode="aprs";
+    dom.messagePresetsMenu.innerHTML=aprsMenuHtml(aprs);
+    return;
+  }
+  if(dom.messagePresetsMenu.dataset.mode!=="base"){
+    dom.messagePresetsMenu.dataset.mode="base";
+    dom.messagePresetsMenu.innerHTML=presetMenuBase;
+  }
+  const snrPreset=dom.messagePresetsMenu.querySelector('[data-message-preset="snr"]');
+  if(!snrPreset)return;
+  // Only a station decoded here has an SNR to report back; one we were merely told about
+  // would insert somebody else's signal report.
+  const snrStation=state.activity.calls.find(item=>item.call===state.selectedCall && item.heardDirectly!==false);
+  snrPreset.disabled=!snrStation;
+  snrPreset.title=snrStation ? `Insert SNR ${formatJs8Snr(snrStation.snr)}` : "Select a heard station first";
+}
+
+function setMessageDraft(value) {
+  dom.message.value=value;
+  dom.message.dispatchEvent(new Event("input",{bubbles:true}));
+  dom.message.focus({preventScroll:true});
+  dom.message.setSelectionRange(value.length,value.length);
+}
+
+// Nodes without parameters extend the draft straight away; the rest open the
+// popup, so the operator never sees a {placeholder} to overwrite by hand.
+function pickAprsNode(id) {
+  const node=aprsNodeById(id);
+  if(!node)return;
+  if(!node.params.length){setMessageDraft(Js8Aprs.compose(node,{}));return;}
+  openAprsParams(node,null);
+}
+
+function editAprsNode(id) {
+  const node=aprsNodeById(id), aprs=Js8Aprs.parse(dom.message.value);
+  if(!node||!aprs)return;
+  openAprsParams(node,node.fields(aprs.text,aprs.dest));
+}
+
+function aprsParamValues() {
+  const values={};
+  for(const input of dom.aprsParamGrid.querySelectorAll("[data-aprs-param]"))
+    values[input.dataset.aprsParam]=input.value;
+  return values;
+}
+
+function renderAprsRecent() {
+  dom.aprsRecentCalls.innerHTML=aprsState.recent
+    .map(call=>`<option value="${esc(call)}"></option>`).join("");
+}
+
+function renderAprsParams() {
+  const node=aprsState.node;
+  if(!node)return;
+  const check=Js8Aprs.checkParams(node,aprsParamValues());
+  dom.aprsParamPreview.textContent=check.payload || "Fill the fields to preview the exact radio payload.";
+  dom.aprsParamError.textContent=check.errors.map(error=>error.reason).join(" · ");
+  dom.aprsParamInsert.disabled=!check.ok;
+  const cost=check.ok?aprsCostText(check.payload,check.textLength):{text:"",long:false};
+  dom.aprsParamCost.textContent=cost.text;
+  dom.aprsParamCost.classList.toggle("warn",cost.long);
+}
+
+function openAprsParams(node,values) {
+  aprsState.node=node;
+  const js8=currentJs8();
+  const initial=values || Js8Aprs.prefill(node,{myCall:js8.myCall,grid:js8.grid,
+    dialFrequencyHz:state.radio.frequency});
+  dom.aprsParamTitle.textContent=`${node.label} — ${node.hint}`;
+  renderAprsRecent();
+  dom.aprsParamGrid.innerHTML=node.params.map(param=>{
+    const list=param.recent?' list="aprsRecentCalls"':"";
+    const optional=param.required?"":' <small>optional</small>';
+    return `<label>${esc(param.label)}${optional} <input data-aprs-param="${esc(param.key)}"`+
+      ` value="${esc(initial[param.key]||"")}" placeholder="${esc(param.placeholder||"")}"`+
+      ` autocomplete="off" spellcheck="false"${list}></label>`;
+  }).join("");
+  renderAprsParams();
+  dom.aprsParamDialog.showModal();
+  dom.aprsParamGrid.querySelector("input")?.focus({preventScroll:true});
+}
+
+function insertAprsParams(event) {
+  event.preventDefault();
+  const node=aprsState.node;
+  if(!node)return;
+  const values=aprsParamValues();
+  const check=Js8Aprs.checkParams(node,values);
+  if(!check.ok)return;
+  // Only the free-text destination is worth remembering; every other addressee
+  // is already in the catalogue.
+  if(node.destParam){
+    aprsState.recent=Js8Aprs.saveRecent(localStorage,
+      Js8Aprs.rememberCall(aprsState.recent,values[node.destParam]));
+  }
+  dom.aprsParamDialog.close();
+  setMessageDraft(check.payload);
 }
 
 function insertMessagePreset(key) {
   const value=messagePresetValue(key);
   if(!value)return;
-  dom.message.value=value;
-  closeMessagePresets();
-  dom.message.dispatchEvent(new Event("input",{bubbles:true}));
-  dom.message.focus({preventScroll:true});
-  dom.message.setSelectionRange(value.length,value.length);
+  // @APRSIS is the start of a command, not a finished message: leave the menu
+  // open so the next level (GRID / CMD) is one click away.
+  if(key!=="aprsis")closeMessagePresets();
+  setMessageDraft(value);
 }
 
 function updateOutgoingTxProgress(txState) {
@@ -3228,10 +3878,18 @@ function updateOutgoingTxProgress(txState) {
       item.txMeta.inboxDeliveryId=null; // completion may be reported more than once
       if(inbox.confirmDelivered(deliveryId)){renderInbox();syncInbox();}
     }
+    // A CQ that got out re-arms the one rollback its schedule is allowed.
+    if(item.recipe&&item.recipe.kind==="cq")cqRetryPending=false;
   }
   item.sentChars=Math.max(0,Math.min(item.text.length,sent));
   item.activeFraction=["aborted","fault","completed"].includes(txState.status)?0:activeFraction;
   item.status=txState.status;
+  // Frames, not characters: sentChars cannot say how many keyings actually happened, and
+  // txState does not survive a reload.
+  item.frameCount=Number(txState.frameCount)||0;
+  item.framesSent=Math.max(Number(item.framesSent)||0,Number(txState.frameIndex)||0);
+  // Before the render key, because the verdict may rewrite the status to "unconfirmed".
+  if(["aborted","fault"].includes(txState.status))noteTxOutcome(item,txState.status,txState.error);
   const renderKey=`${item.status}|${item.sentChars}|${Math.round(item.activeFraction*20)}`;
   if(renderKey!==item.txRenderKey){
     // The feed only shows status (colour), so redraw it on status transitions
@@ -3242,10 +3900,9 @@ function updateOutgoingTxProgress(txState) {
     if(statusChanged)renderActivity();
     persistSession();
   }
-  // A scheduled beacon that faulted never reached the air; retry it in the next
-  // quiet frame rather than leaving the station silent until the next interval.
-  if(txState.status==="fault" && item.txMeta && item.txMeta.heartbeatAuto)
-    heartbeat.noteFault(js8Clock.now());
+  // A scheduled beacon or CQ that faulted never reached the air; its schedule is moved
+  // back by noteTxOutcome() above, which also covers a lost link (status "aborted") --
+  // the case the old fault-only check here used to miss.
   if(["aborted","fault","completed"].includes(txState.status))state.activeOutgoing=null;
 }
 
@@ -3255,11 +3912,18 @@ async function pollRadio() {
   try {
     const response=await fetch(RADIO_STATE_URL,{cache:"no-store"}); if (!response.ok) throw new Error();
     const next=await response.json();
+    noteRadioLink(next);
     state.radio={...state.radio,...next,frequency:Number(next.frequency)||0};
     const activityFrequencyChanged=selectActivityFrequency(state.radio.frequency);
     if (state.pendingFrequency && state.radio.frequency===state.pendingFrequency) state.pendingFrequency=null;
+    noteRfKnob(); applyAutoRfPower();
     ensureAudio(); if(activityFrequencyChanged)renderActivity(); renderHeader(); renderControls();
-  } catch (_error) { state.radio.connected=false; stopAudio(); renderHeader(); renderControls(); }
+  } catch (_error) {
+    // Deliberately not through noteRadioLink(): a fetch that never arrived says
+    // nothing about the radio, and counting it as a link drop would re-arm the
+    // power write on every WiFi flutter between the browser and the ESP32.
+    state.radio.connected=false; stopAudio(); renderHeader(); renderControls();
+  }
   finally { radioPollInFlight=false; }
 }
 
@@ -3514,11 +4178,33 @@ function bind() {
     dom.messagePresetsButton.setAttribute("aria-expanded",opening?"true":"false");
     if(opening)dom.messagePresetsMenu.querySelector("button:not(:disabled)")?.focus({preventScroll:true});
   });
+  // The static markup is the root menu; renderMessagePresets() swaps it for the
+  // @APRSIS branch and restores this copy on the way back.
+  presetMenuBase=dom.messagePresetsMenu.innerHTML;
+  dom.messagePresetsMenu.dataset.mode="base";
   dom.messagePresetsMenu.addEventListener("click",event=>{
-    const button=event.target.closest("[data-message-preset]");
-    if(button&&!button.disabled)insertMessagePreset(button.dataset.messagePreset);
+    const button=event.target.closest("button");
+    if(!button||button.disabled)return;
+    // The render this triggers replaces innerHTML and detaches `button`, so the
+    // dataset has to be read before anything else runs.
+    const {messagePreset,aprsNode,aprsEdit,aprsCrumb}=button.dataset;
+    if(messagePreset)insertMessagePreset(messagePreset);
+    else if(aprsNode)pickAprsNode(aprsNode);
+    else if(aprsEdit)editAprsNode(aprsEdit);
+    else if(aprsCrumb!==undefined)setMessageDraft(Js8Aprs.truncateTo(dom.message.value,aprsCrumb));
   });
-  document.addEventListener("click",event=>{if(!event.target.closest(".message-field"))closeMessagePresets();});
+  dom.aprsParamGrid.addEventListener("input",renderAprsParams);
+  dom.aprsParamForm.addEventListener("submit",insertAprsParams);
+  dom.aprsParamDialog.querySelectorAll("[data-aprs-dialog-close]").forEach(button=>
+    button.addEventListener("click",()=>dom.aprsParamDialog.close()));
+  // Picking an @APRSIS node rebuilds the menu, which detaches the very button
+  // that was clicked -- closest() would then walk an orphaned subtree, find no
+  // .message-field and close the menu the operator is still working in.
+  // composedPath() is captured at dispatch, so it still holds the real ancestors.
+  document.addEventListener("click",event=>{
+    if(event.composedPath().some(node=>node.classList?.contains("message-field")))return;
+    closeMessagePresets();
+  });
   dom.txSessionMode.addEventListener("change",()=>{state.txSessionMode=dom.txSessionMode.value;renderControls();});
   dom.emailAddress.addEventListener("input",renderControls);
   dom.emailMessage.addEventListener("input",renderControls);
@@ -3556,6 +4242,10 @@ function bind() {
   dom.txOffset.addEventListener("change",()=>setJs8Setting("txOffsetHz",Math.max(RX_LOW,Math.min(RX_HIGH,Number(dom.txOffset.value)||1500))));
   dom.myCall.addEventListener("input",()=>{state.settingsDraft.myCall=dom.myCall.value;});
   dom.myGrid.addEventListener("input",()=>{state.settingsDraft.grid=dom.myGrid.value;});
+  // Typing only updates the watts beside the box; nothing reaches the radio
+  // until SET, which is what makes the number a stored choice.
+  dom.rfPercent.addEventListener("input",()=>{rfDraft=dom.rfPercent.value;rfLastError="";renderHeader();});
+  dom.rfPercentSet.addEventListener("click",setRfPowerFromField);
   dom.txGain.addEventListener("input",()=>{state.settingsDraft.txGain=dom.txGain.value;});
   dom.myCall.addEventListener("change",()=>{const value=dom.myCall.value.toUpperCase();state.settingsDraft.myCall=null;setJs8Setting("myCall",value);renderActivity();});
   dom.myGrid.addEventListener("change",()=>{const value=dom.myGrid.value.toUpperCase();state.settingsDraft.grid=null;setJs8Setting("grid",value);});
@@ -3571,7 +4261,7 @@ function bind() {
   dom.cqRepeat.addEventListener("change",()=>{setJs8Setting("cqRepeatMin",Number(dom.cqRepeat.value)||0);renderCqState();});
   dom.hbEnabled.addEventListener("change",()=>{setJs8Setting("hb",dom.hbEnabled.checked);applyHeartbeatSettings();});
   dom.hbAck.addEventListener("change",()=>{setJs8Setting("hbAck",dom.hbAck.checked);applyHeartbeatSettings();});
-  dom.hbMinutes.addEventListener("change",()=>{setJs8Setting("hbMinutes",Number(dom.hbMinutes.value)||15);applyHeartbeatSettings();});
+  dom.hbMinutes.addEventListener("change",()=>{setJs8Setting("hbMinutes",Number(dom.hbMinutes.value)||60);applyHeartbeatSettings();});
   dom.autoReply.addEventListener("change",()=>{
     setJs8Setting("auto",dom.autoReply.checked);
     armUnattended(dom.autoReply.checked?"arm":"revoke");
@@ -3588,7 +4278,11 @@ function bind() {
   // Resend a transmission that was interrupted by leaving mid-frame: restage the
   // raw text in the composer (never auto-transmit) so the operator sends it when
   // audio and the decoder are warm again.
-  dom.chat.addEventListener("click",event=>{const button=event.target.closest("[data-resend-text]");if(!button)return;dom.message.value=button.dataset.resendText;renderControls();persistSession();dom.message.focus({preventScroll:true});const end=dom.message.value.length;dom.message.setSelectionRange(end,end);});
+  dom.chat.addEventListener("click",event=>{const send=event.target.closest("[data-resend-id]");if(send){resendOutgoing(send.dataset.resendId);return;}const button=event.target.closest("[data-resend-text]");if(!button)return;dom.message.value=button.dataset.resendText;renderControls();persistSession();dom.message.focus({preventScroll:true});const end=dom.message.value.length;dom.message.setSelectionRange(end,end);});
+  // RESEND in the feed transmits; it does not merely restage the text. The row already
+  // passed through the composer once, and the queue is what keeps the click from
+  // colliding with a frame that is still on air.
+  dom.traffic.addEventListener("click",event=>{const button=event.target.closest("[data-resend-id]");if(!button)return;event.stopPropagation();resendOutgoing(button.dataset.resendId);});
   dom.abort.addEventListener("click",()=>activeEncoder&&activeEncoder.abort());
   dom.logQso.addEventListener("click",()=>{ if(dom.logQso.dataset.action==="view")openJs8Log(); else handleLogQso(); });
   window.addEventListener("focus",refreshJs8Log);
@@ -3606,7 +4300,9 @@ function bind() {
   dom.sessionTakeover.addEventListener("click",()=>{dom.sessionTakeover.disabled=true;acquireJs8Session(true).then(won=>{if(won)location.reload();else dom.sessionTakeover.disabled=false;});});
   window.addEventListener("pagehide",()=>{flushSession();if(activeEncoder)activeEncoder.abort();stopAudio();releaseJs8Session();});
   document.addEventListener("visibilitychange",()=>{if(document.hidden&&activeEncoder)activeEncoder.abort();});
-  addEventListener("keydown",event=>{if(event.key==="Escape"){if(activeEncoder)activeEncoder.abort();dom.frequencyMenu.hidden=true;closeMessagePresets();closeTimetablePopover();dom.freqTimetablePanel.hidden=true;dom.freqTimetableButton.setAttribute("aria-expanded","false");}});
+  // Escape inside a modal belongs to that dialog. Without this guard, dismissing
+  // the APRS parameter popup would also abort a transmission already on air.
+  addEventListener("keydown",event=>{if(event.key==="Escape"){if(document.querySelector("dialog[open]"))return;if(activeEncoder)activeEncoder.abort();dom.frequencyMenu.hidden=true;closeMessagePresets();closeTimetablePopover();dom.freqTimetablePanel.hidden=true;dom.freqTimetableButton.setAttribute("aria-expanded","false");}});
 }
 
 async function init() {
@@ -3629,7 +4325,7 @@ async function init() {
   scheduler.every("utcClock",250,()=>{dom.utcClock.textContent=`UTC ${new Date().toISOString().slice(11,19)}`;});
   renderRhythm(); scheduler.every("rhythm",100,renderRhythm);
   pollRadio(); scheduler.every("pollRadio",500,pollRadio);
-  scheduler.every("txQueue",1000,()=>{drainTxQueue();renderTxQueue();});
+  scheduler.every("txQueue",1000,()=>{drainTxQueue();renderTxQueue();renderRetryCountdowns();});
   scheduler.every("heartbeat",5000,()=>{checkHeartbeat();renderHeartbeatState();});
   scheduler.every("cqRepeat",5000,checkCqRepeat);
   pollUnattended().then(()=>reconcileUnattended("page load")); scheduler.every("unattended",5000,pollUnattended);
@@ -3639,6 +4335,10 @@ async function init() {
   renderInbox();
   setMasterTick(TICK_IDLE_MS);
   if (TEST_MODE) self.__dataTest={
+    // Read-only views the RF-power checks need: the stored choice and what
+    // the poll last read back, neither of which is reachable from the DOM.
+    js8Settings(){return currentJs8();},
+    radioState(){return {...state.radio};},
     setActivity(activity){state.testActivityLocked=true;applyDecoderActivity(activity);renderActivity();},
     setRadioFrequency(frequency){state.radio.frequency=Number(frequency)||0;if(selectActivityFrequency(state.radio.frequency))renderActivity();renderHeader();renderControls();},
     setRadioConnection(connected,lanStatus=connected?"linked":"disconnected"){state.radio.connected=Boolean(connected);state.radio.lanStatus=lanStatus;renderHeader();renderControls();},
@@ -3668,6 +4368,41 @@ async function init() {
     feedInbox(frame){handleDecodedFrame({kind:"directed",...frame});},
     feedAssembled(message){dispatchAssembledMessage(message);},
     txStatus(){return state.txStatus;},
+    // Failure injection. The harness cannot key a radio, and clicking ABORT produces an
+    // OPERATOR abort -- precisely the one case that earns no RESEND -- so without these
+    // hooks not a single resend path could be exercised in a browser.
+    txFail(reason,status="fault"){
+      const item=state.activeOutgoing||state.lastOutgoing;
+      if(!item)return false;
+      const text=String(reason||"injected fault");
+      if(activeEncoder&&activeEncoder.abort)activeEncoder.abort(text);
+      stopTxTicking();
+      // The abort above may already have classified the failure; start from a clean slate
+      // so the injected reason, not the abort, decides the verdict.
+      if(item.retryQueueId){txQueue.remove(item.retryQueueId);item.retryQueueId=0;item.retryUntilMs=0;}
+      state.txStatus=status==="aborted"?"aborted":"fault";
+      item.status=status; item.activeFraction=0; item.outcome="";
+      noteTxOutcome(item,status,text);
+      state.activeOutgoing=null;
+      renderControls();renderConversation();renderTxPayload();renderActivity();persistSession();
+      return true;
+    },
+    txDropLink(){onAudioStatus({type:"closed"});return true;},
+    outgoingRows(){return state.outgoingLog.map(item=>({id:item.id,status:item.status,
+      outcome:item.outcome||"",attempts:Number(item.attempts)||1,text:item.text,to:item.to||"",
+      kind:item.recipe?item.recipe.kind:"",frequencyHz:Number(item.frequencyHz)||0,
+      retryUntilMs:Number(item.retryUntilMs)||0,resendable:txResendable(item)}));},
+    resendRow(id){return resendOutgoing(id);},
+    trafficTxRows(){return [...dom.traffic.querySelectorAll(".message-tx")].map(node=>({
+      status:node.dataset.txStatus||"",attempts:Number(node.dataset.txAttempts)||1,
+      emitted:node.classList.contains("tx-emitted"),
+      resend:Boolean(node.querySelector("[data-resend-id]")),
+      struck:Boolean(node.querySelector(".tx-copy-failed")),
+      text:node.querySelector(".message-text")?.textContent||"",
+      sent:node.querySelector(".tx-copy-sent")?.textContent||""}));},
+    setItemFrequency(id,hz){const item=outgoingItemById(id);if(!item)return false;item.frequencyHz=Number(hz)||0;renderActivity();return true;},
+    txQueueClear(){return txQueue.clear("test");},
+    drainNow(){drainTxQueue();renderTxQueue();renderRetryCountdowns();return true;},
     feedRelay(frame){handleDecodedFrame({kind:"directed",command:">",...frame});},
     feedHeartbeat(frame){handleDecodedFrame({kind:"heartbeat",...frame});},
     resetAutoReplyLock(){autoReply.lastDirectedFrameMs=0;},

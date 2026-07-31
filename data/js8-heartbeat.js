@@ -19,7 +19,7 @@
   const HB_SUBMODES = [4, 0, 1];       // Slow, Normal, Fast
   const OFFSET_MIN_HZ = 500;           // HBs sit in 500..1000 Hz so they do not
   const OFFSET_MAX_HZ = 1000;          // scatter across the whole passband
-  const DEFAULT_INTERVAL_MS = 15 * 60000;
+  const DEFAULT_INTERVAL_MS = 60 * 60000;
   const INTERVAL_CHOICES_MS = [5, 10, 15, 30, 60].map(minutes => minutes * 60000);
   // Only a beacon that is about to key up needs to yield to band traffic; one JS8
   // frame (~15 s) is the window in which transmitting would actually talk over a

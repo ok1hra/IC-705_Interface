@@ -26,6 +26,11 @@
 .frequency-preset:disabled { opacity: .4; cursor: not-allowed; }
 .frequency-preset:disabled:hover { border-color: var(--line); background: transparent; }
 
+/* `.trx-frequency.off-dial` itself lives in data.css: both this page and
+   JS8Call mark a dial that is on none of the presets. Only the explanation in
+   the menu footer is WSPR's, because only here does it also disable START. */
+.frequency-menu footer.off-dial { color: var(--red); }
+
 .aud1-state { color: var(--muted); font-size: 11px; }
 .aud1-state.up { color: var(--green); border-color: #2f6b57; }
 .lan-health { font-size: 11px; font-variant-numeric: tabular-nums; }

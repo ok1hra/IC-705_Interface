@@ -36,36 +36,44 @@
   //   "idle"        Not started, or stopped.
   const STATES = ["idle", "wake-lock", "video", "needs-tap", "unavailable"];
 
-  // Both held states say the same thing, because to the operator they mean the
-  // same thing. Which mechanism is holding the display is a developer question
-  // and lives in data-wakelock-state, not in the label.
+  // Nothing about the state is written on the page. The topbar carries one dot
+  // that changes colour -- green held, amber recoverable, red not held -- and
+  // every word lives in the hover/tap panel. Both held states share a colour
+  // because to the operator they mean the same thing; which mechanism is holding
+  // the display is a developer question and lives in data-wakelock-state.
+  //
+  // LABELS are never displayed. They are the accessible name, because a bare
+  // coloured dot tells a screen reader nothing.
   const LABELS = {
     idle: "",
-    "wake-lock": "☀ screen on",
-    video: "☀ screen on",
-    "needs-tap": "⚠ tap to keep screen on",
-    unavailable: "⚠ screen may sleep",
+    "wake-lock": "screen on",
+    video: "screen on",
+    "needs-tap": "tap to keep screen on",
+    unavailable: "screen may sleep",
   };
 
-  // Operator-facing text: what is true, and what to do about it. No protocol
-  // talk -- nobody reading this can put TLS in front of the firmware, so telling
-  // them the API "needs HTTPS" only raises a question with no answer. The reason
-  // it works this way belongs in the comments above and in docs/wake-lock.md.
+  // The whole explanation, since there is nowhere else for it to go. Each one
+  // opens by naming the state, because a colour on its own is ambiguous.
+  //
+  // No protocol talk: nobody reading this can put TLS in front of the firmware,
+  // so telling them the API "needs HTTPS" only raises a question with no answer.
+  // The reason it works this way belongs in the comments above and in
+  // docs/wake-lock.md.
   const TIPS = {
-    "wake-lock": "The display will not sleep while this page is open.",
-    video: "The display will not sleep while this page is open. A silent "
-      + "looping video keeps it lit.",
-    "needs-tap": "The browser blocked what keeps the display lit. Tap here, or "
-      + "anywhere on the page, to allow it.",
-    unavailable: "This page cannot keep the display lit. Turn off the automatic "
-      + "screen lock in the system settings before leaving the station "
-      + "unattended.",
-    "unavailable-ios": "This page cannot keep the display lit on iOS. Turn off "
-      + "Settings → Display & Brightness → Auto-Lock before leaving the "
+    "wake-lock": "Screen on. The display will not sleep while this page is open.",
+    video: "Screen on. The display will not sleep while this page is open — a "
+      + "silent looping video keeps it lit.",
+    "needs-tap": "Screen may sleep. The browser blocked what keeps the display "
+      + "lit. Tap here, or anywhere on the page, to allow it.",
+    unavailable: "Screen may sleep. This page cannot keep the display lit. Turn "
+      + "off the automatic screen lock in the system settings before leaving the "
       + "station unattended.",
-    "unavailable-desktop": "This page cannot keep the display lit in a desktop "
-      + "browser. Turn off the screen blanking and sleep in the system settings "
-      + "before leaving the station unattended.",
+    "unavailable-ios": "Screen may sleep. This page cannot keep the display lit "
+      + "on iOS. Turn off Settings → Display & Brightness → Auto-Lock before "
+      + "leaving the station unattended.",
+    "unavailable-desktop": "Screen may sleep. This page cannot keep the display "
+      + "lit in a desktop browser. Turn off the screen blanking and sleep in the "
+      + "system settings before leaving the station unattended.",
   };
 
   // iPadOS 13+ reports a desktop Safari user agent, so the touch points are what
@@ -201,7 +209,7 @@
 
     // Autoplay of muted video is normally allowed, but Low Power Mode and some
     // data-saver modes reject play(). A real user gesture always passes, so the
-    // next tap anywhere -- including on the pill itself -- retries.
+    // next tap anywhere -- including on the dot itself -- retries.
     function bindGesture() {
       if (gestureBound || !doc || typeof doc.addEventListener !== "function") return;
       const retry = () => {
@@ -266,9 +274,6 @@
       start, stop, acquire,
       get state() { return state; },
       get reason() { return reason; },
-      // Only needs-tap can be acted on. Every other state is a read-out, and the
-      // pill must not pretend otherwise by looking or behaving like a control.
-      get actionable() { return state === "needs-tap"; },
       onChange(listener) { listeners.push(listener); return listener; },
       label() { return LABELS[state] || ""; },
       tip() {
@@ -279,60 +284,100 @@
     };
   }
 
-  // The pill lives in the shared site-topbar next to the firmware version, and it
+  // The dot lives in the shared site-topbar next to the firmware version, and it
   // builds its own markup and style so that adding the keeper to a page is one
   // script tag -- no edits to data.html, wspr.html, data.css and wspr.css for
   // every future tweak.
-  const PILL_CSS = ".wakelock-pill{margin-left:.6em;padding:.1em .5em;border-radius:1em;"
-    + "font-size:.78em;line-height:1.6;white-space:nowrap;border:1px solid currentColor;"
-    + "opacity:.75;background:none;color:inherit;font-family:inherit}"
-    + ".wakelock-pill[hidden]{display:none}"
-    + ".wakelock-pill.is-warning{opacity:1;color:#e0a020}"
-    + ".wakelock-pill.is-action{opacity:1;color:#e0a020;cursor:pointer}";
+  //
+  // 7 px plus a glow, matching .trx-dot in data.css; the panel matches .help-tip
+  // in setup.css. Colours come from the data.css palette, which wspr.html also
+  // loads, with literal fallbacks so a dot never lands invisible.
+  //
+  // The one place this departs from .help-tip: that rule fires on :hover alone,
+  // and a phone has no hover. The panel therefore also opens on :focus-visible
+  // and on .is-open, which a tap toggles -- otherwise the explanation would be
+  // unreachable on exactly the devices this feature exists for.
+  const DOT_CSS = ".wakelock-dot{position:relative;display:inline-block;width:7px;"
+    + "height:7px;margin-left:.7em;padding:0;border:0;border-radius:50%;"
+    + "vertical-align:middle;cursor:help;-webkit-tap-highlight-color:transparent;"
+    + "background:var(--green,#5ad18a);box-shadow:0 0 7px var(--green,#5ad18a)}"
+    + ".wakelock-dot[hidden]{display:none}"
+    + ".wakelock-dot[data-wakelock-state=\"needs-tap\"]{cursor:pointer;"
+    + "background:var(--amber,#ffbf69);box-shadow:0 0 7px var(--amber,#ffbf69)}"
+    + ".wakelock-dot[data-wakelock-state=\"unavailable\"]{"
+    + "background:var(--red,#ff6b6b);box-shadow:0 0 7px var(--red,#ff6b6b)}"
+    + ".wakelock-dot::after{content:attr(data-tip);position:absolute;"
+    + "bottom:calc(100% + 10px);right:-6px;width:260px;"
+    + "max-width:calc(100vw - 48px);background:#101a14;"
+    + "border:1px solid var(--line,#28443e);color:var(--text,#e8f3ee);"
+    + "padding:10px 12px;border-radius:10px;font-size:.82rem;font-weight:400;"
+    + "line-height:1.5;letter-spacing:0;text-align:left;white-space:normal;"
+    + "pointer-events:none;opacity:0;transition:opacity .15s;z-index:100}"
+    + ".wakelock-dot:hover::after,.wakelock-dot:focus-visible::after,"
+    + ".wakelock-dot.is-open::after{opacity:1}";
 
-  function attachPill(keeper, doc) {
+  function attachDot(keeper, doc) {
     if (!doc || typeof doc.createElement !== "function") return null;
     const host = doc.querySelector(".site-topbar .tabs") || doc.querySelector(".site-topbar");
     if (!host) return null;
-    if (!doc.getElementById("wakeLockPillStyle")) {
+    if (!doc.getElementById("wakeLockDotStyle")) {
       const style = doc.createElement("style");
-      style.id = "wakeLockPillStyle";
-      style.textContent = PILL_CSS;
+      style.id = "wakeLockDotStyle";
+      style.textContent = DOT_CSS;
       (doc.head || host).appendChild(style);
     }
-    // A span, not a button. Only needs-tap does anything when clicked -- in every
-    // other state acquire() short-circuits immediately -- so a permanent button
-    // would be a tab stop with a focus ring that a screen reader announces as a
-    // control, all for a no-op. The element becomes a real control, keyboard and
-    // all, exactly when tapping it helps.
-    const pill = doc.createElement("span");
-    pill.id = "wakeLockPill";
-    pill.className = "wakelock-pill";
-    pill.hidden = true;
-    const act = () => { if (keeper.actionable) keeper.acquire(); };
-    pill.addEventListener("click", act);
-    pill.addEventListener("keydown", event => {
+    // A button in every state, and honestly so: the dot carries no words, so
+    // opening the explanation is what a tap is FOR. In needs-tap the same tap
+    // additionally revives the video, but that happens through the document-level
+    // gesture listener in bindGesture(), not here -- any tap on the page will do.
+    const dot = doc.createElement("span");
+    dot.id = "wakeLockDot";
+    dot.className = "wakelock-dot";
+    dot.setAttribute("role", "button");
+    dot.setAttribute("tabindex", "0");
+    dot.hidden = true;
+
+    let open = false;
+    function setOpen(next) {
+      open = next;
+      dot.classList.toggle("is-open", open);
+      dot.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+    dot.addEventListener("click", event => {
+      if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+      setOpen(!open);
+    });
+    dot.addEventListener("keydown", event => {
+      if (event.key === "Escape") return setOpen(false);
       if (event.key !== "Enter" && event.key !== " ") return;
       if (typeof event.preventDefault === "function") event.preventDefault();
-      act();
+      setOpen(!open);
     });
-    host.appendChild(pill);
+    // A tap-opened panel has to be dismissable by tapping away from it, or on a
+    // phone it covers the topbar until the page reloads.
+    if (typeof doc.addEventListener === "function") {
+      doc.addEventListener("click", () => { if (open) setOpen(false); });
+      doc.addEventListener("keydown", event => {
+        if (open && event.key === "Escape") setOpen(false);
+      });
+    }
+    host.appendChild(dot);
 
     function render() {
-      const state = keeper.state, actionable = keeper.actionable;
-      pill.hidden = state === "idle";
-      pill.textContent = keeper.label();
-      pill.setAttribute("title", keeper.tip());
-      pill.setAttribute("role", actionable ? "button" : "status");
-      if (actionable) pill.setAttribute("tabindex", "0");
-      else if (typeof pill.removeAttribute === "function") pill.removeAttribute("tabindex");
-      pill.dataset.wakelockState = state;
-      pill.classList.toggle("is-warning", state === "unavailable");
-      pill.classList.toggle("is-action", actionable);
+      const state = keeper.state;
+      dot.hidden = state === "idle";
+      // The tip is the only place the words live, so it doubles as the title:
+      // that keeps the explanation reachable even if the injected CSS is lost.
+      dot.setAttribute("data-tip", keeper.tip());
+      dot.setAttribute("title", keeper.tip());
+      dot.setAttribute("aria-label", keeper.label());
+      dot.dataset.wakelockState = state;
+      if (state === "idle") setOpen(false);
     }
     keeper.onChange(render);
+    setOpen(false);
     render();
-    return pill;
+    return dot;
   }
 
   // Autostart, browser only. The keeper holds the display for as long as the page
@@ -344,7 +389,7 @@
     const doc = root && root.document;
     if (!doc) return null;
     const keeper = create({navigator: root.navigator, document: doc});
-    const begin = () => { attachPill(keeper, doc); keeper.start(); };
+    const begin = () => { attachDot(keeper, doc); keeper.start(); };
     if (doc.readyState === "loading")
       doc.addEventListener("DOMContentLoaded", begin, {once: true});
     else begin();
@@ -360,7 +405,7 @@
   //
   // Cost: 12 440 B of base64 here, 5 235 B of it once gzipped (mp4 1 816 B, webm
   // 3 433 B); the whole minified and gzipped wake-lock.js.gz that ships in the
-  // image is 7 622 B. If the filesystem ever runs out of room, this is the LAST
+  // image is 7 982 B. If the filesystem ever runs out of room, this is the LAST
   // place to look, not the first: the alternative is canvas.captureStream(1) fed
   // into video.srcObject, which needs no asset at all, but it is an unverified
   // technique and it would trade something known to work -- the video branch is
@@ -371,5 +416,5 @@
 
   if (typeof window !== "undefined" && window.document) autostart(window);
 
-  return {create, attachPill, autostart, isIos, isMobile, MEDIA, STATES, LABELS, TIPS};
+  return {create, attachDot, autostart, isIos, isMobile, MEDIA, STATES, LABELS, TIPS};
 });

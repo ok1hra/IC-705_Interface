@@ -23,6 +23,18 @@ function sessionReply(res,status){res.writeHead(status,{"Content-Type":"applicat
 let unaReboot=false;
 function unattendedState(){return{armed:!unaReboot,remainingMs:unaReboot?0:43200000,clientLive:false,clientAgeMs:31000,clientSeen:true,blockedLiveness:2,blockedNotArmed:0,livenessTimeoutMs:5000,ptt:false,txState:0,txUsed:0,txCapacity:12288,rxPackets:5,lan:true,upMs:unaReboot?1200:90500,choicesH:[1,6,12,24,168]};}
 let lanStateRequests=0, primaryStateRequests=0, primaryCommands=[];
+// The radio's own power level and link, as far as this fixture is concerned.
+let radioRfPower=128, radioConnected=true;
+// Decoded exactly as the radio decodes 14 0A: two BCD bytes, 0..255 (02 55).
+// The page confirms its writes by reading this back, so getting it wrong here
+// would make every power test pass on a number the page itself invented.
+function applyCivRaw(parsed) {
+  if(!parsed||parsed.type!=="civ.raw")return;
+  const data=String(parsed.data||"");
+  if(!data.startsWith("140A")||data.length<8)return;
+  const hundreds=parseInt(data.slice(4,6),16), rest=parseInt(data.slice(6,8),16);
+  radioRfPower=hundreds*100+(rest>>4)*10+(rest&0x0f);
+}
 let chrome, finished=false, timer, sequence=0, firstSample=0, streamId=707, txPrepares=0, txPackets=0, wsConnections=0, earlyWsConnections=0, jscRequests=0, jscStartedAt=0, jscCompleteAt=0, wsOpenedAt=0, jscComplete=false, js8Gzip=0, js8Brotli=0, commands=[], setupSaveBody="", setupRestartRequests=0, lanReconnectRequests=0;
 const mime={".html":"text/html",".css":"text/css",".js":"application/javascript",".wasm":"application/wasm",".bin":"application/octet-stream"};
 function frame(opcode,payload){const body=Buffer.isBuffer(payload)?payload:Buffer.from(payload);return body.length<126?Buffer.concat([Buffer.from([0x80|opcode,body.length]),body]):Buffer.concat([Buffer.from([0x80|opcode,126,body.length>>8,body.length&255]),body]);}
@@ -47,16 +59,30 @@ const server=http.createServer((req,res)=>{
   if(url.pathname==="/unattended"&&req.method==="POST"){let body="";req.on("data",c=>body+=c);req.on("end",()=>{try{const post=JSON.parse(body);unattendedPosts.push({...post,afterReboot:unaReboot});if(post.action==="arm"||post.action==="extend")unaReboot=false;}catch(_error){}res.setHeader("Content-Type","application/json");res.end(JSON.stringify(unattendedState()));});return;}
   if(url.pathname==="/unattended"){res.setHeader("Content-Type","application/json");res.end(JSON.stringify(unattendedState()));return;}
   if(url.pathname==="/unattended/log"){res.setHeader("Content-Type","text/plain");res.end("1200 ARM 12 h\n90500 BLOCK liveness lost before keying\n");return;}
+  // The radio's own state, so the power write can be tested end to end: the page
+  // sends 14 0A, the fixture decodes it exactly as the radio would, and the page
+  // reads the result back through /state. Poking state.radio from __dataTest
+  // instead would bypass the poll -- and the poll is where the page decides
+  // whether a level it did not write means somebody turned the knob.
+  if(url.pathname==="/setRfPower"&&req.method==="POST"){let body="";req.on("data",c=>body+=c);req.on("end",()=>{radioRfPower=Math.max(0,Math.min(255,Number(body)||0));res.setHeader("Content-Type","application/json");res.end('{"ok":true}');});return;}
+  // The FIRMWARE reporting the radio gone, which is a different thing from
+  // /state not answering at all -- only the former counts as a reconnect.
+  if(url.pathname==="/setConnected"&&req.method==="POST"){let body="";req.on("data",c=>body+=c);req.on("end",()=>{radioConnected=body==="true";res.setHeader("Content-Type","application/json");res.end('{"ok":true}');});return;}
+  // Lets the browser side assert on what the page actually sent the firmware.
+  if(url.pathname==="/commands"){res.setHeader("Content-Type","application/json");res.end(JSON.stringify(commands));return;}
   // The JS8 page must ask for the LAN radio by name -- plain /state means TRX1,
   // which is a different radio whenever LAN sits on TRX2/TRX3.
-  if(url.pathname==="/state"){if(url.searchParams.get("radio")==="lan")lanStateRequests++;else primaryStateRequests++;/* fw-version.js badge, shared by every page */res.setHeader("Content-Type","application/json");res.end(JSON.stringify({connected:true,lanStatus:"linked",transceiverType:"IC-705-LAN",power:true,frequency:7078000,mode:"USB",tx:false,rfPower:128,rfPowerSeen:true,radioName:"IC-705",fwRev:"20260718",wifiRssi:-51,bdSupported:true}));return;}
+  if(url.pathname==="/state"){if(url.searchParams.get("radio")==="lan")lanStateRequests++;else primaryStateRequests++;/* fw-version.js badge, shared by every page */res.setHeader("Content-Type","application/json");res.end(JSON.stringify({connected:radioConnected,lanStatus:radioConnected?"linked":"disconnected",transceiverType:"IC-705-LAN",power:true,frequency:7078000,mode:"USB",tx:false,rfPower:radioRfPower,rfPowerSeen:true,radioName:"IC-705",fwRev:"20260718",wifiRssi:-51,bdSupported:true}));return;}
   // fixture=trx2 moves LAN to the second slot with one credential still blank:
   // the page must name TRX 2 and read that slot's fields, while staying gated so
   // it never competes with the main frame for the single-operator lease.
   if(url.pathname==="/setup-data.json"){const js8=url.searchParams.get("scope")==="js8call",fixture=url.searchParams.get("fixture"),lanOnTrx2=fixture==="trx2",missing=fixture==="missing"||lanOnTrx2||!js8,lanip=missing?"":"192.168.1.60",lanuser=missing?"":"operator",lanpass=missing?"":"secret123";res.setHeader("Content-Type","application/json");res.end(JSON.stringify({fwRev:20260718,hwRev:4,apModeText:"AP mode ON",mac:"00:11:22:33:44:55",ssid:"fixture-wifi",pswd:"fixture-password",ssid2:"",pswd2:"",trxnetid:"01",lanip,lanuser,lanpass,civaddr:"A4",trx1enabled:true,trx1label:"IC-705",trx1transport:lanOnTrx2?"trxnet":"lan",trx1lanip:lanip,trx1lanuser:lanuser,trx1lanpass:lanpass,trx1civaddr:"A4",trx1netid:"02",trx2enabled:lanOnTrx2,trx2label:"TRX2",trx2transport:lanOnTrx2?"lan":"trxnet",trx2lanip:lanOnTrx2?"192.168.1.61":"",trx2lanuser:lanOnTrx2?"operator":"",trx2lanpass:"",trx2netid:"02",trx2civaddr:"94",trx3enabled:false,trx3label:"TRX3",trx3transport:"trxnet",trx3netid:"03",trx3civaddr:"A2"}));return;}
-  if(url.pathname==="/cmd"&&req.method==="POST"){const lanTarget=url.searchParams.get("radio")==="lan";let body="";req.on("data",chunk=>body+=chunk);req.on("end",()=>{try{const parsed=JSON.parse(body);commands.push(parsed);if(!lanTarget)primaryCommands.push(parsed);}catch(_error){}res.setHeader("Content-Type","application/json");res.end('{"ok":true}');});return;}
+  if(url.pathname==="/cmd"&&req.method==="POST"){const lanTarget=url.searchParams.get("radio")==="lan";let body="";req.on("data",chunk=>body+=chunk);req.on("end",()=>{try{const parsed=JSON.parse(body);commands.push(parsed);if(!lanTarget)primaryCommands.push(parsed);applyCivRaw(parsed);}catch(_error){}res.setHeader("Content-Type","application/json");res.end('{"ok":true}');});return;}
   if(url.pathname==="/smoke.html"){
-    res.setHeader("Content-Type","text/html");res.end(`<!doctype html>
+    // Without the charset the inline checks below are decoded as windows-1252,
+    // so any literal comparing non-ASCII page text (the "·" separators the UI is
+    // full of) silently never matches. data.html declares utf-8 itself.
+    res.setHeader("Content-Type","text/html; charset=utf-8");res.end(`<!doctype html>
 <iframe id="app" src="/data?test=1&audioPort=${server.address().port}" style="width:1100px;height:800px"></iframe>
 <iframe id="setup" src="/setup" style="display:none"></iframe>
 <iframe id="lanGate" src="/data?test=1&lanFixture=missing" style="display:none"></iframe>
@@ -107,7 +133,13 @@ f.onload=()=>{
     const restoredBandActivity=f.contentWindow.__dataTest.activityCounts();
     f.contentWindow.__dataTest.setRadioFrequency(7079500);
     const withinToleranceActivity=f.contentWindow.__dataTest.activityCounts();
+    // The activity list keeps a tolerance around the band it counts for; the dial
+    // button deliberately does not. 7.0795 is not the preset the menu offers, and
+    // a station 1.5 kHz off the JS8 dial is on a band nobody is listening on, so
+    // the button that opens the presets is marked.
+    const offDialMarksButton=d.querySelector('#trxFrequency').classList.contains('off-dial');
     f.contentWindow.__dataTest.setRadioFrequency(7078000);
+    const onDialClearsButton=!d.querySelector('#trxFrequency').classList.contains('off-dial');
     d.querySelector('#trxFrequency').click();
     const originalPreset=d.querySelector('[data-frequency="14078000"]');
     const editingCall=d.querySelector('#myCall'),editingGrid=d.querySelector('#myGrid'),editingTxGain=d.querySelector('#txGain');
@@ -159,6 +191,7 @@ f.onload=()=>{
       f.contentWindow.__dataTest.setRadioConnection(true,'linked');
       const checks={
         frequencyScopedActivity:originalBandActivity.messages===6&&originalBandActivity.calls===3&&otherBandStartsEmpty.messages===0&&otherBandStartsEmpty.calls===0&&otherBandActivity.messages===1&&otherBandActivity.calls===1&&restoredBandActivity.messages===6&&restoredBandActivity.calls===3&&withinToleranceActivity.messages===6&&withinToleranceActivity.calls===3,
+        offDialFrequencyMarked:offDialMarksButton&&onDialClearsButton,
         emptyIdentityDefaults,
         // This harness browses http://ic705.test, a named host rather than
         // loopback, so it is NOT a secure context and navigator.wakeLock is
@@ -167,8 +200,13 @@ f.onload=()=>{
         // "video" is what the operator's phone will really get. Anything else
         // means the fallback broke. (tools/wspr-browser-smoke.js browses
         // 127.0.0.1, which IS secure, so it sees the other branch.)
-        wakeLockFallback:d.querySelector('#wakeLockPill')?.dataset.wakelockState==='video',
+        wakeLockFallback:d.querySelector('#wakeLockDot')?.dataset.wakelockState==='video',
         wakeLockVideoPlaying:(()=>{const video=d.querySelector('video');return Boolean(video)&&!video.paused&&video.muted;})(),
+        // The dot's meaning is its colour, and only a real browser can prove the
+        // injected rule actually resolves --green from data.css instead of
+        // silently falling back or landing transparent. #5ad18a = rgb(90,209,138).
+        wakeLockDotIsGreen:(()=>{const dot=d.querySelector('#wakeLockDot');return Boolean(dot)&&f.contentWindow.getComputedStyle(dot).backgroundColor==='rgb(90, 209, 138)';})(),
+        wakeLockDotHasNoText:d.querySelector('#wakeLockDot')?.textContent==='',
         modemSettingsEditingStable,
         defaultTxGain,
         txGainEditingStable,
@@ -219,13 +257,13 @@ f.onload=()=>{
           ['qsl-query','yes','no','tu','dit-dit','grid-query','info-query','status-query']
             .every(key=>!!d.querySelector('[data-message-preset="'+key+'"]')),
         sendHidden:d.querySelector('#sendButton').hidden===true&&d.querySelector('#sendHint').textContent.trim()==='Enter sends',
-        js8Nav:d.querySelector('.tabs a[href="/data"]')?.textContent.trim()==='DATA'&&d.querySelector('.tabs a[href="/data"]')?.title==='JS8Call and WSPR over ICOM-LAN',
+        js8Nav:d.querySelector('.tabs a[href="/data"]')?.textContent.trim()==='DATA'&&d.querySelector('.tabs a[href="/data"]')?.title==='JS8Call-ICOM and WSPR over ICOM-LAN',
         // WSPR moved one level down: it is reachable from DATA, not from the
         // primary bar. The sub-nav must sit outside .data-page so the gate and
         // session-busy blanking cannot strand an operator on one sub-page.
         wsprOnlyInSubnav:!d.querySelector('.tabs a[href="/wspr.html"]')&&
           d.querySelector('.subtabs a[href="/wspr.html"]')?.textContent.trim()==='WSPR-Beacon'&&
-          d.querySelector('.subtabs a[href="/data"]')?.textContent.trim()==='JS8Call'&&
+          d.querySelector('.subtabs a[href="/data"]')?.textContent.trim()==='JS8Call-ICOM'&&
           d.querySelector('.subtabs a[href="/data"]')?.classList.contains('subtab-active')===true&&
           !d.querySelector('.subtabs a[target]')&&
           !d.querySelector('.data-page .subtabs'),
@@ -291,7 +329,7 @@ f.onload=()=>{
       checks.trxSlotLabelFollowsLan=sld.querySelector('#trxSlotLabel')?.textContent.trim()==='TRX 2'&&
         sld.querySelector('#lanGateDetail')?.textContent.trim()==='network password is missing';
       checks.lanGateNoLeaveWarning=(()=>{const event=new lanGateFrame.contentWindow.Event('beforeunload',{cancelable:true});return lanGateFrame.contentWindow.dispatchEvent(event)!==false&&!event.defaultPrevented;})();
-      checks.setupJs8Nav=sd.querySelector('a[href="/data"]')?.textContent.trim()==='DATA'&&sd.querySelector('a[href="/data"]')?.title==='JS8Call and WSPR over ICOM-LAN'&&!sd.querySelector('a[href="/wspr.html"]');
+      checks.setupJs8Nav=sd.querySelector('a[href="/data"]')?.textContent.trim()==='DATA'&&sd.querySelector('a[href="/data"]')?.title==='JS8Call-ICOM and WSPR over ICOM-LAN'&&!sd.querySelector('a[href="/wspr.html"]');
       checks.setupRemovedPagesAbsentFromNav=!sd.querySelector('.bd-nav,.tab-cat-muted,a[href="/bd"],a[href="/"]');
       const missingInputs=[...sd.querySelectorAll('[name="trx1lanip"],[name="trx1lanuser"],[name="trx1lanpass"]')];
       const setupMissingObserved=radioSection?.open===true&&lanWarning?.hidden===false&&missingInputs.length===3&&missingInputs.every(input=>input.classList.contains('setup-radio-field-missing')&&input.getAttribute('aria-invalid')==='true');
@@ -313,6 +351,85 @@ f.onload=()=>{
         [...sd.querySelectorAll('#unattendedExtend button')].map(b=>b.textContent).join('|')==='Extend 1 h|Extend 6 h|Extend 12 h|Extend 24 h|Extend 168 h';
       sd.querySelector('#unattendedRevoke').click();
       await new Promise(resolve=>setTimeout(resolve,300));
+      // ---- RF power ------------------------------------------------------
+      //
+      // Percent, not the WSPR dBm grid: JS8 announces no power in the protocol,
+      // so nothing pins this page to that grid, and percent is both the radio's
+      // display unit and its real resolution. 30 % is level 77 (BCD 00 77), and
+      // reading 77 back is 30 % again -- the round trip has to close, or the
+      // page would keep rewriting a level it had just written.
+      const pw=async ms=>new Promise(resolve=>setTimeout(resolve,ms));
+      const commandsSoFar=async()=>(await (await fetch('/commands')).json());
+      const wroteRf=async from=>(await commandsSoFar()).slice(from||0)
+        .filter(command=>String(command.data||'').startsWith('140A')).map(command=>command.data);
+      const rfSafety=d.querySelector('#txSafety'); const rfSafetyWas=rfSafety.checked;
+      const rfField=d.querySelector('#rfPercent'), rfSet=d.querySelector('#rfPercentSet');
+      // Typing sets a draft the renders must not stomp. Verified rather than
+      // assumed: the SETTINGS panel opens collapsed, so focus() on this field is
+      // a no-op, and a page that only protected the FOCUSED field would throw
+      // the number away between typing it and pressing the button beside it.
+      const rfType=value=>{rfField.value=value;
+        rfField.dispatchEvent(new f.contentWindow.Event('input',{bubbles:true}));};
+      // Nothing has ever been chosen, so the page must not have touched the
+      // radio: a QSO mode has no safe level to invent, unlike the WSPR beacon.
+      checks.rfPowerUntouchedUntilChosen=(await wroteRf()).length===0;
+
+      if(!rfSafety.checked){rfSafety.checked=true;rfSafety.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));}
+      rfType('30');
+      await pw(700);            // several renders, none of which may stomp it
+      checks.rfPowerDraftSurvivesRender=rfField.value==='30'&&
+        d.querySelector('#rfPercentWatts').textContent==='3.0 W';
+      rfSet.click();
+      await pw(1500);
+      checks.rfPowerSetWrites=(await wroteRf()).includes('140A0077');
+      checks.rfPowerStored=f.contentWindow.__dataTest.js8Settings().rfPercent===30;
+      checks.rfPowerReadBack=f.contentWindow.__dataTest.radioState().rfPower===77;
+      checks.rfPowerWattsShown=d.querySelector('#rfPercentWatts').textContent==='3.0 W';
+      checks.rfPowerNoMismatch=!d.querySelector('#rfPowerField').classList.contains('mismatch')&&
+        !d.querySelector('#trxPower').classList.contains('mismatch');
+
+      // A hand on the front panel outranks the automation, and the header bar
+      // has to carry that: the SETTINGS panel opens collapsed, so an amber row
+      // inside it is not a warning anybody sees.
+      await fetch('/setRfPower',{method:'POST',body:'200'});
+      await pw(1500);
+      checks.rfPowerKnobNoticed=d.querySelector('#rfPowerField').classList.contains('mismatch')&&
+        d.querySelector('#trxPower').classList.contains('mismatch')&&
+        d.querySelector('#rfPercentState').textContent.includes('changed on the radio');
+      const rfBeforeKnobReconnect=(await commandsSoFar()).length;
+      await fetch('/setConnected',{method:'POST',body:'false'});
+      await pw(1200);
+      await fetch('/setConnected',{method:'POST',body:'true'});
+      await pw(2000);
+      checks.rfPowerKnobSurvivesReconnect=(await wroteRf(rfBeforeKnobReconnect)).length===0&&
+        f.contentWindow.__dataTest.radioState().rfPower===200;
+
+      // SET is a deliberate act and needs no pledge; the AUTOMATIC write does,
+      // because unlike WSPR -- whose automatic value is always the minimum --
+      // this one can raise power into whatever is on the antenna socket.
+      rfSet.click();
+      await pw(1500);
+      rfSafety.checked=false;rfSafety.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));
+      const rfBeforePledgeOff=(await commandsSoFar()).length;
+      await fetch('/setConnected',{method:'POST',body:'false'});
+      await pw(1200);
+      await fetch('/setRfPower',{method:'POST',body:'255'});
+      await fetch('/setConnected',{method:'POST',body:'true'});
+      await pw(2000);
+      checks.rfPowerAutoNeedsPledge=(await wroteRf(rfBeforePledgeOff)).length===0&&
+        f.contentWindow.__dataTest.radioState().rfPower===255;
+
+      // With the pledge back on, a radio that forgot while it was away is put
+      // right. Asserted on the command log rather than on rfPower: the last poll
+      // before the link returned still holds the old reading, so a state test
+      // could pass without the automation having done anything at all.
+      rfSafety.checked=true;rfSafety.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));
+      const rfBeforeForgetful=(await commandsSoFar()).length;
+      await pw(2500);
+      checks.rfPowerForgetfulRadioFixed=(await wroteRf(rfBeforeForgetful)).includes('140A0077')&&
+        f.contentWindow.__dataTest.radioState().rfPower===77;
+      if(!rfSafetyWas){rfSafety.checked=false;rfSafety.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));}
+
       // Auto-reply wiring: a decoded directed query must reach the engine and
       // come back as a composed answer. AUTO is off here, so the answer belongs
       // in the message box rather than on the air.
@@ -472,7 +589,10 @@ f.onload=()=>{
       const hbBefore=f.contentWindow.__dataTest.heartbeatState();
       f.contentWindow.__dataTest.feedHeartbeat({from:'K0OG',to:'@HB',command:'HEARTBEAT',grid:'EM73'});
       const hbAfter=f.contentWindow.__dataTest.heartbeatState();
-      checks.heartbeatWiring=hbBefore.enabled===true&&hbBefore.intervalMs===15*60000&&
+      // 60 minutes since schema v9: the default moved there and the migration
+      // rewrites stored profiles too, because a stored 15 could not be told
+      // apart from v8's own default.
+      checks.heartbeatWiring=hbBefore.enabled===true&&hbBefore.intervalMs===60*60000&&
         typeof hbBefore.dueInMs==='number'&&
         (hbAfter.acked===1||hbAfter.ackSkipped>=1)&&
         [...d.querySelectorAll('#hbMinutes option')].map(o=>o.value).join(',')==='5,10,15,30,60';
@@ -583,9 +703,77 @@ f.onload=()=>{
       d.querySelector('#messagePresetsButton').click();
       d.querySelector('[data-message-preset="cq"]').click();
       checks.cqPreset=d.querySelector('#messageInput').value==='CQ CQ CQ';
+      // ---- @APRSIS command builder (docs/aprsis-implementace.md) -------------
+      // The menu is re-derived from the composer text, so walking it here proves
+      // the parser, the catalogue and the DOM agree. KN4CRD is still selected:
+      // an APRS command must not disturb the operator's chosen station.
+      const setInput=(node,value)=>{node.value=value;node.dispatchEvent(new f.contentWindow.Event('input',{bubbles:true}));};
+      const composerA=d.querySelector('#messageInput'), presetMenu=d.querySelector('#messagePresetsMenu');
+      const aprsNodes=()=>[...presetMenu.querySelectorAll('[data-aprs-node]')].map(button=>button.dataset.aprsNode);
+      d.querySelector('#messagePresetsButton').click();
+      d.querySelector('[data-message-preset="aprsis"]').click();
+      // The menu stays open after @APRSIS: the next level is one click away.
+      checks.aprsRoot=composerA.value==='@APRSIS '&&presetMenu.hidden===false&&
+        JSON.stringify(aprsNodes())===JSON.stringify(['grid','cmd']);
+      presetMenu.querySelector('[data-aprs-node="cmd"]').click();
+      checks.aprsServices=composerA.value==='@APRSIS CMD '&&
+        JSON.stringify(aprsNodes())===JSON.stringify(['smsgte','email2','wlnk1','sota','pota','whois','wxbot','direct']);
+      presetMenu.querySelector('[data-aprs-node="wxbot"]').click();
+      const aprsDialog=d.querySelector('#aprsParamDialog');
+      // An empty required field keeps Insert disabled, so a half-filled popup
+      // can never reach the composer.
+      checks.aprsPopupGate=aprsDialog.open===true&&d.querySelector('#aprsParamInsert').disabled===true;
+      setInput(aprsDialog.querySelector('[data-aprs-param="city"]'),'Prague');
+      // No regex here: this whole page is a template literal in the harness, so
+      // a backslash class would arrive as a literal "d". Plain substrings also
+      // pin the numbers, which are deterministic for this payload.
+      const aprsCost=d.querySelector('#aprsParamCost').textContent;
+      checks.aprsPopupPreview=d.querySelector('#aprsParamPreview').textContent==='@APRSIS CMD :WXBOT    :PRAGUE'&&
+        d.querySelector('#aprsParamInsert').disabled===false&&
+        aprsCost.startsWith('6/67 characters · 4 frames · ')&&aprsCost.includes(' at ');
+      d.querySelector('#aprsParamForm').requestSubmit();
+      // WXBOT is five characters, so the addressee needs exactly four spaces.
+      checks.aprsInserted=aprsDialog.open===false&&composerA.value==='@APRSIS CMD :WXBOT    :PRAGUE';
+      checks.aprsSendHint=d.querySelector('#sendHint').textContent.startsWith('Enter sends to @APRSIS, not KN4CRD');
+      checks.aprsSelectionKept=f.contentWindow.__dataTest.selectedCall()==='KN4CRD'&&d.querySelector('#recipient').value==='KN4CRD';
+      presetMenu.querySelector('[data-aprs-crumb="cmd"]').click();
+      checks.aprsBreadcrumb=composerA.value==='@APRSIS CMD '&&
+        JSON.stringify(aprsNodes()).includes('wxbot');
+      // Editing by hand cannot break the invisible padding: normalize() rebuilds
+      // it, and a bare callsign is padded the same way the catalogue would.
+      setInput(composerA,'@APRSIS CMD :OK1ABC:AHOJ');
+      checks.aprsNormalize=f.contentWindow.Js8Aprs.normalize(composerA.value)==='@APRSIS CMD :OK1ABC   :AHOJ'&&
+        f.contentWindow.Js8Aprs.splitForTx(composerA.value).toCall==='@APRSIS';
+      // Leaving the branch restores the ordinary preset list.
+      setInput(composerA,'RR');
+      checks.aprsMenuRestored=presetMenu.querySelector('[data-message-preset="cq"]')!==null&&aprsNodes().length===0;
       d.querySelector('#messageInput').value='';d.querySelector('#messageInput').dispatchEvent(new f.contentWindow.Event('input',{bubbles:true}));
       d.querySelector('#recipientClear')?.click();
       checks.recipientClear=d.querySelector('#recipient').value===''&&f.contentWindow.__dataTest.selectedCall()==='';
+      // With nothing selected, a plain draft is refused for the missing
+      // recipient and an APRS command is not -- it carries its own.
+      setInput(composerA,'HELLO');
+      const plainGate=d.querySelector('#sendButton').title;
+      setInput(composerA,'@APRSIS CMD :WXBOT    :PRAGUE');
+      const aprsGate=d.querySelector('#sendButton').title;
+      checks.aprsNoRecipientNeeded=plainGate.includes('select a recipient')&&!aprsGate.includes('select a recipient');
+      setInput(composerA,'@APRSIS CMD');
+      const aprsIncompleteGate=d.querySelector('#sendButton').title;
+      setInput(composerA,'@APRSIS CMD :WXBOT    :'+'X'.repeat(68));
+      const aprsOverLimitGate=d.querySelector('#sendButton').title;
+      checks.aprsCompleteness=aprsIncompleteGate.includes('pick an APRS destination')&&
+        aprsOverLimitGate.includes('limit is 67')&&d.querySelector('#sendButton').disabled===true;
+      setInput(composerA,'');
+      // An IGate relays the answer addressed to the group, not to us
+      // (AprsInboundRelay.cpp:192), so without replyForMe() our own WXBOT reply
+      // would vanish behind the MYCALL filter with nothing to mark it.
+      f.contentWindow.__dataTest.pushMessage({callsigns:['OK1XYZ','@APRSIS'],
+        text:'OK1XYZ: @APRSIS MSG to:OK1HRA SUNNY 25C DE WXBOT',
+        lastSlotUtcMs:Date.now(),submode:0,offsetHz:1500,kinds:['directed','data']});
+      d.querySelector('[data-traffic-filter="mycall"]').click();
+      const aprsReplyRow=[...d.querySelectorAll('#traffic .message')].find(row=>row.textContent.includes('DE WXBOT'));
+      checks.aprsReplyVisible=Boolean(aprsReplyRow)&&Boolean(aprsReplyRow.querySelector('.aprs-badge'));
+      d.querySelector('[data-traffic-filter="all"]').click();
       const txSessionMode=d.querySelector('#txSessionMode');
       // The Mode selector no longer offers EMAIL, so the composer is opened the
       // only way that is left. Everything below it is unchanged: the module ships.
@@ -653,6 +841,77 @@ f.onload=()=>{
           d.querySelector('#messageInput').dispatchEvent(new f.contentWindow.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));
           d.querySelector('#abortButton').click();
           checks.txFailedVisual=d.querySelector('.chat-row.outgoing:last-child .tx-copy-failed')?.textContent==='OK1HRA: K0OG WILL FAIL';
+          // ---- RESEND and the one automatic retry (docs/js8-tx-resend-plan.md) ----
+          // Clicking ABORT is an OPERATOR abort, so the row it just produced must NOT
+          // offer a button: a deliberate stop is a decision, not a failure. Every other
+          // case needs a real fault, which no click can produce -- hence txFail().
+          const test=f.contentWindow.__dataTest;
+          const newestRow=()=>{const rows=test.outgoingRows();return rows[rows.length-1];};
+          checks.resendNotOnOperatorAbort=newestRow().status==='aborted'&&
+            newestRow().resendable===false&&
+            test.trafficTxRows().find(node=>node.text.includes('WILL FAIL'))?.resend===false;
+          // Inject one failure per class and read the verdict straight off the row. Rows
+          // are matched by their text, not by position: several can share a millisecond.
+          const failCase=(text,reason,status)=>{
+            test.txQueueClear();
+            d.querySelector('#messageInput').value=text;
+            d.querySelector('#messageInput').dispatchEvent(new f.contentWindow.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));
+            test.txFail(reason,status);
+            const row=newestRow();
+            return {row,sent:row.text.includes(text),
+              node:test.trafficTxRows().find(node=>node.text.includes(text))||{}};
+          };
+          // A lost link is the commonest real failure and arrives as "aborted", not
+          // "fault". It earns both the button and an armed retry.
+          const wsLost=failCase('LINK DROP','websocket lost','aborted');
+          checks.resendOnLinkLoss=wsLost.sent&&wsLost.row.status==='aborted'&&wsLost.row.resendable===true&&
+            wsLost.node.resend===true&&wsLost.row.attempts===1&&wsLost.row.retryUntilMs>Date.now();
+          // The frame almost certainly radiated: red, not struck through, and no machine
+          // repeat -- but the operator may still decide to send it again.
+          const drained=failCase('DRAIN LOST','drain watchdog','fault');
+          checks.resendUnconfirmed=drained.sent&&drained.row.status==='unconfirmed'&&drained.node.emitted===true&&
+            drained.node.struck===false&&drained.node.resend===true&&drained.row.retryUntilMs===0;
+          // A permanent error repeats identically, so it keeps the button and loses the
+          // automatic attempt.
+          const permanent=failCase('BAD TONE','invalid TX mode or tone','fault');
+          checks.resendPermanentNoRetry=permanent.sent&&permanent.row.status==='fault'&&
+            permanent.node.resend===true&&permanent.row.retryUntilMs===0;
+          // One row per message, not per attempt: resending must move the existing row on
+          // to attempt 2 rather than opening a second one.
+          const rowsBefore=test.outgoingRows().length;
+          test.resendRow(permanent.row.id);
+          const resent=test.outgoingRows().find(row=>row.id===permanent.row.id);
+          checks.resendOneRowPerMessage=test.outgoingRows().length===rowsBefore&&resent.attempts===2;
+          // The resend really keyed the encoder, so stop it before the next case: a busy
+          // TX would refuse the send and the check below would read a stale row.
+          d.querySelector('#abortButton').click();
+          test.txQueueClear();
+          // TX used to mean "went on air", which would have hidden every row that needs
+          // the button. It now means "my transmissions".
+          d.querySelector('[data-traffic-filter="tx"]').click();
+          checks.txFilterShowsFailures=[...d.querySelectorAll('#traffic .message-tx')]
+            .some(node=>node.dataset.txStatus==='fault'||node.dataset.txStatus==='aborted');
+          d.querySelector('[data-traffic-filter="all"]').click();
+          // A machine never carries a message to another band. Arm a retry, retune, and
+          // the release must drop it instead of keying on the wrong frequency.
+          const strayed=failCase('WRONG BAND','websocket lost','aborted');
+          test.setItemFrequency(strayed.row.id,7074000);
+          test.drainNow();
+          const strayedAfter=test.outgoingRows().find(row=>row.id===strayed.row.id);
+          checks.resendBandGuard=strayed.sent&&strayedAfter.status==='expired'&&strayedAfter.attempts===1;
+          test.txQueueClear();
+          // @APRSIS carries its own recipient: the frame must be addressed to the
+          // group, appear in the traffic feed, and leave K0OG's thread alone --
+          // otherwise the spot would claim a LOG QSO button and an SNR history.
+          const threadRowsBefore=d.querySelectorAll('.chat-row.outgoing').length;
+          d.querySelector('#messageInput').value='@APRSIS CMD :OK1ABC:AHOJ';
+          d.querySelector('#messageInput').dispatchEvent(new f.contentWindow.Event('input',{bubbles:true}));
+          d.querySelector('#messageInput').dispatchEvent(new f.contentWindow.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));
+          checks.aprsTxPayload=d.querySelector('#txPayload')?.textContent.includes('OK1HRA: @APRSIS CMD :OK1ABC   :AHOJ');
+          checks.aprsTxFeedLabel=d.querySelector('#traffic .message-tx strong')?.textContent==='@APRSIS';
+          checks.aprsTxNotInThread=d.querySelectorAll('.chat-row.outgoing').length===threadRowsBefore&&
+            f.contentWindow.__dataTest.selectedCall()==='K0OG';
+          d.querySelector('#abortButton').click();
           d.querySelector('#heartbeatButton').click();
           checks.heartbeatQueued=!d.querySelector('#txSummary').textContent.toLowerCase().includes('completed');
           checks.heartbeatPayload=d.querySelector('#txPayload')?.textContent.includes('OK1HRA: @HB JO70')&&!d.querySelector('#txPayload')?.textContent.includes('HEARTBEAT');

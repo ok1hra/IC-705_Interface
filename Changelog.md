@@ -11,6 +11,111 @@ published.
 
 ## Working tree — not committed
 
+* **JS8CALL-ICOM sets the TRX power too, and heartbeats moved to 60 minutes.** The same machinery
+  as WSPR, with two deliberate differences. The unit is **percent**, not the WSPR dBm grid: JS8
+  announces no power in the protocol, so nothing pins it to that grid, and on a 100 W radio the
+  grid would offer 10, 20, 50 and 100 W with nothing between 20 and 50. Percent is the radio's own
+  display unit and its real resolution, so every value that can be typed is one the radio can be
+  set to — and unlike the WSPR menu it needs no model table, so it still works on a radio the table
+  does not recognise. Watts are shown beside the field when the model is known. The value is JS8's
+  own (`Js8Settings.modems.js8call.rfPercent`), not shared with WSPR: that page caps at 10 W
+  because it is a beacon, while 50 W on JS8 is ordinary, and one shared number would either export
+  the cap or leave the beacon refusing to start.
+
+  It is written on page open and after the radio's link returns, with the same three guards (knob
+  wins, never mid-transmission, a failed `/state` fetch is not a reconnect). Two things differ,
+  both because **this write can raise power** where WSPR's automatic value is always the minimum:
+  only a level the operator set themselves is ever applied — a QSO mode has no safe value to invent
+  — and the automatic write requires **Enable radio TX**, the one place they said the antenna is
+  fine. Pressing SET needs no pledge, same as WSPR. The header power bar carries the "radio is not
+  where the setting says" state, because the SETTINGS panel opens collapsed.
+
+  Heartbeat interval default moved from 15 to 60 minutes in all four places that held it, plus a
+  schema **v8→v9 migration that rewrites stored profiles**: a saved 15 cannot be told apart from
+  v8's own default, so a default-only change would never reach anyone who had already opened the
+  page. One selection in the menu undoes it.
+
+  Found by the tests: the power field was rewritten from the target on every render whenever it was
+  not focused, so a number typed and then left on the way to the SET button beside it was thrown
+  away. Now held in an edit draft, the same shape `txGain` two settings below already uses.
+  `powerCommand()` gave up `percentToLevel()` and `civLevelCommand()` so both pages share one CI-V
+  encoder. Details in `docs/wspr-majak-implementace.md` ch. 24; eleven new checks in the DATA
+  browser smoke (fixture gained `/commands`, `/setRfPower`, `/setConnected` and a real 14 0A
+  decode) and seven in the JS8 settings smoke.
+
+* **WSPR power menu follows the radio, and the page now applies it.** The dropdown offered every
+  legal WSPR level under 10 W regardless of the transmitter, so an IC-705 was offered 17 dBm
+  (50 mW = **0,5 %** of its scale) — a level the radio cannot be set to, because its smallest step
+  is one percent. The list now starts at that step: seven entries on a 10 W radio, four on a 100 W
+  one (1 W…10 W), three on a 200 W one. Each line names its percent (`30 dBm · 1 W · 1 %`), which
+  is both the unit the radio's own display uses and the explanation for the shorter list. The floor
+  is decided on the CI-V level rather than on watts: 33 dBm is 1,995 W, five thousandths *below*
+  one percent of a 200 W radio, so an honest watts comparison would discard exactly the level that
+  radio's smallest step produces. An unknown model empties and locks the menu instead of offering
+  levels it cannot convert.
+
+  The page also stopped waiting for SET: it writes the target on load and after the radio's link
+  returns, so an unattended beacon keys at the level left in the menu rather than at whatever the
+  radio remembered after a power cycle. This deliberately reverses an invariant the file defended
+  in three places, so three rules bound it — the knob wins (the page remembers the percent it wrote
+  and confirmed, and a different reading while the link is up stands the automation down until the
+  next SET), a transmission is never interrupted (LAN drops here happen under audio load, i.e.
+  mid-carrier, so the write waits for the PTT), and a failed `/state` fetch is not a reconnect
+  (that is a WiFi flutter the radio knew nothing about). A stored choice the connected radio cannot
+  produce is not honoured and not erased either, so swapping radios back restores it.
+
+  Found on the way: the `±2` tolerance both agreement checks used is 0,78 % of a scale whose step
+  is one percent, so it called 1 % and 2 % the same reading — 3 dB, and *the* most likely operating
+  point after this change. Both now compare whole percent exactly, as does the knob detector, which
+  would otherwise have fired on the radio's own rounding and switched the automation off by itself.
+  Details in `docs/wspr-majak-implementace.md` ch. 23; sixteen new checks in the WSPR browser smoke
+  (with `/setConnected` and `/setDialFrequency` fixture endpoints), and the schedule rotation in
+  that harness is now re-armed before START instead of assuming the intervening checks fit inside
+  one two-minute frame.
+
+* **A dial off the presets is marked on both pages, and refused on WSPR.** The frequency button in
+  the radio bar turns red whenever the TRX is not on one of the frequencies the pop-up offers — the
+  other half of the answer the menu already gives by highlighting the matching preset, for when the
+  menu is closed. On WSPR that also disables START, with the reason printed under the buttons and
+  repeated in the menu footer: arming on 14.200 would look fine for ten minutes and then fail its
+  first slot ten seconds before it keyed. TUNE stays available, since setting the drive level on
+  whatever the radio is on is a legitimate thing to be doing at that moment, and a beacon already
+  running is exempt — there the schedule tunes the radio itself before every slot, so a hand-turned
+  VFO is something it corrects rather than something it stops for. WSPR keeps its ±500 Hz dial
+  tolerance; JS8CALL tests the presets exactly, the same comparison that draws the highlight, so
+  the button and the menu can never disagree. Seven new checks in the WSPR browser smoke (with a
+  `/setDialFrequency` fixture endpoint for turning the VFO behind the page's back) and one in the
+  DATA browser smoke.
+
+* **@APRSIS command builder in the JS8CALL composer.** The `▾` menu beside the message field
+  gained an `@APRSIS` entry; picking it turns the menu into the APRS-IS catalogue — `GRID` and
+  `CMD`, and under `CMD` the eight destinations from `docs/aprsis-cmd.md` (SMSGTE, EMAIL-2,
+  WLNK-1, APRS2SOTA, APRS2POTA, WHO-IS, WXBOT, plus a free direct callsign that remembers the
+  last five). A breadcrumb walks back out. Parameters are never typed into the field as
+  `{placeholders}`: each destination opens a small form with the callsign, locator and dial
+  frequency already filled in from the station settings and the radio, a live preview of the exact
+  radio payload, and the cost in characters, frames and seconds. The nine-character APRS addressee
+  padding is computed, never typed, and recomputed before transmission — a hand-edited
+  `:OK1ABC:` becomes `:OK1ABC   :` and an over-long destination is truncated at nine, matching
+  `APRSISClient.cpp`. Over 67 characters of APRS text the send is refused (the gateway would
+  truncate it anyway, after up to two minutes of airtime); over six frames it is only warned
+  about. A half-built command cannot be transmitted at all. The group call lives in the Message
+  field, never in Recipient, so an APRS spot mid-QSO leaves the selected station, its chat thread
+  and its LOG QSO button untouched — the command goes to the recent-traffic feed like CQ and HB.
+  Sending needs no recipient at all. Replies come back from an IGate addressed to the group rather
+  than to us, so they are now recognised, kept under the MYCALL filter and marked `APRS` in the
+  feed. New `data/js8-aprs.js` (catalogue, parser, padding, validation; no DOM) and
+  `tools/js8-aprs-smoke.js`; sixteen new checks in the DATA browser smoke.
+
+* **Two traps fixed while building it.** Rebuilding the preset menu through `innerHTML` detaches
+  the button that was just clicked, so the global close-the-menu handler walked an orphaned
+  subtree, failed to find `.message-field` and closed the menu mid-use; it now reads
+  `event.composedPath()`, which is captured at dispatch. And `tools/data-browser-smoke.js` served
+  its test page as `text/html` with no `charset`, so Chrome decoded the inline checks as
+  windows-1252 and any literal compared against non-ASCII page text (the `·` separators the UI is
+  full of) silently never matched. Escape inside a modal no longer aborts a transmission in
+  progress.
+
 * **WSPR timetable simplified to ordered sequence changes.** The band × 48-half-hour matrix and
   variable/randomised period were replaced by a short 24-hour UTC list such as `08:30 20→15→10`,
   `20:00 160→80→40`. Each sequence runs until the next half-hour change, preserves the operator's

@@ -390,6 +390,7 @@
       const response = await fetch(RADIO_STATE_URL, {cache: "no-store"});
       if (!response.ok) throw new Error(String(response.status));
       const json = await response.json();
+      noteLinkState(json);
       state.radio = {
         connected: Boolean(json.connected),
         transceiverType: String(json.transceiverType || ""),
@@ -407,8 +408,12 @@
         lanFilled: Number(json.lanFilled) || 0,
       };
     } catch (_error) {
+      // Deliberately does NOT go through noteLinkState(): a fetch that never
+      // arrived says nothing about the radio, and treating it as a link drop
+      // would re-arm the power write on every WiFi flutter.
       state.radio.connected = false;
     }
+    noteKnob();
     render();
   }
 
@@ -427,35 +432,47 @@
       ? `unknown model ${state.radio.radioName}` : "radio has not reported a model yet"};
   }
 
+  // What this radio can be set to, cheapest first. The floor is its own
+  // one-percent step, so the list is seven levels long on a 10 W IC-705 and
+  // four on a 100 W radio -- the shorter list is the point, not a bug: the
+  // levels it drops are ones the transmitter cannot distinguish from their
+  // neighbours, and announcing one of those would put a power on wsprnet that
+  // never left the antenna.
+  const offeredLevels = () =>
+    WsprCore.offeredPowerLevels(fullPower().watts, POWER_CEILING_W);
+
   // A beacon's opening bid is one percent of the transmitter, not a fixed dBm:
   // 30 dBm is a tenth of an IC-705 but a hundredth of an IC-7610, and only one
-  // of those is a sensible place to start. It lands on a legal WSPR level
-  // exactly for every model in the table (10 W -> 20, 100 W -> 30, 200 W -> 33),
-  // so nothing is rounded away.
-  const DEFAULT_POWER_FRACTION = 0.01;
-
+  // of those is a sensible place to start. Now that the offered range begins at
+  // one percent, that bid simply IS the bottom of the list -- one rule instead
+  // of two that would have to be kept agreeing.
   function defaultPowerDbm(fullWatts) {
-    if (!(fullWatts > 0)) return null;
-    const wanted = WsprCore.wattsToDbm(fullWatts * DEFAULT_POWER_FRACTION);
-    let best = null;
-    for (const level of WsprCore.POWER_LEVELS) {
-      if (WsprCore.dbmToWatts(level) > POWER_CEILING_W * 1.01) continue;
-      if (best === null || Math.abs(level - wanted) < Math.abs(best - wanted)) best = level;
-    }
-    return best;
+    const levels = WsprCore.offeredPowerLevels(fullWatts, POWER_CEILING_W);
+    return levels.length ? levels[0] : null;
   }
 
-  // The target for SET. Never written to the radio by itself -- the whole point
-  // of the invariant is that power only changes when the button is pressed --
-  // so an unchosen target is just a proposal until the operator agrees with it.
+  // The target: what the menu shows and what the automation and SET write.
+  //
+  // A stored choice is honoured only while the connected radio can actually
+  // produce it. It is deliberately not erased when it cannot -- swapping back
+  // to the radio it was chosen on restores it -- and in the meantime the list
+  // follows the radio, which is the whole point of deriving it per model.
   function targetDbm() {
-    if (settings.powerDbm !== null) return settings.powerDbm;
-    return defaultPowerDbm(fullPower().watts);
+    const levels = offeredLevels();
+    if (!levels.length) return null;
+    if (settings.powerDbm !== null && levels.includes(settings.powerDbm))
+      return settings.powerDbm;
+    return levels[0];
   }
 
-  // Do the radio and the target agree? Compared on the raw 0..255 CI-V level,
-  // the same tolerance setRadioPower() uses to confirm a write landed: the
-  // rounded dBm would call it a match with the radio half a decibel away.
+  // Do the radio and the target agree? Compared in whole percent, exactly,
+  // because that is the resolution the radio has. The raw 0..255 scale carries
+  // 2.55 units per percent, so the +-2 this used to allow was wide enough to
+  // call 1 % and 2 % the same reading -- and at the bottom of the offered range
+  // those two are 3 dB apart. The rounded dBm is no better in the other
+  // direction: it would call it a match with the radio half a decibel away.
+  const radioPercent = () => WsprCore.civPercent(state.radio.rfPower);
+
   function powerMismatch() {
     const full = fullPower().watts;
     const target = targetDbm();
@@ -468,7 +485,7 @@
     // within tolerance of the target would tell the operator the radio is
     // already set when nobody has ever asked it.
     if (state.radio.rfPowerSeen !== true) return {target, level};
-    return Math.abs(state.radio.rfPower - level) <= 2 ? null : {target, level};
+    return radioPercent() === WsprCore.civPercent(level) ? null : {target, level};
   }
 
   // ---- TUNE power references ------------------------------------------------
@@ -523,10 +540,11 @@
     });
   }
 
-  // Band and mode only. Power is deliberately NOT written here any more: the
-  // radio is the authority on it, and what the message reports is derived from
-  // what the radio says it is set to. Writing it back before every slot would
-  // silently undo the operator's own knob.
+  // Band and mode only. Power is deliberately NOT written here: what the message
+  // reports is derived from what the radio says it is set to, so a write squeezed
+  // in seconds before the slot would only widen the window in which the two can
+  // disagree. applyAutoPower() settles the level on load and after a link return,
+  // when there is time to confirm the readback.
   async function tuneRadio(slot) {
     // `state.radio.tx` comes off the 1 Hz /state poll, so it can still read
     // "keyed" a second after the PTT dropped. Between two back-to-back frames
@@ -596,9 +614,11 @@
         `<button class="frequency-preset${preset.hz === selected ? " current" : ""}"` +
         ` type="button" data-frequency="${preset.hz}"${locked ? " disabled" : ""}>` +
         `<strong>${preset.band}</strong><span>${(preset.hz / 1e6).toFixed(4)} MHz</span></button>`).join("")}</div>` +
-      `<footer>${locked
+      `<footer class="${!locked && offDialFrequency() ? "off-dial" : ""}">${locked
         ? "Stop the beacon to tune by hand; while it runs the schedule sets the band before each slot."
-        : "Standard WSPR dial frequencies. The beacon sets USB-D itself."}</footer>`;
+        : offDialFrequency()
+          ? "The radio is not on a WSPR dial frequency, so START stays disabled until a band is chosen here. TUNE still works where the radio is."
+          : "Standard WSPR dial frequencies. The beacon sets USB-D itself."}</footer>`;
   }
 
   async function requestFrequency(hz) {
@@ -630,10 +650,14 @@
   // Both conditions have to hold: USB-D on a random frequency is a legitimate
   // mid-tune state, and so is sitting on a WSPR frequency in USB while the
   // beacon is about to set the mode itself.
+  //
+  // A preset that is still being written counts as arrived: pendingFrequency is
+  // only ever one of the presets, and flagging the second between the CAT write
+  // and its readback would blink the dial red every time a band is chosen.
   function offDialFrequency() {
-    if (!state.radio.frequency) return false;
-    return !WsprCore.PRESETS.some(preset =>
-      Math.abs(preset.hz - state.radio.frequency) <= DIAL_TOLERANCE_HZ);
+    const hz = state.pendingFrequency || state.radio.frequency;
+    if (!hz) return false;
+    return !WsprCore.PRESETS.some(preset => Math.abs(preset.hz - hz) <= DIAL_TOLERANCE_HZ);
   }
 
   function maybeOfferSetupHelp() {
@@ -652,7 +676,90 @@
     else dom.trxHelpDialog.setAttribute("open", "");
   }
 
-  // The one place the page writes power: an explicit SET, never a side effect.
+  // ---- writing power --------------------------------------------------------
+  //
+  // This page used to write power only when SET was pressed, and said so in
+  // three places. It now also writes it on load and whenever the radio's link
+  // comes back, so an unattended beacon keys at the level left in the menu
+  // rather than at whatever the radio happens to remember after a power cycle.
+  //
+  // Three rules keep that from becoming a page that fights its own operator:
+  //
+  //   * The knob wins. `appliedPercent` is what this page last wrote and saw
+  //     confirmed; a different reading while the link is up can only be a hand
+  //     on the front panel, and that stands the automation down until the
+  //     operator makes a fresh choice.
+  //   * A transmission is never interrupted. LAN drops here happen under audio
+  //     load -- that is, mid-carrier -- so the write waits for the PTT rather
+  //     than moving the amplitude half way through a frame that has already
+  //     announced its power.
+  //   * A failed /state fetch is not a reconnect. pollState() reports
+  //     `connected: false` when the fetch itself fails, which on this setup is
+  //     usually a WiFi flutter the radio knew nothing about.
+  let appliedPercent = null;     // last percent written AND confirmed by readback
+  let knobTouched = false;       // operator moved it; automation stands down
+  let autoPowerArmed = true;     // a write is owed: page load, or the link returned
+  let autoPowerBusy = false, autoPowerRetryMs = 0;
+  let linkWasUp = false, lastLanDrops = -1;
+
+  // Called only for a reply that actually arrived, so the radio's link is what
+  // is being judged rather than the browser's.
+  function noteLinkState(json) {
+    const up = Boolean(json.connected);
+    const drops = Number(json.lanDrops) || 0;
+    if ((up && !linkWasUp) || (lastLanDrops >= 0 && drops > lastLanDrops))
+      autoPowerArmed = true;
+    linkWasUp = up;
+    lastLanDrops = drops;
+  }
+
+  // Only meaningful when no write is owed: right after the link returns the
+  // reading disagrees precisely because the radio may have forgotten, which is
+  // the case the automation exists for -- not evidence of a hand on the knob.
+  function noteKnob() {
+    if (autoPowerArmed || appliedPercent === null) return;
+    if (!state.radio.connected || state.radio.rfPowerSeen !== true) return;
+    if (radioPercent() !== appliedPercent) knobTouched = true;
+  }
+
+  async function applyAutoPower() {
+    if (autoPowerBusy || !autoPowerArmed || knobTouched) return;
+    if (Date.now() < autoPowerRetryMs) return;
+    // The same gate as SET. The TX pledge is deliberately not part of it:
+    // writing power is not transmitting, and this write moves towards the safe
+    // end of the scale rather than away from it.
+    if (!isLan() || !state.radio.connected || !sessionHeld || !sessionConfirmed) return;
+    if (state.radio.tx || (tx && tx.ptt)) return;
+    const full = fullPower().watts;
+    const target = targetDbm();
+    if (!full || target === null) return;
+    let power;
+    try { power = WsprCore.powerCommand(target, full); }
+    catch (_error) { return; }
+    const wanted = WsprCore.civPercent(power.level);
+    // Already there. Record it anyway: the knob detector needs a baseline, and
+    // it should not cost a CI-V round trip to establish one.
+    if (state.radio.rfPowerSeen === true && radioPercent() === wanted) {
+      appliedPercent = wanted; autoPowerArmed = false; return;
+    }
+    autoPowerBusy = true;
+    try {
+      await command({type: "civ.raw", data: power.data});
+      await waitForState(radio => WsprCore.civPercent(radio.rfPower) === wanted);
+      appliedPercent = wanted; autoPowerArmed = false;
+      state.lastError = "";
+    } catch (error) {
+      // Stays armed. Backing off rather than retrying every tick keeps a radio
+      // that refuses the write from turning into a CI-V flood.
+      autoPowerRetryMs = Date.now() + 5000;
+      state.lastError = String(error.message || error);
+    }
+    autoPowerBusy = false;
+    render();
+  }
+
+  // The operator's own write. Still the only thing that turns the proposal into
+  // a stored choice -- the automation applies a target, it does not decide one.
   async function setRadioPower() {
     if (!isLan() || !state.radio.connected || !sessionHeld) {
       state.lastError = "the radio is not reachable"; render(); return;
@@ -665,12 +772,16 @@
     try {
       const power = WsprCore.powerCommand(target, fullPower().watts);
       await command({type: "civ.raw", data: power.data});
-      // rfPower is the decoded 0..255 level; allow a little slack for rounding
-      // inside the radio rather than demanding an exact echo.
-      await waitForState(radio => Math.abs(radio.rfPower - power.level) <= 2);
+      // Confirmed in whole percent: the radio quantises to its own step, so
+      // demanding an exact echo of the raw level would time out on a write that
+      // in fact landed exactly where it was asked to.
+      const wanted = WsprCore.civPercent(power.level);
+      await waitForState(radio => WsprCore.civPercent(radio.rfPower) === wanted);
       // Pressing SET is the decision the 1 % proposal was waiting for, so the
-      // level stops being a suggestion and starts being the operator's choice.
+      // level stops being a suggestion and starts being the operator's choice --
+      // and it re-arms an automation that a turn of the knob had stood down.
       settings.powerDbm = target; saveSettings();
+      appliedPercent = wanted; knobTouched = false; autoPowerArmed = false;
       state.lastError = "";
     } catch (error) {
       state.lastError = String(error.message || error);
@@ -1264,7 +1375,7 @@
   // ---- beacon ---------------------------------------------------------------
 
   function startBeacon() {
-    const problem = blockingReason();
+    const problem = startBlockingReason();
     if (problem) { state.lastError = problem; render(); return; }
     state.lastError = ""; state.consecutiveBroken = 0;
     state.beacon = "armed";
@@ -1440,7 +1551,10 @@
     const power = radioPower();
     if (!(power.watts > 0.001)) return "the radio is set to zero power";
     // The ceiling is the operator's rule, not the radio's. Refuse rather than
-    // turning the power down: this page does not touch the knob by itself.
+    // turning the power down: the automation only ever writes a level from the
+    // menu, and every level in the menu is already under the cap -- so a radio
+    // found above it was put there by hand, and answering that by reaching for
+    // the knob would be the page arguing with its operator.
     if (power.watts > POWER_CEILING_W * 1.01)
       return `the radio is set to ${power.watts.toFixed(1)} W, above the ${POWER_CEILING_W} W ceiling`;
     try {
@@ -1451,7 +1565,53 @@
     return "";
   }
 
+  // What blocks START but not a beacon that is already running. The dial is the
+  // operator's until the beacon takes it: arming from 14.200 would look fine for
+  // ten minutes and then fail its first slot, so refuse at the button instead
+  // and colour the control that fixes it. A run in progress is deliberately
+  // exempt -- beaconTick keeps checking blockingReason() alone, because there
+  // the schedule tunes the radio itself before every slot and a hand-turned VFO
+  // mid-run is something it corrects rather than something it stops for.
+  // TUNE is exempt too: it keys a carrier on whatever the radio is on, which is
+  // exactly what an operator setting the drive level wants.
+  function startBlockingReason() {
+    const problem = blockingReason();
+    if (problem) return problem;
+    if (offDialFrequency())
+      return "the radio is not on a WSPR dial frequency — choose a band from the dial menu";
+    return "";
+  }
+
   // ---- rendering ------------------------------------------------------------
+
+  // The menu is derived from the radio, which arrives asynchronously, so it is
+  // built here rather than once at startup -- and rebuilt only when the set of
+  // levels genuinely changes, because replacing the options of a select the
+  // operator has open would throw away what they were pointing at.
+  //
+  // The percent is on every line on purpose. It explains why a 100 W radio gets
+  // four entries and a 10 W one seven, and it is the same unit the radio's own
+  // display shows, so it can be read straight against the front-panel knob.
+  let powerOptionsKey = null;
+
+  function renderPowerOptions() {
+    const levels = offeredLevels();
+    const key = levels.join(",");
+    if (key === powerOptionsKey) return;
+    powerOptionsKey = key;
+    const full = fullPower().watts;
+    dom.powerDbm.innerHTML = levels.map(dbm => {
+      const watts = WsprCore.dbmToWatts(dbm);
+      const percent = WsprCore.civPercent(WsprCore.powerCommand(dbm, full).level);
+      const shown = watts < 1 ? `${(watts * 1000).toFixed(0)} mW`
+                              : `${watts.toFixed(watts < 10 ? 1 : 0)} W`;
+      return `<option value="${dbm}">${dbm} dBm · ${shown} · ${percent} %</option>`;
+    }).join("");
+    // An unknown model has no scale, so there is no honest list to offer. The
+    // page already refuses to start in that state; the menu says the same thing
+    // rather than showing levels it cannot convert.
+    dom.powerDbm.disabled = !levels.length;
+  }
 
   function render() {
     // Whether ICOM-LAN is configured at all was settled by lan-gate.js before
@@ -1469,6 +1629,14 @@
     dom.trxFrequencyValue.textContent =
       shownHz ? Js8TrxPresets.formatFrequency(shownHz) : "--.---.---";
     dom.trxFrequency.classList.toggle("pending", Boolean(state.pendingFrequency));
+    // START is refused off a dial frequency, so the refusal is drawn on the one
+    // control that resolves it rather than left as a dead button with the reason
+    // in a line of text further down the page.
+    const offDial = offDialFrequency();
+    dom.trxFrequency.classList.toggle("off-dial", offDial);
+    dom.trxFrequency.title = offDial
+      ? "Not a WSPR dial frequency — choose a band before the beacon can start"
+      : "";
     if (!dom.frequencyMenu.hidden) renderFrequencyMenu();
     maybeOfferSetupHelp();
     dom.trxMode.textContent = state.radio.mode || "---";
@@ -1513,6 +1681,7 @@
     // goes on the air is the readout to its left, so a mismatch never stops a
     // transmission -- one turn of the knob would otherwise silence the beacon
     // for the night. Only the 10 W ceiling refuses to key, and it wears red.
+    renderPowerOptions();
     const target = targetDbm();
     if (target !== null && document.activeElement !== dom.powerDbm)
       dom.powerDbm.value = String(target);
@@ -1593,7 +1762,7 @@
     dom.spectrumSummary.textContent =
       `RX ${RX_LOW}–${RX_HIGH} Hz · WSPR window ${WINDOW_LOW_HZ}–${WINDOW_HIGH_HZ} Hz · TX ${state.lastOffsetHz} Hz`;
 
-    const problem = blockingReason();
+    const problem = startBlockingReason();
     const tuning = state.beacon === "tuning";
     const beaconRunning = state.beacon !== "stopped" && !tuning;
     // The two buttons key the same transmitter, so each one locks the other out
@@ -1710,19 +1879,6 @@
   // ---- wiring ---------------------------------------------------------------
 
   function populateSelects() {
-    // Only levels this page is willing to key at: SET is a write into the radio,
-    // and offering 100 W in a beacon's dropdown invites exactly the mistake the
-    // ceiling exists to prevent.
-    dom.powerDbm.innerHTML = WsprCore.POWER_LEVELS
-      .filter(dbm => WsprCore.dbmToWatts(dbm) <= POWER_CEILING_W * 1.01)
-      .map(dbm =>
-      `<option value="${dbm}">${dbm} dBm · ${WsprCore.dbmToWatts(dbm) < 1
-        ? `${(WsprCore.dbmToWatts(dbm) * 1000).toFixed(0)} mW`
-        : `${WsprCore.dbmToWatts(dbm).toFixed(WsprCore.dbmToWatts(dbm) < 10 ? 1 : 0)} W`}</option>`).join("");
-    // Left blank when the model is still unknown: 1 % of an unknown radio is not
-    // a number, and render() fills it in the moment the radio says what it is.
-    if (settings.powerDbm !== null) dom.powerDbm.value = String(settings.powerDbm);
-
     for (const model of Object.keys(WsprCore.RADIO_FULL_POWER_W)) {
       const option = document.createElement("option");
       option.value = model;
@@ -1752,7 +1908,12 @@
       render();
     });
     dom.powerDbm.addEventListener("change", () => {
-      settings.powerDbm = Number(dom.powerDbm.value); saveSettings(); render();
+      settings.powerDbm = Number(dom.powerDbm.value); saveSettings();
+      // A fresh choice re-enables an automation that a turn of the knob had
+      // stood down. It does not itself write -- SET is still what writes -- so
+      // the new target lands on the radio at the next load or link return.
+      knobTouched = false;
+      render();
     });
     dom.powerSet.addEventListener("click", setRadioPower);
     dom.clockCorrection.addEventListener("change", () => {
@@ -1986,6 +2147,9 @@
     // is queued, WsprTx is driven by inbound tx-level messages instead.
     beaconTimer = setInterval(() => {
       beaconTick();
+      // Owes a write only after a page load or a real link return, and holds off
+      // while the transmitter is keyed, so this is a no-op on almost every tick.
+      applyAutoPower();
       if (tx) tx.tick();
       // Forward power is only meaningful while keyed, and /state reports it only
       // then (the poller reads SWR/power during TX and S-meter/supply otherwise).
@@ -2004,7 +2168,10 @@
                          radioBlockingReason, fullPower, radioPower, render,
                          recordSession, refreshActivity, renderActivity, onTxEvent,
                          renderSchedule, clockCorrectionMs, waterfall,
-                         targetDbm, defaultPowerDbm, powerMismatch,
+                         targetDbm, defaultPowerDbm, powerMismatch, offeredLevels,
+                         get autoPower() {
+                           return {appliedPercent, knobTouched, armed: autoPowerArmed};
+                         },
                          referenceFor, storeReference, txGain,
                          scheduleView, addChange, saveSettings,
                          get editingSlot() { return editingSlot; },

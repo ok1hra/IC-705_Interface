@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>JS8Call</title>
+  <title>JS8Call-ICOM</title>
   <link rel="stylesheet" href="/data.css?v=20260730a">
 </head>
 <body class="startup-pending lan-gate-checking">
   <header class="site-topbar">
     <nav class="tabs" aria-label="Primary">
       <a class="tab" href="/log" target="_blank" rel="noopener">QRPLog</a><a class="tab" href="/dxc.html" onclick="window.open(this.href,'DXC','width=600,height=750,left=0,top=0,menubar=no,location=no,status=no'); return false;">DXC</a>
-      <a class="tab tab-active" href="/data" title="JS8Call and WSPR over ICOM-LAN">DATA</a><a class="tab" href="/setup" target="_blank" rel="noopener">SETUP</a>
+      <a class="tab tab-active" href="/data" title="JS8Call-ICOM and WSPR over ICOM-LAN">DATA</a><a class="tab" href="/setup" target="_blank" rel="noopener">SETUP</a>
       <a class="tab" href="/datasync" target="_blank" rel="noopener">LOGSYNC</a><a class="tab bd-nav" href="/bd" target="_blank" rel="noopener" hidden>BD</a>
       <span id="topbarFw" class="topbar-fw"></span>
     </nav>
@@ -18,7 +18,7 @@
          sessionStorage, so navigating in this tab keeps the radio lease while a
          new tab would land on "session busy". -->
     <nav class="subtabs" aria-label="DATA mode">
-      <a class="subtab subtab-active" href="/data">JS8Call</a><a class="subtab" href="/wspr.html">WSPR-Beacon</a>
+      <a class="subtab subtab-active" href="/data">JS8Call-ICOM</a><a class="subtab" href="/wspr.html">WSPR-Beacon</a>
     </nav>
   </header>
 
@@ -68,13 +68,13 @@
   <dialog id="trxHelpDialog" class="trx-help-dialog" aria-labelledby="trxHelpTitle">
     <form method="dialog" class="trx-help-card">
       <header>
-        <div><small>JS8CALL OVER WLAN</small><h2 id="trxHelpTitle">IC-705 setup</h2></div>
+        <div><small>JS8CALL-ICOM OVER WLAN</small><h2 id="trxHelpTitle">IC-705 setup</h2></div>
         <button class="trx-help-close" type="submit" value="close" aria-label="Close setup help" title="Close">×</button>
       </header>
       <div class="trx-help-content">
         <p id="trxHelpModeWarning" class="trx-help-warning" hidden>
           The radio is not in a suitable data mode. Complete the setup below and load the
-          <strong>JS8CALL WLAN</strong> preset; the JS8Call header must show <strong>USB-D</strong>.
+          <strong>JS8CALL WLAN</strong> preset; the JS8Call-ICOM header must show <strong>USB-D</strong>.
         </p>
         <ol class="trx-setup-steps">
           <li>
@@ -114,11 +114,11 @@
             <p>Open <code>MENU → PRESET → JS8CALL WLAN → YES</code>. The preset must show <code>In Use</code>, and this page's header must report <code>USB-D</code>. If it reports CW, RTTY, AM, FM, or another mode, reload the preset.</p>
           </li>
           <li>
-            <strong>Complete the JS8Call page setup.</strong>
+            <strong>Complete the JS8Call-ICOM page setup.</strong>
             <p>Choose a JS8 dial frequency by tapping the TRX frequency, set <code>My callsign</code> and <code>My grid</code>, wait for the audio clock to lock, and confirm <code>Enable radio TX</code>. Start with <code>TX audio gain 0.25</code> and <code>WLAN MOD Level 25%</code>. Use TUNE briefly, change only one level at a time, and aim for a clean signal with little or no ALC indication.</p>
           </li>
         </ol>
-        <p class="trx-help-note"><strong>Reminder:</strong> JS8Call is a high-duty-cycle digital mode. Use conservative RF power and verify antenna matching before transmitting.</p>
+        <p class="trx-help-note"><strong>Reminder:</strong> JS8Call-ICOM is a high-duty-cycle digital mode. Use conservative RF power and verify antenna matching before transmitting.</p>
       </div>
       <footer>
         <span>Source: Icom IC-705 manuals and JS8Call user guide</span>
@@ -145,11 +145,23 @@
     </form>
   </dialog>
 
+  <dialog id="aprsParamDialog" class="email-dialog aprs-param-dialog">
+    <form id="aprsParamForm" method="dialog">
+      <header><strong id="aprsParamTitle">APRS command</strong><button type="button" data-aprs-dialog-close aria-label="Close">×</button></header>
+      <div id="aprsParamGrid" class="email-dialog-grid"></div>
+      <datalist id="aprsRecentCalls"></datalist>
+      <p id="aprsParamError" class="form-error" role="alert"></p>
+      <label class="aprs-param-preview">JS8Call-ICOM payload <output id="aprsParamPreview"></output></label>
+      <p id="aprsParamCost" class="aprs-param-cost"></p>
+      <footer><button type="button" data-aprs-dialog-close>Cancel</button><button id="aprsParamInsert" class="primary" type="submit">Insert</button></footer>
+    </form>
+  </dialog>
+
   <dialog id="emailConfirmDialog" class="email-dialog email-confirm-dialog">
     <form method="dialog">
       <header><strong>Confirm radio email transmission</strong><button type="button" value="cancel" aria-label="Close">×</button></header>
       <dl class="email-confirm-details"><dt>Gateway</dt><dd id="emailConfirmGateway"></dd><dt>Dial frequency</dt><dd id="emailConfirmFrequency"></dd><dt>Audio offset</dt><dd id="emailConfirmOffset"></dd><dt>Estimated JS8 frames</dt><dd id="emailConfirmFrames"></dd></dl>
-      <label class="email-confirm-payload">JS8Call payload <output id="emailConfirmPayload"></output></label>
+      <label class="email-confirm-payload">JS8Call-ICOM payload <output id="emailConfirmPayload"></output></label>
       <div class="email-privacy-warning"><strong>Open radio channel</strong><p>The email address and message are not private or encrypted. Other stations may receive, store, or forward them. Do not send passwords, access codes, health, payment, or other sensitive data.</p><p>RF transmission does not guarantee that the gateway received the message or that the email was delivered.</p></div>
       <footer><button type="submit" value="cancel">Cancel</button><button id="emailConfirmSend" class="primary" type="submit" value="send">Tune and transmit</button></footer>
     </form>
@@ -195,7 +207,7 @@
 
     <section id="startupLoader" class="startup-loader" role="status" aria-live="polite">
       <div class="startup-loader-copy">
-        <strong id="startupLabel">Loading JS8Call modem</strong>
+        <strong id="startupLabel">Loading JS8Call-ICOM modem</strong>
         <span id="startupPercent">0%</span>
       </div>
       <progress id="startupProgress" max="100" value="0">0%</progress>
@@ -261,6 +273,7 @@
               <button type="button" role="menuitem" data-message-preset="dit-dit"><strong>DIT DIT</strong><small>End of contact</small></button>
               <button type="button" role="menuitem" data-message-preset="73"><strong>73</strong><small>Best regards</small></button>
               <button type="button" role="menuitem" data-message-preset="sk"><strong>SK</strong><small>End contact</small></button>
+              <button type="button" role="menuitem" class="preset-aprs" data-message-preset="aprsis"><strong>@APRSIS</strong><small>Build an APRS-IS command</small></button>
             </span></span>
             <small id="sendHint" class="send-hint">Enter sends</small>
             <button id="sendButton" type="submit" hidden disabled aria-hidden="true" tabindex="-1">Send</button>
@@ -274,7 +287,7 @@
             <div id="emailGatewayDetails" class="email-gateway-details"><span>Target</span><code>—</code><span>Dial</span><code>—</code><span>Offset</span><code>—</code><span>Format</span><code>—</code></div>
             <label>Short message <textarea id="emailMessage" rows="2" placeholder="Short plain-text message" required></textarea></label>
             <small id="emailBudget" class="email-budget">Select a gateway to see the message limit.</small>
-            <label class="email-preview">JS8Call payload <output id="emailPreview">Complete the form to preview the exact radio payload.</output></label>
+            <label class="email-preview">JS8Call-ICOM payload <output id="emailPreview">Complete the form to preview the exact radio payload.</output></label>
             <p id="emailError" class="form-error" role="alert"></p>
             <div class="email-submit-row"><span id="emailStatus">Draft is not stored in message history.</span><button id="emailSend" type="submit" disabled>TUNE AND SEND</button></div>
           </form>
@@ -351,6 +364,23 @@
           <label>Follow detected speed <input id="followSpeed" type="checkbox"></label>
           <label>Clock correction <input id="clockCorrection" type="number" min="-1000" max="1000" step="1"><span>ms</span></label>
           <label>Auto timing <input id="autoTiming" type="checkbox"></label>
+          <!-- RF power before audio gain: that is the order the signal travels,
+               and the two are the only settings here that decide how loud this
+               station is. Percent because that is what the radio's own display
+               shows and the resolution it actually has; JS8 announces no power
+               in the protocol, so nothing forces the WSPR dBm grid here. -->
+          <label class="power-field" id="rfPowerField">TRX RF power
+            <span class="power-row">
+              <input id="rfPercent" type="number" min="1" max="100" step="1" inputmode="numeric">
+              <span class="power-unit">%</span>
+              <b id="rfPercentWatts">--</b>
+              <button id="rfPercentSet" type="button">SET</button>
+            </span>
+            <small>Written to the radio when this page opens and after the link returns &mdash;
+                   needs <em>Enable radio TX</em> below. Turning the knob on the radio stops that
+                   until the next SET.</small>
+            <small id="rfPercentState" class="power-mismatch" hidden></small>
+          </label>
           <label>TX audio gain <input id="txGain" type="number" min="0.1" max="0.8" step="0.05"></label>
           <label class="safety-setting">Enable radio TX <input id="txSafety" type="checkbox"><small>I will use safe RF power and a suitable load/antenna.</small></label>
           <label>INFO answer <input id="infoText" maxlength="40" autocomplete="off" placeholder="50W VERT"></label>
@@ -382,6 +412,7 @@
   <script src="/fw-version.js?v=20260719d"></script>
   <script src="/js8-settings.js?v=20260719d"></script>
   <script src="/js8-email.js?v=20260719d"></script>
+  <script src="/js8-aprs.js?v=20260731a"></script>
   <script src="/js8-file-transfer.js?v=20260719d"></script>
   <script src="/js8-presets.js?v=20260719d"></script>
   <script src="/js8-scheduler.js?v=20260719d"></script>

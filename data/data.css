@@ -96,6 +96,15 @@ button { color: inherit; cursor: pointer; }
 }
 .trx-frequency:hover, .trx-frequency[aria-expanded="true"] { border-color: var(--cyan); background: #10231f; }
 .trx-frequency.pending { border-color: var(--amber); color: var(--amber); }
+/* The dial is on none of the presets the menu offers -- on JS8 that is a band
+   nobody is listening on, on WSPR it also keeps START disabled. Red rather than
+   the amber of `.pending`: that one is a write in flight and clears itself,
+   this one waits for the operator. The hover and open states are restated
+   because the cyan rule above would otherwise erase the warning exactly when
+   the operator reaches for the button that fixes it. */
+.trx-frequency.off-dial { border-color: var(--red); color: var(--red); background: #21100f; }
+.trx-frequency.off-dial:hover,
+.trx-frequency.off-dial[aria-expanded="true"] { border-color: var(--red); background: #301715; }
 .trx-frequency small { display: block; color: var(--muted); font-size: 8px; font-weight: 800; letter-spacing: .12em; }
 .trx-frequency strong { display: block; font: 800 16px/1.05 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .025em; }
 .trx-frequency .unit { color: var(--muted); font-size: 10px; align-self: flex-end; margin-bottom: 5px; }
@@ -385,7 +394,22 @@ button { color: inherit; cursor: pointer; }
 .message-preset-menu > button:hover, .message-preset-menu > button:focus-visible { background:#173a32; outline:none; }
 .message-preset-menu strong { color:var(--cyan); font:700 11px/1.25 ui-monospace,monospace; }
 .message-preset-menu small { color:var(--muted); font-size:10px; }
+/* @APRSIS command builder: the branch menu, its breadcrumb and the cost line. */
+.message-preset-menu > button.preset-aprs { margin-top:4px; border-top:1px solid var(--line); border-radius:0 0 4px 4px; padding-top:9px; }
+.aprs-crumbs { display:flex; flex-wrap:wrap; align-items:center; gap:3px; margin-bottom:4px; padding:4px 6px 6px; border-bottom:1px solid var(--line); }
+.aprs-crumb { padding:2px 5px; border:0; border-radius:3px; background:transparent; color:var(--muted); font:700 10px/1.3 ui-monospace,monospace; letter-spacing:.04em; }
+.aprs-crumb:hover, .aprs-crumb:focus-visible { color:var(--cyan); background:#173a32; outline:none; }
+.aprs-crumb-sep { color:#3f5c55; font-size:10px; }
+.aprs-status { margin:2px 6px 4px; color:var(--muted); font-size:10px; }
+.aprs-status.warn { color:var(--amber); }
 .send-hint { grid-column:4; justify-self:end; margin-top:-5px; color:var(--muted); font-size:10px; }
+.send-hint.warn { color:var(--amber); }
+.aprs-param-preview { display:grid; grid-template-columns:140px minmax(0,1fr); gap:9px; align-items:center; margin:0 14px; color:var(--muted); font-size:12px; }
+.aprs-param-preview output { min-height:42px; padding:9px; border:1px solid #31574f; border-radius:4px; background:#07100f; color:#fff; font:12px/1.45 ui-monospace,monospace; overflow-wrap:anywhere; white-space:pre-wrap; }
+.aprs-param-cost { min-height:1.3em; margin:6px 14px 0; color:var(--muted); font-size:11px; text-align:right; }
+.aprs-param-cost.warn { color:var(--amber); }
+.aprs-badge { display:inline-block; margin-right:6px; padding:0 5px; border:1px solid var(--amber); border-radius:3px; color:var(--amber); font:800 9px/1.6 ui-monospace,monospace; letter-spacing:.08em; vertical-align:1px; }
+.message.aprs-reply { opacity:1; }
 .abort { border: 1px solid var(--red); background: transparent; color: var(--red); border-radius: 5px; padding: 5px 8px; }
 .session-actions { display: flex; align-items: center; gap: 8px; }
 .log-qso { border: 1px solid var(--cyan); background: transparent; color: var(--cyan); border-radius: 5px; padding: 5px 8px; font-weight: 800; cursor: pointer; }
@@ -492,12 +516,26 @@ button { color: inherit; cursor: pointer; }
 .own-callsign { color: var(--green) !important; }
 .message-text { min-width:0; color:#fff; white-space:normal; overflow-wrap:anywhere; }
 .message.directed { border-left: 3px solid var(--amber); }
-/* Own TX in the recent-traffic feed. Red = went on air (completed), grey = a
-   link/TX failure kept it off air. Not clickable — you cannot select yourself. */
+/* Own TX in the recent-traffic feed. Red = went on air, grey = a link/TX failure kept
+   it off air. A partly transmitted message is neither, so the strike-through sits on
+   the unsent characters alone and the frames that really did radiate stay red —
+   claiming nothing went out when two of five frames were keyed is a lie the operator
+   would act on. Not clickable — you cannot select yourself. */
+.message-tx { grid-template-columns:auto auto minmax(0,1fr) auto; }
 .message-tx strong { cursor: default; }
-.message-tx.tx-emitted strong, .message-tx.tx-emitted .message-text { color: var(--red); }
-.message-tx.tx-unsent strong, .message-tx.tx-unsent .message-text { color: var(--muted); }
-.message-tx.tx-unsent .message-text { text-decoration: line-through; text-decoration-color: rgba(139,165,157,0.5); }
+.message-tx.tx-emitted strong { color: var(--red); }
+.message-tx.tx-unsent strong { color: var(--muted); }
+.message-tx .message-text .tx-copy-sent { color: var(--red); }
+.message-tx .message-text .tx-copy-failed, .message-tx .message-text .tx-copy-pending {
+  color: var(--muted); text-decoration: line-through; text-decoration-color: rgba(139,165,157,0.5); }
+/* Only the drain confirmation was lost, not the carrier: red like any other emitted
+   row, flagged with a question mark instead of being struck through. */
+.message-tx[data-tx-status="unconfirmed"] strong { color: var(--red); }
+.message-tx[data-tx-status="unconfirmed"] .message-text::after { content:" ?"; color:var(--amber); }
+.tx-retry:not(:empty) { color: var(--amber); }
+.tx-resend { align-self:center; padding:1px 8px; border:1px solid var(--amber); border-radius:10px;
+  background:transparent; color:var(--amber); font-size:10px; cursor:pointer; white-space:nowrap; }
+.tx-resend:hover { background:rgba(255,191,105,0.12); }
 /* Understated "this recipient is blocked" note — amber, like the auto-reply ban, not an alarm. */
 .session-blocked { color: var(--amber); }
 .message.operational { opacity: .48; }
@@ -547,6 +585,32 @@ button { color: inherit; cursor: pointer; }
 .settings label { display: grid; grid-template-columns: 130px minmax(0, 1fr) auto; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
 .settings input:disabled { opacity: .5; }
 .settings input[type="checkbox"] { width:20px; justify-self:start; accent-color:var(--cyan); }
+/* RF power. The label grid above is three fixed columns, which a control with
+   a unit, a readout and a button does not fit -- so this row spans the value
+   column and lays itself out. Amber is "the radio is not where the setting
+   says", which on this page is information rather than an error: JS8 announces
+   no power, so a turned knob is a legitimate state and only means the automatic
+   write has stood down. */
+.power-field { grid-template-columns: 130px minmax(0, 1fr) !important; }
+.power-field .power-row { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.power-field .power-row input { width: 74px; }
+.power-field .power-unit { color: var(--muted); }
+.power-field .power-row b {
+  min-width: 56px; color: var(--text); font-variant-numeric: tabular-nums; font-weight: 750;
+}
+.power-field .power-row button {
+  padding: 5px 10px; border: 1px solid var(--line); border-radius: 4px; background: transparent;
+  color: var(--text); font-weight: 800; font-size: 11px;
+}
+.power-field .power-row button:hover { border-color: var(--cyan); color: var(--cyan); }
+.power-field small { grid-column: 2; color: var(--muted); font-size: 10px; }
+.power-field.mismatch .power-row button { border-color: var(--amber); color: var(--amber); }
+.power-mismatch { color: var(--amber); }
+/* The header bar carries the same state, because the SETTINGS panel opens
+   collapsed and a warning nobody can see is not a warning. */
+.trx-power.mismatch .pwr-bar i.on { background: var(--amber); }
+.trx-power.mismatch b { color: var(--amber); }
+
 .safety-setting { grid-column:1 / -1; border:1px solid #674a30; padding:8px; }
 .safety-setting small { color:var(--amber); }
 .check-setting input { width: 20px; justify-self: start; accent-color: var(--cyan); }
@@ -631,6 +695,7 @@ button { color: inherit; cursor: pointer; }
   .email-gateway-details, .email-budget, .email-preview, .email-form > .form-error, .email-submit-row { grid-column:1; }
   .email-preview { grid-template-columns:1fr; gap:4px; }
   .email-dialog-grid label { grid-template-columns:1fr; gap:4px; }
+  .aprs-param-preview { grid-template-columns:1fr; gap:4px; }
   .bin-form { grid-template-columns:1fr; }
   .bin-form > label:not(.bin-expect) { display:grid; gap:4px; }
   .bin-file-details, .bin-expect, .bin-form > .form-error, .bin-form > .email-submit-row { grid-column:1; }

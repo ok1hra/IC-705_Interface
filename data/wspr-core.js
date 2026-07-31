@@ -324,23 +324,60 @@
   // anything genuinely over-powered through.
   const POWER_TOLERANCE = 1.01;
 
+  // Percent of the CI-V scale -> the 0..255 level, and a level -> the two BCD
+  // bytes 14 0A carries (255 -> 02 55). Split out of powerCommand because the
+  // JS8Call page sets power in percent directly: it announces no power in the
+  // protocol, so it has no reason to be pinned to the WSPR grid, and percent is
+  // both what the radio's display shows and the unit its one-percent step is in.
+  const percentToLevel = percent =>
+    Math.max(0, Math.min(255, Math.round((Number(percent) || 0) * 255 / 100)));
+
+  function civLevelCommand(level) {
+    const value = Math.max(0, Math.min(255, Math.round(Number(level) || 0)));
+    const hex = number => number.toString(16).toUpperCase().padStart(2, "0");
+    return {level: value,
+            data: "140A" + hex(Math.floor(value / 100)) +
+                  hex((((value / 10) | 0) % 10) * 16 + (value % 10))};
+  }
+
   function powerCommand(dbm, fullWatts) {
     if (!(fullWatts > 0)) throw new WsprError("full power is unknown for this radio");
     const watts = dbmToWatts(dbm);
     if (watts > fullWatts * POWER_TOLERANCE)
       throw new WsprError(`${dbm} dBm is ${watts.toFixed(2)} W, above this radio's ${fullWatts} W`);
     const percent = 100 * watts / fullWatts;
-    const level = Math.max(0, Math.min(255, Math.round(percent * 255 / 100)));
-    const hex = value => value.toString(16).toUpperCase().padStart(2, "0");
-    return {watts, percent, level,
-            data: "140A" + hex(Math.floor(level / 100)) +
-                  hex((((level / 10) | 0) % 10) * 16 + (level % 10))};
+    return {watts, percent, ...civLevelCommand(percentToLevel(percent))};
   }
 
   // Highest legal WSPR power level this radio can actually produce.
   function maxPowerDbm(fullWatts) {
     const ceiling = fullWatts * POWER_TOLERANCE;
     return POWER_LEVELS.filter(dbm => dbmToWatts(dbm) <= ceiling).pop() ?? POWER_LEVELS[0];
+  }
+
+  // The radio's own resolution: the 0..255 CI-V scale is a percentage, and the
+  // radio quantises to whole percent. Everything that compares a level against
+  // another level goes through here, because 1 % is 2.55 raw units -- a raw
+  // tolerance wide enough to absorb the quantisation is also wide enough to
+  // swallow a whole step, and at the bottom of the range one step is 3 dB.
+  const civPercent = level => Math.round(Math.max(0, Number(level) || 0) * 100 / 255);
+
+  // Levels this radio can actually be set to, and that this page is willing to
+  // key at. The floor is the radio's one-percent step: below it a level cannot
+  // be distinguished from the one next to it, so the message would announce a
+  // power the transmitter never produced.
+  //
+  // Deliberately decided on the CI-V level rather than on watts. 33 dBm is
+  // 1.995 W, five thousandths BELOW one percent of a 200 W radio, so an honest
+  // `watts >= full / 100` would discard exactly the level that radio's smallest
+  // step produces -- the same trap POWER_TOLERANCE above exists for.
+  function offeredPowerLevels(fullWatts, ceilingWatts) {
+    if (!(fullWatts > 0)) return [];
+    return POWER_LEVELS.filter(dbm => {
+      if (dbmToWatts(dbm) > ceilingWatts * POWER_TOLERANCE) return false;
+      try { return civPercent(powerCommand(dbm, fullWatts).level) >= 1; }
+      catch (_error) { return false; }        // above what this radio can do
+    });
   }
 
   // WSPR starts one second after an even UTC minute.
@@ -547,7 +584,8 @@
     convolutionalEncode, interleave, syncBit, encode,
     WsprStream, nextSlotUtcMs,
     PRESETS, RADIO_FULL_POWER_W, fullPowerWatts, dbmToWatts, wattsToDbm,
-    powerCommand, maxPowerDbm,
+    powerCommand, maxPowerDbm, civPercent, offeredPowerLevels,
+    percentToLevel, civLevelCommand,
     FRAME_MS, SLOTS_PER_DAY, FRAMES_PER_SLOT, FRAMES_PER_DAY, MIN_BAND_GAP_FRAMES,
     slotIndexAt, slotLabel, timetableEntries, sequenceAt, daySequence,
     frameTransmission, nextTransmission, plannedFrames,

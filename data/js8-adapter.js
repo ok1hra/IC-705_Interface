@@ -146,7 +146,7 @@
     return {
       id: "js8call",
       definition: {
-        label: "JS8Call",
+        label: "JS8Call-ICOM",
         Decoder: Js8CallDecoder,
         Encoder: Js8CallEncoder,
         minTone: 500,

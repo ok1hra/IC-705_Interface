@@ -6,7 +6,7 @@
   else root.Js8Settings = value;
 })(typeof globalThis !== "undefined" ? globalThis : self, function () {
   const STORAGE_KEY = "ic705.data.js8-settings";
-  const SCHEMA_VERSION = 8;
+  const SCHEMA_VERSION = 9;
   // Frequency timetable: 48 half-hour UTC slots (index 0 = 00:00, 47 = 23:30).
   // Global to the station (one radio), independent of the active modem.
   const TIMETABLE_SLOTS = 48;
@@ -41,7 +41,13 @@
         // Unattended operation. `auto` is the operator's switch; `armHours` is
         // how long it stays on before the firmware lets it lapse by itself.
         auto:false, armHours:1, infoText:"", statusText:"",
-        hb:false, hbAck:true, hbMinutes:15, groups:[], cqRepeatMin:0}},
+        hb:false, hbAck:true, hbMinutes:60, groups:[], cqRepeatMin:0,
+        // Percent of the radio's CI-V power scale, written on page open and
+        // after a reconnect. null means the operator has never chosen, and
+        // that is what keeps the page from writing power to a radio nobody
+        // asked it to touch -- unlike WSPR there is no naturally safe value
+        // to propose, because a QSO mode has no beacon-sized opening bid.
+        rfPercent:null}},
       ui: {disclosures: {spectrum: true, reply: true, traffic: false,
         stations: false, inbox: false, settings: false, timing: false}},
       // Sparse schedule: only the slots the operator filled are stored. `enabled`
@@ -101,7 +107,7 @@
         statusText:String(js8.statusText ?? "").toUpperCase()
           .replace(/[^A-Z0-9 ./?+-]/g, "").slice(0, 40).trim(),
         hb:js8.hb === true, hbAck:js8.hbAck !== false,
-        hbMinutes:HB_MINUTES.includes(Number(js8.hbMinutes)) ? Number(js8.hbMinutes) : 15,
+        hbMinutes:HB_MINUTES.includes(Number(js8.hbMinutes)) ? Number(js8.hbMinutes) : 60,
         // Custom groups only; the always-joined ones are added at use time so a
         // stored profile can never accidentally drop them.
         groups:Array.isArray(js8.groups)
@@ -110,7 +116,11 @@
               .map(g => g.startsWith("@") ? g : `@${g}`)
               .filter(g => GROUP_RE.test(g) && !ALWAYS_GROUPS.includes(g)))].slice(0, 8)
           : [],
-        cqRepeatMin:CQ_REPEAT_MIN.includes(Number(js8.cqRepeatMin)) ? Number(js8.cqRepeatMin) : 0}},
+        cqRepeatMin:CQ_REPEAT_MIN.includes(Number(js8.cqRepeatMin)) ? Number(js8.cqRepeatMin) : 0,
+        // Only 1..100 is settable: the radio's step is one percent, so a
+        // stored 0.5 would be written as something else entirely.
+        rfPercent:Number.isFinite(Number(js8.rfPercent)) && Number(js8.rfPercent) >= 1
+          ? Math.min(100, Math.round(Number(js8.rfPercent))) : null}},
       ui: {disclosures},
       freqTimetable: normalizeTimetable(source.freqTimetable)};
   }
@@ -140,6 +150,16 @@
       return {settings:normalize(input), status:"migrated-v6"};
     if (input.schemaVersion === 7)
       return {settings:normalize(input), status:"migrated-v7"};
+    // v8 -> v9 moves the heartbeat interval to 60 minutes, and does it to stored
+    // profiles too rather than only to the default. A stored 15 cannot be told
+    // apart from v8's own default -- the same trap the WSPR settings hit with
+    // powerDbm -- so leaving it alone would mean the new interval never reaches
+    // anyone who has ever opened the page. One selection in the menu undoes it.
+    if (input.schemaVersion === 8) {
+      const migrated = normalize(input);
+      migrated.modems.js8call.hbMinutes = 60;
+      return {settings:migrated, status:"migrated-v8"};
+    }
     if (Number(input.schemaVersion) > SCHEMA_VERSION)
       return {settings: defaults(), status: "unsupported-future"};
     return {settings: defaults(), status: "invalid"};
@@ -148,6 +168,7 @@
   function label(status) {
     return ({default: "Defaults · not saved", loaded: "Saved locally",
       saved: "Saved locally", reset: "Defaults restored",
+      "migrated-v8": "Migrated from schema v8",
       "migrated-v1": "Migrated from schema v1",
       "migrated-v2": "Migrated from schema v2",
       "migrated-v3": "Migrated from schema v3",

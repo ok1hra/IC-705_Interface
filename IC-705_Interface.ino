@@ -107,7 +107,7 @@ bool cwIpOnConnect  = true;       // announce WiFi IP via CW on first full-CAT r
 volatile bool cwIpSendPending = false;
 
 #define LOOP_WARN_MS 200
-#define REV 20260730
+#define REV 20260731
 #define WIFI
 #define UDP_TO_FSK
 #define WDT         // watchdog timer

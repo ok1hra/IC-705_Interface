@@ -17,7 +17,7 @@
 <header class="site-topbar">
   <nav class="tabs" aria-label="Primary">
     <a class="tab" href="/log" target="_blank" rel="noopener">QRPLog</a><a class="tab" href="/dxc.html" onclick="window.open(this.href,'DXC','width=600,height=750,left=0,top=0,menubar=no,location=no,status=no'); return false;">DXC</a>
-    <a class="tab tab-active" href="/data" title="JS8Call and WSPR over ICOM-LAN">DATA</a><a class="tab" href="/setup" target="_blank" rel="noopener">SETUP</a>
+    <a class="tab tab-active" href="/data" title="JS8Call-ICOM and WSPR over ICOM-LAN">DATA</a><a class="tab" href="/setup" target="_blank" rel="noopener">SETUP</a>
     <a class="tab" href="/datasync" target="_blank" rel="noopener">LOGSYNC</a>
     <span id="topbarFw" class="topbar-fw"></span>
   </nav>
@@ -25,7 +25,7 @@
        sessionStorage, so navigating in this tab keeps the radio lease while a
        new tab would land on "session busy". -->
   <nav class="subtabs" aria-label="DATA mode">
-    <a class="subtab" href="/data">JS8Call</a><a class="subtab subtab-active" href="/wspr.html">WSPR-Beacon</a>
+    <a class="subtab" href="/data">JS8Call-ICOM</a><a class="subtab subtab-active" href="/wspr.html">WSPR-Beacon</a>
   </nav>
 </header>
 
@@ -116,7 +116,7 @@
     <div class="gate-card-icon" aria-hidden="true">!</div>
     <div>
       <h1>The radio is driven from somewhere else</h1>
-      <p>One radio, one operator: JS8Call and WSPR-Beacon both drive the transceiver through a
+      <p>One radio, one operator: JS8Call-ICOM and WSPR-Beacon both drive the transceiver through a
          single audio link, so only one page can run at a time.</p>
       <p id="sessionBusyWhere" class="session-busy-where"></p>
       <button id="sessionTakeover" class="gate-card-action" type="button">TAKE THE SESSION OVER HERE</button>
@@ -220,7 +220,7 @@
                  placeholder="JN79QI or 50.0755, 14.4378">
           <small>transmits <b id="locatorTransmitted">----</b> — WSPR type 1 carries four characters</small>
         </label>
-        <label>Clock correction <span><input id="clockCorrection" type="number" min="-1000" max="1000" step="1"><small>ms, shared with JS8Call</small></span></label>
+        <label>Clock correction <span><input id="clockCorrection" type="number" min="-1000" max="1000" step="1"><small>ms, shared with JS8Call-ICOM</small></span></label>
         <label>Radio
           <select id="radioModelOverride">
             <option value="">auto (from the radio)</option>
@@ -238,11 +238,12 @@
             <span class="power-arrow" aria-hidden="true">&rarr;</span>
             <span class="power-set"><select id="powerDbm"></select><button id="powerSet" type="button">SET</button></span>
           </span>
-          <small>full scale <b id="fullPowerWatts">--</b> <span id="fullPowerSource"></span> &mdash; legal WSPR levels only, capped at 10 W</small>
+          <small>full scale <b id="fullPowerWatts">--</b> <span id="fullPowerSource"></span> &mdash; legal WSPR levels
+                 from this radio&rsquo;s 1 % step up to the 10 W cap; applied on load and after a reconnect</small>
           <small id="powerMismatch" class="power-mismatch" hidden></small>
         </label>
         <label>TX audio gain <input id="txGain" type="number" min="0.1" max="0.8" step="0.05">
-          <small>shared with JS8Call &mdash; one MOD input, one level</small>
+          <small>shared with JS8Call-ICOM &mdash; one MOD input, one level</small>
         </label>
         <label class="reference-field">TUNE power references
           <span class="reference-row"><b id="referenceCount">no bands measured</b><button id="referenceClear" type="button">Clear</button></span>
@@ -251,7 +252,7 @@
         </label>
         <label class="safety-setting">Enable radio TX <input id="txSafety" type="checkbox">
           <small>I will use safe RF power and a suitable load/antenna. The same confirmation as
-                 on the JS8Call page &mdash; one radio, one pledge.</small>
+                 on the JS8Call-ICOM page &mdash; one radio, one pledge.</small>
         </label>
         <p id="stationError" class="form-error" role="alert" hidden></p>
       </div>

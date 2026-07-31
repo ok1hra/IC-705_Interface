@@ -30,8 +30,18 @@
   const PERIOD_MS = {0: 15000, 1: 10000, 2: 6000, 4: 30000, 8: 4000};
   const AUTOREPLY_PERIODS = 2;
 
+  // A second attempt at a failed transmission is worth exactly as long as the exchange
+  // it belongs to. Counted in slot periods rather than seconds for the same reason as
+  // the auto-reply TTL: 60 s is two slots on SLOW and fifteen on TURBO, so a fixed
+  // wall-clock figure would mean something different on every speed.
+  const RESEND_PERIODS = 4;
+
   function autoReplyTtlMs(submode) {
     return (PERIOD_MS[submode] ?? PERIOD_MS[0]) * AUTOREPLY_PERIODS;
+  }
+
+  function resendTtlMs(submode) {
+    return (PERIOD_MS[submode] ?? PERIOD_MS[0]) * RESEND_PERIODS;
   }
 
   class Js8TxQueue {
@@ -146,5 +156,6 @@
     }
   }
 
-  return {Js8TxQueue, PRIORITY, TTL_MS, PERIOD_MS, AUTOREPLY_PERIODS, autoReplyTtlMs};
+  return {Js8TxQueue, PRIORITY, TTL_MS, PERIOD_MS, AUTOREPLY_PERIODS, autoReplyTtlMs,
+    RESEND_PERIODS, resendTtlMs};
 });

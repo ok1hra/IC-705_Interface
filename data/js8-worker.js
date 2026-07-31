@@ -139,7 +139,7 @@
   subscribe(async (message) => {
     try {
       if (message.type === "init") {
-        loading("runtime", "Starting JS8Call modem", 1);
+        loading("runtime", "Starting JS8Call-ICOM modem", 1);
         const Runtime = loadRuntime(message.runtimeJs);
         const brotli = await loadBrotli(message);
         const modules = await loadModules(message, brotli);
@@ -148,7 +148,7 @@
                               BigInt(message.anchorUtcMs || 0), protocol,
                               {strictEpochAnchoring:
                                 Boolean(message.strictEpochAnchoring)});
-        loading("ready", "JS8Call modem ready", 100);
+        loading("ready", "JS8Call-ICOM modem ready", 100);
         post({type: "ready", state: runtime.state()});
       } else if (message.type === "epoch") {
         post({type: "epoch", state: runtime.beginEpoch(
