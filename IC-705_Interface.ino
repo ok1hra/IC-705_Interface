@@ -6844,13 +6844,17 @@ void aud1TxAbort(const String& reason, bool notify){
   }
 }
 
-// True while a JS8 slot key is imminent: the whole prebuffer fill (PREBUFFER) and
-// the last stretch of the wait before the slot (READY within the guard lead). The
-// cooperative loop skips blocking best-effort work (port-80 handlers, DXC connect)
+// True while a scheduled audio-TX key is imminent: the whole prebuffer fill
+// (PREBUFFER) and the last stretch of the wait before the slot (READY within
+// the guard lead). The cooperative loop skips blocking best-effort work
+// (port-80 handlers, DXC connect)
 // during this window so a flash/DNS/connect stall cannot push PTT past the slot.
 // Deliberately excludes STREAM: realtime playout has its own owner, while this
 // guard controls cooperative-loop work around the key instant and prebuffer.
-static const uint32_t TX_GUARD_LEAD_MS  = 1300;   // > prebufferMs, covers the fill
+// Start before the browser's 1.35 s stream lead. Apart from protecting the
+// cooperative loop, this window lets firmware push scheduling opportunities to
+// a backgrounded WSPR page whose JavaScript timer may have been throttled.
+static const uint32_t TX_GUARD_LEAD_MS  = 3000;
 static const uint32_t TX_GUARD_TRAIL_MS = 150;    // covers the key instant itself
 bool txCriticalNow(){
   if(aud1TxState == AUD1_TX_PREBUFFER) return true;
@@ -6882,7 +6886,28 @@ void aud1TxTick(bool deferPrebufferMiss){
     aud1TxConsumedUlaw = txSnapshot.consumed;
   }
   if(aud1TxState == AUD1_TX_READY || aud1TxState == AUD1_TX_PREBUFFER){
-    if((int32_t)(now - aud1TxTargetMs) < 0) return;
+    int32_t toSlot = (int32_t)(aud1TxTargetMs - now);
+    if(toSlot > 0){
+      // Browser timers are only a fallback clock. A hidden Chrome tab can have
+      // chained timers checked as rarely as once per minute, so drive the WSPR
+      // pump from inbound WebSocket traffic before its 1.35 s prebuffer point.
+      // JS8 uses the same socket but safely ignores this status message.
+      if(toSlot <= (int32_t)TX_GUARD_LEAD_MS &&
+         (int32_t)(now - aud1TxLevelNextMs) >= 0){
+        aud1TxLevelNextMs = now + 200;   // ~5/s until PTT
+        AudioSendText("{\"type\":\"tx-level\",\"txId\":" + String(aud1TxId) +
+                      ",\"used\":" + String((unsigned long)aud1TxUsed) +
+                      ",\"capacity\":" + String((unsigned long)AUD1_TX_RING_SIZE) +
+                      ",\"consumed\":" + String((unsigned long long)aud1TxConsumedUlaw) +
+                      ",\"udpPackets\":" + String((unsigned long)txSnapshot.sentPackets) +
+                      ",\"maxLateMs\":" + String((unsigned long)txSnapshot.maxLatenessMs) +
+                      ",\"replays\":" + String((unsigned long)txSnapshot.replayedPackets) +
+                      ",\"sendFailures\":" + String((unsigned long)txSnapshot.sendFailures) +
+                      ",\"rxDropped\":" + String((unsigned long)txClient->audioRxDropped()) +
+                      ",\"ptt\":false}");
+      }
+      return;
+    }
     size_t required = (aud1TxPrebufferSamples + 5) / 6;
     if(aud1TxExpectedSample < aud1TxPrebufferSamples || aud1TxUsed < required){
       // A complete packet may already be queued behind a fragmented TCP read.
