@@ -44,7 +44,7 @@ async function bdInit() {
 function bdPopulateSource(status, selectedSource) {
   const sel = document.getElementById('bd-source');
   sel.innerHTML = '';
-  sel.appendChild(new Option('TRX1 — ' + (status.trx1Label || 'IC-705'), '1'));
+  sel.appendChild(new Option('TRX1 — ' + (status.trx1Label || 'TRX1'), '1'));
   if (status.trx2Label && status.trx2Label !== 'TRX2') {
     sel.appendChild(new Option('TRX2 — ' + status.trx2Label, '2'));
   }

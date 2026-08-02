@@ -578,7 +578,7 @@ int incomingByte = 0;   // for incoming serial data
   static const char* LOG_CONFIG_PATH = "/log-config.json";
 
   // In-memory cache of log-config.json fields used by setupTemplateProcessor.
-  String g_lcTrx1Label = "IC-705";
+  String g_lcTrx1Label = "TRX1";   // replaced by the radio's own model once known
   String g_lcTrx2Label = "TRX2";
   String g_lcTrx3Label = "TRX3";
   String g_lcRstSsb    = "59";
@@ -713,6 +713,8 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   bool beginRadioLanClient(uint8_t slot);
   void secondaryLanClientsLoop(void);
   uint8_t lanRadioSlotIndex(void);
+  String defaultTrxLabel(uint8_t slot);
+  void adoptModelAsLabelIfUnset(uint8_t slot);
   IcomLanClient* lanRadioClient(void);
   bool lanRadioConnected(void);
   bool lanRadioSendCommand(const uint8_t *body, size_t len);
@@ -2478,6 +2480,9 @@ bool loadRadioConfig(void) {
 
   syncLegacyRadioGlobals();
   radioConfigLoaded = true;
+  // A model remembered from an earlier session is enough to label the slot, so the
+  // SETUP page names the operator's actual radio before any link comes up.
+  for (uint8_t slot = 0; slot < 3; slot++) adoptModelAsLabelIfUnset(slot);
   Serial.println("CFG | unified radio config loaded");
   return true;
 }
@@ -4487,6 +4492,34 @@ void wifiTryTick() {
 //-------------------------------------------------------------------------------------------------------
 // Remembers the model a radio reported in its capabilities packet. Touches
 // flash only on an actual change, which in practice means once per radio.
+// The label a slot falls back to when the operator has not typed one. It used to
+// be the hardcoded string "IC-705", which was a fair guess while that was the only
+// radio this interface spoke to and became a false claim the moment it spoke to
+// five. The radio reports its own model and we keep that across reboots, so use
+// it; the slot number is the only honest answer when nothing has ever answered.
+String defaultTrxLabel(uint8_t slot) {
+  if (slot < 3 && radioSlots[slot].model.length() > 0)
+    return trimMemoryValue(radioSlots[slot].model, 10);
+  return String("TRX") + String(slot + 1);
+}
+
+// Adopt a freshly learned model as the label, but only while the label is still a
+// bare slot number -- anything else is the operator's own wording and outranks
+// what the radio calls itself.
+void adoptModelAsLabelIfUnset(uint8_t slot) {
+  if (slot >= 3) return;
+  String *label = slot == 0 ? &g_lcTrx1Label : slot == 1 ? &g_lcTrx2Label : &g_lcTrx3Label;
+  String neutral = String("TRX") + String(slot + 1);
+  if (label->length() != 0 && *label != neutral) return;
+  String next = defaultTrxLabel(slot);
+  if (next == *label) return;
+  // In memory only. The model is already persisted in radio-config.json, so this
+  // is recomputed on every boot; writing log-config.json here would mean rebuilding
+  // the whole document (blockedDxcc and the RST defaults included) to change one
+  // display string, and an operator-typed label must keep winning anyway.
+  *label = next;
+}
+
 void rememberRadioModel(uint8_t slot, const char* model) {
   if (slot >= 3 || !model || !model[0]) return;
   String clean = trimMemoryValue(String(model), 15);
@@ -4497,6 +4530,7 @@ void rememberRadioModel(uint8_t slot, const char* model) {
   Serial.print(" reports model ");
   Serial.println(clean);
   if (!saveRadioConfig()) Serial.println("CFG | radio model save failed");
+  adoptModelAsLabelIfUnset(slot);
 }
 
 // Picks the model up from an ordinary session too, not just from the SETUP
@@ -6581,7 +6615,7 @@ void handleSet() {
 
     {
       String trx1Label = trimMemoryValue(requestArg("trx1label"), 10);
-      if (trx1Label.length() == 0) trx1Label = "IC-705";
+      if (trx1Label.length() == 0) trx1Label = defaultTrxLabel(0);
       String trx2Label = trimMemoryValue(requestArg("trx2label"), 10);
       if (trx2Label.length() == 0) trx2Label = "TRX2";
       String trx3Label = trimMemoryValue(requestArg("trx3label"), 10);

@@ -2408,7 +2408,7 @@ async function logQsoFor(call, {manual=false}={}) {
     const saved=await window.LogDB.commitQso({
       logId:log.id, call, rstSent, rstReceived,
       frequencyHz, frequencyDisplay:formatFrequency(frequencyHz),
-      mode:"JS8", trx:state.radio.trx1Label||"IC-705",
+      mode:"JS8", trx:state.radio.trx1Label||"TRX1",
       grid:(station && station.grid) || "",
       bandClass:frequencyHz>49_000_000 ? "VHF_PLUS" : "HF",
       source:manual ? "js8-tx-session" : "js8-auto",

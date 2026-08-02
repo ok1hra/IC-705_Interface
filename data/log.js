@@ -860,7 +860,7 @@
 const app = {
   runMode:    'RUN',   // 'RUN' | 'SP'
   activeTrx:  1,       // 1 | 2 | 3
-  trxLabels:  ['IC-705', 'TRX2', 'TRX3'],
+  trxLabels:  ['TRX1', 'TRX2', 'TRX3'],
   trxOi3:     [false, false, false],  // OI3 mode per TRX (true when NET_ID != 0)
 
   // TRX state from /state polling
