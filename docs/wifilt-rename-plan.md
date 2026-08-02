@@ -358,7 +358,7 @@ commit 1 zbývá.**
 | 5 | URL → `ok1hra/wifilt` | `cfa0001` — Pages i repo ověřeny HTTP 200 |
 | 7 | multi-model nápověda | `cd33bed` |
 | 4 | `hw/` + `3Dprint/` | **ZRUŠENO** |
-| 1 | adresář + `.ino` → `wifilt` | **ZBÝVÁ**, viz níže |
+| 1 | adresář + `.ino` → `wifilt` | `87363e6` — hotovo, build z nové cesty ověřen |
 
 Nezbývá žádná neověřená softwarová část. Chybí **kontrola na rádiu** — žádné jiné rádio než
 IC-705 zatím ty menu cesty nepotvrdilo.
@@ -370,7 +370,21 @@ na disku, v žádném commitu:
 `tools/{js8-session-browser,wspr-browser,state-json-budget,wake-lock}-smoke.js`,
 `docs/{find-device-ip,how-to-bugfix,how-to-regenerate-manual,wspr-page-redesign,mercury-implementace}.md`.
 
-### Recept na commit 1
+### Commit 1 — provedeno (`87363e6`)
+
+Recept níže je záznam toho, co se udělalo. Pracovní cesta je teď
+`/home/dan/Arduino/hra/ok1hra/esp32/wifilt`, sketch `wifilt.ino`.
+
+Ověřeno po přejmenování: build 1 001 008 B z app0 1 441 792 B (69 %), generovaná
+tabulka oddílů souhlasí s `partitions.csv`, `state-json-budget` a
+`setup-radio-contract` (oba parsují sketch podle jména) prošly, browser suity
+zelené.
+
+**Vedlejší důsledek:** paměť projektu je klíčovaná cestou, takže se zkopírovala do
+`~/.claude/projects/-home-dan-Arduino-hra-ok1hra-esp32-wifilt/memory/`. Starý klíč
+zůstal jako záloha.
+
+### Recept (co bylo spuštěno)
 
 Musí být poslední a samostatný. Přejmenování adresáře odřízne agentovi přístup k souborům,
 proto ho nedělal.
