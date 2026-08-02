@@ -395,6 +395,7 @@
         connected: Boolean(json.connected),
         transceiverType: String(json.transceiverType || ""),
         radioName: String(json.radioName || ""),
+        // fall through to setReportedModel below -- the guide follows the radio
         mode: String(json.mode || ""),
         frequency: Number(json.frequency) || 0,
         tx: Boolean(json.tx),
@@ -1652,6 +1653,9 @@
     maybeOfferSetupHelp();
     dom.trxMode.textContent = state.radio.mode || "---";
     dom.radioModel.textContent = state.radio.radioName || "model unknown";
+    // Same string drives the setup guide, so the dialog can never explain a radio
+    // other than the one on the air. No-op while it does not change.
+    if (typeof TrxHelp !== "undefined") TrxHelp.setReportedModel(state.radio.radioName);
     dom.linkState.textContent = state.radio.connected ? "● LINKED" : "● OFFLINE";
     dom.linkState.classList.toggle("up", state.radio.connected);
 
@@ -2131,6 +2135,14 @@
   // out of the radio for no reason.
   LanGate.gate().then(ready => {
     if (!ready) return;
+
+    // Open the guide on the model this radio reported last time, until a live
+    // answer replaces it. radioSlots[].model survives a reboot for exactly this.
+    if (typeof TrxHelp !== "undefined") {
+      const slot = LanGate.slot ? LanGate.slot() : 0;
+      const config = LanGate.config() || {};
+      if (slot) TrxHelp.setReportedModel(config[`trx${slot}model`] || "");
+    }
 
     loadSettings();
     populateSelects();

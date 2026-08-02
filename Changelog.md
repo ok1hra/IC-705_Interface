@@ -11,6 +11,35 @@ published.
 
 ## Working tree — not committed
 
+* **The setup help now explains *your* radio, and it can be switched by hand.** This is the part
+  of the rename that the operator actually sees: until now the help dialog was one hand-written
+  IC-705 procedure, so an IC-7610 owner was told to open `MENU → SET → WLAN Set` — a menu that
+  radio does not have — and to build a `PRESET`, a function it does not have either. The dialog
+  is now generated per model from a single table, opens on whichever radio reported itself, and
+  carries buttons for the other four plus **Other Icom**.
+  Writing it turned up three differences that are not wording. **WLAN** (IC-705, wireless) versus
+  **LAN** (everything else, Ethernet) appears in three separate menu items. Network settings live
+  in **three** different places, not two: IC-705 under `WLAN Set → Remote Settings`, IC-7300MK2 and
+  IC-7760 under `Network → Remote Settings`, and the IC-7610 and IC-9700 have **no Remote Settings
+  submenu at all** — the items sit directly under `Network`. And `PRESET` exists on the IC-705,
+  IC-7300MK2 and IC-7760 but not on the IC-7610 or IC-9700, so their guide says "note these down
+  or use a memory channel" instead of silently dropping three steps and leaving the operator
+  hunting for the one-touch restore that never existed. Every path was read out of that radio's
+  own manual in `docs/`, and the CI-V addresses with them — the IC-7300MK2 is **B6h**, not the
+  original IC-7300's 94h.
+  An unrecognised radio gets the common-denominator procedure, is **named** in the dialog, and is
+  told that no specific guide exists yet. It never falls back to the IC-705 steps. The generic
+  guide also covers the one case where the model number is right and no menu path can be: a serial
+  radio bridged onto the network by a wfview or RS-BA1 server, where the network settings live on
+  the PC and the radio only reports its name.
+  **Same table, one source of truth.** `RADIO_FULL_POWER_W` used to be a second, half-overlapping
+  list of radios — which is how an IC-7760 ended up unable to transmit WSPR while the help text
+  was confidently explaining an IC-705. Watts and setup instructions are now the same row, so a
+  model cannot exist in one and be missing from the other.
+  The ICOM-LAN gate card stopped saying "IC-705 is tested. Other Icom transceivers…" while no
+  radio is connected. It now names the model the slot last identified itself as, or names nothing.
+  The `?` button lost its `IC-705 setup help` label for the same reason.
+
 * **The repository and the firmware installer moved to `ok1hra/wifilt`.** 33 links followed it:
   the installer page, the 13 asset links in the README, the `GitHub | Licenses` footer on all six
   pages that have one, and — the one that actually has to resolve — the *corresponding source*

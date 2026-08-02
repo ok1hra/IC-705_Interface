@@ -65,8 +65,10 @@
     + "<li>Enter the radio IP address, network username and network password, "
     + "then save the setup.</li>"
     + "</ol>"
-    + '<p class="gate-card-note">IC-705 is tested. Other Icom transceivers using the '
-    + "compatible LAN remote-control and audio protocol may also work.</p>"
+    // Filled in by show(): the card appears precisely when no radio is connected,
+    // so it must not name one. If a model was remembered from an earlier login it
+    // is named; otherwise this says nothing about which radio you have.
+    + '<p class="gate-card-note" id="lanGateRadio"></p>' 
     + '<a class="gate-card-action" href="/setup#radioSection">OPEN ICOM-LAN SETUP</a>'
     + '<small id="lanGateDetail"></small>'
     + "</div>";
@@ -131,6 +133,23 @@
     host.insertBefore(card, host.firstChild);
     const line = doc.getElementById("lanGateDetail");
     if (line) line.textContent = detail;
+
+    // radioSlots[].model survives a reboot, so even with the link down the
+    // interface usually knows what it last spoke to. Name that, or name nothing --
+    // never a model the operator may not own.
+    const note = doc.getElementById("lanGateRadio");
+    if (note) {
+      const slot = result && result.slot;
+      const remembered = slot && config
+        ? String(config[`trx${slot}model`] || "").trim() : "";
+      note.textContent = remembered
+        ? `TRX${slot} last identified itself as ${remembered}. Any Icom transceiver with `
+          + "network remote control and network audio can be used here; the IC-705 is the "
+          + "model this interface has been verified against."
+        : "Any Icom transceiver with network remote control and network audio can be used "
+          + "here. The IC-705 is the model this interface has been verified against; press "
+          + "Test & identify radio in SETUP to record which one you have.";
+    }
   }
 
   // Resolves false when the page must not start. Callers return on false rather

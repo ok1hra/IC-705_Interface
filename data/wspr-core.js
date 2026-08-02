@@ -296,29 +296,32 @@
     {band: "6m", hz: 50293000},    {band: "2m", hz: 144489000},
   ];
 
-  // Full output at 100 % of the CI-V power scale, per radio. Keyed on
-  // /state.radioName -- what the radio reports about *itself* in its capabilities
-  // packet -- and never on the transport profile, which is "ICOM-LAN" for every
-  // model and so cannot tell 10 W from 100 W. (It used to be called "IC-705-LAN",
-  // which made trusting it look almost reasonable and was a factor-of-ten trap.)
-  // An unknown model deliberately has no entry: the UI must refuse to start
-  // rather than guess.
-  // IC-7760 was missing, which is not a cosmetic gap: with no entry fullPowerWatts()
-  // returns null and the page refuses to transmit at all ("unknown model"). 200 W is
-  // the radio's own default (IC-7760 basic manual: "Default: 200W (AM: 50W)").
-  // IC-7300MK2 needs no separate key -- the prefix match below catches it on "IC-7300",
-  // and 100 W is right for both.
-  const RADIO_FULL_POWER_W = {
-    "IC-705": 10, "IC-7610": 100, "IC-9700": 100, "IC-7300": 100,
-    "IC-7100": 100, "IC-7851": 200, "IC-9100": 100, "IC-7760": 200,
-  };
+  // Full output at 100 % of the CI-V power scale. Answered from icom-models.js,
+  // which is the single table the setup guides are also built from -- when watts
+  // and setup instructions were two separate lists they disagreed, and an IC-7760
+  // ended up unable to transmit WSPR at all because only one of them knew it.
+  //
+  // Keyed on what the radio reports about *itself* in its capabilities packet, and
+  // never on the transport profile: that is "ICOM-LAN" for every model and cannot
+  // tell 10 W from 200 W. An unrecognised radio deliberately has no answer, so the
+  // UI refuses to start rather than risk a factor-of-ten error.
+  const IcomModels = (typeof module === "object" && typeof require === "function")
+    ? require("./icom-models.js")
+    : (typeof globalThis !== "undefined" ? globalThis : self).IcomModels;
 
-  function fullPowerWatts(radioName) {
-    const key = String(radioName || "").trim().toUpperCase().replace(/\s+/g, "");
-    for (const [model, watts] of Object.entries(RADIO_FULL_POWER_W))
-      if (key.startsWith(model.replace("-", "")) || key.startsWith(model)) return watts;
-    return null;
-  }
+  const fullPowerWatts = reported => IcomModels.fullPowerWatts(reported);
+
+  // Label -> watts, for the WSPR manual override list. Derived rather than written
+  // out, so the menu cannot offer a model the guides do not know or miss one they
+  // do. Bridged-only radios (no network menus of their own, reachable through a
+  // wfview/RS-BA1 server) are included: the operator may still have to name one.
+  const RADIO_FULL_POWER_W = (() => {
+    const table = {};
+    for (const model of IcomModels.MODELS) table[model.label] = model.watts;
+    for (const [number, watts] of Object.entries(IcomModels.BRIDGED_ONLY_WATTS))
+      table[`IC-${number}`] = watts;
+    return table;
+  })();
 
   const dbmToWatts = dbm => Math.pow(10, (Number(dbm) - 30) / 10);
   const wattsToDbm = watts => 10 * Math.log10(Math.max(1e-6, Number(watts))) + 30;

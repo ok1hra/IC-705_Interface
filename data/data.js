@@ -1007,6 +1007,21 @@ function reconcileTimetable() {
   requestFrequency(slot.hz).catch(()=>{});
 }
 
+// trx-help.js is a separate script, so guard rather than assume: a page that
+// somehow loads without it must still work, just without the guide.
+function root_TrxHelp() { return typeof TrxHelp === "undefined" ? null : TrxHelp; }
+
+// Before any radio answers, the model the operator's radio reported last time is
+// still the right guide to open -- radioSlots[].model survives a reboot precisely
+// so this answer does not disappear with the link.
+function seedTrxHelpFromSetup() {
+  const help=root_TrxHelp(); if(!help)return;
+  if(state.radio.radioName)return;
+  const config=(typeof LanGate!=="undefined" && LanGate.config()) || null;
+  const slot=(typeof LanGate!=="undefined" && LanGate.slot()) || 0;
+  if(config && slot) help.setReportedModel(config[`trx${slot}model`] || "");
+}
+
 function hasSeenTrxHelp() {
   try { return localStorage.getItem(TRX_HELP_SEEN_KEY) === "1"; }
   catch (_error) { return false; }
@@ -4031,6 +4046,9 @@ async function pollRadio() {
     const next=await response.json();
     noteRadioLink(next);
     state.radio={...state.radio,...next,frequency:Number(next.frequency)||0};
+    // The setup guide follows the radio, not the page: whatever model this reports
+    // is the procedure the help dialog opens on. No-op when unchanged.
+    if(root_TrxHelp())root_TrxHelp().setReportedModel(state.radio.radioName);
     const activityFrequencyChanged=selectActivityFrequency(state.radio.frequency);
     if (state.pendingFrequency && state.radio.frequency===state.pendingFrequency) state.pendingFrequency=null;
     noteRfKnob(); applyAutoRfPower();
@@ -4071,6 +4089,7 @@ async function checkLanConfiguration() {
     .map(entry=>entry.trim().toLowerCase()).filter(Boolean);
   state.lanConfig={checked:true,...LanGate.result()};
   renderTrxSlotLabel();
+  seedTrxHelpFromSetup();
   return ready;
 }
 

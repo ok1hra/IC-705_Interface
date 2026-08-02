@@ -356,7 +356,7 @@ f.onload=()=>{
       // The card is built by lan-gate.js and worded for both sub-pages, so it
       // says DATA rather than JS8Call and names the transports that still exist.
       const gd=lanGateFrame.contentDocument,lanGate=gd.querySelector('#lanGate');
-      checks.lanRequiredGate=gd.body.classList.contains('lan-gate-blocked')&&!!lanGate&&!lanGate.hidden&&!gd.querySelector('.brand')&&getComputedStyle(gd.querySelector('.radio-bar')).display==='none'&&getComputedStyle(gd.querySelector('#js8Interface')).display==='none'&&lanGate.querySelector('h1')?.textContent.trim()==='DATA requires a TRX over ICOM-LAN'&&lanGate.textContent.includes('TRXNET and CI-V carry commands only')&&!lanGate.textContent.includes('Bluetooth')&&lanGate.textContent.includes('Other Icom transceivers')&&!!lanGate.querySelector('a[href="/setup#radioSection"]');
+      checks.lanRequiredGate=gd.body.classList.contains('lan-gate-blocked')&&!!lanGate&&!lanGate.hidden&&!gd.querySelector('.brand')&&getComputedStyle(gd.querySelector('.radio-bar')).display==='none'&&getComputedStyle(gd.querySelector('#js8Interface')).display==='none'&&lanGate.querySelector('h1')?.textContent.trim()==='DATA requires a TRX over ICOM-LAN'&&lanGate.textContent.includes('TRXNET and CI-V carry commands only')&&!lanGate.textContent.includes('Bluetooth')&&lanGate.textContent.includes('Any Icom transceiver')&&!!lanGate.querySelector('a[href="/setup#radioSection"]');
       // The sub-nav is the one thing that must outlive the blanking, otherwise a
       // blocked WSPR page would have no way back to JS8LAN.
       checks.lanGateKeepsSubnav=getComputedStyle(gd.querySelector('.subtabs')).display!=='none'&&
