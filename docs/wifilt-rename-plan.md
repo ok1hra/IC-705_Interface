@@ -342,3 +342,58 @@ a pořád vysvětluje jen IC-705. Proto stejný REV.
 Zároveň je to jediná část, kterou **grep neověří** — potřebuje napsat nový obsah z pěti PDF
 a kontrolu na rádiu. Proto samostatný commit až po renamu: kdyby per-model návody potřebovaly
 víc práce, nesmí držet rename jako rukojmí.
+
+---
+
+## 10. Stav provedení (2026-08-02)
+
+Větev `wifilt-rename`. **Commity 2, 3, 5, 6, 7 hotové a software-ověřené; commit 4 zrušen;
+commit 1 zbývá.**
+
+| # | Commit | Stav |
+|---|---|---|
+| 2 | síťová identita → `wifilt` | `34790c8` |
+| 3 | branding + trademark + IC-7760 fix | `79d2cf5` |
+| 6 | `IC-705-LAN` → `ICOM-LAN` | `da98930` |
+| 5 | URL → `ok1hra/wifilt` | `cfa0001` — Pages i repo ověřeny HTTP 200 |
+| 7 | multi-model nápověda | `cd33bed` |
+| 4 | `hw/` + `3Dprint/` | **ZRUŠENO** |
+| 1 | adresář + `.ino` → `wifilt` | **ZBÝVÁ**, viz níže |
+
+Nezbývá žádná neověřená softwarová část. Chybí **kontrola na rádiu** — žádné jiné rádio než
+IC-705 zatím ty menu cesty nepotvrdilo.
+
+### Co ještě není v gitu
+
+Devět upravených souborů je **netrackovaných** (rozhodnutí operátora: nepřidávat). Úpravy jsou
+na disku, v žádném commitu:
+`tools/{js8-session-browser,wspr-browser,state-json-budget,wake-lock}-smoke.js`,
+`docs/{find-device-ip,how-to-bugfix,how-to-regenerate-manual,wspr-page-redesign,mercury-implementace}.md`.
+
+### Recept na commit 1
+
+Musí být poslední a samostatný. Přejmenování adresáře odřízne agentovi přístup k souborům,
+proto ho nedělal.
+
+```
+git mv IC-705_Interface.ino wifilt.ino
+cd .. && mv IC-705_Interface wifilt && cd wifilt
+rm -rf prototype/js8-core-prototype/build prototype/js8-core-prototype/build-wasm
+sed -i 's|IC-705_Interface\.ino|wifilt.ino|g' \
+  tools/gh-pages.sh tools/upload-firmware-spiffs.sh Changelog.md \
+  docs/aud1-audio-websocket-protocol.md docs/icom-lan-network-audit.md
+# netrackované, ale jinak přestanou fungovat -- parsují sketch podle jména:
+sed -i 's|IC-705_Interface\.ino|wifilt.ino|g' \
+  tools/state-json-budget-smoke.js tools/wspr-browser-smoke.js \
+  tools/setup-radio-contract-smoke.js \
+  prototype/js8-core-prototype/firmware/extract_sketch_aud1.py
+```
+
+`docs/wifilt-rename-plan.md` ze sweepu **vynechat** — je z poloviny tabulka starý→nový a smazal
+by si vlastní obsah (§7).
+
+Arduino váže jméno `.ino` na jméno adresáře, a výchozí jméno adresáře po `git clone` je jméno
+repa — proto `wifilt`, malými, shodně s `wifilt.local` a s repem.
+
+Po přejmenování ověřit: `node tools/state-json-budget-smoke.js`,
+`node tools/setup-radio-contract-smoke.js` (oba čtou sketch), pak build.
