@@ -445,7 +445,7 @@
         // whether this page is being served from the AP or from the real LAN.
         window.setupDeviceInfo = {
           apMode: !!data.apMode,
-          hostname: data.hostname || 'ic705',
+          hostname: data.hostname || 'wifilt',
           lastStaIp: data.lastStaIp || ''
         };
         if (window.setupWifiHandoff) window.setupWifiHandoff.showLastKnown();
@@ -1106,7 +1106,7 @@
       const day = String(d.getDate()).padStart(2, '0');
       const h   = String(d.getHours()).padStart(2, '0');
       const mi  = String(d.getMinutes()).padStart(2, '0');
-      const filename = y + mo + day + '-' + h + mi + '-ic705-config.json';
+      const filename = y + mo + day + '-' + h + mi + '-wifilt-config.json';
       fetch('/config/download', { cache: 'no-store' }).then(function(r) {
         if (!r.ok) throw new Error('download ' + r.status);
         return r.blob();

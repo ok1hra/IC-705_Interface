@@ -31,7 +31,7 @@
   const GROUP = "@APRSIS";
   const ADDRESSEE_WIDTH = 9;
   const MESSAGE_TEXT_LIMIT = 67;
-  const RECENT_KEY = "ic705.data.js8-aprs-recent.v1";
+  const RECENT_KEY = "wifilt.data.js8-aprs-recent.v1";
   const RECENT_MAX = 5;
   // Mirrors MODE_PERIOD_SECONDS in data.js: seconds of airtime per JS8 frame.
   const PERIOD_SECONDS = {0:15, 1:10, 2:6, 4:30, 8:4};

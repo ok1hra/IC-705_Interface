@@ -7,7 +7,7 @@ const PAGE_PARAMS = new URLSearchParams(location.search);
 const TEST_MODE = PAGE_PARAMS.has("test");
 const ASSET_REV = "20260719d";
 const assetUrl = path => `${path}?v=${ASSET_REV}`;
-const TRX_HELP_SEEN_KEY = "ic705.data.trx-help-seen.v1";
+const TRX_HELP_SEEN_KEY = "wifilt.data.trx-help-seen.v1";
 // This page drives the LAN radio, which the operator may have put on any of the
 // three TRX slots, so it asks the firmware for that radio by name rather than
 // for "the primary radio" -- /state and /cmd without the marker still mean TRX1
@@ -1035,7 +1035,7 @@ function renderTrxSlotLabel() {
 // pages can never put different watts on the same transmitter. An unrecognised
 // model returns null rather than a guess -- a factor-of-ten error here would be
 // invisible and wrong.
-const WSPR_SETTINGS_KEY="ic705.wspr.v1";
+const WSPR_SETTINGS_KEY="wifilt.wspr.v1";
 function fullPowerScale() {
   let override="";
   try { override=String((JSON.parse(localStorage.getItem(WSPR_SETTINGS_KEY)||"null")||{}).modelOverride||""); }

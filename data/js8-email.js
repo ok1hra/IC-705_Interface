@@ -5,7 +5,7 @@
   if (typeof module === "object" && module.exports) module.exports = value;
   else root.Js8Email = value;
 })(typeof globalThis !== "undefined" ? globalThis : self, function () {
-  const STORAGE_KEY = "ic705.data.js8-email-gateways.v1";
+  const STORAGE_KEY = "wifilt.data.js8-email-gateways.v1";
   const TARGET_RE = /^(@[A-Z0-9/]+|[A-Z0-9/]+(?:>[A-Z0-9/]+)*)$/;
   const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   const FORMATS = ["direct", "direct-msg", "template", "aprs-email2"];

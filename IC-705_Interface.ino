@@ -49,7 +49,7 @@
 
   Features
   + Three independently configured radio slots using LAN, TrxNet or CI-V
-  + Frequency and mode for PHP log available on http port 81 (address http://ic705.local:81)
+  + Frequency and mode for PHP log available on http port 81 (address http://wifilt.local:81)
   + UDP port 89 receives ascii characters and transmits them as a CW or RTTY message
   + UDP port 89 receives ascii characters, which it sends in RTTY mode by keying FSK and PTT TRX inputs
   + Status LED
@@ -60,7 +60,7 @@
       - FLASH send MQTT freq
       - DOUBLE FLASH receive CW via UDP
       - FLASH+PTT receive RTTY via UDP
-  + mDNS - to easily find IP devices in the network, using the command "ping ic705.local"
+  + mDNS - to easily find IP devices in the network, using the command "ping wifilt.local"
   + Watchdog - resets the device after more than 73 seconds of inactivity
   + Output signal POWER-OUT (13.8V/0.5A) with LED activates after connecting a full-CAT primary radio
   + Galvanically isolated CI-V output for connecting PA or other devices
@@ -294,13 +294,13 @@ volatile bool btConnectPending = false;
   #include <ESPmDNS.h>
   #include <DNSServer.h>
 
-  const char* ssidAP     = "IC705-if";
+  const char* ssidAP     = "WIFILT-AP";
   const char* passwordAP = "remoteqth";
   // One name for three lookup paths: the DHCP hostname the router registers in
-  // its own DNS (http://ic705/), the mDNS name (http://ic705.local) and the AP
+  // its own DNS (http://wifilt/), the mDNS name (http://wifilt.local) and the AP
   // captive portal. Keeping them identical is the whole point -- the operator
   // types one string no matter which mechanism their network actually supports.
-  const char* deviceHostname = "ic705";
+  const char* deviceHostname = "wifilt";
   bool APmode = false;
   // WebServer discards the client before handleClient() returns, so the slow-loop
   // diagnostic can't sample it from outside. Response writes (where stalls to a dead
@@ -2815,7 +2815,7 @@ void handleConfigDownload() {
   j += "}";
   webServer.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
   webServer.sendHeader("Pragma", "no-cache");
-  webServer.sendHeader("Content-Disposition", "attachment; filename=\"ic705-config.json\"");
+  webServer.sendHeader("Content-Disposition", "attachment; filename=\"wifilt-config.json\"");
   webServer.sendHeader("Connection", "close");
   webServer.client().setNoDelay(true);
   webServer.send(200, "application/json", j);
@@ -4642,7 +4642,7 @@ void ServiceBackgroundTasks(unsigned long waitMs) {
 //-------------------------------------------------------------------------------------------------------
 // Must run after WiFi.mode(WIFI_STA) and BEFORE WiFi.begin() -- the hostname is
 // only carried in the DHCP request, so setting it later has no effect until the
-// next lease. With it the router lists the device as "ic705" and most consumer
+// next lease. With it the router lists the device as "wifilt" and most consumer
 // routers publish that in their local DNS, which is the only find-me path that
 // also works from Android (plain unicast DNS, no multicast involved).
 //
@@ -4675,7 +4675,7 @@ void StartMdns() {
 
 //-------------------------------------------------------------------------------------------------------
 // The responder is bound to the interface it was started on; after a reconnect
-// the registration is stale and ic705.local quietly stops resolving -- which is
+// the registration is stale and wifilt.local quietly stops resolving -- which is
 // most of the "mDNS works sometimes" experience. TrxNet already re-announces on
 // this same edge, mDNS was simply forgotten. Kept out of TrxNetLoop() because
 // that one returns early when TrxNet is disabled, which is unrelated to mDNS.
@@ -6227,7 +6227,7 @@ void ListCommands(){
     Serial.println("  WIFI-MAC "+String(MACString) );
     Serial.println("  WIFI-dBm: "+String(WiFi.RSSI()) );
     Serial.println("----------------------------------------------------------------------------" );
-    Serial.println("  For setup OPEN url http://ic705.local or http://"+String(WiFi.localIP()[0])+"."+String(WiFi.localIP()[1])+"."+String(WiFi.localIP()[2])+"."+String(WiFi.localIP()[3]) );
+    Serial.println("  For setup OPEN url http://"+String(deviceHostname)+".local or http://"+String(WiFi.localIP()[0])+"."+String(WiFi.localIP()[1])+"."+String(WiFi.localIP()[2])+"."+String(WiFi.localIP()[3]) );
     Serial.println("----------------------------------------------------------------------------" );
     if(TRXNET_ID != 0x00){
       Serial.println("  TrxNet device: "+String(trxDeviceName)+" port:"+String(TRXNET_PORT));
@@ -6267,7 +6267,7 @@ void APcliAlert(){
   Serial.println("---------------------------------------------------------------");
   Serial.println("  PLEASE connect your PC to '"+String(ssidAP)+"' WiFi access-point");
   Serial.println("  with password 'remoteqth'");
-  Serial.println("  and OPEN url http://ic705.local or http://"+String(IP[0])+"."+String(IP[1])+"."+String(IP[2])+"."+String(IP[3]) );
+  Serial.println("  and OPEN url http://"+String(deviceHostname)+".local or http://"+String(IP[0])+"."+String(IP[1])+"."+String(IP[2])+"."+String(IP[3]) );
   Serial.println("  AP mode can be entered again only from the serial console");
   Serial.println("---------------------------------------------------------------");
   Serial.println();

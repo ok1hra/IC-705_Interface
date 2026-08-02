@@ -11,6 +11,27 @@ published.
 
 ## Working tree — not committed
 
+* **⚠️ The device answers to a new name: `wifilt`, not `ic705`.** First step of the rename to
+  **WIFILT — Web interface for Icom LAN Transceivers**; the project stopped being IC-705-only when
+  radio-type autodetection landed, and a hostname that names one model out of five was actively
+  lying to anyone running an IC-7610. `deviceHostname` is one constant behind three lookup paths —
+  DHCP hostname (`http://wifilt/`), mDNS (`http://wifilt.local`) and the AP portal — so all three
+  moved together, and the two serial hints that used to spell the name out now interpolate the
+  constant instead of keeping a second copy that could drift. The fallback access point is
+  **`WIFILT-AP`** (was `IC705-if`), config backups download as `wifilt-config.json`, and exported
+  ADIF carries `PROGRAMID` `WIFILT-Log`.
+  **Export your log before you update.** `http://ic705.local` and `http://wifilt.local` are
+  different *origins* to a browser, and the QSO database lives in browser storage
+  (`contestLogDb`, IndexedDB) — so after this update the log, the JS8 settings, the email
+  gateways and the stored file transfers all look empty. Nothing is deleted; it is filed under
+  the old name. Open **LOGSYNC** on `http://ic705.local` first and export, then import once on the
+  new address. Anyone who bookmarked the device by IP address is unaffected: that was already a
+  separate origin.
+  Because the state is lost either way, the browser storage keys were renamed in the same pass
+  (`ic705.*` → `wifilt.*`, `ic705-dxc-*` → `wifilt-dxc-*`), which is free now and would never be
+  free again. Untouched on purpose: the `IC-705` power table and every other statement that is
+  about *the radio* rather than about this software, and the dead Bluetooth-era identifiers.
+
 * **Neither IP address has to be typed from memory any more — the radio's is scanned for, and the
   interface's is handed over.** Two addresses stood between a box on the bench and a working
   system, and both were the operator's problem.

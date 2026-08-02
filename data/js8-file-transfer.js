@@ -7,7 +7,7 @@
 })(typeof globalThis!=="undefined"?globalThis:self,function(){
   const BASE32="ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
   const PROTOCOL_PREFIX="~F1";
-  const DB_NAME="ic705-js8-file-transfers";
+  const DB_NAME="wifilt-js8-file-transfers";
   const DB_VERSION=1;
   const STORE_NAME="sessions";
   const DEFAULTS={protocolVersion:1,blockSizeBytes:32,maxContinuousTxSeconds:120,

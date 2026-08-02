@@ -17,7 +17,7 @@
     Number(new URLSearchParams(location.search).get("audioPort")) || 83;
   const STATE_POLL_MS = 1000;
   const SESSION_PING_MS = 5000, SESSION_RETRY_MS = 3000, SESSION_PROBE_MS = 250;
-  const SETTINGS_KEY = "ic705.wspr.v1";
+  const SETTINGS_KEY = "wifilt.wspr.v1";
   const PREPARE_LEAD_MS = 10000;    // must match WsprTx's window
   // Back-to-back frames leave 9,4 s between the end of one WSPR signal (110,592 s
   // of a 120 s frame) and the start of the next, and the band change has to fit

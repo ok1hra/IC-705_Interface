@@ -570,11 +570,11 @@ cat > "${OUTPUT_DIR}/index.html" <<EOF
 
       <h2>Open the interface after flashing</h2>
       <ol>
-        <li>On its first boot, the device creates the WiFi network <code>IC705-if</code>. Connect to it using password <code>remoteqth</code>.</li>
-        <li>Open <code>http://192.168.4.1/setup</code> in your browser. You can also try <code>http://ic705.local/setup</code>; some phones open the setup portal automatically.</li>
+        <li>On its first boot, the device creates the WiFi network <code>WIFILT-AP</code>. Connect to it using password <code>remoteqth</code>.</li>
+        <li>Open <code>http://192.168.4.1/setup</code> in your browser. You can also try <code>http://wifilt.local/setup</code>; some phones open the setup portal automatically.</li>
         <li>Configure your normal WiFi and the IC-705 <strong>TRX1 LAN</strong> address, username, and password. Select <strong>Save &amp; Restart</strong>, then reconnect your phone or computer to the normal WiFi.</li>
         <li>Find the interface's new IP address in your router's DHCP client list, or open the installer serial console at <code>9600 baud</code> and press <strong>Reset Device</strong> to read it from the boot log.</li>
-        <li>Open <code>http://&lt;assigned-IP&gt;/</code> or try <code>http://ic705.local/</code>. Bookmark the working address.</li>
+        <li>Open <code>http://&lt;assigned-IP&gt;/</code> or try <code>http://wifilt.local/</code>. Bookmark the working address.</li>
       </ol>
 
       <p class="muted">

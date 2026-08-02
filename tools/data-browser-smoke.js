@@ -56,7 +56,7 @@ const server=http.createServer((req,res)=>{
   // AP handoff: one scanning poll, then the station is up. The page has to walk
   // both phases before it may show an address.
   if(url.pathname==="/setup/wifi-try"&&req.method==="POST"){wifiTryPolls=0;res.statusCode=202;res.setHeader("Content-Type","application/json");res.end('{"ok":true}');return;}
-  if(url.pathname==="/setup/wifi-try.json"){wifiTryPolls++;const up=wifiTryPolls>1;res.setHeader("Content-Type","application/json");res.end(JSON.stringify({state:up?"ok":"scanning",ip:up?"192.168.1.55":"",ssid:"fixture-wifi",reason:"",host:"ic705"}));return;}
+  if(url.pathname==="/setup/wifi-try.json"){wifiTryPolls++;const up=wifiTryPolls>1;res.setHeader("Content-Type","application/json");res.end(JSON.stringify({state:up?"ok":"scanning",ip:up?"192.168.1.55":"",ssid:"fixture-wifi",reason:"",host:"wifilt"}));return;}
   if(url.pathname==="/setup/save"&&req.method==="POST"){let body="";req.on("data",c=>body+=c);req.on("end",()=>{setupSaveBody=body;res.setHeader("Content-Type","application/json");res.end('{"ok":true}');});return;}
   if(url.pathname==="/restart"&&req.method==="POST"){setupRestartRequests++;res.setHeader("Content-Type","application/json");res.end('{"ok":true}');return;}
   if(url.pathname==="/lan/reconnect"&&req.method==="POST"){lanReconnectRequests++;res.setHeader("Content-Type","application/json");res.end('{"ok":true}');return;}
@@ -167,7 +167,7 @@ f.onload=()=>{
       editingCall.value='OK1HRA';editingCall.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));
       editingGrid.value='JO70';editingGrid.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));
       editingTxGain.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));
-      const savedTxGain=JSON.parse(f.contentWindow.localStorage.getItem('ic705.data.js8-settings')).modems.js8call.txGain;
+      const savedTxGain=JSON.parse(f.contentWindow.localStorage.getItem('wifilt.data.js8-settings')).modems.js8call.txGain;
       const currentPreset=d.querySelector('[data-frequency="14078000"]');
       const stationObserved={speed:d.querySelector('#stationRows tr[data-call="K0OG"] td:nth-child(5)')?.textContent.trim(),fallbackTitle:d.querySelector('#stationRows tr[data-call="K0OG"] .station-direction span')?.title,gridTitle:d.querySelector('#stationRows tr[data-call="KN4CRD"] .station-direction span')?.title,distance:d.querySelector('#stationRows tr[data-call="K0OG"] .station-distance')?.textContent};
       const overlay=d.querySelector('#waterfallOverlay'),overlayContext=overlay.getContext('2d'),hzX=hz=>Math.round((hz-500)/(2700-500)*overlay.width);
@@ -203,7 +203,7 @@ f.onload=()=>{
         frequencyScopedActivity:originalBandActivity.messages===6&&originalBandActivity.calls===3&&otherBandStartsEmpty.messages===0&&otherBandStartsEmpty.calls===0&&otherBandActivity.messages===1&&otherBandActivity.calls===1&&restoredBandActivity.messages===6&&restoredBandActivity.calls===3&&withinToleranceActivity.messages===6&&withinToleranceActivity.calls===3,
         offDialFrequencyMarked:offDialMarksButton&&onDialClearsButton,
         emptyIdentityDefaults,
-        // This harness browses http://ic705.test, a named host rather than
+        // This harness browses http://wifilt.test, a named host rather than
         // loopback, so it is NOT a secure context and navigator.wakeLock is
         // undefined here exactly as it is on http://192.168.x.x. That makes the
         // state deterministic: the keeper must fall through to the video, and
@@ -404,13 +404,13 @@ f.onload=()=>{
       // and the QR itself can only be judged on hardware. Reset to station at
       // the end -- leaving apMode set would divert the save test into handoff.
       const sw=setupFrame.contentWindow;
-      sw.setupDeviceInfo={apMode:true,hostname:'ic705',lastStaIp:'192.168.1.55'};
+      sw.setupDeviceInfo={apMode:true,hostname:'wifilt',lastStaIp:'192.168.1.55'};
       sw.setupWifiHandoff.showLastKnown();
       const lastKnown=sd.querySelector('#wifiLastKnown');
       checks.wifiLastKnownHint=lastKnown.hidden===false&&
         lastKnown.querySelector('a')?.getAttribute('href')==='http://192.168.1.55'&&
         sw.setupWifiHandoff.available()===true;
-      sw.setupDeviceInfo={apMode:false,hostname:'ic705',lastStaIp:'192.168.1.55'};
+      sw.setupDeviceInfo={apMode:false,hostname:'wifilt',lastStaIp:'192.168.1.55'};
       sw.setupWifiHandoff.showLastKnown();
       checks.wifiLastKnownStationHidden=lastKnown.hidden===true&&sw.setupWifiHandoff.available()===false;
       // The handover screen itself. Driven into a scratch container because
@@ -424,8 +424,8 @@ f.onload=()=>{
       await new Promise(resolve=>setTimeout(resolve,2400));
       const handoffLink=holder.querySelector('.wifi-handoff-url a');
       checks.wifiHandoffAddress=!!handoffLink&&handoffLink.getAttribute('href')==='http://192.168.1.55'&&
-        !!holder.querySelector('a[href="http://ic705/"]')&&
-        !!holder.querySelector('a[href="http://ic705.local/"]')&&
+        !!holder.querySelector('a[href="http://wifilt/"]')&&
+        !!holder.querySelector('a[href="http://wifilt.local/"]')&&
         !!holder.querySelector('#wifiHandoffDone');
       holder.remove();
       // Unattended panel: armed, but the fixture says the modem tab has been
@@ -1158,4 +1158,4 @@ wsConnections++;wsOpenedAt=Date.now();if(!jscComplete)earlyWsConnections++;const
 // makes the wake lock checks meaningful: the video fallback is a mobile technique
 // and a desktop user agent would (correctly) refuse to use it.
 const ANDROID_UA="Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36";
-server.listen(0,"127.0.0.1",()=>{chrome=spawn("google-chrome",["--headless=new","--no-sandbox","--disable-gpu","--disable-dev-shm-usage","--no-proxy-server",`--user-agent=${ANDROID_UA}`,"--host-resolver-rules=MAP ic705.test 127.0.0.1",`http://ic705.test:${server.address().port}/smoke.html`]);let errors="";chrome.stderr.on("data",c=>errors+=c);chrome.on("close",code=>{if(!finished)finish(false,`DATA BROWSER FAIL Chrome exited ${code}\n${errors}`);});timer=setTimeout(()=>finish(false,`DATA BROWSER FAIL timeout prepares=${txPrepares} packets=${txPackets}`),55000);});
+server.listen(0,"127.0.0.1",()=>{chrome=spawn("google-chrome",["--headless=new","--no-sandbox","--disable-gpu","--disable-dev-shm-usage","--no-proxy-server",`--user-agent=${ANDROID_UA}`,"--host-resolver-rules=MAP wifilt.test 127.0.0.1",`http://wifilt.test:${server.address().port}/smoke.html`]);let errors="";chrome.stderr.on("data",c=>errors+=c);chrome.on("close",code=>{if(!finished)finish(false,`DATA BROWSER FAIL Chrome exited ${code}\n${errors}`);});timer=setTimeout(()=>finish(false,`DATA BROWSER FAIL timeout prepares=${txPrepares} packets=${txPackets}`),55000);});

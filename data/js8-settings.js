@@ -5,7 +5,7 @@
   if (typeof module === "object" && module.exports) module.exports = value;
   else root.Js8Settings = value;
 })(typeof globalThis !== "undefined" ? globalThis : self, function () {
-  const STORAGE_KEY = "ic705.data.js8-settings";
+  const STORAGE_KEY = "wifilt.data.js8-settings";
   const SCHEMA_VERSION = 9;
   // Frequency timetable: 48 half-hour UTC slots (index 0 = 00:00, 47 = 23:30).
   // Global to the station (one radio), independent of the active modem.
