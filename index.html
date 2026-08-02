@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
-  <title>IC-705 Interface — firmware installer</title>
+  <title>Firmware installer — WIFILT</title>
   <script type="module" src="https://unpkg.com/esp-web-tools@10.4.0/dist/web/install-button.js?module"></script>
   <style>
     :root {
@@ -129,16 +129,26 @@
       --esp-tools-button-border-radius: 999px;
     }
     .muted { color: #64748b; font-size: 0.88rem; margin-top: 0.75rem; }
+    /* The tagline names Icom descriptively, so the trademark notice has to sit on
+       the same page -- this is the project's public front door. */
+    h1 .tagline {
+      display: block;
+      margin-top: 0.35rem;
+      color: #94a3b8;
+      font-size: 0.95rem;
+      font-weight: 400;
+    }
+    .legal { margin-top: 1.75rem; font-size: 0.78rem; line-height: 1.5; }
     a { color: #60a5fa; }
   </style>
 </head>
 <body>
   <main>
     <div class="card">
-      <h1>IC-705 Interface</h1>
+      <h1>WIFILT<span class="tagline">Web interface for Icom LAN Transceivers</span></h1>
       <p class="subtitle">
-        Firmware installer &mdash; version <code>20260731</code> &nbsp;&bull;&nbsp;
-        <a href="https://github.com/ok1hra/IC-705_Interface" target="_blank">GitHub</a>
+        Firmware installer &mdash; version <code>20260803</code> &nbsp;&bull;&nbsp;
+        <a href="https://github.com/ok1hra/wifilt" target="_blank">GitHub</a>
       </p>
 
       <hr class="divider">
@@ -189,28 +199,32 @@
       </p>
       <ul>
         <li>After connecting, select the correct <code>CP210x</code> / <code>CH340</code> / <code>JTAG</code> serial device.</li>
-        <li>Choose <strong>Install IC-705 Interface</strong> and follow the prompts.</li>
+        <li>Choose <strong>Install WIFILT</strong> and follow the prompts.</li>
       </ul>
 
       <div class="cta">
-        <esp-web-install-button manifest="manifest.json?v=20260731" baudrate="9600"></esp-web-install-button>
+        <esp-web-install-button manifest="manifest.json?v=20260803" baudrate="9600"></esp-web-install-button>
       </div>
 
       <hr class="divider">
 
       <h2>Open the interface after flashing</h2>
       <ol>
-        <li>On its first boot, the device creates the WiFi network <code>IC705-if</code>. Connect to it using password <code>remoteqth</code>.</li>
-        <li>Open <code>http://192.168.4.1/setup</code> in your browser. You can also try <code>http://ic705.local/setup</code>; some phones open the setup portal automatically.</li>
-        <li>Configure your normal WiFi and the IC-705 <strong>TRX1 LAN</strong> address, username, and password. Select <strong>Save &amp; Restart</strong>, then reconnect your phone or computer to the normal WiFi.</li>
+        <li>On its first boot, the device creates the WiFi network <code>WIFILT-AP</code>. Connect to it using password <code>remoteqth</code>.</li>
+        <li>Open <code>http://192.168.4.1/setup</code> in your browser. You can also try <code>http://wifilt.local/setup</code>; some phones open the setup portal automatically.</li>
+        <li>Configure your normal WiFi and the radio's <strong>TRX1 LAN</strong> address, username, and password. Select <strong>Save &amp; Restart</strong>, then reconnect your phone or computer to the normal WiFi.</li>
         <li>Find the interface's new IP address in your router's DHCP client list, or open the installer serial console at <code>9600 baud</code> and press <strong>Reset Device</strong> to read it from the boot log.</li>
-        <li>Open <code>http://&lt;assigned-IP&gt;/</code> or try <code>http://ic705.local/</code>. Bookmark the working address.</li>
+        <li>Open <code>http://&lt;assigned-IP&gt;/</code> or try <code>http://wifilt.local/</code>. Bookmark the working address.</li>
       </ol>
 
       <p class="muted">
         Flashes: bootloader, partition table, boot_app0, firmware, LittleFS filesystem.
-        For manual flashing use <code>ic705-20260731-full.bin</code> at offset <code>0x0</code>
+        For manual flashing use <code>wifilt-20260803-full.bin</code> at offset <code>0x0</code>
         with <code>esptool.py</code>.
+      </p>
+      <p class="muted legal">
+        Icom is a registered trademark of Icom Incorporated. WIFILT is an independent software
+        project and is not affiliated with, endorsed by, or sponsored by Icom Incorporated.
       </p>
     </div>
   </main>
