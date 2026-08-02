@@ -106,7 +106,11 @@ can read the address from the radio's own menu, or let the interface find it.
 | Control | Description |
 |---------|-------------|
 | **Scan** (beside Radio IP address) | Probes every host on the local /24 on UDP 50001 and lists whatever answers. Click a result to fill the address in. Takes a few seconds. |
-| **Test connection** | Performs a real login with the address, username and password in the form, and reports whether the radio accepted them, refused them, or did not answer at all. |
+| **Test & identify radio** | Performs a real login with the address, username and password in the form, and reports whether the radio accepted them, refused them, or did not answer at all. On success it also reads the radio's model from its capabilities packet and remembers it. |
+
+The stored model is what lets the WSPR and JS8 pages know whether 100 % of the power scale means
+10 W or 100 W. Without it WSPR refuses to transmit rather than risk a factor-of-ten error, so it is
+worth pressing the button once per radio. It also refreshes itself on every normal connection.
 
 Scanning never logs in, so it will not take the IC-705's single session away from a wfview instance
 that is connected at the time. It does briefly stop this interface's own radio link, because it

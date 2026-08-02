@@ -405,6 +405,8 @@ IcomLanClient* icomTestClient = nullptr;
 IPAddress icomTestIp;
 String   icomTestUser, icomTestPass;
 uint8_t  icomTestCivAddr = 0xA4;
+uint8_t  icomTestSlot = 0;             // which TRX slot the tested address belongs to
+String   icomTestModel;                // model the radio reported during the test
 uint32_t icomTestDeadline = 0;
 const char* icomTestResult = "idle";   // idle|running|ok|bad_credentials|no_answer
 
@@ -443,6 +445,11 @@ struct RadioSlotConfig {
   String lanIp;
   String lanUser;
   String lanPass;
+  // Model the radio reported in its capabilities packet, remembered across
+  // reboots. Not operator-editable -- it is an observation, not a setting.
+  // WSPR needs it to know whether 100 % of the CI-V power scale means 10 W or
+  // 100 W, and without a stored copy that answer disappears with the link.
+  String model;
 };
 
 RadioSlotConfig radioSlots[3];
@@ -1631,6 +1638,8 @@ void handleSetupData(){
     j += configJsonEscape(radioSlots[slot].lanUser); j += "\"";
     j += ",\""; j += prefix; j += "lanpass\":\"";
     j += configJsonEscape(radioSlots[slot].lanPass); j += "\"";
+    j += ",\""; j += prefix; j += "model\":\"";
+    j += configJsonEscape(radioSlots[slot].model); j += "\"";
   }
   // Compatibility aliases used by the current JS8 readiness check and older
   // setup backups while the unified per-slot keys become authoritative.
@@ -1782,6 +1791,12 @@ void handleIcomTestStart(){
   icomTestUser = user;
   icomTestPass = pass;
   icomTestCivAddr = civ.length() ? (uint8_t)strtoul(civ.c_str(), nullptr, 16) : 0xA4;
+  // The page names the slot so a detected model is stored against the right
+  // one; matching by IP would fail for an address that is not saved yet.
+  String slotArg = extractJsonString(body, "slot");
+  long slotNum = slotArg.length() ? slotArg.toInt() : 1;
+  icomTestSlot = (slotNum >= 1 && slotNum <= 3) ? (uint8_t)(slotNum - 1) : 0;
+  icomTestModel = "";
   icomTestResult = "running";
   icomScanPhase = ISCAN_TEST_SUSPEND;
   icomScanSendJson(202, "{\"ok\":true}");
@@ -1790,7 +1805,12 @@ void handleIcomTestStart(){
 void handleIcomTestStatus(){
   const char* st = icomTestResult;
   if (icomScanPhase == ISCAN_TEST_SUSPEND || icomScanPhase == ISCAN_TEST_RUN) st = "running";
-  icomScanSendJson(200, String("{\"state\":\"") + st + "\"}");
+  String j = "{\"state\":\"";
+  j += st;
+  j += "\",\"model\":\"";
+  j += configJsonEscape(icomTestModel);
+  j += "\"}";
+  icomScanSendJson(200, j);
 }
 
 // ---- AP -> station handoff endpoints ---------------------------------------
@@ -1879,6 +1899,16 @@ void handleWebServerLoop(){
 static const char *radioNameForJson(IcomLanClient *client){
   static char safe[16];
   const char *source = client ? client->radioModelName() : "";
+  // Fall back to what this radio reported last time. WSPR refuses to transmit
+  // without a known model -- correctly, since 100 % of the CI-V scale is 10 W
+  // on an IC-705 and 100 W on an IC-7610 -- and before this the answer was
+  // forgotten the moment the link dropped, leaving the page dead until a live
+  // session came back. A remembered observation is not a guess; a live one
+  // still wins, and every successful connection refreshes it.
+  if ((!source || !source[0]) && client) {
+    uint8_t slot = lanRadioSlotIndex();
+    if (slot != 0xFF) source = radioSlots[slot].model.c_str();
+  }
   size_t out = 0;
   for (size_t i = 0; source[i] && out + 1 < sizeof(safe); i++) {
     char c = source[i];
@@ -2442,6 +2472,8 @@ bool loadRadioConfig(void) {
       radioSlots[slot].lanUser = trimMemoryValue(extractJsonString(obj, "lanuser"), 16);
     if (obj.indexOf("\"lanpass\"") >= 0)
       radioSlots[slot].lanPass = trimMemoryValue(extractJsonString(obj, "lanpass"), 16);
+    if (obj.indexOf("\"model\"") >= 0)
+      radioSlots[slot].model = trimMemoryValue(extractJsonString(obj, "model"), 15);
   }
 
   syncLegacyRadioGlobals();
@@ -2466,6 +2498,7 @@ bool saveRadioConfig(void) {
     json += ",\"lanip\":\""; json += configJsonEscape(radioSlots[slot].lanIp); json += "\"";
     json += ",\"lanuser\":\""; json += configJsonEscape(radioSlots[slot].lanUser); json += "\"";
     json += ",\"lanpass\":\""; json += configJsonEscape(radioSlots[slot].lanPass); json += "\"";
+    json += ",\"model\":\"";   json += configJsonEscape(radioSlots[slot].model);   json += "\"";
     json += "}";
   }
   json += "}";
@@ -3854,6 +3887,7 @@ void loop(){
   #endif
   handleWebServerLoop();
   _TIMED("NetIdentity",     NetworkIdentityLoop())
+  _TIMED("RadioModel",      radioModelLearnTick())
   _TIMED("WifiTry",         wifiTryTick())
   _TIMED("IcomScan",        icomScanTick())
   _TIMED("TrxNet",          TrxNetLoop())
@@ -4451,6 +4485,33 @@ void wifiTryTick() {
 }
 
 //-------------------------------------------------------------------------------------------------------
+// Remembers the model a radio reported in its capabilities packet. Touches
+// flash only on an actual change, which in practice means once per radio.
+void rememberRadioModel(uint8_t slot, const char* model) {
+  if (slot >= 3 || !model || !model[0]) return;
+  String clean = trimMemoryValue(String(model), 15);
+  if (clean.length() == 0 || clean == radioSlots[slot].model) return;
+  radioSlots[slot].model = clean;
+  Serial.print("CFG | TRX");
+  Serial.print(slot + 1);
+  Serial.print(" reports model ");
+  Serial.println(clean);
+  if (!saveRadioConfig()) Serial.println("CFG | radio model save failed");
+}
+
+// Picks the model up from an ordinary session too, not just from the SETUP
+// test: swapping the radio behind an address has to correct the stored value
+// without the operator remembering to press anything.
+void radioModelLearnTick() {
+  if (APmode) return;
+  uint8_t slot = lanRadioSlotIndex();
+  if (slot == 0xFF) return;
+  IcomLanClient* client = radioLanClient(slot);
+  if (!client || !client->connected()) return;
+  rememberRadioModel(slot, client->radioModelName());
+}
+
+//-------------------------------------------------------------------------------------------------------
 // LAN radio discovery + credential test, driven from the main loop.
 //
 // Both need UDP 50001, which the live client owns, so both go through the same
@@ -4535,6 +4596,11 @@ void icomScanTick() {
                             st == IcomLanClient::LAN_CONNECTED);
       bool finished = false;
       if (authenticated) {
+        // LAN_STREAM is only entered after the capabilities packet arrived
+        // (maybeRequestStream gates on haveCaps), so the model is guaranteed
+        // to be known here -- which is why the test can report and store it.
+        icomTestModel = icomTestClient->radioModelName();
+        rememberRadioModel(icomTestSlot, icomTestModel.c_str());
         icomTestResult = "ok";
         finished = true;
       } else if (icomTestClient->failed()) {

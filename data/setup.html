@@ -147,8 +147,9 @@
                       <label>Network username<input type="text" name="trx1lanuser" maxlength="16" value=""></label>
                       <label>Network password<input type="password" name="trx1lanpass" maxlength="16" value=""></label>
                       <div class="icom-test-row">
-                        <button type="button" class="use-ip-btn" data-icom-test="trx1">Test connection</button>
+                        <button type="button" class="use-ip-btn" data-icom-test="trx1" title="Log in once to check the credentials and read the radio's model">Test &amp; identify radio</button>
                         <span class="icom-test-result" data-icom-test-result="trx1"></span>
+                        <span class="icom-model" data-icom-model="trx1"></span>
                       </div>
                     </div>
                     <div class="setup-radio-context" data-radio-context="trx1" data-connections="lan civ">
@@ -199,8 +200,9 @@
                       <label>Network username<input type="text" name="trx2lanuser" maxlength="16" value=""></label>
                       <label>Network password<input type="password" name="trx2lanpass" maxlength="16" value=""></label>
                       <div class="icom-test-row">
-                        <button type="button" class="use-ip-btn" data-icom-test="trx2">Test connection</button>
+                        <button type="button" class="use-ip-btn" data-icom-test="trx2" title="Log in once to check the credentials and read the radio's model">Test &amp; identify radio</button>
                         <span class="icom-test-result" data-icom-test-result="trx2"></span>
+                        <span class="icom-model" data-icom-model="trx2"></span>
                       </div>
                     </div>
                     <div class="setup-radio-context" data-radio-context="trx2" data-connections="lan civ">
@@ -245,8 +247,9 @@
                       <label>Network username<input type="text" name="trx3lanuser" maxlength="16" value=""></label>
                       <label>Network password<input type="password" name="trx3lanpass" maxlength="16" value=""></label>
                       <div class="icom-test-row">
-                        <button type="button" class="use-ip-btn" data-icom-test="trx3">Test connection</button>
+                        <button type="button" class="use-ip-btn" data-icom-test="trx3" title="Log in once to check the credentials and read the radio's model">Test &amp; identify radio</button>
                         <span class="icom-test-result" data-icom-test-result="trx3"></span>
+                        <span class="icom-model" data-icom-model="trx3"></span>
                       </div>
                     </div>
                     <div class="setup-radio-context" data-radio-context="trx3" data-connections="lan civ">
@@ -436,6 +439,12 @@
           lastStaIp: data.lastStaIp || ''
         };
         if (window.setupWifiHandoff) window.setupWifiHandoff.showLastKnown();
+        // Model previously reported by each radio, so the field is not blank
+        // until someone presses the button again.
+        ['trx1', 'trx2', 'trx3'].forEach(function (slot) {
+          var el = document.querySelector('[data-icom-model="' + slot + '"]');
+          if (el) el.textContent = data[slot + 'model'] ? 'Detected: ' + data[slot + 'model'] : '';
+        });
         var fw = document.getElementById('topbarFw');
         if (fw) fw.dataset.rev = data.fwRev || '';
         var meta = document.getElementById('setupMeta');
@@ -985,11 +994,20 @@
         e.textContent = text;
         e.className = 'icom-test-result' + (cls ? ' ' + cls : '');
       }
-      function testVerdict(state) {
-        if (state === 'ok') return ['Radio accepted the login.', 'is-ok'];
+      function testVerdict(state, model) {
+        // The model comes from the radio's own capabilities packet, which
+        // arrives before the login completes — so a successful test always
+        // knows it, and WSPR stops having to be told what 100 % power means.
+        if (state === 'ok') {
+          return [model ? 'Logged in — radio identifies as ' + model + '.' : 'Radio accepted the login.', 'is-ok'];
+        }
         if (state === 'bad_credentials') return ['Radio refused the username or password.', 'is-bad'];
         if (state === 'no_answer') return ['No answer from that address.', 'is-bad'];
         return ['Testing…', ''];
+      }
+      function showModel(slot, model) {
+        var e = document.querySelector('[data-icom-model="' + slot + '"]');
+        if (e) e.textContent = model ? 'Detected: ' + model : '';
       }
       function stopTest() {
         if (testTimer) { clearInterval(testTimer); testTimer = null; }
@@ -998,8 +1016,9 @@
         fetch('/icom/test.json', { cache: 'no-store' })
           .then(function (r) { return r.json(); })
           .then(function (d) {
-            var v = testVerdict(d.state);
+            var v = testVerdict(d.state, d.model);
             setTestText(slot, v[0], v[1]);
+            if (d.model) showModel(slot, d.model);
             if (d.state !== 'running') stopTest();
           })
           .catch(function () { stopTest(); setTestText(slot, 'Test status unavailable.', 'is-bad'); });
@@ -1010,7 +1029,8 @@
           ip: val(slot + 'lanip'),
           user: val(slot + 'lanuser'),
           pass: val(slot + 'lanpass'),
-          civaddr: val(slot + 'civaddr')
+          civaddr: val(slot + 'civaddr'),
+          slot: Number(slot.replace('trx', '')) || 1
         };
         if (!payload.ip || !payload.user || !payload.pass) {
           setTestText(slot, 'Fill in address, username and password first.', 'is-bad');

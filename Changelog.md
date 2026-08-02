@@ -24,12 +24,26 @@ published.
   than opening a second socket is that `WiFiUDP` sets `SO_REUSEADDR`: the duplicate bind would
   succeed and then silently eat the client's control packets instead of failing. 254 datagrams are
   paced 8 per loop pass so the audio-carrying loop is not disturbed, and the scan is refused while
-  transmitting. **Test connection** does a real login and separates "radio refused the credentials"
-  from "nothing answered" — it declares success at `LAN_STREAM`, before the CI-V channel opens, so
-  a radio being probed never writes its frequency into the shared rig state. The result list is
-  labelled *answered on UDP 50001*, not *IC-705*: a wfview or RS-BA1 server answers the same probe
-  and telling them apart would require the login the scan refuses to do. Wire primitives moved to
-  `icom_lan_wire.h` so scanner and client share one definition of the packet layout.
+  transmitting. **Test &amp; identify radio** does a real login and separates "radio refused the
+  credentials" from "nothing answered" — it declares success at `LAN_STREAM`, before the CI-V
+  channel opens, so a radio being probed never writes its frequency into the shared rig state.
+  The result list is labelled *answered on UDP 50001*, not *IC-705*: a wfview or RS-BA1 server
+  answers the same probe and telling them apart would require the login the scan refuses to do.
+  Wire primitives moved to `icom_lan_wire.h` so scanner and client share one definition of the
+  packet layout.
+  **The test also identifies the radio**, which turned out to be nearly free: `maybeRequestStream()`
+  gates on `haveCaps`, so reaching `LAN_STREAM` guarantees the capabilities packet — and its model
+  name — has already arrived. The model is stored per slot in `/radio-config.json` (new `model`
+  field, an observation rather than a setting, so it is not operator-editable), and
+  `radioModelLearnTick()` refreshes it from ordinary sessions too, so swapping the radio behind an
+  address corrects it without anyone pressing the button. The payoff is in `radioNameForJson()`:
+  `/state.radioName` now falls back to the stored model when no session is up. WSPR refuses to
+  transmit for a radio it cannot identify — correctly, since 100 % of the CI-V scale is 10 W on an
+  IC-705 and 100 W on an IC-7610 — and that answer used to vanish with the link, leaving both WSPR
+  and the DATA power bar on "model unknown" and dependent on WSPR's manual `modelOverride`. One
+  firmware change lit up both pages: neither needed editing, they already consumed
+  `state.radio.radioName`. The button was relabelled from *Test connection* accordingly, and the
+  detected model is shown beside it.
   **Finding the interface:** the AP-mode "tap to open" prompt provably cannot be reproduced in
   station mode — that sheet is the client OS reacting to its connectivity probe, and it only works
   in AP mode because the device *is* the DHCP server and answers DNS for every name; on the home
@@ -74,7 +88,7 @@ published.
   the scan had just seen and burned a 20 s timeout before alternating. Six checks added to `tools/data-browser-smoke.js` (scan lists a hit, the row
   click fills the field, the credential verdict renders, the last-known hint appears in AP mode and
   stays hidden otherwise, and the handover screen reaches an address), harness timeout raised
-  45→55 s to fit them. Firmware 989 833 → 993 365 B, filesystem image 1 535 320 B. Documented in
+  45→55 s to fit them. Firmware 989 833 → 994 553 B, filesystem image 1 535 693 B. Documented in
   `docs/find-device-ip.md`. **Not yet verified on a radio or a real network** — in particular
   whether the radio answers a probe from an ephemeral port, which would let the scan run without
   dropping the link at all.

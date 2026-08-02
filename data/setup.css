@@ -990,6 +990,12 @@ button.icom-scan-hit:hover {
 .icom-test-result.is-bad {
   color: #ff8a80;
 }
+.icom-model {
+  margin-left: auto;
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--muted);
+}
 
 /* ---- TrxNet live device list ---- */
 .trxnet-devices {
