@@ -736,7 +736,7 @@ function audioUrl() {
 }
 
 function ensureAudio() {
-  const lan = state.radio.connected && state.radio.transceiverType === "IC-705-LAN";
+  const lan = state.radio.connected && state.radio.transceiverType === "ICOM-LAN";
   // A duplicated tab can share the holder's sessionStorage token, so the
   // firmware cannot distinguish it from the real owner. Wait until the local
   // BroadcastChannel probe confirms this page before opening AUD1.
@@ -1157,7 +1157,7 @@ async function applyAutoRfPower() {
   // QSO mode, so a page nobody has configured leaves the radio alone.
   if(target===null){rfAutoArmed=false;return;}
   if(!currentJs8().txSafetyAccepted)return;
-  if(!state.radio.connected || state.radio.transceiverType!=="IC-705-LAN")return;
+  if(!state.radio.connected || state.radio.transceiverType!=="ICOM-LAN")return;
   // Never mid-transmission: LAN drops on this setup happen under audio load,
   // which is exactly when something is on the air.
   if(radioTransmitting())return;
@@ -1222,7 +1222,7 @@ function renderRfPowerField() {
 }
 
 function renderHeader() {
-  const connected=state.radio.connected && state.radio.transceiverType === "IC-705-LAN";
+  const connected=state.radio.connected && state.radio.transceiverType === "ICOM-LAN";
   const transmitting=radioTransmitting();
   const receiving=connected && state.lastAudioMs>0 && performance.now()-state.lastAudioMs<1500;
   if(state.spectrumWasTransmitting && !transmitting)resetSpectrumAnalyzer();
@@ -1277,7 +1277,7 @@ function renderStartup() {
 }
 
 function txBlockReasons(needsRecipient,allowFileTransfer=false) {
-  const js8=currentJs8(), connected=state.radio.connected && state.radio.transceiverType === "IC-705-LAN";
+  const js8=currentJs8(), connected=state.radio.connected && state.radio.transceiverType === "ICOM-LAN";
   const busy=!['idle','completed','aborted','fault'].includes(state.txStatus);
   const mediaLocked=Boolean(audioSource && audioSource.state().timebase.media.status==="locked");
   const reasons=[];

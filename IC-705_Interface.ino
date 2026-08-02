@@ -664,7 +664,7 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   String setupPswd2Err = "";
   String setupCivAddrErr = "";
   bool setupSaveOk = false;
-  String transceiverType = "IC-705-LAN";  // LAN is the recommended default (BT deprecated)
+  String transceiverType = "ICOM-LAN";  // LAN is the recommended default (BT deprecated)
   uint8_t configuredCivAddress = CIV_ADDRESS_DEFAULT;
   String cwMemoryText[CW_MEMORY_COUNT];
   String freqMemoryText[FREQ_MEMORY_COUNT];
@@ -894,7 +894,7 @@ void loadMemoryConfig(void){
       transceiverType = configuredType;
     } else {
       // Bluetooth transport removed: any stored non-CIV value falls back to LAN.
-      transceiverType = "IC-705-LAN";
+      transceiverType = "ICOM-LAN";
     }
   }
 
@@ -910,7 +910,7 @@ void loadMemoryConfig(void){
   if (file.available()) lanUser    = trimMemoryValue(file.readStringUntil('\n'), 16);
   if (file.available()) lanPass    = trimMemoryValue(file.readStringUntil('\n'), 16);
 
-  lanMode = (transceiverType == "IC-705-LAN");
+  lanMode = (transceiverType == "ICOM-LAN");
 
   file.close();
 }
@@ -1973,7 +1973,7 @@ void buildStateJson(char *buf, size_t bufSize, bool lanView){
   bool viewRfPowerSeen = snapView ? lanRadioSnap.rfPowerSeen : stateRfPowerSeen;
   float viewSupplyVolts = snapView ? lanRadioSnap.supplyVolts : stateSupplyVolts;
   float viewSwr = snapView ? lanRadioSnap.swr : stateSwr;
-  const char *viewType = snapView ? (primaryTransport == RADIO_LAN ? "IC-705-LAN" : "TRXNET")
+  const char *viewType = snapView ? (primaryTransport == RADIO_LAN ? "ICOM-LAN" : "TRXNET")
                                   : transceiverType.c_str();
   // lanDrops/lanStalls/lanFilled are link health since boot, reported on every
   // view rather than only the LAN one: an operator watching an unattended beacon
@@ -2334,14 +2334,14 @@ void loadPrimaryRadioConfig(void) {
   // Bluetooth transport removed: stored transport 2 (BT) now falls back to LAN.
   if (transport == 3) transceiverType = "IC-7610-CI-V";
   else if (transport == 4) transceiverType = "TRXNET";
-  else transceiverType = "IC-705-LAN";
+  else transceiverType = "ICOM-LAN";
 
   uint8_t civAddress = EEPROM.read(PRIMARY_RADIO_CIV_ADDR);
   configuredCivAddress = civAddress == 0xff ? CIV_ADDRESS_DEFAULT : civAddress;
   lanRadioIp = trimMemoryValue(eepromReadStr(PRIMARY_RADIO_LAN_IP_ADDR, 16), 15);
   lanUser = trimMemoryValue(eepromReadStr(PRIMARY_RADIO_LAN_USER_ADDR, 17), 16);
   lanPass = trimMemoryValue(eepromReadStr(PRIMARY_RADIO_LAN_PASS_ADDR, 17), 16);
-  lanMode = transceiverType == "IC-705-LAN";
+  lanMode = transceiverType == "ICOM-LAN";
   Serial.println("CFG | TRX1 loaded from EEPROM/NVS: " + transceiverType +
                  " ip=" + lanRadioIp + " user='" + lanUser +
                  "' passlen=" + String(lanPass.length()));
@@ -2410,7 +2410,7 @@ void syncLegacyRadioGlobals(void) {
   lanPass = radioSlots[0].lanPass;
   if (radioSlots[0].transport == RADIO_CIV) transceiverType = "IC-7610-CI-V";
   else if (radioSlots[0].transport == RADIO_TRXNET) transceiverType = "TRXNET";
-  else transceiverType = "IC-705-LAN";
+  else transceiverType = "ICOM-LAN";
   lanMode = radioSlots[0].transport == RADIO_LAN;
 
   TRX2_CONN_TYPE = (byte)radioSlots[1].transport;
@@ -2849,7 +2849,7 @@ void handleConfigUpload() {
   // Bluetooth transport removed; unified backups may also select TrxNet.
   if (trx == "IC-7610-CI-V") transceiverType = trx;
   else if (trx == "TRXNET") transceiverType = trx;
-  else if (trx.length() > 0) transceiverType = "IC-705-LAN";
+  else if (trx.length() > 0) transceiverType = "ICOM-LAN";
 
   if (body.indexOf("\"lanip\"") >= 0) {
     lanRadioIp = trimMemoryValue(extractJsonString(body, "lanip"), 15);
@@ -2860,7 +2860,7 @@ void handleConfigUpload() {
   if (body.indexOf("\"lanpass\"") >= 0) {
     lanPass = trimMemoryValue(extractJsonString(body, "lanpass"), 16);
   }
-  lanMode = transceiverType == "IC-705-LAN";
+  lanMode = transceiverType == "ICOM-LAN";
 
   String civStr = extractJsonString(body, "civaddr");
   uint8_t civAddr = configuredCivAddress;

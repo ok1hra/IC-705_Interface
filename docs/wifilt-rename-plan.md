@@ -132,8 +132,20 @@ Původně vrstva 3 → nesahat. Předpoklady se změnily: žádná nasazená za�
 jmenuje `ICOM-LAN`. Jméno dnes lže — komentář ve
 [`wspr-core.js:300`](../data/wspr-core.js#L300) na past sám upozorňuje.
 
-Samostatný commit, aby se dal revertovat bez rozbití brandingu. **Při načtení configu přijímat
-i starou hodnotu.**
+Samostatný commit, aby se dal revertovat bez rozbití brandingu.
+
+**Provedeno — a migrační kód nebyl potřeba.** Plán počítal s „přijímat i starou hodnotu", ale
+všechny čtecí cesty už dnes na LAN hodnotu *normalizují* přes else-branch, takže se stará
+hodnota nikde nematchuje pozitivně a sama spadne na novou konstantu:
+
+- [`:893`](../IC-705_Interface.ino#L893) `if (type=="IC-7610-CI-V" || type=="TRXNET") {keep} else {LAN}`
+- [`:2333`](../IC-705_Interface.ino#L2333) derivuje z EEPROM transport bajtu, ne ze stringu
+- [`:2411`](../IC-705_Interface.ino#L2411) derivuje z `radioSlots[0].transport` enumu
+- [`:2849`](../IC-705_Interface.ino#L2849) `else if (trx.length()>0) → LAN` (restore z backupu)
+
+**Zbývá stejná vada u CI-V:** `"IC-7610-CI-V"` pojmenovává generický CI-V transport podle
+jednoho modelu rádia. Na rozdíl od LAN se ale **matchuje pozitivně** na čtyřech místech výše,
+takže jeho přejmenování na `"ICOM-CIV"` migraci potřebuje. Mimo rozsah přejmenování.
 
 ---
 

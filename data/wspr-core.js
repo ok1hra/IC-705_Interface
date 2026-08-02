@@ -296,11 +296,13 @@
     {band: "6m", hz: 50293000},    {band: "2m", hz: 144489000},
   ];
 
-  // Full output at 100 % of the CI-V power scale, per radio. The LAN transport is
-  // configured as "IC-705-LAN" but IC-7610 and IC-9700 speak the same protocol,
-  // so trusting the profile name instead of /state.radioName is a factor-of-ten
-  // error. An unknown model deliberately has no entry: the UI must refuse to
-  // start rather than guess.
+  // Full output at 100 % of the CI-V power scale, per radio. Keyed on
+  // /state.radioName -- what the radio reports about *itself* in its capabilities
+  // packet -- and never on the transport profile, which is "ICOM-LAN" for every
+  // model and so cannot tell 10 W from 100 W. (It used to be called "IC-705-LAN",
+  // which made trusting it look almost reasonable and was a factor-of-ten trap.)
+  // An unknown model deliberately has no entry: the UI must refuse to start
+  // rather than guess.
   // IC-7760 was missing, which is not a cosmetic gap: with no entry fullPowerWatts()
   // returns null and the page refuses to transmit at all ("unknown model"). 200 W is
   // the radio's own default (IC-7760 basic manual: "Default: 200W (AM: 50W)").

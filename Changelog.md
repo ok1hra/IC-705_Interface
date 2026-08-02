@@ -11,6 +11,19 @@ published.
 
 ## Working tree — not committed
 
+* **The LAN transport profile is called `ICOM-LAN`, not `IC-705-LAN`.** The name never reached
+  the screen — the SETUP dropdown has said `ICOM-LAN` for a long time — but internally the value
+  named one model out of five, and a comment in `wspr-core.js` had to warn future readers not to
+  trust it, because 100 % of the CI-V power scale is 10 W on an IC-705 and 100 W on an IC-7610.
+  A name that needs a warning label is the wrong name.
+  **No migration code was needed, which is worth recording:** every read path already normalises
+  to the LAN value through an `else` branch — the stored string is only ever matched positively
+  against `IC-7610-CI-V` and `TRXNET`, so an old `IC-705-LAN` in EEPROM or in a config backup
+  falls through to the new constant on its own. Kept as its own commit so it can be reverted
+  without touching the branding.
+  Still wrong for the same reason, and left alone: `IC-7610-CI-V` names a generic CI-V transport
+  after one radio. That one *is* matched positively, so renaming it needs real migration.
+
 * **The project has a name now: WIFILT — Web interface for Icom LAN Transceivers.** It had six
   before, none of them canonical: *IC-705 IP interface* on the SETUP page and the serial banner,
   *IC-705 IP Interface* in the manual, *IC-705 Interface* on the flasher and in the licence

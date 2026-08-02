@@ -417,7 +417,7 @@
     render();
   }
 
-  const isLan = () => state.radio.transceiverType === "IC-705-LAN";
+  const isLan = () => state.radio.transceiverType === "ICOM-LAN";
 
   // Full power of the transmitter on the CI-V percentage scale. Order matters:
   // an explicit override wins, then what the radio itself reported, and an
