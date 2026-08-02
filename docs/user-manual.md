@@ -26,8 +26,11 @@ After saving, the device reboots automatically and the browser waits until it co
 
 | Field | Description |
 |-------|-------------|
-| SSID 1 / Password 1 | Primary WiFi network. Tried first after every reboot. |
-| SSID 2 / Password 2 | Fallback network. The device alternates between the two profiles until it connects. |
+| SSID 1 / Password 1 | Primary WiFi network. |
+| SSID 2 / Password 2 | Fallback network. |
+
+At boot the device scans first and starts with whichever configured network is actually on the air,
+strongest signal first — not always SSID 1. If that one refuses it, it alternates to the other.
 
 If neither network is reachable the device falls back to AP mode.
 

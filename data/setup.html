@@ -827,10 +827,17 @@
         host.innerHTML = '';
         var box = document.createElement('div');
         box.className = 'wifi-handoff';
+        // "Neither network is on the air" and "the network is there but would
+        // not let us in" call for different actions, so they are not merged.
+        var notFound = d.reason === 'not_found';
         box.innerHTML =
-          '<h2>Could not join ' + (d.ssid || 'that network') + '</h2>' +
-          '<p class="wifi-handoff-lead">The settings are saved anyway. Check the name and password, ' +
-            'or restart and let the device retry on its own.</p>' +
+          '<h2>' + (notFound ? 'Neither network was found' : 'Could not join ' + (d.ssid || 'that network')) + '</h2>' +
+          '<p class="wifi-handoff-lead">' +
+            (notFound
+              ? 'No configured SSID was on the air just now. Check the spelling, or move the device ' +
+                'closer to the access point.'
+              : 'The network answered but the device was not let in — most often a wrong password.') +
+            ' The settings are saved either way; restarting makes the device keep retrying on its own.</p>' +
           '<button type="button" class="wifi-handoff-btn" id="wifiHandoffBack">Back to settings</button>';
         host.appendChild(box);
         document.getElementById('wifiHandoffBack').addEventListener('click', function () {
@@ -845,13 +852,15 @@
           .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, data: j }; }); })
           .then(function (res) {
             if (!res.ok) { msgEl.textContent = 'Saved. Restart the device to apply.'; return; }
-            var dots = 0;
+            var dots = 0, phase = 'Looking for your WiFi';
             poll = setInterval(function () {
               dots = (dots + 1) % 4;
-              msgEl.textContent = 'Joining your WiFi' + Array(dots + 1).join('.');
+              msgEl.textContent = phase + Array(dots + 1).join('.');
               fetch('/setup/wifi-try.json', { cache: 'no-store' })
                 .then(function (r) { return r.json(); })
                 .then(function (d) {
+                  if (d.state === 'scanning') phase = 'Looking for your WiFi';
+                  else if (d.state === 'connecting') phase = 'Joining ' + (d.ssid || 'your WiFi');
                   if (d.state === 'ok') {
                     clearInterval(poll); poll = null;
                     msgEl.parentNode.removeChild(msgEl);

@@ -35,7 +35,7 @@ function applyCivRaw(parsed) {
   const hundreds=parseInt(data.slice(4,6),16), rest=parseInt(data.slice(6,8),16);
   radioRfPower=hundreds*100+(rest>>4)*10+(rest&0x0f);
 }
-let chrome, finished=false, timer, sequence=0, firstSample=0, streamId=707, txPrepares=0, txPackets=0, wsConnections=0, earlyWsConnections=0, jscRequests=0, jscStartedAt=0, jscCompleteAt=0, wsOpenedAt=0, jscComplete=false, js8Gzip=0, js8Brotli=0, commands=[], setupSaveBody="", setupRestartRequests=0, lanReconnectRequests=0, icomScanStarts=0, icomScanPolls=0, icomTestPolls=0, icomTestBody="";
+let chrome, finished=false, timer, sequence=0, firstSample=0, streamId=707, txPrepares=0, txPackets=0, wsConnections=0, earlyWsConnections=0, jscRequests=0, jscStartedAt=0, jscCompleteAt=0, wsOpenedAt=0, jscComplete=false, js8Gzip=0, js8Brotli=0, commands=[], setupSaveBody="", setupRestartRequests=0, lanReconnectRequests=0, icomScanStarts=0, icomScanPolls=0, icomTestPolls=0, icomTestBody="", wifiTryPolls=0;
 const mime={".html":"text/html",".css":"text/css",".js":"application/javascript",".wasm":"application/wasm",".bin":"application/octet-stream"};
 function frame(opcode,payload){const body=Buffer.isBuffer(payload)?payload:Buffer.from(payload);return body.length<126?Buffer.concat([Buffer.from([0x80|opcode,body.length]),body]):Buffer.concat([Buffer.from([0x80|opcode,126,body.length>>8,body.length&255]),body]);}
 function aud1(){const wire=Buffer.alloc(200,0xff);wire.write("AUD1");wire[4]=1;wire[5]=1;wire.writeUInt16BE(sequence===0?1:0,6);wire.writeUInt16BE(40,8);wire.writeUInt16BE(0,10);wire.writeUInt32BE(streamId,12);wire.writeUInt32BE(sequence++,16);wire.writeUInt32BE(8000,20);wire.writeBigUInt64BE(BigInt(firstSample),24);wire.writeUInt32BE(0,32);wire.writeUInt32BE(160,36);firstSample+=160;return wire;}
@@ -53,6 +53,10 @@ const server=http.createServer((req,res)=>{
   if(url.pathname==="/icom/scan.json"){icomScanPolls++;const done=icomScanPolls>1;res.setHeader("Content-Type","application/json");res.end(JSON.stringify({state:done?"done":"running",scanned:done?254:120,total:254,subnet:"192.168.1",truncated:false,found:done?[{ip:"192.168.1.60",id:"c0a8013c"}]:[]}));return;}
   if(url.pathname==="/icom/test"&&req.method==="POST"){let body="";req.on("data",c=>body+=c);req.on("end",()=>{icomTestBody=body;icomTestPolls=0;res.statusCode=202;res.setHeader("Content-Type","application/json");res.end('{"ok":true}');});return;}
   if(url.pathname==="/icom/test.json"){icomTestPolls++;res.setHeader("Content-Type","application/json");res.end(JSON.stringify({state:"ok"}));return;}
+  // AP handoff: one scanning poll, then the station is up. The page has to walk
+  // both phases before it may show an address.
+  if(url.pathname==="/setup/wifi-try"&&req.method==="POST"){wifiTryPolls=0;res.statusCode=202;res.setHeader("Content-Type","application/json");res.end('{"ok":true}');return;}
+  if(url.pathname==="/setup/wifi-try.json"){wifiTryPolls++;const up=wifiTryPolls>1;res.setHeader("Content-Type","application/json");res.end(JSON.stringify({state:up?"ok":"scanning",ip:up?"192.168.1.55":"",ssid:"fixture-wifi",reason:"",host:"ic705"}));return;}
   if(url.pathname==="/setup/save"&&req.method==="POST"){let body="";req.on("data",c=>body+=c);req.on("end",()=>{setupSaveBody=body;res.setHeader("Content-Type","application/json");res.end('{"ok":true}');});return;}
   if(url.pathname==="/restart"&&req.method==="POST"){setupRestartRequests++;res.setHeader("Content-Type","application/json");res.end('{"ok":true}');return;}
   if(url.pathname==="/lan/reconnect"&&req.method==="POST"){lanReconnectRequests++;res.setHeader("Content-Type","application/json");res.end('{"ok":true}');return;}
@@ -385,6 +389,21 @@ f.onload=()=>{
       sw.setupDeviceInfo={apMode:false,hostname:'ic705',lastStaIp:'192.168.1.55'};
       sw.setupWifiHandoff.showLastKnown();
       checks.wifiLastKnownStationHidden=lastKnown.hidden===true&&sw.setupWifiHandoff.available()===false;
+      // The handover screen itself. Driven into a scratch container because
+      // renderSuccess() clears its host -- pointed at the real page that would
+      // wipe the form the save test still needs.
+      const holder=sd.createElement('div');
+      sd.body.appendChild(holder);
+      const handoffMsg=sd.createElement('p');
+      holder.appendChild(handoffMsg);
+      sw.setupWifiHandoff.run(handoffMsg);
+      await new Promise(resolve=>setTimeout(resolve,2400));
+      const handoffLink=holder.querySelector('.wifi-handoff-url a');
+      checks.wifiHandoffAddress=!!handoffLink&&handoffLink.getAttribute('href')==='http://192.168.1.55'&&
+        !!holder.querySelector('a[href="http://ic705/"]')&&
+        !!holder.querySelector('a[href="http://ic705.local/"]')&&
+        !!holder.querySelector('#wifiHandoffDone');
+      holder.remove();
       // Unattended panel: armed, but the fixture says the modem tab has been
       // silent for 31 s. A timer alone would still read "armed" -- the point of
       // the panel is that this state is visibly flagged.

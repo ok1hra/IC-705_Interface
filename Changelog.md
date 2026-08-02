@@ -53,12 +53,31 @@ published.
   visit, including the unintended kind when the configured WiFi is out of range at boot, shows
   *"Last address on your network"*. The softAP follows the station onto its channel during the
   handover, so clients briefly drop and re-associate; the page treats a failed poll as "still
-  connecting". Five checks added to `tools/data-browser-smoke.js` (scan lists a hit, the row click
-  fills the field, the credential verdict renders, and the last-known hint appears in AP mode and
-  stays hidden otherwise), harness timeout raised 45→55 s to fit them. Firmware 989 833 → 991 861 B,
-  filesystem image 1 535 063 B. Documented in `docs/find-device-ip.md`. **Not yet verified on a
-  radio or a real network** — in particular whether the radio answers a probe from an ephemeral
-  port, which would let the scan run without dropping the link at all.
+  connecting". **Both WiFi profiles are tried, and the target is chosen by scan.** The first cut of
+  the handover tried only `WifiProfileConfigured(0) ? 0 : 1`, so an unreachable SSID 1 reported
+  failure while SSID 2 was working — caught on the bench. `/setup/wifi-try` now matches a scan
+  against both configured profiles through the new `collectVisibleWifiProfiles()` and walks them
+  strongest-RSSI first with a targeted channel+BSSID `begin()` — no reason to re-sweep every
+  channel for an AP we just heard. The **second** attempt at that was also wrong: an async scan
+  started from the request handler right after `WiFi.mode(WIFI_AP_STA)` returns
+  `WIFI_SCAN_FAILED` immediately, because the station interface has not come up yet, and the
+  handover reported `not_found` without ever trying to connect (`WiFi.status()` was logging 255,
+  WL_NO_SHIELD, which was the tell). The scan now runs from the main loop after a 400 ms settle
+  and uses the same blocking call the boot path has always used successfully; it stalls the loop
+  for a second or two, which during setup costs nothing because there is no radio link and no
+  audio. An empty scan is no longer treated as proof of absence either — it may have failed, and
+  hidden SSIDs never appear in one — so every configured profile is attempted anyway, blind,
+  passing no BSSID rather than the all-zero one a blind candidate carries. Failure is reported
+  only after all attempts, as `not_found` (a scan ran, saw nothing of ours, attempts failed too)
+  or `no_connect` (the network was there but refused us). The same helper replaced the boot path's
+  any-visible check in `ConnectWiFiAlternating()`, which started at profile 0 regardless of what
+  the scan had just seen and burned a 20 s timeout before alternating. Six checks added to `tools/data-browser-smoke.js` (scan lists a hit, the row
+  click fills the field, the credential verdict renders, the last-known hint appears in AP mode and
+  stays hidden otherwise, and the handover screen reaches an address), harness timeout raised
+  45→55 s to fit them. Firmware 989 833 → 993 365 B, filesystem image 1 535 320 B. Documented in
+  `docs/find-device-ip.md`. **Not yet verified on a radio or a real network** — in particular
+  whether the radio answers a probe from an ephemeral port, which would let the scan run without
+  dropping the link at all.
 * **Brand mark at the head of every menu, and an About window behind it.** The RemoteQTH icon sits
   as the first item of `nav.tabs` on all six pages that carry the bar (DATA, WSPR, QRPLog, SETUP,
   BD, LOGSYNC), 26 px tall with `padding:0` so it stays inside the row height the text tabs already

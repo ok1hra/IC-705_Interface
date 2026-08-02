@@ -414,10 +414,23 @@ const char* icomTestResult = "idle";   // idle|running|ok|bad_credentials|no_ans
 // the station is brought up alongside the still-running softAP, so the portal
 // can show the address the router actually handed out before the AP goes away.
 #define LAST_STA_IP_ADDR 132       // EEPROM 132-135, previously MQTT_TOPIC_RX
-enum WifiTryState : uint8_t { WTRY_IDLE, WTRY_CONNECTING, WTRY_OK, WTRY_FAILED };
+// One configured WiFi profile as the scan actually saw it on the air.
+struct WifiScanPick {
+  byte    profile = 0xFF;
+  int32_t rssi = -127;
+  int32_t channel = 0;
+  uint8_t bssid[6] = {0};
+  bool    targeted = false;   // false = no scan hit, connect the ordinary way
+};
+enum WifiTryState : uint8_t { WTRY_IDLE, WTRY_SCAN, WTRY_CONNECTING, WTRY_OK, WTRY_FAILED };
 WifiTryState wifiTryState = WTRY_IDLE;
 uint32_t  wifiTryDeadline = 0;
 String    wifiTrySsid;
+const char* wifiTryReason = "";    // not_found | no_connect, when state == failed
+WifiScanPick wifiTryCandidates[2]; // profiles to attempt, strongest scan hit first
+uint8_t   wifiTryCandidateCount = 0;
+uint8_t   wifiTryCandidateIdx = 0;
+bool      wifiTryScanSawNothing = false;  // a scan completed and found no configured SSID
 IPAddress lastStaIp;               // survives a reboot; 0.0.0.0 when unknown
 
 static const char* RADIO_CONFIG_PATH = "/radio-config.json";
@@ -1789,38 +1802,43 @@ void handleWifiTryStart(){
     icomScanSendJson(409, "{\"ok\":false,\"error\":\"not_ap\"}");
     return;
   }
-  if (wifiTryState == WTRY_CONNECTING) {
+  if (wifiTryState == WTRY_SCAN || wifiTryState == WTRY_CONNECTING) {
     icomScanSendJson(409, "{\"ok\":false,\"error\":\"busy\"}");
     return;
   }
-  byte profile = WifiProfileConfigured(0) ? 0 : (WifiProfileConfigured(1) ? 1 : 0xFF);
-  if (profile == 0xFF) {
+  if (!WifiProfileConfigured(0) && !WifiProfileConfigured(1)) {
     icomScanSendJson(400, "{\"ok\":false,\"error\":\"no_ssid\"}");
     return;
   }
-  wifiTrySsid = WifiProfileSSID(profile);
-  String pswd = WifiProfilePSWD(profile);
+  wifiTrySsid = "";
+  wifiTryReason = "";
+  wifiTryCandidateCount = 0;
+  wifiTryCandidateIdx = 0;
+  wifiTryScanSawNothing = false;
   WiFi.mode(WIFI_AP_STA);          // portal stays reachable while we associate
-  ApplyStaIdentity();
-  WiFi.begin(wifiTrySsid.c_str(), pswd.c_str());
-  wifiTryState = WTRY_CONNECTING;
-  wifiTryDeadline = millis() + 25000;
-  Serial.print("WIFI| AP handoff: trying ");
-  Serial.println(wifiTrySsid);
+  WiFi.scanDelete();
+  // The scan itself runs in the tick, not here: it blocks for a second or two,
+  // and the STA interface needs a moment after the mode switch before it can
+  // scan at all. The deadline doubles as that settle delay.
+  wifiTryState = WTRY_SCAN;
+  wifiTryDeadline = millis() + 400;
+  Serial.println("WIFI| AP handoff: scanning for configured networks");
   icomScanSendJson(202, "{\"ok\":true}");
 }
 
 void handleWifiTryStatus(){
   const char* st = "idle";
-  if (wifiTryState == WTRY_CONNECTING) st = "connecting";
-  else if (wifiTryState == WTRY_OK)    st = "ok";
+  if (wifiTryState == WTRY_SCAN)        st = "scanning";
+  else if (wifiTryState == WTRY_CONNECTING) st = "connecting";
+  else if (wifiTryState == WTRY_OK)     st = "ok";
   else if (wifiTryState == WTRY_FAILED) st = "failed";
   String ip = (wifiTryState == WTRY_OK) ? WiFi.localIP().toString() : String("");
   String j = "{\"state\":\"";
   j += st;
-  j += "\",\"ip\":\"";   j += ip;
-  j += "\",\"ssid\":\""; j += configJsonEscape(wifiTrySsid);
-  j += "\",\"host\":\""; j += deviceHostname;
+  j += "\",\"ip\":\"";     j += ip;
+  j += "\",\"ssid\":\"";   j += configJsonEscape(wifiTrySsid);
+  j += "\",\"reason\":\""; j += wifiTryReason;
+  j += "\",\"host\":\"";   j += deviceHostname;
   j += "\"}";
   icomScanSendJson(200, j);
 }
@@ -4312,12 +4330,105 @@ void saveLastStaIp(IPAddress ip) {
 }
 
 //-------------------------------------------------------------------------------------------------------
-// Watches the station link raised by /setup/wifi-try while the softAP is still
-// up. Note the AP follows the station's channel once it associates, so clients
-// on the portal see a brief drop and re-associate -- the page tolerates that by
-// treating failed polls as "still connecting".
+// Drives the station link raised by /setup/wifi-try while the softAP is still
+// up: scan, then try every configured profile the scan saw, strongest first.
+//
+// Trying only the first configured profile was wrong -- an unreachable SSID 1
+// made the handoff report failure while SSID 2 was sitting there working. The
+// boot path alternates between profiles for exactly this reason.
+//
+// Both the scan and the association move the shared radio, so clients on the
+// portal see brief drops and re-associate; the page treats a failed poll as
+// "still connecting".
+// Every configured profile, in order, with no scan behind it. Used when the
+// scan could not run or saw nothing: a scan result is an optimisation, being
+// unable to scan is no reason to refuse to try the credentials the operator
+// just typed. Hidden SSIDs never show up in a scan either.
+uint8_t fillBlindWifiCandidates(WifiScanPick out[2]) {
+  uint8_t count = 0;
+  for (byte p = 0; p < 2; p++) {
+    if (!WifiProfileConfigured(p)) continue;
+    out[count] = WifiScanPick();
+    out[count].profile = p;
+    count++;
+  }
+  return count;
+}
+
+void wifiTryBeginCandidate() {
+  const WifiScanPick &pick = wifiTryCandidates[wifiTryCandidateIdx];
+  wifiTrySsid = WifiProfileSSID(pick.profile);
+  String pswd = WifiProfilePSWD(pick.profile);
+  ApplyStaIdentity();
+  if (pick.targeted) {
+    // We just heard this AP, so there is no reason to make the driver sweep
+    // every channel again. Never pass the all-zero BSSID of a blind candidate
+    // here -- that would ask the driver for a station that cannot exist.
+    WiFi.begin(wifiTrySsid.c_str(), pswd.c_str(), pick.channel, pick.bssid);
+  } else {
+    WiFi.begin(wifiTrySsid.c_str(), pswd.c_str());
+  }
+  wifiTryState = WTRY_CONNECTING;
+  wifiTryDeadline = millis() + 20000;
+  Serial.print("WIFI| AP handoff: trying ");
+  Serial.print(wifiTrySsid);
+  if (pick.targeted) {
+    Serial.print(" ch");
+    Serial.print(pick.channel);
+    Serial.print(" ");
+    Serial.print(pick.rssi);
+    Serial.println(" dBm");
+  } else {
+    Serial.println(" (no scan hit, connecting blind)");
+  }
+}
+
+void wifiTryFail(const char* reason) {
+  wifiTryState = WTRY_FAILED;
+  wifiTryReason = reason;
+  WiFi.disconnect(false, false);
+  WiFi.mode(WIFI_AP);              // drop back to a clean portal-only AP
+  Serial.print("WIFI| AP handoff failed: ");
+  Serial.println(reason);
+}
+
 void wifiTryTick() {
+  if (wifiTryState == WTRY_SCAN) {
+    // Give the STA interface a moment to come up after WIFI_AP_STA before
+    // asking it to scan.
+    if ((long)(millis() - wifiTryDeadline) < 0) return;
+
+    // Blocking scan, the same call the boot path uses successfully. The async
+    // form was tried first and returned WIFI_SCAN_FAILED immediately when
+    // started from the request handler right after the mode switch, which made
+    // the handover give up without ever attempting a connection. Blocking here
+    // stalls the loop for a second or two -- during setup there is no radio
+    // link and no audio to disturb, and the portal page tolerates a lost poll.
+    int found = WiFi.scanNetworks(false, false, false, 150);
+    wifiTryCandidateCount = (found > 0) ? collectVisibleWifiProfiles(found, wifiTryCandidates) : 0;
+    WiFi.scanDelete();
+    wifiTryScanSawNothing = (found >= 0 && wifiTryCandidateCount == 0);
+
+    if (wifiTryCandidateCount == 0) {
+      // A scan that saw nothing is not proof of absence: it may have failed
+      // outright, and a hidden SSID never appears in one. Try the credentials
+      // anyway rather than refusing on the strength of a negative.
+      Serial.print("WIFI| AP handoff: scan found no configured SSID (");
+      Serial.print(found);
+      Serial.println(" APs), trying every profile blind");
+      wifiTryCandidateCount = fillBlindWifiCandidates(wifiTryCandidates);
+    }
+    if (wifiTryCandidateCount == 0) {
+      wifiTryFail("no_ssid");
+      return;
+    }
+    wifiTryCandidateIdx = 0;
+    wifiTryBeginCandidate();
+    return;
+  }
+
   if (wifiTryState != WTRY_CONNECTING) return;
+
   if (WiFi.status() == WL_CONNECTED && (uint32_t)WiFi.localIP() != 0) {
     saveLastStaIp(WiFi.localIP());
     wifiTryState = WTRY_OK;
@@ -4326,10 +4437,16 @@ void wifiTryTick() {
     return;
   }
   if ((long)(millis() - wifiTryDeadline) >= 0) {
-    wifiTryState = WTRY_FAILED;
-    WiFi.disconnect(false, false);
-    WiFi.mode(WIFI_AP);            // drop back to a clean portal-only AP
-    Serial.println("WIFI| AP handoff: station did not connect");
+    wifiTryCandidateIdx++;
+    if (wifiTryCandidateIdx < wifiTryCandidateCount) {
+      Serial.println("WIFI| AP handoff: next configured SSID");
+      WiFi.disconnect(false, false);
+      wifiTryBeginCandidate();
+      return;
+    }
+    // Every profile was attempted. Whether the scan had seen them decides which
+    // of the two useful explanations the operator gets.
+    wifiTryFail(wifiTryScanSawNothing ? "not_found" : "no_connect");
   }
 }
 
@@ -4630,6 +4747,42 @@ void FallbackToAPmode() {
 }
 
 //-------------------------------------------------------------------------------------------------------
+// Matches a finished scan against both configured profiles, strongest AP first.
+// Reads scan results only -- the caller owns starting the scan and deleting it.
+//
+// Choosing by what is actually on the air matters more than it looks: starting
+// with profile 0 because it happens to be first costs a full connect timeout
+// before the alternation ever reaches the profile that was in range all along.
+uint8_t collectVisibleWifiProfiles(int found, WifiScanPick out[2]) {
+  uint8_t count = 0;
+  for (byte p = 0; p < 2; p++) {
+    if (!WifiProfileConfigured(p)) continue;
+    String want = WifiProfileSSID(p);
+    int best = -1;
+    int32_t bestRssi = -127;
+    for (int i = 0; i < found; i++) {
+      if (WiFi.SSID(i) != want) continue;
+      int32_t rssi = WiFi.RSSI(i);
+      if (best >= 0 && rssi <= bestRssi) continue;   // same SSID, weaker AP
+      best = i;
+      bestRssi = rssi;
+    }
+    if (best < 0) continue;
+    out[count].profile = p;
+    out[count].rssi = bestRssi;
+    out[count].channel = WiFi.channel(best);
+    const uint8_t* bssid = WiFi.BSSID(best);
+    if (bssid) memcpy(out[count].bssid, bssid, 6);
+    count++;
+  }
+  if (count == 2 && out[1].rssi > out[0].rssi) {
+    WifiScanPick swap = out[0];
+    out[0] = out[1];
+    out[1] = swap;
+  }
+  return count;
+}
+
 void ConnectWiFiAlternating() {
   WiFi.mode(WIFI_STA);
 
@@ -4641,26 +4794,23 @@ void ConnectWiFiAlternating() {
   // Scan before connecting — avoids infinite loop when SSIDs are configured but not in range
   Serial.println("WIFI| scanning for configured networks...");
   int n = WiFi.scanNetworks();
-  bool anyVisible = false;
-  for (int i = 0; i < n; i++) {
-    String scanned = WiFi.SSID(i);
-    if ((WifiProfileConfigured(0) && scanned == WifiProfileSSID(0)) ||
-        (WifiProfileConfigured(1) && scanned == WifiProfileSSID(1))) {
-      anyVisible = true;
-      break;
-    }
-  }
+  WifiScanPick visible[2];
+  uint8_t visibleCount = collectVisibleWifiProfiles(n, visible);
   WiFi.scanDelete();
 
-  if (!anyVisible) {
+  if (visibleCount == 0) {
     Serial.println("WIFI| no configured SSID found in scan, switching to AP mode");
     FallbackToAPmode();
   }
 
-  byte wifiProfile = 0;
-  if (WifiProfileConfigured(0) == false && WifiProfileConfigured(1) == true) {
-    wifiProfile = 1;
-  }
+  // Start with the profile the scan actually saw, strongest first, instead of
+  // always profile 0. The alternation below still covers the other one.
+  byte wifiProfile = visible[0].profile;
+  Serial.print("WIFI| ");
+  Serial.print(WifiProfileSSID(wifiProfile));
+  Serial.print(" visible at ");
+  Serial.print(visible[0].rssi);
+  Serial.println(" dBm, trying it first");
 
   WifiTimer = millis();
   int attempts = 0;
