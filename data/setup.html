@@ -75,17 +75,16 @@
               <span class="msg"></span>
             </label>
             <div class="setup-guide">
-              <strong class="setup-guide-title">Connect the IC-705 to the same access point</strong>
+              <strong class="setup-guide-title">Put the radio on the same network as this interface</strong>
               <ol>
                 <li>Enter your router's network name and password in <b>SSID 1</b> / <b>Password 1</b> above, then Save.</li>
-                <li>On the radio, open <code>MENU → SET → WLAN Set</code> and set <code>WLAN</code> to <b>ON</b>.</li>
-                <li>Set <code>Connection Type</code> to <b>Station</b> — this joins an existing router instead of the radio's own access-point mode.</li>
-                <li>Open <code>Access Point</code>, scan the networks, pick the <b>same SSID</b> as in step 1, and enter its password.</li>
-                <li>Keep <code>DHCP</code> <b>ON</b> so the router assigns the radio an address; note the <b>IP Address</b> shown in <code>WLAN Set</code>.</li>
-                <li>Select <b>Radio → TRX1 → ICOM-LAN</b> below and enter that IP. For ICOM-LAN control also set <code>Remote Settings → Network Control</code> to <b>ON</b> and configure a Network User1 ID/password.</li>
+                <li><b>Radios with a LAN socket</b> (IC-7610, IC-9700, IC-7300MK2, IC-7760): connect an Ethernet cable from the radio to the same router. Leave <code>DHCP</code> <b>ON</b> and note the address the radio shows.</li>
+                <li><b>IC-705</b> (wireless): open <code>MENU → SET → WLAN Set</code>, set <code>WLAN</code> to <b>ON</b> and <code>Connection Type</code> to <b>Station</b>. Under <code>Access Point</code> scan the networks, pick the <b>same SSID</b> as in step 1 and enter its password. Keep <code>DHCP</code> <b>ON</b> and note the <b>IP Address</b> shown in <code>WLAN Set</code>.</li>
+                <li>Turn network control on. On the IC-705, IC-7300MK2 and IC-7760 it lives under <code>Remote Settings</code>; on the IC-7610 and IC-9700 the items sit directly under <code>Network</code>. Set <code>Network Control</code> to <b>ON</b> and configure a Network User ID and password.</li>
+                <li>Select <b>Radio → TRX1 → ICOM-LAN</b> below, enter that address and those credentials, then press <b>Test &amp; identify radio</b> — it reports whether the radio accepted the login and reads back its model.</li>
               </ol>
-              <span class="setup-guide-note">Both devices must be on the same access point for the interface to reach the radio.</span>
-            </div>
+              <span class="setup-guide-note">Both devices must be on the same network for the interface to reach the radio. The DATA and WSPR pages carry a full per-radio setup guide behind their <b>?</b> button.</span>
+</div>
           </div>
         </details>
 
