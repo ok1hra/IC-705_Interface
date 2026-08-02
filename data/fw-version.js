@@ -1,8 +1,8 @@
 (function () {
   'use strict';
 
-  var MANIFEST_URL = 'https://ok1hra.github.io/IC-705_Interface/manifest.json';
-  var FLASHER_URL  = 'https://ok1hra.github.io/IC-705_Interface/';
+  var MANIFEST_URL = 'https://ok1hra.github.io/wifilt/manifest.json';
+  var FLASHER_URL  = 'https://ok1hra.github.io/wifilt/';
 
   var localRev  = null;
   var remoteRev = null;

@@ -5,7 +5,7 @@ WIFILT — Web interface for Icom LAN Transceivers.
 
 This project and its firmware are distributed under GNU GPL version 3. The
 complete license and corresponding source are available at:
-https://github.com/ok1hra/IC-705_Interface
+https://github.com/ok1hra/wifilt
 
 Trademarks
 ----------

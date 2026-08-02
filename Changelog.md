@@ -11,6 +11,23 @@ published.
 
 ## Working tree — not committed
 
+* **The repository and the firmware installer moved to `ok1hra/wifilt`.** 33 links followed it:
+  the installer page, the 13 asset links in the README, the `GitHub | Licenses` footer on all six
+  pages that have one, and — the one that actually has to resolve — the *corresponding source*
+  URL in `THIRD-PARTY-NOTICES.txt`, which is a GPL obligation, not a convenience. `fw-version.js`
+  now checks `https://ok1hra.github.io/wifilt/manifest.json`; both that and the repository were
+  confirmed serving before this was committed. Renaming a repository moves its GitHub Pages site
+  without leaving a redirect behind, which is only harmless because no device is deployed against
+  the old address.
+  The `hw/` and `3Dprint/` **file names deliberately did not change**, so only the repository
+  segment of those links moved — the enclosure still carries `IC-705` moulded into it, and
+  regenerating printable STL/3MF is not part of a rename.
+  Fixed along the way, because the README is the front door and it was giving instructions that
+  cannot be carried out: the quick start still said to join `IC705-if`, to open `ic705.local`, and
+  to pair the radio over **Bluetooth** — a transport that no longer exists. It now walks through
+  Network Control and `SETUP / Radio`. POWER-OUT is described the way the firmware's own header
+  has described it for a while: it follows a full-CAT primary radio, not a BT connection.
+
 * **The LAN transport profile is called `ICOM-LAN`, not `IC-705-LAN`.** The name never reached
   the screen — the SETUP dropdown has said `ICOM-LAN` for a long time — but internally the value
   named one model out of five, and a comment in `wspr-core.js` had to warn future readers not to
@@ -704,7 +721,7 @@ The unattended-operation layer. 71 files, ~4 000 insertions.
 
 ### `7ca05ee` fix installer
 
-* Web installer at `https://ok1hra.github.io/IC-705_Interface/` failed with
+* Web installer at `https://ok1hra.github.io/wifilt/` failed with
   *Failed to initialize*; ESP Web Tools was pinned back to **10.2.1** and the published assets
   regenerated. (The board has no BOOT button; unplug/replug of the USB cable was the workaround
   during diagnosis.)

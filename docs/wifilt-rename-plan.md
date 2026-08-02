@@ -213,7 +213,7 @@ a hostname je v manuálu na 6 místech → **regenerace všech screenshotů manu
 | 1 | adresář + `IC-705_Interface.ino` → `WIFILT.ino` | **samostatně** — zneplatní build cache a cwd. Smazat `prototype/*/build*` (absolutní cesty). Opravit `gh-pages.sh` (4×), `upload-firmware-spiffs.sh` (5×), `extract_sketch_aud1.py`, 82 citací v docs. Arduino váže jméno `.ino` na jméno adresáře. |
 | 2 | síťová identita | §3 celá + klíče vrstvy 3 |
 | 3 | branding + trademark | §2, §5, `RADIO_FULL_POWER_W` += `"IC-7760": 200`, **regenerace assetů** |
-| 4 | `hw/` + `3Dprint/` | přejmenovat soubory, vytlačený text `WIFILT` na [`ic-705-interface-3.scad:138`](../3Dprint/ic-705-interface-3.scad#L138), regenerovat STL/3MF/`preview*.png` |
+| 4 | ~~`hw/` + `3Dprint/`~~ | **ZRUŠENO** 2026-08-02 (rozhodnutí operátora: OpenSCAD neřešit). Vytlačený `IC-705` na [`ic-705-interface-3.scad:138`](../3Dprint/ic-705-interface-3.scad#L138) i názvy souborů zůstávají. **Důsledek pro commit 5:** odkazy v README na `hw/IC-705-interface-*` a `3Dprint/ic-705-interface-*` musí ponechat staré názvy souborů, měnit se v nich smí jen segment se jménem repa — jinak budou 404. |
 | 5 | repo + Pages URL | až po skutečném přejmenování na GitHubu: `fw-version.js` (`MANIFEST_URL`, `FLASHER_URL`), 22 README odkazů, patičky 6 stránek |
 | 6 | `transceiverType` → `"ICOM-LAN"` | §4, revertovatelné |
 | 7 | multi-model nápověda | §8 — **stejný REV**, ne „někdy potom" |

@@ -518,7 +518,7 @@ cat > "${OUTPUT_DIR}/index.html" <<EOF
       <h1>WIFILT<span class="tagline">Web interface for Icom LAN Transceivers</span></h1>
       <p class="subtitle">
         Firmware installer &mdash; version <code>${FW_REV}</code> &nbsp;&bull;&nbsp;
-        <a href="https://github.com/ok1hra/IC-705_Interface" target="_blank">GitHub</a>
+        <a href="https://github.com/ok1hra/wifilt" target="_blank">GitHub</a>
       </p>
 
       <hr class="divider">
@@ -681,4 +681,4 @@ git -C "$TMP_DIR" push "$PUBLISH_REMOTE" "$PUBLISH_BRANCH"
 echo ""
 echo "==> Published successfully."
 echo "    Enable GitHub Pages on branch '${PUBLISH_BRANCH}' (root) in repository settings."
-echo "    URL: https://ok1hra.github.io/IC-705_Interface/"
+echo "    URL: https://ok1hra.github.io/wifilt/"

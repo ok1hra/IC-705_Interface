@@ -18,9 +18,9 @@
 - self-healing WiFi — escalating recovery (targeted reconnect → radio reset → automatic restart)
 - red OFFLINE warning in the web page top bar when the browser loses connection to the interface
 
-<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/docs/LOG.png" height="400"><img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/docs/DXC.png" height="400">
+<img src="https://raw.githubusercontent.com/ok1hra/wifilt/main/docs/LOG.png" height="400"><img src="https://raw.githubusercontent.com/ok1hra/wifilt/main/docs/DXC.png" height="400">
 
-<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/docs/SETUP.png" height="300"><img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/docs/LOGSYNC.png" height="300">
+<img src="https://raw.githubusercontent.com/ok1hra/wifilt/main/docs/SETUP.png" height="300"><img src="https://raw.githubusercontent.com/ok1hra/wifilt/main/docs/LOGSYNC.png" height="300">
 
 ## Hardware required
 - an Icom transceiver with network remote control. **IC-705 is the tested model.** IC-7610, IC-9700, IC-7300MK2 and IC-7760 provide the same Network Control and LAN AF/IF audio functions and are expected to work, but have not been verified on air yet.
@@ -29,17 +29,18 @@
 
 ## Firmware web installer
 - First plug USB-C between ESP32 and PC
-- Then open the Firmware page and follow the instructions https://ok1hra.github.io/IC-705_Interface/
+- Then open the Firmware page and follow the instructions https://ok1hra.github.io/wifilt/
 
 ## Quick start guide
 - upload firmware
-- connect PC to WIFI SSID ```IC705-if``` access point
+- connect PC to WIFI SSID ```WIFILT-AP``` access point
 - [Find IP address](#find-ip-address)
 - open IP address in web browser
-- select ```SETUP``` page and set Wii SSID and password
+- select ```SETUP``` page and set Wifi SSID and password
 - after reboot device connect to your Wifi access point
-- [Find IP address](#find-ip-address) again or open http://ic705.local in web browser
-- in IC-705 select ```MENU / SET / Bluetooth Set / Pairing/Connect / Device Search``` and select ```IC705-interface```
+- [Find IP address](#find-ip-address) again or open http://wifilt.local in web browser
+- on the radio, enable ```Network Control``` and set a network user and password — see [docs/user-manual.md](docs/user-manual.md)
+- in ```SETUP / Radio``` set TRX1 to ```ICOM-LAN```, enter the radio address and credentials, and press ```Test & identify radio```
 
 ## Find IP address
 
@@ -48,26 +49,26 @@
 - Set Baudrate to 9600
 - Press ? and Enter
 - Read IP address from terminal debug
-<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/docs/cli.png" height="500">
+<img src="https://raw.githubusercontent.com/ok1hra/wifilt/main/docs/cli.png" height="500">
 
 ### via Terminal
 - Turn on the interface
 - Wait for the Status LED to turn off, which signals the Wifi connection
-- In the terminal window, use the command ```ping ic705.local``` - the output will show the IP address that the interface received from the DHCP server
+- In the terminal window, use the command ```ping wifilt.local``` - the output will show the IP address that the interface received from the DHCP server
 
 ## WEB app user Manual
 - [docs/user-manual.md](docs/user-manual.md) — setup, web UI, CW/RTTY, MQTT, troubleshooting
 - [docs/js8call-modem-implementation.md](docs/js8call-modem-implementation.md) — implementation plan for the browser-based JS8Call modem
 - [docs/aud1-audio-websocket-protocol.md](docs/aud1-audio-websocket-protocol.md) — proposed versioned RX/TX audio WebSocket envelope
-<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/hw/sw-block.png">
+<img src="https://raw.githubusercontent.com/ok1hra/wifilt/main/hw/sw-block.png">
 
 ## Hardware
-- **Output signal POWER-OUT** (13.8V/0.5A) with LED activates after connecting BT (can turn on your hamshack)
+- **Output signal POWER-OUT** (13.8V/0.5A) with LED activates after connecting a full-CAT primary radio (can turn on your hamshack)
 - **Galvanically isolated CI-V output** for connecting PA or other devices
 - Power consumption < 1W
 - RTTY operation
 
-[![RTTY + PTT keying](https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/hw/rtty-key.png)](https://youtube.com/shorts/b0uTiIwEsbw)
+[![RTTY + PTT keying](https://raw.githubusercontent.com/ok1hra/wifilt/main/hw/rtty-key.png)](https://youtube.com/shorts/b0uTiIwEsbw)
 
 ### Status LED
 - Fade in/out - WiFi in AP mode
@@ -79,7 +80,7 @@
     - FLASH+PTT receive RTTY via UDP
 
 ### Connection
-<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/hw/hw-block.png" height="250">
+<img src="https://raw.githubusercontent.com/ok1hra/wifilt/main/hw/hw-block.png" height="250">
 
 ### Connectors
 - 13,8V DC jack
@@ -89,14 +90,14 @@
 - ACC RJ45
 
 ### PCB
-- [Schematic rev3 PDF](https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/hw/IC-705-interface-03.pdf)
-- [BOM rev3 html](https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/hw/IC-705-interface-ibom-03.html)
+- [Schematic rev3 PDF](https://raw.githubusercontent.com/ok1hra/wifilt/main/hw/IC-705-interface-03.pdf)
+- [BOM rev3 html](https://raw.githubusercontent.com/ok1hra/wifilt/main/hw/IC-705-interface-ibom-03.html)
 
 ### 3D prit case
-<img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/3Dprint/preview.png" height="200"><img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/3Dprint/preview-mountpoint.png" height="200">
+<img src="https://raw.githubusercontent.com/ok1hra/wifilt/main/3Dprint/preview.png" height="200"><img src="https://raw.githubusercontent.com/ok1hra/wifilt/main/3Dprint/preview-mountpoint.png" height="200">
 
-- [Source rev3 OpenScad](https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/3Dprint/ic-705-interface-3.scad)
-- [rev3 STL](https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/3Dprint/ic-705-interface-3.stl)
-- [rev3 3MF](https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/3Dprint/ic-705-interface-3.3mf)
-- [With mountpoint rev3 STL](https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/3Dprint/ic-705-interface-3-mountpoint.stl)
-- [With mountpoint rev3 3MF](https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/3Dprint/ic-705-interface-3-mountpoint.3mf)
+- [Source rev3 OpenScad](https://raw.githubusercontent.com/ok1hra/wifilt/main/3Dprint/ic-705-interface-3.scad)
+- [rev3 STL](https://raw.githubusercontent.com/ok1hra/wifilt/main/3Dprint/ic-705-interface-3.stl)
+- [rev3 3MF](https://raw.githubusercontent.com/ok1hra/wifilt/main/3Dprint/ic-705-interface-3.3mf)
+- [With mountpoint rev3 STL](https://raw.githubusercontent.com/ok1hra/wifilt/main/3Dprint/ic-705-interface-3-mountpoint.stl)
+- [With mountpoint rev3 3MF](https://raw.githubusercontent.com/ok1hra/wifilt/main/3Dprint/ic-705-interface-3-mountpoint.3mf)
