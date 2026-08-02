@@ -17,6 +17,7 @@
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <new>
+#include "icom_lan_wire.h"
 #include "icom_lan_audio_tx.h"
 #include "icom_lan_tx_history.h"
 
@@ -116,6 +117,7 @@ public:
     tokRequest = (uint16_t)esp_random();
     token = 0;
     haveCaps = false; authOk = false; authAnnounced = false; streamReqSent = false; streamOpened = false;
+    loginRejected = false;
     civPort = 0;
     audioPort = 0; audioOpened = false; audioGotHere = false; audioGotReady = false;
     civTxTrafficActive = false;
@@ -157,6 +159,9 @@ public:
   bool connected() const { return state == LAN_CONNECTED; }
   bool failed() const    { return state == LAN_FAILED; }
   State status() const   { return state; }
+  // Distinguishes "radio said no" from "radio never answered". Only the SETUP
+  // credential test cares; the reconnect logic retries either way.
+  bool credentialsRejected() const { return loginRejected; }
   // CI-V stream is actually delivering data and not mid-recovery.
   bool catHealthy() const { return state == LAN_CONNECTED && civGotData && !civRecovering; }
   // Audio sub-stream linked and delivering fresh payload (firmware-side RX-live).
@@ -535,6 +540,7 @@ private:
   uint8_t radioCivAddr = 0xA4;
   uint8_t radioSlot = 0;
   bool audioAllowed = true;
+  bool loginRejected = false;   // radio answered the login and refused it
 
   WiFiUDP ctrlUdp, civUdp, audioUdp;  // audioUdp is native-harness only on ESP32
   uint32_t ctrlMyId = 0, ctrlRemoteId = 0;
@@ -664,19 +670,17 @@ private:
   IcomLanTxHistory<64, 128> civTxHistory;
 
   // ---- little/big-endian writers ----
-  static void putLE16(uint8_t*p,uint16_t v){p[0]=v;p[1]=v>>8;}
-  static void putLE32(uint8_t*p,uint32_t v){p[0]=v;p[1]=v>>8;p[2]=v>>16;p[3]=v>>24;}
-  static void putBE16(uint8_t*p,uint16_t v){p[0]=v>>8;p[1]=v;}
-  static void putBE32(uint8_t*p,uint32_t v){p[0]=v>>24;p[1]=v>>16;p[2]=v>>8;p[3]=v;}
-  static uint16_t getLE16(const uint8_t*p){return p[0]|(p[1]<<8);}
-  static uint32_t getLE32(const uint8_t*p){return (uint32_t)p[0]|(p[1]<<8)|(p[2]<<16)|((uint32_t)p[3]<<24);}
-  static uint16_t getBE16(const uint8_t*p){return (p[0]<<8)|p[1];}
+  // Thin forwarders; the implementations live in icom_lan_wire.h so the LAN
+  // discovery scanner shares one definition of the wire format with us.
+  static void putLE16(uint8_t*p,uint16_t v){ IcomWire::putLE16(p,v); }
+  static void putLE32(uint8_t*p,uint32_t v){ IcomWire::putLE32(p,v); }
+  static void putBE16(uint8_t*p,uint16_t v){ IcomWire::putBE16(p,v); }
+  static void putBE32(uint8_t*p,uint32_t v){ IcomWire::putBE32(p,v); }
+  static uint16_t getLE16(const uint8_t*p){ return IcomWire::getLE16(p); }
+  static uint32_t getLE32(const uint8_t*p){ return IcomWire::getLE32(p); }
+  static uint16_t getBE16(const uint8_t*p){ return IcomWire::getBE16(p); }
 
-  uint32_t mkId(uint16_t localPort) {
-    uint32_t a = (uint32_t)localIP;   // stored little-endian (a=oct1..oct4)
-    uint8_t o3 = (a >> 16) & 0xff, o4 = (a >> 24) & 0xff;
-    return ((uint32_t)o3 << 24) | ((uint32_t)o4 << 16) | (localPort & 0xffff);
-  }
+  uint32_t mkId(uint16_t localPort) { return IcomWire::mkId(localIP, localPort); }
 
   // ---- passcode substitution (icomudpbase.h) ----
   static uint8_t pcSeq(uint8_t i) {
@@ -701,10 +705,7 @@ private:
   // ---- packet primitives ----
   // Build a 0x10 control packet into buf; returns length.
   size_t hdr16(uint32_t myId, uint32_t rid, uint16_t type, uint16_t seq) {
-    memset(buf, 0, 0x10);
-    putLE32(buf+0, 0x10); putLE16(buf+4, type); putLE16(buf+6, seq);
-    putLE32(buf+8, myId); putLE32(buf+12, rid);
-    return 0x10;
+    return IcomWire::hdr16(buf, myId, rid, type, seq);
   }
   size_t ctrlPkt(uint16_t /*len*/, uint16_t type) { return hdr16(ctrlMyId, ctrlRemoteId, type, 0); }
   size_t civPkt0(uint16_t type) { return hdr16(civMyId, civRemoteId, type, 0); }
@@ -1070,8 +1071,8 @@ private:
       uint32_t err = getLE32(r+0x30);
       uint16_t tr = getLE16(r+0x1a);
       Serial.print("LAN | login response err=0x"); Serial.println(err, HEX);
-      if (err == 0xFEFFFFFF) { Serial.println("LAN | BAD USERNAME/PASSWORD"); state = LAN_FAILED; return; }
-      if (err != 0) { Serial.println("LAN | login rejected"); state = LAN_FAILED; return; }
+      if (err == 0xFEFFFFFF) { Serial.println("LAN | BAD USERNAME/PASSWORD"); loginRejected = true; state = LAN_FAILED; return; }
+      if (err != 0) { Serial.println("LAN | login rejected"); loginRejected = true; state = LAN_FAILED; return; }
       if (tr == tokRequest) {
         token = getLE32(r+0x1c);
         sendToken(0x02); sendToken(0x05);              // confirm + auth

@@ -11,6 +11,105 @@ published.
 
 ## Working tree — not committed
 
+* **Neither IP address has to be typed from memory any more — the radio's is scanned for, and the
+  interface's is handed over.** Two addresses stood between a box on the bench and a working
+  system, and both were the operator's problem.
+  **Finding the radio:** the Icom LAN protocol has no discovery, and neither does wfview — its
+  `discoveredRigID()` identifies the rig model over a link that is already open, and there is no
+  broadcast probe anywhere in the protocol. So `icom_lan_discovery.h` uses the only unauthenticated
+  primitive the handshake offers: `AreYouThere (0x03)` to UDP 50001 on every host of the local /24,
+  collecting `IAmHere (0x04)`. **It stops there and never logs in**, so it cannot consume the
+  IC-705's single session — a scan will not lock out a wfview that is connected at the time. It
+  does have to borrow UDP 50001 from the live client, and the reason it *stops* that client rather
+  than opening a second socket is that `WiFiUDP` sets `SO_REUSEADDR`: the duplicate bind would
+  succeed and then silently eat the client's control packets instead of failing. 254 datagrams are
+  paced 8 per loop pass so the audio-carrying loop is not disturbed, and the scan is refused while
+  transmitting. **Test connection** does a real login and separates "radio refused the credentials"
+  from "nothing answered" — it declares success at `LAN_STREAM`, before the CI-V channel opens, so
+  a radio being probed never writes its frequency into the shared rig state. The result list is
+  labelled *answered on UDP 50001*, not *IC-705*: a wfview or RS-BA1 server answers the same probe
+  and telling them apart would require the login the scan refuses to do. Wire primitives moved to
+  `icom_lan_wire.h` so scanner and client share one definition of the packet layout.
+  **Finding the interface:** the AP-mode "tap to open" prompt provably cannot be reproduced in
+  station mode — that sheet is the client OS reacting to its connectivity probe, and it only works
+  in AP mode because the device *is* the DHCP server and answers DNS for every name; on the home
+  network the router owns both, and faking it would mean answering queries addressed to the router.
+  What replaces it is a name and a handover. `WiFi.setHostname("ic705")` was missing entirely, so
+  the router listed a generic `espressif` entry and could not publish a name; with it, `http://ic705/`
+  resolves through ordinary unicast DNS on most consumer routers — the one path that also works from
+  **Android**. Three separate faults explain why `ic705.local` "worked sometimes": modem power save
+  was left at its default so the AP only delivered the multicast queries at DTIM beacons and dropped
+  them (`WiFi.setSleep(false)`, at the cost of steady-state current), `_http._tcp` was registered in
+  AP mode only so nothing could browse for the device on the real LAN, and the responder was never
+  re-registered after a reconnect — `NetworkIdentityLoop()` now does it on the same edge TrxNet
+  already used, kept out of `TrxNetLoop()` because that returns early when TrxNet is disabled. A
+  failed `MDNS.begin()` also no longer parks the device in `while(1)` forever.
+  **The handover:** saving WiFi in AP mode used to end in a blind restart that took the portal away
+  and left no address behind. `/setup/wifi-try` now raises the station beside the still-running
+  softAP and the portal shows the address the router handed out, as a link and as a QR code
+  (`data/qrcode.min.js` restored from the old filesystem layout, loaded on demand so it costs
+  nothing on normal page loads), before the operator presses restart. The address is kept in EEPROM
+  132-135 — written only when it changes, because that region is a flash sector — so any later AP
+  visit, including the unintended kind when the configured WiFi is out of range at boot, shows
+  *"Last address on your network"*. The softAP follows the station onto its channel during the
+  handover, so clients briefly drop and re-associate; the page treats a failed poll as "still
+  connecting". Five checks added to `tools/data-browser-smoke.js` (scan lists a hit, the row click
+  fills the field, the credential verdict renders, and the last-known hint appears in AP mode and
+  stays hidden otherwise), harness timeout raised 45→55 s to fit them. Firmware 989 833 → 991 861 B,
+  filesystem image 1 535 063 B. Documented in `docs/find-device-ip.md`. **Not yet verified on a
+  radio or a real network** — in particular whether the radio answers a probe from an ephemeral
+  port, which would let the scan run without dropping the link at all.
+* **Brand mark at the head of every menu, and an About window behind it.** The RemoteQTH icon sits
+  as the first item of `nav.tabs` on all six pages that carry the bar (DATA, WSPR, QRPLog, SETUP,
+  BD, LOGSYNC), 26 px tall with `padding:0` so it stays inside the row height the text tabs already
+  set — the bar does not grow, not even at the 33 px mobile tab size. It is **inline SVG**, not a
+  file: a separate `/logo.svg` would have cost a firmware MIME entry, an `isStatic` flag, two build
+  scripts and one more HTTP request per page, and an external SVG in `<img>` cannot inherit
+  `currentColor`. Carrying `class="tab"` and `fill="currentColor"`, the mark takes each page's own
+  muted colour instead of a hard-coded grey, so it cannot disappear if a page's palette changes.
+  The path was reduced from 3307 to 1648 characters by converting to absolute coordinates, rounding
+  to two decimals — which bounds the error instead of accumulating it along the path — and baking
+  the Inkscape layer transform into the coordinates; the result differs from the original by 0.67 %
+  RMSE, invisible at 15× the size it is drawn. Total cost **+6334 B** of the LittleFS image
+  (819 kB still free). Clicking it opens `data/about.html` in a browser pop-up the same way the DXC
+  tab does, showing **WIFILT** over *Web interface for Icom LAN transceivers*, the whole block a
+  link to the GitHub repository in a new tab. The anchor also carries `target="_blank"`, which the
+  DXC tab does not: without JavaScript the fallback navigation would otherwise leave the page and
+  drop the radio session. Checks added to `tools/data-browser-smoke.js` (DATA and SETUP) and
+  `tools/wspr-browser-smoke.js`; they assert the link target, the 26 px height, that the mark is no
+  taller than a text tab, and that `currentColor` resolves to the same colour the tabs use.
+* **Design notes in `docs/`** (22 files untracked), including `wspr-page-redesign.md`,
+  `wspr-timetable-redesign.md`, `wspr-majak-implementace.md`, `wspr-band-rotation-plan.md`,
+  `aprsis-cmd.md`, `aprsis-implementace.md`, `js8-tx-resend-plan.md`,
+  `data-menu-wspr-subnav-plan.md`, `wake-lock.md`, `js8lan-hearing-links.md`,
+  `setup-interfaces-architecture.md`, `icom-lan-implementace.md`, the `js8call-*` guides and
+  `docs/agents/`.
+* **`mercury/`** — Rhizomatica Mercury v2 evaluated as a second file-transfer modem beside JS8 and
+  WSPR; the WASM build exists and passes a loopback test (~230 kB Brotli). Airtime, not flash, is the
+  limiting factor. Notes in `docs/mercury-implementace.md`.
+* Most of the `prototype/js8-core-prototype/` smoke harness and the newer `tools/*-smoke.*` scripts,
+  plus `backups/` and `AGENTS.md`.
+
+---
+
+## REV 20260731 — 2026-08-01
+
+### `023f241` @APRSIS, PWR preset, Resend
+
+* **RESEND on failed transmissions, plus one armed automatic retry.** A row in the feed that did
+  not make it to the air carries a `RESEND` button, and `RESEND` transmits — it does not merely put
+  the text back in the field. Row ids are carried through the state snapshot so a rebuild of the
+  feed cannot detach the button from what it resends. An **operator abort earns no RESEND**: it is
+  the one failure the operator caused on purpose. Beyond the manual button, a failed slot arms
+  exactly one automatic retry; a retry that runs out of time says so in the row rather than
+  disappearing quietly. Found while building it: `CQ` reset the full interval on every call,
+  `drainTxQueue` skipped its own `txBlockReasons`, and the outgoing log leaked across band changes.
+  Plan in `docs/js8-tx-resend-plan.md`.
+* **The display keeper became a dot in the shared topbar**, next to the firmware version, with the
+  whole explanation in its tip — it is the only place those words live, so the tip doubles as the
+  title and as the accessible name. The pop-up no longer mentions HTTPS: nobody reading it can put
+  TLS in front of the firmware, so the advice was noise. A tap-opened tip can be dismissed by
+  tapping away from it.
 * **JS8CALL-ICOM sets the TRX power too, and heartbeats moved to 60 minutes.** The same machinery
   as WSPR, with two deliberate differences. The unit is **percent**, not the WSPR dBm grid: JS8
   announces no power in the protocol, so nothing pins it to that grid, and on a 100 W radio the
@@ -116,6 +215,24 @@ published.
   full of) silently never matched. Escape inside a modal no longer aborts a transmission in
   progress.
 
+---
+
+## REV 20260730 — 2026-07-30 … 2026-07-31
+
+### `61d6749` fix prebuffered missed slot, now 3s before
+
+* **The TX guard window grew from 1.3 s to 3 s**, ahead of the browser's own 1.35 s stream lead.
+  Besides keeping the cooperative loop off blocking work (port-80 handlers, DXC connect) around the
+  key instant, the wider window gives the firmware somewhere to push scheduling opportunities to a
+  **backgrounded page whose JavaScript timers have been throttled** — a hidden Chrome tab can have
+  chained timers serviced as rarely as once a minute, which is what made a prebuffered WSPR slot
+  miss its frame.
+* While a key is imminent the firmware now emits `tx-level` status about five times a second over
+  the audio WebSocket, so the WSPR pump is driven by inbound traffic instead of by the browser's
+  clock. JS8 shares the socket and ignores the message.
+
+### `81534ad` redesign WSPR time table
+
 * **WSPR timetable simplified to ordered sequence changes.** The band × 48-half-hour matrix and
   variable/randomised period were replaced by a short 24-hour UTC list such as `08:30 20→15→10`,
   `20:00 160→80→40`. Each sequence runs until the next half-hour change, preserves the operator's
@@ -123,6 +240,25 @@ published.
   two bands automatically leave unused frame positions. Existing v1–v3 schedules migrate to the
   new v4 shape. Back-to-back retuning now starts immediately on `tx-drained`, polls CAT readback at
   100 ms and overlaps the 300 ms band-relay settle interval with frequency confirmation.
+
+### `dfc4d5b` redesign all network stream to one RealtimeAudioPump
+
+* **One realtime audio pump for every network stream.** The TX-audio path was pulled out of
+  `icomLanClient.h` into a shared `icom_lan_audio_tx.h` used by both WSPR and JS8, allocated only
+  for the single LAN slot that owns audio, and driven on ESP32 by a dedicated task that owns the
+  whole channel (a wedged socket task can no longer be reused by a reconnect).
+* **CI-V commands got a priority queue.** Control and safety traffic — above all PTT — can evict
+  the oldest strictly lower-priority entry instead of queueing behind a stale meter or frequency
+  request that would hold PTT ON/OFF for half a second. PTT is treated as level state rather than
+  an event stream, so an older queued PTT body is dropped instead of replayed, and a failed
+  submission assumes the radio may still be keyed.
+* During browser TX only `/state` and safety metering are polled; frequency and the rest stand down,
+  which keeps lightweight session heartbeats alive through a long WSPR carrier. The audio-channel
+  epoch (both sequence spaces) is reset as a unit, and a legacy fallback covers radios that do not
+  answer the newer query.
+* Firmware health smoke extended (`icom_lan_client_health_smoke.cpp`, +86).
+
+### `02ca83b` wspr time table, js8 pwr bar
 
 * **RF power in the JS8Call header.** A ten-segment vertical bar sits after the mode, the height of
   the TIMETABLE button, one segment per 10 % of the radio's own 0–255 CI-V power scale — so the
@@ -176,15 +312,6 @@ published.
   SETTINGS is derived from the polled deadline instead of the last POST, so it also shows a window
   armed before this page loaded. Covered by `tools/data-browser-smoke.js`
   (`unattendedRearmAfterRestart`).
-* **Design notes in `docs/`** (22 files untracked), including `wspr-page-redesign.md`,
-  `wspr-timetable-redesign.md`, `wspr-majak-implementace.md`, `data-menu-wspr-subnav-plan.md`,
-  `wake-lock.md`, `js8lan-hearing-links.md`, `setup-interfaces-architecture.md`,
-  `icom-lan-implementace.md`, the `js8call-*` guides and `docs/agents/`.
-* **`mercury/`** — Rhizomatica Mercury v2 evaluated as a second file-transfer modem beside JS8 and
-  WSPR; the WASM build exists and passes a loopback test (~230 kB Brotli). Airtime, not flash, is the
-  limiting factor. Notes in `docs/mercury-implementace.md`.
-* Most of the `prototype/js8-core-prototype/` smoke harness and the newer `tools/*-smoke.*` scripts,
-  plus `backups/` and `AGENTS.md`.
 
 ---
 
@@ -223,6 +350,10 @@ WSPR beacon polish — the page's second pass after the first on-air use.
 * Activity panel: future slots drawn dark grey instead of bright outlines, and tooltips explain the
   power meter, TUNE reference and ring values.
 * REV bumped to 20260729 and the build republished to the USB-C web flasher.
+
+### `e2f1f6e` changelog
+
+* Documentation only.
 
 ---
 

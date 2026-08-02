@@ -135,7 +135,17 @@
         this.windows += 1;
         this.windowsByMode[mode] += 1;
         this.decodeWindow(mode, slotUtcMs, firstSample, sampleCount);
+        // The reassembly clock: a window exists for every slot whether anything decoded
+        // or not, so partial receptions age out even on a dead band, with no wall clock
+        // in the worker and deterministic behaviour in tests.
+        this.expire(Number(slotUtcMs));
       }
+    }
+
+    // Also reachable from the page on a 1 s job: when audio stops for good, no window is
+    // produced and a stranded partial would otherwise pose as a live reception forever.
+    expire(nowMs) {
+      if (this.protocol && this.protocol.expire) this.protocol.expire(nowMs);
     }
 
     decodeWindow(mode, slotUtcMs, firstSample, sampleCount) {

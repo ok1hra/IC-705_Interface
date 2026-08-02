@@ -35,7 +35,7 @@ function applyCivRaw(parsed) {
   const hundreds=parseInt(data.slice(4,6),16), rest=parseInt(data.slice(6,8),16);
   radioRfPower=hundreds*100+(rest>>4)*10+(rest&0x0f);
 }
-let chrome, finished=false, timer, sequence=0, firstSample=0, streamId=707, txPrepares=0, txPackets=0, wsConnections=0, earlyWsConnections=0, jscRequests=0, jscStartedAt=0, jscCompleteAt=0, wsOpenedAt=0, jscComplete=false, js8Gzip=0, js8Brotli=0, commands=[], setupSaveBody="", setupRestartRequests=0, lanReconnectRequests=0;
+let chrome, finished=false, timer, sequence=0, firstSample=0, streamId=707, txPrepares=0, txPackets=0, wsConnections=0, earlyWsConnections=0, jscRequests=0, jscStartedAt=0, jscCompleteAt=0, wsOpenedAt=0, jscComplete=false, js8Gzip=0, js8Brotli=0, commands=[], setupSaveBody="", setupRestartRequests=0, lanReconnectRequests=0, icomScanStarts=0, icomScanPolls=0, icomTestPolls=0, icomTestBody="";
 const mime={".html":"text/html",".css":"text/css",".js":"application/javascript",".wasm":"application/wasm",".bin":"application/octet-stream"};
 function frame(opcode,payload){const body=Buffer.isBuffer(payload)?payload:Buffer.from(payload);return body.length<126?Buffer.concat([Buffer.from([0x80|opcode,body.length]),body]):Buffer.concat([Buffer.from([0x80|opcode,126,body.length>>8,body.length&255]),body]);}
 function aud1(){const wire=Buffer.alloc(200,0xff);wire.write("AUD1");wire[4]=1;wire[5]=1;wire.writeUInt16BE(sequence===0?1:0,6);wire.writeUInt16BE(40,8);wire.writeUInt16BE(0,10);wire.writeUInt32BE(streamId,12);wire.writeUInt32BE(sequence++,16);wire.writeUInt32BE(8000,20);wire.writeBigUInt64BE(BigInt(firstSample),24);wire.writeUInt32BE(0,32);wire.writeUInt32BE(160,36);firstSample+=160;return wire;}
@@ -47,6 +47,12 @@ function finish(ok,text){if(finished)return;finished=true;clearTimeout(timer);if
 const server=http.createServer((req,res)=>{
   const url=new URL(req.url,"http://fixture");
   if(url.pathname==="/result"&&req.method==="POST"){let body="";req.on("data",c=>body+=c);req.on("end",()=>{res.writeHead(204).end();const result=JSON.parse(body);finish(result.pass,result.text);});return;}
+  // Icom LAN discovery: the scan reports "running" once, then a single hit, so
+  // the page has to survive at least one poll before the list appears.
+  if(url.pathname==="/icom/scan"&&req.method==="POST"){icomScanStarts++;icomScanPolls=0;res.statusCode=202;res.setHeader("Content-Type","application/json");res.end('{"ok":true}');return;}
+  if(url.pathname==="/icom/scan.json"){icomScanPolls++;const done=icomScanPolls>1;res.setHeader("Content-Type","application/json");res.end(JSON.stringify({state:done?"done":"running",scanned:done?254:120,total:254,subnet:"192.168.1",truncated:false,found:done?[{ip:"192.168.1.60",id:"c0a8013c"}]:[]}));return;}
+  if(url.pathname==="/icom/test"&&req.method==="POST"){let body="";req.on("data",c=>body+=c);req.on("end",()=>{icomTestBody=body;icomTestPolls=0;res.statusCode=202;res.setHeader("Content-Type","application/json");res.end('{"ok":true}');});return;}
+  if(url.pathname==="/icom/test.json"){icomTestPolls++;res.setHeader("Content-Type","application/json");res.end(JSON.stringify({state:"ok"}));return;}
   if(url.pathname==="/setup/save"&&req.method==="POST"){let body="";req.on("data",c=>body+=c);req.on("end",()=>{setupSaveBody=body;res.setHeader("Content-Type","application/json");res.end('{"ok":true}');});return;}
   if(url.pathname==="/restart"&&req.method==="POST"){setupRestartRequests++;res.setHeader("Content-Type","application/json");res.end('{"ok":true}');return;}
   if(url.pathname==="/lan/reconnect"&&req.method==="POST"){lanReconnectRequests++;res.setHeader("Content-Type","application/json");res.end('{"ok":true}');return;}
@@ -252,6 +258,15 @@ f.onload=()=>{
         recentMessageWhite:getComputedStyle(d.querySelector('#traffic .message-text')).color==='rgb(255, 255, 255)',
         operationalDim:d.querySelectorAll('#traffic .message.operational').length===1,
         noDebugNav:![...d.querySelectorAll('.tabs .tab')].some(link=>link.textContent.trim()==='DEBUG'),
+        // The brand mark opens the About window and must never make the bar
+        // taller than the text tabs already do -- hence padding:0 on the link.
+        // Its fill is currentColor, so it has to land on the same muted colour
+        // the tabs use; a hard-coded grey would vanish on the light LOGSYNC page.
+        brandLogo:(()=>{const logo=d.querySelector('.tabs')?.firstElementChild,text=d.querySelector('.tabs a[href="/log"]');
+          return logo?.getAttribute('href')==='/about.html'&&logo.target==='_blank'&&!!logo.querySelector('svg path')&&
+            Math.round(logo.querySelector('svg').getBoundingClientRect().height)===26&&
+            logo.getBoundingClientRect().height<=text.getBoundingClientRect().height&&
+            getComputedStyle(logo.querySelector('svg')).fill===getComputedStyle(text).color;})(),
         removedPagesAbsentFromNav:!d.querySelector('.bd-nav,.tab-cat-muted,a[href="/bd"],a[href="/"]'),
         messagePresets:d.querySelectorAll('[data-message-preset]').length>=18&&!!d.querySelector('#messagePresetsButton')&&
           ['qsl-query','yes','no','tu','dit-dit','grid-query','info-query','status-query']
@@ -331,11 +346,45 @@ f.onload=()=>{
       checks.lanGateNoLeaveWarning=(()=>{const event=new lanGateFrame.contentWindow.Event('beforeunload',{cancelable:true});return lanGateFrame.contentWindow.dispatchEvent(event)!==false&&!event.defaultPrevented;})();
       checks.setupJs8Nav=sd.querySelector('a[href="/data"]')?.textContent.trim()==='DATA'&&sd.querySelector('a[href="/data"]')?.title==='JS8Call-ICOM and WSPR over ICOM-LAN'&&!sd.querySelector('a[href="/wspr.html"]');
       checks.setupRemovedPagesAbsentFromNav=!sd.querySelector('.bd-nav,.tab-cat-muted,a[href="/bd"],a[href="/"]');
+      checks.setupBrandLogo=(()=>{const logo=sd.querySelector('.tabs')?.firstElementChild;
+        return logo?.getAttribute('href')==='/about.html'&&logo.target==='_blank'&&!!logo.querySelector('svg path')&&
+          getComputedStyle(logo.querySelector('svg')).fill===getComputedStyle(sd.querySelector('.tabs a[href="/log"]')).color;})();
       const missingInputs=[...sd.querySelectorAll('[name="trx1lanip"],[name="trx1lanuser"],[name="trx1lanpass"]')];
       const setupMissingObserved=radioSection?.open===true&&lanWarning?.hidden===false&&missingInputs.length===3&&missingInputs.every(input=>input.classList.contains('setup-radio-field-missing')&&input.getAttribute('aria-invalid')==='true');
       const setupValues={trx1lanip:'192.168.1.60',trx1lanuser:'operator',trx1lanpass:'secret123'};
       missingInputs.forEach(input=>{input.value=setupValues[input.name];input.dispatchEvent(new setupFrame.contentWindow.Event('input',{bubbles:true}));});
       checks.setupLanWarning=setupMissingObserved&&lanWarning.hidden===true&&missingInputs.every(input=>!input.classList.contains('setup-radio-field-missing')&&input.getAttribute('aria-invalid')==='false');
+      // Icom LAN scan: the firmware finds the radio so the operator does not
+      // have to read the address off the radio's own menu. The result list is
+      // rebuilt on every poll, so the row click also proves the delegation
+      // survives innerHTML replacing the node under the pointer.
+      const scanPanel=sd.querySelector('[data-icom-scan-panel="trx1"]');
+      const scanHiddenBefore=scanPanel?.hidden===true;
+      sd.querySelector('[data-icom-scan="trx1"]').click();
+      await new Promise(resolve=>setTimeout(resolve,1300));
+      const scanHit=sd.querySelector('[data-icom-scan-panel="trx1"] .icom-scan-hit');
+      checks.icomScanLists=scanHiddenBefore&&scanPanel.hidden===false&&!!scanHit&&
+        scanHit.getAttribute('data-ip')==='192.168.1.60';
+      sd.querySelector('[name="trx1lanip"]').value='';
+      scanHit?.click();
+      checks.icomScanFillsIp=sd.querySelector('[name="trx1lanip"]').value==='192.168.1.60';
+      sd.querySelector('[data-icom-test="trx1"]').click();
+      await new Promise(resolve=>setTimeout(resolve,1300));
+      checks.icomTestVerdict=sd.querySelector('[data-icom-test-result="trx1"]').textContent.includes('accepted');
+      // AP-mode handoff. The fixture serves this page as a station, so the AP
+      // state is injected and the module driven directly; the AP_STA transition
+      // and the QR itself can only be judged on hardware. Reset to station at
+      // the end -- leaving apMode set would divert the save test into handoff.
+      const sw=setupFrame.contentWindow;
+      sw.setupDeviceInfo={apMode:true,hostname:'ic705',lastStaIp:'192.168.1.55'};
+      sw.setupWifiHandoff.showLastKnown();
+      const lastKnown=sd.querySelector('#wifiLastKnown');
+      checks.wifiLastKnownHint=lastKnown.hidden===false&&
+        lastKnown.querySelector('a')?.getAttribute('href')==='http://192.168.1.55'&&
+        sw.setupWifiHandoff.available()===true;
+      sw.setupDeviceInfo={apMode:false,hostname:'ic705',lastStaIp:'192.168.1.55'};
+      sw.setupWifiHandoff.showLastKnown();
+      checks.wifiLastKnownStationHidden=lastKnown.hidden===true&&sw.setupWifiHandoff.available()===false;
       // Unattended panel: armed, but the fixture says the modem tab has been
       // silent for 31 s. A timer alone would still read "armed" -- the point of
       // the panel is that this state is visibly flagged.
@@ -978,6 +1027,55 @@ f.onload=()=>{
                     f.contentWindow.__dataTest.snapshotBuild().hearingLinksVisible===false;
                   d.querySelector('#stationMapLinks').click();
                   checks.hearingToggleBack=hearLinks().length===1&&d.querySelector('#stationMapLinks').getAttribute('aria-pressed')==='true';
+                  // Partial receptions: a long message must be readable while it arrives,
+                  // and one that never ended must say so instead of vanishing. Fed the way
+                  // the worker's ActivityStore reports it -- reassembly in progress in
+                  // channels, finalized torso in messages.
+                  const pnow=Date.now();
+                  f.contentWindow.__dataTest.setActivity({frames:[],timing:[],calls:[],
+                    channels:[{key:'0|1500',id:'0|1500|'+(pnow-15000),
+                      text:'K0OG: OK1HRA MSG ARRIVING NOW',callsigns:['K0OG','OK1HRA'],
+                      kinds:['directed','data'],submode:0,offsetHz:1500,
+                      firstSlotUtcMs:pnow-15000,lastSlotUtcMs:pnow-3000,
+                      directed:{from:'K0OG',to:'OK1HRA',command:' MSG'},
+                      gaps:[],headerMissing:false,frameCount:2}],
+                    messages:[{id:'0|1600|'+(pnow-120000),
+                      text:'DL9TOR: OK1HRA MSG BROKEN OFF HERE',callsigns:['DL9TOR','OK1HRA'],
+                      kinds:['directed','data'],submode:0,offsetHz:1600,
+                      firstSlotUtcMs:pnow-120000,lastSlotUtcMs:pnow-90000,
+                      directed:{from:'DL9TOR',to:'OK1HRA',command:' MSG'},
+                      gaps:[{textIndex:25,frames:2,slotUtcMs:pnow-105000}],
+                      headerMissing:false,complete:false,incomplete:true,checksumOk:false}]});
+                  const rxRow=state=>d.querySelector('#traffic article[data-rx-state="'+state+'"]');
+                  const liveRow=rxRow('receiving'),torsoRow=rxRow('incomplete');
+                  checks.partialRow=Boolean(liveRow)&&
+                    liveRow.querySelector('.rx-state').textContent==='receiving'&&
+                    liveRow.querySelector('.message-text').textContent.indexOf('ARRIVING NOW')>=0&&
+                    liveRow.querySelector('strong').dataset.call==='K0OG'&&
+                    !liveRow.querySelector('.rx-eot')&&
+                    d.querySelector('#trafficSummary').textContent.indexOf('1 receiving')>=0;
+                  // The torso is the case that was invisible until now: a lost final frame
+                  // stranded the reassembly in the worker and no row was ever drawn. The end
+                  // marker must be absent here and present on an intact row, otherwise its
+                  // absence proves nothing.
+                  checks.partialFinalized=Boolean(torsoRow)&&
+                    torsoRow.querySelector('.rx-state').textContent==='incomplete'&&
+                    !torsoRow.querySelector('.rx-eot')&&
+                    Boolean(d.querySelector('#traffic article .rx-eot'));
+                  const gapNode=torsoRow&&torsoRow.querySelector('.rx-gap');
+                  checks.gapMarker=Boolean(gapNode)&&
+                    gapNode.title.indexOf('2 frames lost')>=0&&
+                    // one fixed block per lost frame, 3 characters each: the count is a
+                    // fact, the width of the hole is not
+                    gapNode.textContent.length===6&&
+                    // and it must sit where the frames were lost, not at the end
+                    gapNode.previousSibling.textContent.slice(-6)==='BROKEN'&&
+                    torsoRow.querySelector('.message-text').textContent.indexOf('OFF HERE')>=0;
+                  // CLEAR cannot reach the store inside the worker, so without the watermark
+                  // the live row pops straight back and CLEAR reads as a broken button.
+                  d.querySelector('[data-traffic-clear]').click();
+                  checks.clearWatermark=!d.querySelector('#traffic article[data-rx-state]')&&
+                    Boolean(d.querySelector('#traffic .empty-row'));
                   const pass=Object.values(checks).every(Boolean);
                   fetch('/result',{method:'POST',body:JSON.stringify({pass,text:'DATA BROWSER '+(pass?'PASS ':'FAIL ')+JSON.stringify(checks)+' station='+JSON.stringify(stationObserved)+' sort='+JSON.stringify({sortAscObserved,sortDescObserved})+' gate='+gate+' tx='+d.querySelector('#txSummary').textContent+' modem='+d.querySelector('#modemState').textContent+' diag='+diag})});
                 }
@@ -1017,4 +1115,4 @@ wsConnections++;wsOpenedAt=Date.now();if(!jscComplete)earlyWsConnections++;const
 // makes the wake lock checks meaningful: the video fallback is a mobile technique
 // and a desktop user agent would (correctly) refuse to use it.
 const ANDROID_UA="Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36";
-server.listen(0,"127.0.0.1",()=>{chrome=spawn("google-chrome",["--headless=new","--no-sandbox","--disable-gpu","--disable-dev-shm-usage","--no-proxy-server",`--user-agent=${ANDROID_UA}`,"--host-resolver-rules=MAP ic705.test 127.0.0.1",`http://ic705.test:${server.address().port}/smoke.html`]);let errors="";chrome.stderr.on("data",c=>errors+=c);chrome.on("close",code=>{if(!finished)finish(false,`DATA BROWSER FAIL Chrome exited ${code}\n${errors}`);});timer=setTimeout(()=>finish(false,`DATA BROWSER FAIL timeout prepares=${txPrepares} packets=${txPackets}`),45000);});
+server.listen(0,"127.0.0.1",()=>{chrome=spawn("google-chrome",["--headless=new","--no-sandbox","--disable-gpu","--disable-dev-shm-usage","--no-proxy-server",`--user-agent=${ANDROID_UA}`,"--host-resolver-rules=MAP ic705.test 127.0.0.1",`http://ic705.test:${server.address().port}/smoke.html`]);let errors="";chrome.stderr.on("data",c=>errors+=c);chrome.on("close",code=>{if(!finished)finish(false,`DATA BROWSER FAIL Chrome exited ${code}\n${errors}`);});timer=setTimeout(()=>finish(false,`DATA BROWSER FAIL timeout prepares=${txPrepares} packets=${txPackets}`),55000);});

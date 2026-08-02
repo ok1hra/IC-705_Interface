@@ -19,11 +19,13 @@ const RX_LOW = 500, RX_HIGH = 2700, HB_HIGH = 1000, AUDIO_RATE = 8000;
 const FFT_SIZE = 4096, HOP_SIZE = 2048;
 const SPEED_TO_MODE = {A:0, B:1, C:2, E:4, I:8};
 const MODE_TO_SPEED = {0:"A", 1:"B", 2:"C", 4:"E", 8:"I"};
-const MODE_PERIOD_SECONDS = {0:15, 1:10, 2:6, 4:30, 8:4};
+// One source of truth with the reassembly store, which needs the slot length to tell a
+// missed frame from a frame that has not arrived yet.
+const MODE_PERIOD_SECONDS = Js8Protocol.MODE_PERIOD_SECONDS;
 const ACTIVITY_FREQUENCY_TOLERANCE_HZ = 2000;
 
 function emptyActivity() {
-  return {messages:[], calls:[], timing:[], frames:[], channels:[]};
+  return {messages:[], calls:[], timing:[], frames:[], channels:[], clearedAtMs:0};
 }
 
 class AudioSource {
@@ -1714,7 +1716,12 @@ function renderStationSort() {
 function openSectionsForNewOwnCall(messages,calls) {
   const own=currentJs8().myCall;
   const previous=state.ownCallAttention;
-  const messageKeys=new Set(messages.filter(item=>!item.outgoing && messageMentionsCall(item,own)).map(activityMessageKey));
+  // Keyed by channel identity where there is one: a growing reception changes its text and
+  // therefore its message key with every frame, which would re-open a section the operator
+  // has just collapsed, every few seconds. The identity also survives finalization, so one
+  // reception pops the section open exactly once.
+  const messageKeys=new Set(messages.filter(item=>!item.outgoing && messageMentionsCall(item,own))
+    .map(item=>item.id ? `channel|${item.id}` : activityMessageKey(item)));
   const stationKeys=new Set(calls.filter(item=>sameCall(item.call,own))
     .map(item=>`${item.call}|${activityCallSignature(item)}`));
   const sameOperator=previous.call===own;
@@ -1732,7 +1739,14 @@ function messageTimeMs(message){return Number(message.lastSlotUtcMs || message.f
 // TX keeps every own transmission. It used to keep only the ones that went on air, which
 // stopped making sense once a failed row carries a RESEND button: TX is where an operator
 // comes back to sort out what did not get out, and that view must not hide the failures.
-function filterTraffic(messages,own){
+function filterTraffic(items,own){
+  // CLEAR cannot reach the reassembly store inside the worker, so a live partial row would
+  // pop straight back and read as a broken button. The watermark hides what the operator
+  // wiped; a reception still in flight returns with its next frame, which is right -- that
+  // is live traffic, not history. Own TX rows are wiped from outgoingLog instead.
+  const cleared=Number(state.activity.clearedAtMs)||0;
+  const messages=cleared
+    ? items.filter(item=>item.outgoing || messageTimeMs(item)>cleared) : items;
   const filter=state.trafficFilter;
   if(filter==="mycall")return own ? messages.filter(message=>messageMentionsCall(message,own)) : messages;
   if(filter==="tx")return messages.filter(message=>message.outgoing);
@@ -1757,6 +1771,9 @@ function renderTrafficFilterButtons(own){
 function clearRecentTraffic(){
   const messages=state.activity.messages;
   if(Array.isArray(messages))messages.length=0;
+  // Live reassemblies and channels that finalize late live in the worker, out of reach of
+  // this array; the watermark is what keeps them cleared.
+  state.activity.clearedAtMs=js8Clock.now();
   // CLEAR empties the whole feed, own TX included. The per-station chat thread and
   // the in-flight transmission are untouched — this only wipes the traffic view.
   state.outgoingLog.length=0;
@@ -1783,6 +1800,75 @@ function outgoingTrafficItems(){
     callsigns:[own,item.to].filter(Boolean)}));
 }
 
+// Live reassemblies as feed items, shaped like a message so the existing sort and filters
+// apply unchanged. A long message is visible while it arrives instead of appearing whole
+// after its last frame -- and if that last frame never comes, the text is still here.
+// `live` is the renderer's own staleness check with the same 4-period constant the store
+// uses: when audio stops, no decode window is produced to age the channel, and a row must
+// not keep claiming "receiving" for a reception that ended minutes ago.
+function partialTrafficItems(){
+  const now=js8Clock.now();
+  return (state.activity.channels||[]).map(channel=>{
+    const live=now-Number(channel.lastSlotUtcMs||0)
+      < Js8Protocol.REASSEMBLY_TIMEOUT_PERIODS*Js8Protocol.slotPeriodMs(channel.submode);
+    return {...channel, partial:true, live, text:String(channel.text||"").trimEnd()};
+  }).filter(item=>!messageInvolvesBlocked(item));
+}
+
+// One word, the heaviest fact, in the same meta slot where a TX row reports
+// completed/aborted. Colour stays a TX-only vocabulary (red = it was on the air), so
+// nothing here needs a legend. A restored message from before this feature carries none of
+// these fields and is complete by construction: back then only an EOT frame could push a
+// message into the store at all.
+function receptionState(message){
+  if(message.partial)return message.live ? "receiving" : "incomplete";
+  if(message.incomplete)return "incomplete";
+  if(message.checksumOk===false)return "bad crc";
+  if((message.gaps||[]).length)return "gap";
+  return "";
+}
+
+// Holes are drawn from the slot gaps the store recorded alongside the text, never from
+// sentinels inside it: the text stays byte-identical for the inbox, relay, file transfer,
+// APRS and the dedup key.
+function renderReceivedText(message,own){
+  const text=String(message.text||"");
+  const gaps=[...(message.gaps||[])].sort((a,b)=>Number(a.textIndex)-Number(b.textIndex));
+  let html=message.headerMissing
+    ? renderGapMarker({frames:1,slotUtcMs:message.firstSlotUtcMs},"header") : "";
+  let at=0;
+  for(const gap of gaps){
+    const index=Math.max(at,Math.min(text.length,Number(gap.textIndex)||0));
+    html+=ownCallText(text.slice(at,index),own)+renderGapMarker(gap);
+    at=index;
+  }
+  return html+ownCallText(text.slice(at),own);
+}
+
+// One fixed block per lost frame: how many characters it carried is unknowable (JSC
+// compression packs a variable number into the same 72 bits), so the marker states the
+// frame count it does know and claims nothing about length.
+function renderGapMarker(gap,kind){
+  const frames=Math.max(1,Number(gap.frames)||1);
+  const when=Number(gap.slotUtcMs)||0;
+  const at=when ? new Date(when).toISOString().slice(11,19) : "";
+  const title=kind==="header"
+    ? `header frame missing${at?` before ${at}`:""}`
+    : `${frames} frame${frames===1?"":"s"} lost${at?` from ${at}`:""}`;
+  return `<span class="rx-gap" title="${esc(title)}">${"░░░".repeat(frames)}</span>`;
+}
+
+// directed.from is the decoded sender. A callsign lifted out of the body is only a mention,
+// and putting it in this column would also arm the row's click to switch the selected
+// station -- the next transmission would then go to the wrong address.
+function senderOf(message){
+  if(message.directed && message.directed.from)
+    return {call:message.directed.from, clickable:true};
+  if(message.headerMissing)return {call:"?", clickable:false};
+  const call=callOf(message);
+  return {call, clickable:Boolean(call)};
+}
+
 // An item with no recorded frequency predates the field (or was restored from an older
 // snapshot); showing it everywhere is better than hiding history the operator wrote.
 function onTunedBand(frequencyHz,tunedHz){
@@ -1799,14 +1885,21 @@ function renderActivity() {
   const own=currentJs8().myCall;
   const responders=respondingCalls();
   renderTrafficFilterButtons(own);
-  dom.trafficClear.disabled=(state.activity.messages || []).length===0 && state.outgoingLog.length===0;
+  const partials=partialTrafficItems();
+  dom.trafficClear.disabled=(state.activity.messages || []).length===0
+    && state.outgoingLog.length===0 && partials.length===0;
   // Merge own TX into the feed so a returning operator sees what the station sent
   // unattended, and by colour what actually went out versus what a failure dropped.
-  const messages=[...heard,...outgoingTrafficItems()];
+  // Reassemblies in progress ride along, so the newest row is what is arriving now.
+  const messages=[...heard,...outgoingTrafficItems(),...partials];
   const filtered=filterTraffic(messages,own);
-  dom.trafficSummary.textContent=filtered.length===messages.length
-    ? `${messages.length} message${messages.length===1?"":"s"}`
-    : `${filtered.length} / ${messages.length} messages`;
+  // Receptions in progress are counted apart: they are not messages yet, and diluting them
+  // into one total hides both facts.
+  const receiving=filtered.filter(item=>item.partial && item.live).length;
+  const total=filtered.length-receiving, all=messages.length-receiving;
+  dom.trafficSummary.textContent=(total===all
+    ? `${all} message${all===1?"":"s"}`
+    : `${total} / ${all} messages`)+(receiving?` · ${receiving} receiving`:"");
   dom.stationSummary.textContent=`${calls.length} active`;
   const recent=[...filtered].sort((a,b)=>Number(b.lastSlotUtcMs||b.firstSlotUtcMs||0)-Number(a.lastSlotUtcMs||a.firstSlotUtcMs||0)).slice(0,100);
   let dividerShown=false;
@@ -1833,14 +1926,22 @@ function renderActivity() {
         ? `<button type="button" class="tx-resend" data-resend-id="${esc(String(item.id))}" title="${esc(resendTitle(item))}">↻ RESEND</button>` : "";
       return divider+`<article class="message message-tx ${cls}" data-tx-status="${esc(message.status)}" data-tx-attempts="${attempts}"><span class="message-meta"><span>${when}</span><span>TX</span><span>${esc(message.status)}${attempts>1?` ×${attempts}`:""}</span><span class="tx-retry" data-retry-until="${retryUntil}"></span></span><strong>${target}</strong><span class="message-text">${item?renderOutgoingText(item):esc(message.text)}</span>${resend}</article>`;
     }
-    const call=callOf(message);
+    const sender=senderOf(message);
+    const call=sender.call;
     const operational=Array.isArray(message.kinds) && !message.kinds.includes("data");
     const ownCall=sameCall(call,currentJs8().myCall);
     // An APRS-IS answer to one of our own commands is addressed to the group, so
     // nothing else in the row would tell the operator it came back for them.
     const aprsReply=Js8Aprs.replyForMe(message,currentJs8().myCall)
       ? '<span class="aprs-badge" title="APRS-IS reply to your command">APRS</span>' : "";
-    return divider+`<article class="message${operational?" operational":""}${aprsReply?" aprs-reply":""}"><span class="message-meta"><span>${when}</span><span>${MODE_TO_SPEED[message.submode]||"?"}</span><span>${Math.round(message.offsetHz)} Hz</span></span><strong data-call="${esc(call)}"${ownCall?' class="own-callsign" data-own-call="true"':""}>${esc(call || "JS8")}</strong><span class="message-text">${aprsReply}${ownCallText(message.text,currentJs8().myCall)}</span></article>`;
+    // ♢ means the same on both sides of the feed: the end of the message was confirmed. Its
+    // absence is therefore evidence, which is why every intact reception carries it.
+    const status=receptionState(message);
+    const ended=!message.partial && !message.incomplete;
+    const classes=`message${operational?" operational":""}${aprsReply?" aprs-reply":""}`
+      +(message.partial&&message.live?" message-receiving":"")
+      +(status==="incomplete"?" message-incomplete":"")+(status==="bad crc"?" message-badcrc":"");
+    return divider+`<article class="${classes}"${status?` data-rx-state="${esc(status)}"`:""}><span class="message-meta"><span>${when}</span><span>${MODE_TO_SPEED[message.submode]||"?"}</span><span>${Math.round(message.offsetHz)} Hz</span>${status?`<span class="rx-state">${esc(status)}</span>`:""}</span><strong${sender.clickable?` data-call="${esc(call)}"`:""}${ownCall?' class="own-callsign" data-own-call="true"':""}>${esc(call || "JS8")}</strong><span class="message-text">${aprsReply}${renderReceivedText(message,currentJs8().myCall)}${ended?'<span class="rx-eot" title="End of message confirmed">♢</span>':""}</span></article>`;
   }).join("") : '<div class="empty-row">Waiting for JS8 activity…</div>';
   renderRetryCountdowns();   // the 1 s tick owns it afterwards; this fills the first second
   dom.stationRows.innerHTML=sortedStations(calls).map(item=>{
@@ -1920,6 +2021,9 @@ function hearingLinks(messages, own, nowMs){
     links.set(key,{from,to,detail,atMs});
   };
   for(const message of messages||[]){
+    // An incomplete or checksum-failed reception proves nothing about who hears whom: a
+    // truncated HEARING payload would draw a path on the map that may not exist.
+    if(message.incomplete || message.checksumOk===false) continue;
     const directed=!message.outgoing && message.directed;
     if(!directed) continue;
     const atMs=Number(message.lastSlotUtcMs||message.firstSlotUtcMs||0);
@@ -2071,6 +2175,9 @@ function age(utcMs) {
   return `${Math.floor(minutes/60)}:${String(minutes%60).padStart(2,"0")}`;
 }
 function messageBelongsToConversation(message) {
+  // A chat thread is a record of what was said; half a sentence with a hole in it belongs
+  // in the traffic feed, where its state is spelled out, not in a conversation.
+  if(message.incomplete)return false;
   const calls=message.callsigns||[];
   if(!sameCall(calls[0],state.selectedCall))return false;
   const directed=Array.isArray(message.kinds)&&message.kinds.includes("directed");
@@ -2665,6 +2772,9 @@ function radioMessageEndpoints(item) {
 }
 
 async function handleFileActivityMessage(item) {
+  // A torso would be reported as RX INVALID and could cancel a healthy transfer; the
+  // sender retries the frame anyway, so silence is the honest answer here.
+  if(item.incomplete)return;
   if(!String(item.text||"").includes(Js8FileTransfer.PROTOCOL_PREFIX))return;
   let message;try{message=Js8FileTransfer.parseMessage(item.text);}catch(error){binState.lastProtocol=`RX INVALID ${error.message}`;renderControls();return;}
   if(!message)return;
@@ -2964,6 +3074,13 @@ function handleDecodedFrame(decoded) {
 // real traffic -- the per-frame path only ever sees the header.
 function dispatchAssembledMessage(message) {
   if (!message || !message.directed) return;
+  // Never act on a reception that never ended. The CRC would refuse it anyway (the check
+  // bytes ride at the very end), but relaying half of somebody else's traffic under my
+  // callsign is bad enough to deserve its own guard.
+  if (message.incomplete) {
+    console.info("[js8-reassembly] incomplete, display only", message.directed.command);
+    return;
+  }
   const js8 = currentJs8();
   if (!js8.myCall) return;
   if (message.checksumOk === false) {
@@ -4326,6 +4443,13 @@ async function init() {
   renderRhythm(); scheduler.every("rhythm",100,renderRhythm);
   pollRadio(); scheduler.every("pollRadio",500,pollRadio);
   scheduler.every("txQueue",1000,()=>{drainTxQueue();renderTxQueue();renderRetryCountdowns();});
+  // Audio windows normally age out partial receptions inside the worker; when audio stops
+  // for good no window is produced, and without this tick the torso would never reach
+  // messages[] to be persisted. Only finalizations post an activity change, so a quiet
+  // band costs one postMessage per second and no re-render.
+  scheduler.every("reassembly",1000,()=>{
+    if(activeDecoder && activeDecoder.expire)activeDecoder.expire(js8Clock.now());
+  });
   scheduler.every("heartbeat",5000,()=>{checkHeartbeat();renderHeartbeatState();});
   scheduler.every("cqRepeat",5000,checkCqRepeat);
   pollUnattended().then(()=>reconcileUnattended("page load")); scheduler.every("unattended",5000,pollUnattended);

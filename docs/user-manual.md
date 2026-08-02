@@ -1,6 +1,6 @@
 # IC-705 IP Interface — User Manual
 
-The IC-705 IP Interface connects an ICOM IC-705 to your local network and exposes browser-based JS8Call, logging and configuration tools. All pages are served at **`http://ic705.local`** (or the device IP address if mDNS is not available). In station mode the bare address redirects to JS8LAN; in AP mode it opens SETUP. The navigation bar links to:
+The IC-705 IP Interface connects an ICOM IC-705 to your local network and exposes browser-based JS8Call, logging and configuration tools. All pages are served at **`http://ic705/`**, **`http://ic705.local`** or the device IP address. In station mode the bare address redirects to JS8LAN; in AP mode it opens SETUP. The navigation bar links to:
 
 | Tab | URL | Purpose |
 |-----|-----|---------|
@@ -30,6 +30,12 @@ After saving, the device reboots automatically and the browser waits until it co
 | SSID 2 / Password 2 | Fallback network. The device alternates between the two profiles until it connects. |
 
 If neither network is reachable the device falls back to AP mode.
+
+When you save WiFi credentials from AP mode, the hotspot stays up while the device joins your
+network and then shows you the address it was given — as a link and as a QR code — before you
+restart. A later visit to the AP portal also shows the last address the device had. See
+[find-device-ip.md](find-device-ip.md) for every way to reach the device without knowing its IP,
+and why the AP-mode "tap to open" prompt cannot exist on your home network.
 
 ### Network input ports `eeprom`
 
@@ -88,6 +94,27 @@ Each of TRX2 and TRX3 has a **Label** (shown in the log UI) and a connection typ
 | TrxNet ID | Peer NET_ID of the OI3 keyer (2-digit hex). `00` = disabled. The resolved device name is shown below the field (e.g. `→ OI3.02`). When set, the interface subscribes to the peer's `/hz` and `/mode` topics and forwards CW/frequency commands to it. |
 
 **CI-V** (planned) — direct CI-V connection to a remote radio. This option is shown in the interface but is not yet implemented; it will be enabled in a future firmware release.
+
+#### ICOM-LAN — finding the radio
+
+The LAN connection needs the radio's IP address, its network username and its network password. You
+can read the address from the radio's own menu, or let the interface find it.
+
+| Control | Description |
+|---------|-------------|
+| **Scan** (beside Radio IP address) | Probes every host on the local /24 on UDP 50001 and lists whatever answers. Click a result to fill the address in. Takes a few seconds. |
+| **Test connection** | Performs a real login with the address, username and password in the form, and reports whether the radio accepted them, refused them, or did not answer at all. |
+
+Scanning never logs in, so it will not take the IC-705's single session away from a wfview instance
+that is connected at the time. It does briefly stop this interface's own radio link, because it
+needs the same UDP port — the link reconnects when the scan finishes. Scanning is refused while the
+radio is transmitting.
+
+The list is labelled *answered on UDP 50001* rather than *IC-705* on purpose: a wfview or RS-BA1
+server answers the same probe, and telling them apart would require logging in.
+
+See [find-device-ip.md](find-device-ip.md) for the full picture, including how to find the
+interface itself.
 
 ### DX Cluster `eeprom`
 

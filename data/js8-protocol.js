@@ -618,6 +618,19 @@
     return null;
   }
 
+  // Slot length per submode. Frames of one message occupy consecutive slots, so a jump
+  // in slotUtcMs is the only evidence that says how many frames were lost and where in
+  // the text they belonged -- the payload itself carries no frame counter.
+  const MODE_PERIOD_SECONDS = {0: 15, 1: 10, 2: 6, 4: 30, 8: 4};
+  // Four periods without a frame ends a reassembly. Generous on purpose: a shorter
+  // window splits one faded message into two rows (torso + tail), which reads as two
+  // unrelated messages and cannot be joined again by hand. Three consecutive missed
+  // slots also mean the path is gone anyway.
+  const REASSEMBLY_TIMEOUT_PERIODS = 4;
+  function slotPeriodMs(submode) {
+    return (MODE_PERIOD_SECONDS[Number(submode)] || 15) * 1000;
+  }
+
   class ActivityStore {
     constructor(dictionary = null) {
       this.dictionary = dictionary;
@@ -630,8 +643,40 @@
       this.timing = new Map();
     }
 
+    // A stream reset used to drop every partial reassembly without a trace, which is
+    // exactly when frames are being lost. Finalize first, clear after.
     discontinuity() {
-      this.channels.clear();
+      return [...this.channels.values()]
+        .map(channel => ({type: "message", message: this.finalizeChannel(channel, false)}));
+    }
+
+    // The reassembly clock is the audio window, not the wall clock: drainWindows() emits
+    // one per slot whether anything decoded or not, so this keeps working on a dead band
+    // and stays deterministic in tests. Also driven from the page on a 1 s job, so a
+    // stalled audio path still lands the torso in messages[] where it gets persisted.
+    expire(nowMs) {
+      const emitted = [];
+      for (const channel of [...this.channels.values()]) {
+        const deadline = REASSEMBLY_TIMEOUT_PERIODS * slotPeriodMs(channel.submode);
+        if (Number(nowMs) - Number(channel.lastSlotUtcMs) < deadline) continue;
+        emitted.push({type: "message", message: this.finalizeChannel(channel, false)});
+      }
+      return emitted;
+    }
+
+    // Every way a channel can end funnels through here. `complete` is the decoded EOT
+    // frame and nothing else: an incomplete message keeps whatever text did arrive
+    // instead of being dropped, and carries the flag that keeps it out of the relay,
+    // inbox, file transfer and chat paths.
+    finalizeChannel(channel, complete) {
+      this.channels.delete(channel.key);
+      const text = channel.text.trimEnd();
+      const {payload, checksumOk} = assembledDirectedPayload(channel.directed, text);
+      const message = {...channel, text, payload, checksumOk,
+                       complete: Boolean(complete), incomplete: !complete};
+      this.messages.push(message);
+      if (this.messages.length > 200) this.messages.shift();
+      return message;
     }
 
     push(frame) {
@@ -651,10 +696,29 @@
           : Number(frame.dtMs || 0), lastSlotUtcMs: frame.slotUtcMs});
       const channelKey = `${frame.submode}|${Math.round(Number(frame.offsetHz) / 5) * 5}`;
       let channel = this.channels.get(channelKey);
+      // A new message taking the channel used to overwrite the old text. Finalize it
+      // instead: a lost final frame then costs the ending, not the whole reception.
+      const superseded = channel && (frame.frameType & 1)
+        ? this.finalizeChannel(channel, false) : null;
       if (!channel || (frame.frameType & 1))
-        channel = {key: channelKey, text: "", raw: [], kinds: [], firstSlotUtcMs: frame.slotUtcMs,
+        channel = {key: channelKey, id: `${channelKey}|${frame.slotUtcMs}`,
+                   text: "", raw: [], kinds: [], firstSlotUtcMs: frame.slotUtcMs,
                    lastSlotUtcMs: frame.slotUtcMs, submode: frame.submode,
-                   offsetHz: frame.offsetHz, callsigns: [], directed: null};
+                   offsetHz: frame.offsetHz, callsigns: [], directed: null,
+                   // A channel opened by a frame that is not the first one means we tuned
+                   // into the middle: the header, and with it from/to/command, is gone.
+                   headerMissing: !(frame.frameType & 1), gaps: [], frameCount: 0};
+      else {
+        // Consecutive slots are the rule, so the jump names the loss exactly. textIndex
+        // is where the missing text belonged; the marker never claims a character count,
+        // because JSC compression makes chars-per-frame variable.
+        const period = slotPeriodMs(channel.submode);
+        const missed = Math.max(0,
+          Math.round((Number(frame.slotUtcMs) - Number(channel.lastSlotUtcMs)) / period) - 1);
+        if (missed > 0) channel.gaps.push({textIndex: channel.text.length, frames: missed,
+                                           slotUtcMs: Number(channel.lastSlotUtcMs) + period});
+      }
+      channel.frameCount += 1;
       // The first frame carries the structured {from,to,command}; keep it so the
       // completed message can yield a clean, checksum-verified payload.
       if (!channel.directed && decoded.kind === "directed")
@@ -684,15 +748,9 @@
                              grid: direct ? decoded.grid || previous?.grid || "" : previous?.grid || ""});
       }
       const emitted = [{type: "protocol-frame", frame: decoded}];
-      if (frame.frameType & 2) {
-        const text = channel.text.trimEnd();
-        const {payload, checksumOk} = assembledDirectedPayload(channel.directed, text);
-        const message = {...channel, text, payload, checksumOk};
-        this.messages.push(message);
-        if (this.messages.length > 200) this.messages.shift();
-        emitted.push({type: "message", message});
-        this.channels.delete(channelKey);
-      }
+      if (superseded) emitted.push({type: "message", message: superseded});
+      if (frame.frameType & 2)
+        emitted.push({type: "message", message: this.finalizeChannel(channel, true)});
       return emitted;
     }
 
@@ -704,8 +762,9 @@
     }
   }
 
-  return {ActivityStore, FRAME, JscDictionary, buildCqFrames, buildHeartbeatFrames, buildReplyFrames,
+  return {ActivityStore, FRAME, JscDictionary, MODE_PERIOD_SECONDS,
+          REASSEMBLY_TIMEOUT_PERIODS, buildCqFrames, buildHeartbeatFrames, buildReplyFrames,
           checksum16, formatDirectedMessage, normalizeAssembledCommand,
-          buildTxFrames, decodeFrame,
+          buildTxFrames, decodeFrame, slotPeriodMs,
           pack72, unpack72};
 });

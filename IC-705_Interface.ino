@@ -107,7 +107,7 @@ bool cwIpOnConnect  = true;       // announce WiFi IP via CW on first full-CAT r
 volatile bool cwIpSendPending = false;
 
 #define LOOP_WARN_MS 200
-#define REV 20260731
+#define REV 20260802
 #define WIFI
 #define UDP_TO_FSK
 #define WDT         // watchdog timer
@@ -296,6 +296,11 @@ volatile bool btConnectPending = false;
 
   const char* ssidAP     = "IC705-if";
   const char* passwordAP = "remoteqth";
+  // One name for three lookup paths: the DHCP hostname the router registers in
+  // its own DNS (http://ic705/), the mDNS name (http://ic705.local) and the AP
+  // captive portal. Keeping them identical is the whole point -- the operator
+  // types one string no matter which mechanism their network actually supports.
+  const char* deviceHostname = "ic705";
   bool APmode = false;
   // WebServer discards the client before handleClient() returns, so the slow-loop
   // diagnostic can't sample it from outside. Response writes (where stalls to a dead
@@ -379,6 +384,41 @@ uint32_t lanFreqTmp = 0;        // last freq published to TrxNet (change detect)
 bool    lanReconnectRequested = false;
 uint32_t lanRetryAt = 0;
 uint32_t lanBackoff = 3000;
+
+// ---- LAN radio discovery (SETUP page) -------------------------------------
+// The scanner and the credential test both need UDP 50001, which the live LAN
+// client owns. WiFiUDP sets SO_REUSEADDR, so a second bind succeeds and then
+// silently steals the client's control packets -- the live client is therefore
+// stopped for the duration and reconnected afterwards, never run alongside.
+#include "icom_lan_discovery.h"
+IcomLanDiscovery icomScan;
+enum IcomScanPhase : uint8_t {
+  ISCAN_IDLE, ISCAN_SUSPEND, ISCAN_RUN,
+  ISCAN_TEST_SUSPEND, ISCAN_TEST_RUN,
+  ISCAN_DONE
+};
+IcomScanPhase icomScanPhase = ISCAN_IDLE;
+bool     icomScanSuspendLan = false;   // gate honoured by the LAN service loops
+bool     icomScanLanWasUp = false;     // reconnect afterwards only if we cut it
+bool     icomScanFailed = false;       // scan could not start (no station link)
+IcomLanClient* icomTestClient = nullptr;
+IPAddress icomTestIp;
+String   icomTestUser, icomTestPass;
+uint8_t  icomTestCivAddr = 0xA4;
+uint32_t icomTestDeadline = 0;
+const char* icomTestResult = "idle";   // idle|running|ok|bad_credentials|no_answer
+
+// ---- AP -> station handoff --------------------------------------------------
+// Saving WiFi credentials in AP mode used to end with a blind restart: the
+// portal vanished and the operator was left with no address to open. Instead
+// the station is brought up alongside the still-running softAP, so the portal
+// can show the address the router actually handed out before the AP goes away.
+#define LAST_STA_IP_ADDR 132       // EEPROM 132-135, previously MQTT_TOPIC_RX
+enum WifiTryState : uint8_t { WTRY_IDLE, WTRY_CONNECTING, WTRY_OK, WTRY_FAILED };
+WifiTryState wifiTryState = WTRY_IDLE;
+uint32_t  wifiTryDeadline = 0;
+String    wifiTrySsid;
+IPAddress lastStaIp;               // survives a reboot; 0.0.0.0 when unknown
 
 static const char* RADIO_CONFIG_PATH = "/radio-config.json";
 
@@ -1534,13 +1574,19 @@ void handleSetupData(){
   bool trxnetidIsDefault = (EEPROM.read(41) == 0xff);
 
   String j;
-  j.reserve(3400);
+  j.reserve(3500);
   j += "{\"fwRev\":"; j += (unsigned)REV;
   j += ",\"apMode\":"; j += APmode ? "true" : "false";
   j += ",\"apModeText\":\""; j += APmode ? "AP mode ON" : "AP mode OFF"; j += "\"";
   j += ",\"mac\":\""; j += configJsonEscape(MACString); j += "\"";
   j += ",\"hwRev\":"; j += HardwareRev;
   j += ",\"ipLastOctet\":"; j += ipLastOctet;
+  j += ",\"hostname\":\""; j += deviceHostname; j += "\"";
+  // Address the router last handed out. In AP mode this is the only clue the
+  // portal can offer about where the device lives on the real network.
+  j += ",\"lastStaIp\":\"";
+  j += ((uint32_t)lastStaIp != 0) ? lastStaIp.toString() : String("");
+  j += "\"";
   j += ",\"trxnetidIsDefault\":"; j += trxnetidIsDefault ? "true" : "false";
   j += ",\"trxnetDeviceName\":\""; j += configJsonEscape(TRXNET_ID != 0x00 ? String(trxDeviceName) : String("disabled")); j += "\"";
   j += ",\"trxnetApNote\":\""; j += APmode ? "TrxNet is not active in AP mode - requires WiFi station mode." : ""; j += "\"";
@@ -1639,6 +1685,144 @@ void handleTrxNetPeers(){
   webServer.sendHeader("Connection", "close");
   webServer.client().setNoDelay(true);
   webServer.send(200, "application/json", j);
+}
+
+// ---- LAN radio discovery endpoints (SETUP page) ----------------------------
+// Shape follows the two existing precedents: /lan/reconnect for a fire-and-
+// forget command that the main loop picks up, /trxnet-peers.json for a list the
+// browser polls. Nothing long-running happens inside a handler.
+
+static void icomScanSendJson(int code, const String &body) {
+  webServer.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  webServer.sendHeader("Connection", "close");
+  webServer.client().setNoDelay(true);
+  webServer.send(code, "application/json", body);
+}
+
+// Refuses rather than queues: a scan borrows the radio link, so the operator
+// should see why it did not run instead of it happening at some later moment.
+static const char* icomScanRefusal() {
+  if (APmode) return "ap";
+  if (WiFi.status() != WL_CONNECTED) return "no_wifi";
+  if (icomScanPhase != ISCAN_IDLE && icomScanPhase != ISCAN_DONE) return "busy";
+  if (txRealtimeNow()) return "tx";
+  return nullptr;
+}
+
+void handleIcomScanStart(){
+  const char* refusal = icomScanRefusal();
+  if (refusal) {
+    icomScanSendJson(409, String("{\"ok\":false,\"error\":\"") + refusal + "\"}");
+    return;
+  }
+  icomScanFailed = false;
+  icomScanPhase = ISCAN_SUSPEND;
+  icomScanSendJson(202, "{\"ok\":true}");
+}
+
+void handleIcomScanStatus(){
+  String j;
+  j.reserve(512);
+  j += "{";
+  if (APmode) {
+    j += "\"state\":\"ap\",\"scanned\":0,\"total\":254,\"subnet\":\"\",\"truncated\":false,\"found\":[]";
+  } else {
+    const char* st = "idle";
+    if (icomScanPhase == ISCAN_SUSPEND || icomScanPhase == ISCAN_RUN) st = "running";
+    else if (icomScanPhase == ISCAN_DONE) st = icomScanFailed ? "failed" : "done";
+    char subnet[20] = {0};
+    icomScan.subnetPrefix(subnet, sizeof(subnet));
+    j += "\"state\":\""; j += st; j += "\"";
+    j += ",\"scanned\":"; j += icomScan.progress();
+    j += ",\"total\":254";
+    j += ",\"subnet\":\""; j += subnet; j += "\"";
+    j += ",\"truncated\":"; j += icomScan.wasTruncated() ? "true" : "false";
+    j += ",\"found\":[";
+    for (uint8_t i = 0; i < icomScan.count(); i++) {
+      if (i) j += ",";
+      char idHex[9];
+      snprintf(idHex, sizeof(idHex), "%08lx", (unsigned long)icomScan.entry(i).id);
+      j += "{\"ip\":\""; j += icomScan.entry(i).ip.toString(); j += "\"";
+      j += ",\"id\":\"";  j += idHex; j += "\"}";
+    }
+    j += "]";
+  }
+  j += "}";
+  icomScanSendJson(200, j);
+}
+
+void handleIcomTestStart(){
+  const char* refusal = icomScanRefusal();
+  if (refusal) {
+    icomScanSendJson(409, String("{\"ok\":false,\"error\":\"") + refusal + "\"}");
+    return;
+  }
+  String body = webServer.arg("plain");
+  String ip   = extractJsonString(body, "ip");
+  String user = extractJsonString(body, "user");
+  String pass = extractJsonString(body, "pass");
+  String civ  = extractJsonString(body, "civaddr");
+  if (!icomTestIp.fromString(ip) || user.length() == 0 || pass.length() == 0) {
+    icomScanSendJson(400, "{\"ok\":false,\"error\":\"incomplete\"}");
+    return;
+  }
+  icomTestUser = user;
+  icomTestPass = pass;
+  icomTestCivAddr = civ.length() ? (uint8_t)strtoul(civ.c_str(), nullptr, 16) : 0xA4;
+  icomTestResult = "running";
+  icomScanPhase = ISCAN_TEST_SUSPEND;
+  icomScanSendJson(202, "{\"ok\":true}");
+}
+
+void handleIcomTestStatus(){
+  const char* st = icomTestResult;
+  if (icomScanPhase == ISCAN_TEST_SUSPEND || icomScanPhase == ISCAN_TEST_RUN) st = "running";
+  icomScanSendJson(200, String("{\"state\":\"") + st + "\"}");
+}
+
+// ---- AP -> station handoff endpoints ---------------------------------------
+// Credentials are not taken from the request: /setup/save has already stored
+// and validated them, so the handoff always tests exactly what will be used on
+// the next boot rather than a second copy that could differ.
+void handleWifiTryStart(){
+  if (!APmode) {
+    icomScanSendJson(409, "{\"ok\":false,\"error\":\"not_ap\"}");
+    return;
+  }
+  if (wifiTryState == WTRY_CONNECTING) {
+    icomScanSendJson(409, "{\"ok\":false,\"error\":\"busy\"}");
+    return;
+  }
+  byte profile = WifiProfileConfigured(0) ? 0 : (WifiProfileConfigured(1) ? 1 : 0xFF);
+  if (profile == 0xFF) {
+    icomScanSendJson(400, "{\"ok\":false,\"error\":\"no_ssid\"}");
+    return;
+  }
+  wifiTrySsid = WifiProfileSSID(profile);
+  String pswd = WifiProfilePSWD(profile);
+  WiFi.mode(WIFI_AP_STA);          // portal stays reachable while we associate
+  ApplyStaIdentity();
+  WiFi.begin(wifiTrySsid.c_str(), pswd.c_str());
+  wifiTryState = WTRY_CONNECTING;
+  wifiTryDeadline = millis() + 25000;
+  Serial.print("WIFI| AP handoff: trying ");
+  Serial.println(wifiTrySsid);
+  icomScanSendJson(202, "{\"ok\":true}");
+}
+
+void handleWifiTryStatus(){
+  const char* st = "idle";
+  if (wifiTryState == WTRY_CONNECTING) st = "connecting";
+  else if (wifiTryState == WTRY_OK)    st = "ok";
+  else if (wifiTryState == WTRY_FAILED) st = "failed";
+  String ip = (wifiTryState == WTRY_OK) ? WiFi.localIP().toString() : String("");
+  String j = "{\"state\":\"";
+  j += st;
+  j += "\",\"ip\":\"";   j += ip;
+  j += "\",\"ssid\":\""; j += configJsonEscape(wifiTrySsid);
+  j += "\",\"host\":\""; j += deviceHostname;
+  j += "\"}";
+  icomScanSendJson(200, j);
 }
 
 void handleWebServerLoop(){
@@ -2406,6 +2590,7 @@ void lanRadioAudioService(IcomLanClient *client) {
 
 void secondaryLanClientsLoop(void) {
   if (APmode) return;
+  if (icomScanSuspendLan) return;   // see lanClientLoop(): 50001 is borrowed
   uint32_t now = millis();
   uint8_t lanSlot = lanRadioSlotIndex();
   for (uint8_t slot = 1; slot < 3; slot++) {
@@ -3044,6 +3229,12 @@ void setupWebServer(void){
   webServer.on("/setup",   HTTP_GET,  [](){ renderSetupPage(); });
   webServer.on("/setup",   HTTP_POST, [](){ handleSet(); renderSetupPage(); });
   webServer.on("/setup-data.json", HTTP_GET, handleSetupData);
+  webServer.on("/icom/scan",      HTTP_POST, handleIcomScanStart);
+  webServer.on("/icom/scan.json", HTTP_GET,  handleIcomScanStatus);
+  webServer.on("/icom/test",      HTTP_POST, handleIcomTestStart);
+  webServer.on("/icom/test.json", HTTP_GET,  handleIcomTestStatus);
+  webServer.on("/setup/wifi-try",      HTTP_POST, handleWifiTryStart);
+  webServer.on("/setup/wifi-try.json", HTTP_GET,  handleWifiTryStatus);
   webServer.on("/trxnet-peers.json", HTTP_GET, handleTrxNetPeers);
   webServer.on("/restart", HTTP_POST, [](){
     webServer.sendHeader("Connection", "close");
@@ -3358,6 +3549,7 @@ void setup(){
     trxLoadPrioBuffers(TRXNET_PRIO);               // fill trxPrioPtrs/trxPrioCount
 
 
+    loadLastStaIp();
     if(EEPROM.read(136) != 0xff){
       cwIpOnConnect = EEPROM.readBool(136);
     }
@@ -3481,19 +3673,11 @@ void setup(){
         Serial.println("HTTP| RTLE server started");
       #endif
 
-      if (!MDNS.begin("ic705")) {
-        Serial.println("Error setting up MDNS responder!");
-        while(1) {
-          delay(1000);
-        }
-      }
-      MDNS.addService("http", "tcp", 80);
-      MDNS.addService("ws", "tcp", 80);
+      StartMdns();
 
       setupWebServer();
       Serial.println("HTTP| web server started");
 
-      Serial.println("mDNS| responder started");
       APcliAlert();
       Serial.println("SETTINGS  press key to select");
       Serial.println("       ?  list refresh");
@@ -3504,6 +3688,9 @@ void setup(){
 
     }else{
       ConnectWiFiAlternating();
+      // Remember it for the AP portal: if the operator ever lands back in AP
+      // mode, that page can name the address instead of leaving them guessing.
+      saveLastStaIp(WiFi.localIP());
       Serial.print("WIFI| connected with IP ");
       Serial.println(WiFi.localIP());
       Serial.print("WIFI| ");
@@ -3541,25 +3728,13 @@ void setup(){
         Serial.println("HTTP| RTLE server started");
       #endif
 
-      // Set up mDNS responder:
-      // - first argument is the domain name, in this example
-      //   the fully-qualified domain name is "esp32.local"
-      // - second argument is the IP address to advertise
-      //   we send our IP address on the WiFi network
-      if (!MDNS.begin("ic705")) {
-          Serial.println("Error setting up MDNS responder!");
-          while(1) {
-              delay(1000);
-          }
-      }
-      MDNS.addService("ws", "tcp", 80);
+      StartMdns();
       setupWebServer();
       dxcRawServer.begin();
       audioWsServer.begin();
       Serial.println("HTTP| web server started");
       Serial.println("HTTP| DXC WS server started on port 82");
       Serial.println("HTTP| Audio WS server started on port 83");
-      Serial.println("mDNS| responder started");
     }
   #endif
 
@@ -3660,6 +3835,9 @@ void loop(){
     _TIMED("rtleserver",    rtleserver.handleClient())
   #endif
   handleWebServerLoop();
+  _TIMED("NetIdentity",     NetworkIdentityLoop())
+  _TIMED("WifiTry",         wifiTryTick())
+  _TIMED("IcomScan",        icomScanTick())
   _TIMED("TrxNet",          TrxNetLoop())
   _TIMED("DxcLoop",         DxcLoop())
   _TIMED("dxcRaw",          dxcHandleRawClient())
@@ -4036,6 +4214,10 @@ void Watchdog(){
 // decoded frequency/mode into the same globals the BT path fills, so the web UI,
 // TrxNet publish and band decoder work unchanged. Auto-reconnects on failure.
 void lanClientLoop(){
+  // A scan or credential test owns UDP 50001 right now. Letting the retry logic
+  // re-open it here would put two sockets on the same port (SO_REUSEADDR makes
+  // that succeed) and the probe replies would go to the wrong one.
+  if (icomScanSuspendLan) return;
   secondaryLanClientsLoop();
   if (radioSlots[0].transport != RADIO_LAN) return;
   if (lanReconnectRequested) {
@@ -4111,6 +4293,155 @@ void lanClientLoop(){
 }
 
 //-------------------------------------------------------------------------------------------------------
+// Last address the router gave us, kept so a later visit to the AP portal can
+// still answer "where is the device". A fresh EEPROM reads 0xff everywhere.
+void loadLastStaIp() {
+  uint8_t a = EEPROM.read(LAST_STA_IP_ADDR + 0), b = EEPROM.read(LAST_STA_IP_ADDR + 1);
+  uint8_t c = EEPROM.read(LAST_STA_IP_ADDR + 2), d = EEPROM.read(LAST_STA_IP_ADDR + 3);
+  if (a == 0xff && b == 0xff && c == 0xff && d == 0xff) { lastStaIp = IPAddress(); return; }
+  lastStaIp = IPAddress(a, b, c, d);
+}
+
+// Written only when the address actually changed -- this runs on every boot and
+// EEPROM emulation rewrites a whole flash sector per commit.
+void saveLastStaIp(IPAddress ip) {
+  if ((uint32_t)ip == 0 || ip == lastStaIp) return;
+  for (uint8_t i = 0; i < 4; i++) EEPROM.write(LAST_STA_IP_ADDR + i, ip[i]);
+  EEPROM.commit();
+  lastStaIp = ip;
+}
+
+//-------------------------------------------------------------------------------------------------------
+// Watches the station link raised by /setup/wifi-try while the softAP is still
+// up. Note the AP follows the station's channel once it associates, so clients
+// on the portal see a brief drop and re-associate -- the page tolerates that by
+// treating failed polls as "still connecting".
+void wifiTryTick() {
+  if (wifiTryState != WTRY_CONNECTING) return;
+  if (WiFi.status() == WL_CONNECTED && (uint32_t)WiFi.localIP() != 0) {
+    saveLastStaIp(WiFi.localIP());
+    wifiTryState = WTRY_OK;
+    Serial.print("WIFI| AP handoff: station up at ");
+    Serial.println(WiFi.localIP());
+    return;
+  }
+  if ((long)(millis() - wifiTryDeadline) >= 0) {
+    wifiTryState = WTRY_FAILED;
+    WiFi.disconnect(false, false);
+    WiFi.mode(WIFI_AP);            // drop back to a clean portal-only AP
+    Serial.println("WIFI| AP handoff: station did not connect");
+  }
+}
+
+//-------------------------------------------------------------------------------------------------------
+// LAN radio discovery + credential test, driven from the main loop.
+//
+// Both need UDP 50001, which the live client owns, so both go through the same
+// stop-then-restore path. Nothing here ever runs a second socket alongside the
+// real one: WiFiUDP sets SO_REUSEADDR, so the duplicate bind would succeed and
+// then quietly eat the client's control packets instead of failing loudly.
+void icomScanStopLanClients() {
+  if (icomScanSuspendLan) return;
+  icomScanLanWasUp = (lanRadioSlotIndex() != 0xFF);
+  lanClient.stop();
+  for (uint8_t i = 0; i < 2; i++) if (secondaryLanClients[i]) secondaryLanClients[i]->stop();
+  icomScanSuspendLan = true;
+}
+
+void icomScanResumeLanClients() {
+  if (!icomScanSuspendLan) return;
+  icomScanSuspendLan = false;
+  lanRetryAt = 0;
+  lanBackoff = 3000;
+  if (icomScanLanWasUp) lanReconnectRequested = true;
+  icomScanLanWasUp = false;
+}
+
+void icomScanTick() {
+  switch (icomScanPhase) {
+    case ISCAN_IDLE:
+    case ISCAN_DONE:
+      return;
+
+    case ISCAN_SUSPEND:
+      icomScanStopLanClients();
+      if (!icomScan.start()) {
+        icomScanFailed = true;
+        icomScanResumeLanClients();
+        icomScanPhase = ISCAN_DONE;
+        return;
+      }
+      icomScanPhase = ISCAN_RUN;
+      return;
+
+    case ISCAN_RUN:
+      icomScan.tick();
+      if (icomScan.scanState() == IcomLanDiscovery::DONE) {
+        Serial.print("SCAN| finished, ");
+        Serial.print(icomScan.count());
+        Serial.println(" radio(s) answered on 50001");
+        icomScanResumeLanClients();
+        icomScanPhase = ISCAN_DONE;
+      }
+      return;
+
+    case ISCAN_TEST_SUSPEND: {
+      icomScanStopLanClients();
+      // ~30 kB per client (1500 B scratch + two replay histories), so this is
+      // allocated for the test and released again, never kept resident.
+      if (!icomTestClient) icomTestClient = new (std::nothrow) IcomLanClient();
+      if (!icomTestClient) {
+        icomTestResult = "no_answer";
+        icomScanResumeLanClients();
+        icomScanPhase = ISCAN_DONE;
+        return;
+      }
+      // enableAudio=false keeps openAudioChannel() a no-op, so no audio task is
+      // ever spawned and the instance can be deleted the moment we are done.
+      icomTestClient->begin(icomTestIp, 50001, icomTestUser.c_str(), icomTestPass.c_str(),
+                            icomTestCivAddr, 0, 50001, false);
+      icomTestDeadline = millis() + 15000;
+      icomScanPhase = ISCAN_TEST_RUN;
+      return;
+    }
+
+    case ISCAN_TEST_RUN: {
+      icomTestClient->loop();
+      IcomLanClient::State st = icomTestClient->status();
+      // Success is declared at LAN_STREAM -- login, token and auth are all done
+      // by then, which is exactly the question the operator asked. Waiting for
+      // LAN_CONNECTED would open the CI-V channel and start writing decoded
+      // frequency/mode into the shared rig state of a radio we are only probing.
+      bool authenticated = (st == IcomLanClient::LAN_STREAM ||
+                            st == IcomLanClient::LAN_CIV_AYT ||
+                            st == IcomLanClient::LAN_CIV_OPEN ||
+                            st == IcomLanClient::LAN_CONNECTED);
+      bool finished = false;
+      if (authenticated) {
+        icomTestResult = "ok";
+        finished = true;
+      } else if (icomTestClient->failed()) {
+        icomTestResult = icomTestClient->credentialsRejected() ? "bad_credentials" : "no_answer";
+        finished = true;
+      } else if ((long)(millis() - icomTestDeadline) >= 0) {
+        icomTestResult = "no_answer";
+        finished = true;
+      }
+      if (finished) {
+        icomTestClient->stop();     // release the radio's single session at once
+        delete icomTestClient;
+        icomTestClient = nullptr;
+        Serial.print("SCAN| credential test -> ");
+        Serial.println(icomTestResult);
+        icomScanResumeLanClients();
+        icomScanPhase = ISCAN_DONE;
+      }
+      return;
+    }
+  }
+}
+
+//-------------------------------------------------------------------------------------------------------
 
 void ServiceBackgroundTasks(unsigned long waitMs) {
   unsigned long start = millis();
@@ -4123,6 +4454,57 @@ void ServiceBackgroundTasks(unsigned long waitMs) {
     #endif
     delay(10);
   }
+}
+
+//-------------------------------------------------------------------------------------------------------
+// Must run after WiFi.mode(WIFI_STA) and BEFORE WiFi.begin() -- the hostname is
+// only carried in the DHCP request, so setting it later has no effect until the
+// next lease. With it the router lists the device as "ic705" and most consumer
+// routers publish that in their local DNS, which is the only find-me path that
+// also works from Android (plain unicast DNS, no multicast involved).
+//
+// setSleep(false) is not cosmetic here: with the default modem power save the AP
+// only delivers multicast at DTIM beacons and routinely drops it, which is why
+// mDNS answers arrive late or not at all. Costs steady-state current -- revert
+// this one line if consumption or heat turns out to matter more than discovery.
+void ApplyStaIdentity() {
+  WiFi.setHostname(deviceHostname);
+  WiFi.setSleep(false);
+}
+
+//-------------------------------------------------------------------------------------------------------
+void StartMdns() {
+  // A failed MDNS.begin() used to park the device in while(1) forever. A name
+  // clash or a transient init error is not a reason to brick a radio interface.
+  if (!MDNS.begin(deviceHostname)) {
+    Serial.println("mDNS| responder failed to start (continuing without it)");
+    return;
+  }
+  MDNS.setInstanceName("IC-705 Interface");
+  // _http._tcp is what "find devices on my network" browsers actually look for.
+  // It was registered in AP mode only, so on the real LAN nothing could see us.
+  MDNS.addService("http", "tcp", 80);
+  MDNS.addService("ws", "tcp", 80);
+  Serial.print("mDNS| responder started as http://");
+  Serial.print(deviceHostname);
+  Serial.println(".local");
+}
+
+//-------------------------------------------------------------------------------------------------------
+// The responder is bound to the interface it was started on; after a reconnect
+// the registration is stale and ic705.local quietly stops resolving -- which is
+// most of the "mDNS works sometimes" experience. TrxNet already re-announces on
+// this same edge, mDNS was simply forgotten. Kept out of TrxNetLoop() because
+// that one returns early when TrxNet is disabled, which is unrelated to mDNS.
+void NetworkIdentityLoop() {
+  if (APmode) return;
+  static bool prevWifiConnected = WiFiStationReady();
+  bool wifiConnected = WiFiStationReady();
+  if (wifiConnected && !prevWifiConnected) {
+    MDNS.end();
+    StartMdns();
+  }
+  prevWifiConnected = wifiConnected;
 }
 
 //-------------------------------------------------------------------------------------------------------
@@ -4157,10 +4539,12 @@ void WiFiRetryActiveProfile(const char *reason, bool hardReset) {
     delay(200);
     WiFi.mode(WIFI_STA);
     delay(100);
+    ApplyStaIdentity();
     WiFi.begin(wifiSsid.c_str(), wifiPswd.c_str());
   } else {
     WiFi.disconnect(false, false);
     delay(100);
+    ApplyStaIdentity();
     if (targeted) {
       WiFi.begin(wifiSsid.c_str(), wifiPswd.c_str(), wifiLastChannel, wifiLastBssid);
     } else {
@@ -4215,6 +4599,7 @@ bool ConnectWiFiProfile(byte profile, int maxTryCount) {
 
   WiFi.disconnect(false, false);
   delay(100);
+  ApplyStaIdentity();
   WiFi.begin(wifiSsid.c_str(), wifiPswd.c_str());
   Serial.print("WIFI| Connecting ssid ");
   Serial.print(wifiSsid);

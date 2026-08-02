@@ -540,6 +540,24 @@ button { color: inherit; cursor: pointer; }
 .session-blocked { color: var(--amber); }
 .message.operational { opacity: .48; }
 .message.operational:hover { opacity: .82; }
+/* Reception state is carried by a word in the same meta slot where a TX row reports
+   completed/aborted, never by colour alone: colour stays a TX vocabulary (red = it was on
+   the air), so nothing in the feed needs a legend. */
+.rx-state { color: var(--amber); text-transform: uppercase; letter-spacing: .04em; }
+.message-receiving .rx-state { color: var(--cyan); }
+/* ♢ = the end of the message was confirmed, the same meaning as on a TX row. */
+.rx-eot { margin-left: 5px; color: var(--muted); }
+/* A reception in progress gets a cursor, not a colour: it reads as "more is coming"
+   without knowing what any palette means. */
+.message-receiving .message-text::after { content: "▌"; margin-left: 1px; color: var(--cyan);
+  animation: rx-cursor 1.1s steps(1) infinite; }
+@keyframes rx-cursor { 50% { opacity: 0; } }
+/* Frames we know are missing: struck through and grey, exactly like the part of a TX row
+   that never radiated. One block per lost frame -- the block count is a fact, its width is
+   not, because chars-per-frame varies with JSC compression. */
+.rx-gap { color: var(--muted); text-decoration: line-through;
+  text-decoration-color: rgba(139,165,157,0.5); cursor: help; }
+.message.operational:has(.rx-gap), .message.operational[data-rx-state="incomplete"] { opacity: .72; }
 .traffic-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
 .traffic-table th { background: var(--panel2); color: var(--muted); text-align: left; }
 .traffic-table th, .traffic-table td { padding: 9px 8px; border-bottom: 1px solid #1d322e; }

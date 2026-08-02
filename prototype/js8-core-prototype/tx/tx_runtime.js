@@ -298,6 +298,10 @@
 
     abort(reason = "operator", nowUtcMs = this.wallNow()) {
       this.currentUtcMs = nowUtcMs;
+      // Why the transmission ended is what tells an operator STOP apart from a lost
+      // WebSocket, and the resend policy turns on exactly that difference. Without it
+      // the caller only sees "aborted" and has to guess.
+      this.error = reason;
       if (!["idle", "completed", "aborted"].includes(this.status))
         this.sink.abort(this.txId, reason);
       this.packets = [];

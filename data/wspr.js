@@ -1107,6 +1107,14 @@
     const width = dom.waterfallOverlay.width, height = dom.waterfallOverlay.height;
     const transmitting = Boolean(tx && tx.ptt);
 
+    // The TX banner belongs in the top-left corner: the bottom strip of the
+    // canvas is the frequency scale's (it is an overlaid div, not a caption
+    // below), and the banner used to overprint its "500 Hz" end. Measured here
+    // because the window label below has to know how much room is left.
+    const banner = `TX ${state.lastOffsetHz} Hz — not receive audio`;
+    context.font = "bold 11px monospace";
+    const bannerEnd = transmitting ? 6 + context.measureText(banner).width : 0;
+
     // The WSPR window: everything outside it is dimmed, so the 200 Hz that
     // matter are obvious inside a 2200 Hz display.
     const left = view.hzToX(WINDOW_LOW_HZ, width), right = view.hzToX(WINDOW_HIGH_HZ, width);
@@ -1122,7 +1130,10 @@
     }
     context.setLineDash([]);
     context.fillStyle = "rgba(190,220,214,.72)"; context.font = "bold 9px monospace";
-    context.fillText("WSPR 1400–1600", Math.max(3, left - 46), 10);
+    // Keep the label over its own window edge horizontally; on a narrow canvas
+    // that puts it under the TX banner, so it drops a line instead of moving.
+    const labelX = Math.max(3, left - 46);
+    context.fillText("WSPR 1400–1600", labelX, labelX < bannerEnd + 6 ? 22 : 10);
 
     // Where this beacon transmits. Dotted while idle because it is then history,
     // solid while keyed because it is then live.
@@ -1139,7 +1150,7 @@
       context.fillStyle = "rgba(255,24,56,.14)";
       context.fillRect(0, 0, width, height);
       context.fillStyle = "#ff8fa3"; context.font = "bold 11px monospace";
-      context.fillText(`TX ${state.lastOffsetHz} Hz — not receive audio`, 6, height - 6);
+      context.fillText(banner, 6, 12);
     }
   }
 

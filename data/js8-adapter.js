@@ -61,6 +61,10 @@
         this._worker.postMessage({type: "reset", reason});
       }
       close() { this._worker.postMessage({type: "close"}); this._worker.terminate(); }
+      // Ages out partial receptions when audio has stopped and no decode window is being
+      // produced. An older cached worker ignores the unknown type and keeps the
+      // audio-driven expiry, so this degrades instead of breaking.
+      expire(nowMs) { this._worker.postMessage({type: "expire", nowMs}); }
 
       _receive(message) {
         if (message.type === "loading" && this._onEvent)

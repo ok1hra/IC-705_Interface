@@ -836,6 +836,161 @@ label.setup-radio-enable {
   }
 }
 
+/* ---- AP -> station handoff ---- */
+.wifi-last-known {
+  margin: 0 0 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0f1312;
+  color: var(--muted);
+  font-size: 13px;
+}
+.wifi-last-known[hidden] {
+  display: none;
+}
+.wifi-handoff {
+  max-width: 520px;
+  margin: 0 auto;
+  padding: 28px 24px;
+  text-align: center;
+}
+.wifi-handoff h2 {
+  margin: 0 0 12px;
+  font-size: 1.15rem;
+}
+.wifi-handoff-lead,
+.wifi-handoff-alt,
+.wifi-handoff-foot {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.wifi-handoff-url {
+  margin: 0 0 18px;
+  font-family: monospace;
+  font-size: 1.35rem;
+  word-break: break-all;
+}
+.wifi-handoff-qr {
+  display: flex;
+  justify-content: center;
+  margin: 0 0 18px;
+}
+.wifi-handoff-qr img,
+.wifi-handoff-qr canvas {
+  /* qrcodejs paints dark-on-light; keep the quiet zone so scanners lock on. */
+  padding: 10px;
+  background: #fff;
+  border-radius: 8px;
+}
+.wifi-handoff-btn {
+  padding: 10px 18px;
+  font: inherit;
+  color: #eaf6ee;
+  background: rgba(0, 136, 0, 0.35);
+  border: 1px solid #507163;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.wifi-handoff-btn:hover {
+  background: rgba(0, 136, 0, 0.5);
+}
+
+/* ---- Icom LAN scan results ----
+   Same visual language as the TrxNet device list below, but the rows are
+   actionable: clicking one fills the Radio IP field. */
+.icom-scan {
+  margin: 2px 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0f1312;
+  overflow: hidden;
+}
+.icom-scan[hidden] {
+  display: none;
+}
+.icom-scan-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+}
+.icom-scan-note {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+.icom-scan-body {
+  padding: 4px 0;
+}
+.icom-scan-empty {
+  display: block;
+  padding: 10px 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.icom-scan-warn {
+  display: block;
+  padding: 8px 12px;
+  color: #ffb062;
+  font-size: 12px;
+}
+button.icom-scan-hit {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: center;
+  width: 100%;
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  color: var(--text);
+  background: none;
+  border: 0;
+  border-left: 3px solid transparent;
+  cursor: pointer;
+}
+button.icom-scan-hit + button.icom-scan-hit {
+  border-top: 1px solid rgba(59, 69, 65, 0.5);
+}
+button.icom-scan-hit:hover {
+  background: rgba(0, 136, 0, 0.14);
+  border-left-color: var(--accent);
+}
+.icom-scan-ip {
+  font-family: monospace;
+}
+.icom-scan-use {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 6px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
+.icom-test-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+}
+.icom-test-result {
+  font-size: 13px;
+  color: var(--muted);
+}
+.icom-test-result.is-ok {
+  color: #7fd493;
+}
+.icom-test-result.is-bad {
+  color: #ff8a80;
+}
+
 /* ---- TrxNet live device list ---- */
 .trxnet-devices {
   margin-top: 10px;

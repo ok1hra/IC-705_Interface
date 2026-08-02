@@ -160,6 +160,9 @@
         for (const packet of message.packets)
           runtime.pushAud1(packet.wire, packet.arrivalMs);
         post({type: "state", state: runtime.state()});
+      } else if (message.type === "expire") {
+        runtime.expire(message.nowMs);
+        post({type: "state", state: runtime.state()});
       } else if (message.type === "finish") {
         post({type: "finished", state: runtime.finish()});
       } else if (message.type === "reset") {
