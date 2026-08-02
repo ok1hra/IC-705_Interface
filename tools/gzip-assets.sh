@@ -15,6 +15,27 @@ if ! command -v 7z >/dev/null 2>&1; then
   exit 1
 fi
 
+# 7z writes the source file's modification time into the gzip header, so every
+# regeneration produces different bytes for identical content. 14 of these .gz are
+# tracked, which meant a rebuild left phantom diffs that blocked `git switch` and
+# had to be hand-inspected each time to confirm only the timestamp had moved.
+#
+# RFC 1952 allows MTIME=0 for "no time available", so zero the field instead of
+# dropping 7z for `gzip -n`: -mx=9 -mfb=258 -mpass=15 compresses measurably better
+# than gzip -9, and flash is the scarce resource here. Bytes 4..7 of the member
+# header are MTIME; nothing else in the file depends on them.
+zero_gzip_mtime() {
+  python3 - "$1" <<'PYEOF'
+import sys
+path = sys.argv[1]
+with open(path, "r+b") as handle:
+    header = handle.read(8)
+    if len(header) >= 8 and header[:2] == b"\x1f\x8b":
+        handle.seek(4)
+        handle.write(b"\x00\x00\x00\x00")
+PYEOF
+}
+
 echo "==> Generating gzip web assets in ${DATA_DIR}"
 
 find "$DATA_DIR" -type f \
@@ -37,6 +58,7 @@ find "$DATA_DIR" -type f \
     fi
     rm -f "${file}.gz"
     7z a -tgzip -mx=9 -mfb=258 -mpass=15 "${file}.gz" "$input" >/dev/null
+    zero_gzip_mtime "${file}.gz"
   done
 
 # These two large assets are fetched as opaque Brotli data and expanded in the
