@@ -20,7 +20,7 @@ je „nahraď IC-705 za WIFILT" destruktivní operace.
 | **2** | síťová identita (viditelná i funkční) | `deviceHostname="ic705"`, SSID `IC705-if`, `ic705-config.json`, ADIF `PROGRAMID` | **měnit** (viz §3) |
 | **3** | identifikátory v kódu | `transceiverType=="IC-705-LAN"`, localStorage `ic705.*`, BroadcastChannel, IndexedDB | měnit, ale odděleně (viz §4) |
 | **4** | **fakt o rádiu, ne o projektu** | `"IC-705": 10` (W), `trxLabels`, „Connect the IC-705 to WLAN", `IC-705 → 0xA4` | **nesahat** |
-| **5** | citace zdrojáku | `[IC-705_Interface.ino:6644](../IC-705_Interface.ino#L6644)` — 82× v `docs/` | mechanicky s přejmenováním sketche |
+| **5** | citace zdrojáku | `[wifilt.ino:6644](../wifilt.ino#L6644)` (bylo `IC-705_Interface.ino`) — 82× v `docs/` | mechanicky s přejmenováním sketche |
 
 Cizí kód (`wfview-master/`, `mercury/…/hamlib-*/`, `JS8Call-improved-master/`) se nesahá vůbec.
 
@@ -40,7 +40,7 @@ Hardcoded default modelu v test hooku je přesně ten zakázaný případ.
 
 Autodetekce, na které to stojí:
 - [`icomLanClient.h:187`](../icomLanClient.h#L187) `radioModelName()` — z caps, prázdné dokud caps nedorazí
-- [`IC-705_Interface.ino:4505`](../IC-705_Interface.ino#L4505) `radioModelLearnTick()` — učí **jen přes LAN**
+- [`wifilt.ino:4505`](../wifilt.ino#L4505) `radioModelLearnTick()` — učí **jen přes LAN**
 - `radioSlots[slot].model` — persistentní přes reboot; `/state` → `radioName`, `/setup-data.json` → `trx{N}model`
 
 ---
@@ -91,7 +91,7 @@ Nasazená zařízení neexistují, projekt je ve fázi vývoje. Žádné přecho
 
 `deviceHostname` je jeden string pro tři lookup cesty — DHCP hostname (`http://wifilt/`),
 mDNS (`http://wifilt.local`) a AP portál. Komentář na
-[`IC-705_Interface.ino:300`](../IC-705_Interface.ino#L300) říká proč: operátor píše jedno
+[`wifilt.ino:300`](../wifilt.ino#L300) říká proč: operátor píše jedno
 jméno bez ohledu na to, který mechanismus jeho síť umí. **Nezavádět druhé jméno** — dvě jména
 znamenají dvě jména v dokumentaci navždy. (Šlo by to jen sestupem na IDF
 `mdns_delegate_hostname_add()`; Arduino `ESPmDNS` umí jeden hostname. Zamítnuto.)
@@ -138,10 +138,10 @@ Samostatný commit, aby se dal revertovat bez rozbití brandingu.
 všechny čtecí cesty už dnes na LAN hodnotu *normalizují* přes else-branch, takže se stará
 hodnota nikde nematchuje pozitivně a sama spadne na novou konstantu:
 
-- [`:893`](../IC-705_Interface.ino#L893) `if (type=="IC-7610-CI-V" || type=="TRXNET") {keep} else {LAN}`
-- [`:2333`](../IC-705_Interface.ino#L2333) derivuje z EEPROM transport bajtu, ne ze stringu
-- [`:2411`](../IC-705_Interface.ino#L2411) derivuje z `radioSlots[0].transport` enumu
-- [`:2849`](../IC-705_Interface.ino#L2849) `else if (trx.length()>0) → LAN` (restore z backupu)
+- [`:893`](../wifilt.ino#L893) `if (type=="IC-7610-CI-V" || type=="TRXNET") {keep} else {LAN}`
+- [`:2333`](../wifilt.ino#L2333) derivuje z EEPROM transport bajtu, ne ze stringu
+- [`:2411`](../wifilt.ino#L2411) derivuje z `radioSlots[0].transport` enumu
+- [`:2849`](../wifilt.ino#L2849) `else if (trx.length()>0) → LAN` (restore z backupu)
 
 **Zbývá stejná vada u CI-V:** `"IC-7610-CI-V"` pojmenovává generický CI-V transport podle
 jednoho modelu rádia. Na rozdíl od LAN se ale **matchuje pozitivně** na čtyřech místech výše,
@@ -210,7 +210,7 @@ a hostname je v manuálu na 6 místech → **regenerace všech screenshotů manu
 
 | # | Commit | Poznámka |
 |---|---|---|
-| 1 | adresář + `IC-705_Interface.ino` → `WIFILT.ino` | **samostatně** — zneplatní build cache a cwd. Smazat `prototype/*/build*` (absolutní cesty). Opravit `gh-pages.sh` (4×), `upload-firmware-spiffs.sh` (5×), `extract_sketch_aud1.py`, 82 citací v docs. Arduino váže jméno `.ino` na jméno adresáře. |
+| 1 | adresář + `IC-705_Interface.ino` → `wifilt.ino` | **samostatně** — zneplatní build cache a cwd. Smazat `prototype/*/build*` (absolutní cesty). Opravit `gh-pages.sh` (4×), `upload-firmware-spiffs.sh` (5×), `extract_sketch_aud1.py`, 82 citací v docs. Arduino váže jméno `.ino` na jméno adresáře. |
 | 2 | síťová identita | §3 celá + klíče vrstvy 3 |
 | 3 | branding + trademark | §2, §5, `RADIO_FULL_POWER_W` += `"IC-7760": 200`, **regenerace assetů** |
 | 4 | ~~`hw/` + `3Dprint/`~~ | **ZRUŠENO** 2026-08-02 (rozhodnutí operátora: OpenSCAD neřešit). Vytlačený `IC-705` na [`ic-705-interface-3.scad:138`](../3Dprint/ic-705-interface-3.scad#L138) i názvy souborů zůstávají. **Důsledek pro commit 5:** odkazy v README na `hw/IC-705-interface-*` a `3Dprint/ic-705-interface-*` musí ponechat staré názvy souborů, měnit se v nich smí jen segment se jménem repa — jinak budou 404. |
@@ -225,7 +225,7 @@ tedy do vrstvy 1.
 ### Past: předkomprimované assety
 
 Firmware servíruje **`.br` → `.gz` → plain**
-([`IC-705_Interface.ino:2117`](../IC-705_Interface.ino#L2117)). `.gitignore` ignoruje
+([`wifilt.ino:2117`](../wifilt.ino#L2117)). `.gitignore` ignoruje
 `/data/*.br` a `/data/*.js.min`, ale **14 `.gz` je trackovaných**.
 
 Nejpravděpodobnější způsob, jak si tohle přejmenování „nebude fungovat": upravím
@@ -240,9 +240,9 @@ Pořadí: `tools/minify-spiffs-js.sh` (hlídá `.minified-js.sha256`) → `tools
 Mrtvý kód se **nechává ležet** → rename sweep ho musí explicitně vynechat, jinak ho globální
 replace smete. Bez tohoto seznamu bude grep `ic705` hlásit falešné nálezy navždy:
 
-- `TRX_IC705_SEL` — [`IC-705_Interface.ino:1496`](../IC-705_Interface.ino#L1496), zbytek po BT selektoru
+- `TRX_IC705_SEL` — [`wifilt.ino:1496`](../wifilt.ino#L1496), zbytek po BT selektoru
 - `IC-705-BT` — tamtéž
-- `IC705-%02X%02X%02X` — uvnitř `#if defined(BLUETOOTH)`, a `#define BLUETOOTH` je zakomentovaný na [řádku 115](../IC-705_Interface.ino#L115)
+- `IC705-%02X%02X%02X` — uvnitř `#if defined(BLUETOOTH)`, a `#define BLUETOOTH` je zakomentovaný na [řádku 115](../wifilt.ino#L115)
 - `prototype/*/build*` CMake artefakty s absolutními cestami (mazané v commitu 1)
 - `wfview-master/`, `mercury/…/hamlib-*/`, `JS8Call-improved-master/`
 - ~125 prozaických zmínek vrstvy 4 v `docs/`

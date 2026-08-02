@@ -5,9 +5,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 OUTPUT_DIR="${ROOT_DIR}/build/gh-pages"
-FIRMWARE_BIN="${ROOT_DIR}/IC-705_Interface.ino.esp32.bin"
+FIRMWARE_BIN="${ROOT_DIR}/wifilt.ino.esp32.bin"
 DATA_DIR="${ROOT_DIR}/data"
-SKETCH_FILE="${ROOT_DIR}/IC-705_Interface.ino"
+SKETCH_FILE="${ROOT_DIR}/wifilt.ino"
 GZIP_ASSETS_SCRIPT="${ROOT_DIR}/tools/gzip-assets.sh"
 
 # Custom sketch-local partition layout (No OTA — 1.375MB APP / 2.56MB SPIFFS,
@@ -47,11 +47,11 @@ usage() {
   cat <<'EOF'
 Usage: tools/gh-pages.sh [options]
 
-Build a GitHub Pages web flasher for IC-705_Interface (blank ESP32 via USB).
+Build a GitHub Pages web flasher for WIFILT (blank ESP32 via USB).
 Generates build/gh-pages/ with manifest.json and index.html for esp-web-tools.
 
 Steps:
-  1. Read firmware version from IC-705_Interface.ino
+  1. Read firmware version from wifilt.ino
   2. Build LittleFS image from data/
   3. Generate partition table binary
   4. Create manifest.json and index.html
@@ -59,7 +59,7 @@ Steps:
 
 Options:
   --output-dir PATH      Output directory       (default: ./build/gh-pages)
-  --firmware PATH        Firmware .bin file      (default: ./IC-705_Interface.ino.esp32.bin)
+  --firmware PATH        Firmware .bin file      (default: ./wifilt.ino.esp32.bin)
   --esp32-core PATH      ESP32 Arduino core root (auto-detected if not set)
   --bootloader PATH      Prebuilt bootloader .bin (skips ELF conversion)
   --bootloader-elf PATH  Bootloader ELF          (auto-detected; DIO .bin built from it)

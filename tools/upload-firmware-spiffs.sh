@@ -21,7 +21,7 @@ Usage:
 Options:
   --port DEVICE    Serial port, e.g. /dev/ttyUSB0 or /dev/serial/by-id/...
   --firmware FILE  Exported application binary
-                   (default: IC-705_Interface.ino.esp32.bin)
+                   (default: wifilt.ino.esp32.bin)
   --baud RATE      Upload baud rate (default: 921600)
   --dry-run        Build and validate both images without writing flash
 EOF
@@ -39,10 +39,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$FIRMWARE" ]]; then
-  if [[ -f "${ROOT_DIR}/IC-705_Interface.ino.esp32.bin" ]]; then
-    FIRMWARE="${ROOT_DIR}/IC-705_Interface.ino.esp32.bin"
-  elif [[ -f "${ROOT_DIR}/IC-705_Interface.ino.bin" ]]; then
-    FIRMWARE="${ROOT_DIR}/IC-705_Interface.ino.bin"
+  if [[ -f "${ROOT_DIR}/wifilt.ino.esp32.bin" ]]; then
+    FIRMWARE="${ROOT_DIR}/wifilt.ino.esp32.bin"
+  elif [[ -f "${ROOT_DIR}/wifilt.ino.bin" ]]; then
+    FIRMWARE="${ROOT_DIR}/wifilt.ino.bin"
   else
     echo "ERROR: exported firmware not found; run Sketch -> Export Compiled Binary" >&2
     exit 1

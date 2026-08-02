@@ -1,5 +1,5 @@
 /build/
-/IC-705_Interface.ino*.bin
+/wifilt.ino*.bin
 /data/*.gz
 /data/*.br
 /data/*.js.min

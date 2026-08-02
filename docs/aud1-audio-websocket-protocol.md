@@ -12,7 +12,7 @@ Izolovaná referenční implementace nyní obsahuje:
 - předání `epoch(streamId, anchorUtcMs)` Workeru před prvním `audio` paketem;
 - Node i nativní Chrome WebSocket test pro duplikát, mezeru a reconnect.
 
-Tyto části nejsou importovány do `IC-705_Interface.ino` ani `data/data.js`.
+Tyto části nejsou importovány do `wifilt.ino` ani `data/data.js`.
 
 ## Navázání spojení
 

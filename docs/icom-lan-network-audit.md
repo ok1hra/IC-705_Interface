@@ -5,7 +5,7 @@ Datum auditu: 2026-07-19
 ## Rozsah a zdroje
 
 Audit pokrývá control, CI-V a audio UDP kanál, jejich spolehlivost, stavový
-automat a reconnect v `IC-705_Interface.ino`. Porovnání bylo provedeno proti:
+automat a reconnect v `wifilt.ino`. Porovnání bylo provedeno proti:
 
 - lokálnímu klientu `tools/icom-lan-login-test.py`, dříve ověřenému na IC-705;
 - wfview, commit `cd18ea55fe479eb4526d1732b443cbfc3969c540`;
