@@ -1,9 +1,17 @@
-IC-705 Interface — third-party software notices
-================================================
+WIFILT — third-party software and trademark notices
+===================================================
+
+WIFILT — Web interface for Icom LAN Transceivers.
 
 This project and its firmware are distributed under GNU GPL version 3. The
 complete license and corresponding source are available at:
 https://github.com/ok1hra/IC-705_Interface
+
+Trademarks
+----------
+Icom is a registered trademark of Icom Incorporated. WIFILT is an independent
+software project and is not affiliated with, endorsed by, or sponsored by Icom
+Incorporated.
 
 wfview
 ------

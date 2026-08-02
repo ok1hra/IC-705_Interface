@@ -1,6 +1,6 @@
 # TrxNet — Configuration and Usage
 
-**Applies to:** IC-705 Interface firmware rev 20260517+
+**Applies to:** WIFILT firmware rev 20260517+
 
 TrxNet replaces the MQTT broker dependency with a **broker-free, P2P UDP network** built into the firmware. Devices discover each other automatically via UDP broadcast — no router configuration, no broker, no static addresses required.
 
@@ -8,12 +8,12 @@ TrxNet replaces the MQTT broker dependency with a **broker-free, P2P UDP network
 
 ## How it works
 
-The IC-705 Interface publishes its frequency and mode to all devices on the local network and subscribes to frequency and mode data from configured peers. All communication is UDP on port **5683**.
+The WIFILT publishes its frequency and mode to all devices on the local network and subscribes to frequency and mode data from configured peers. All communication is UDP on port **5683**.
 
 ```
 IC-705 (Bluetooth CI-V)
     │
-    └── IC-705 Interface (ESP32)
+    └── WIFILT (ESP32)
             │  publishes /hz, /mode
             │  subscribes /hz, /mode  ← from OI3 keyer(s) for Band Decoder
             │  subscribes /s-hz       ← remote VFO set command
@@ -24,14 +24,14 @@ IC-705 (Bluetooth CI-V)
                     └── OI3.01  (k3ng keyer, TRX3 slot)
 ```
 
-### Published topics (IC-705 Interface → network)
+### Published topics (WIFILT → network)
 
 | Topic | Type | Description |
 |-------|------|-------------|
 | `/hz` | `uint32_t` LE | IC-705 VFO frequency in Hz. Published on change, max every 2 s. Value `0` is sent when the radio disconnects. |
 | `/mode` | `uint8_t` | ICOM CI-V mode byte (see table below). Published on mode change. |
 
-### Subscribed topics (network → IC-705 Interface)
+### Subscribed topics (network → WIFILT)
 
 | Topic | Type | Source | Description |
 |-------|------|--------|-------------|
@@ -41,7 +41,7 @@ IC-705 (Bluetooth CI-V)
 
 ### Mode byte values (ICOM CI-V standard)
 
-All devices in the network use the same ICOM CI-V mode byte encoding. No conversion is needed on the IC-705 Interface side — the byte read from the radio is published directly.
+All devices in the network use the same ICOM CI-V mode byte encoding. No conversion is needed on the WIFILT side — the byte read from the radio is published directly.
 
 | Byte | Mode |
 |------|------|
@@ -70,7 +70,7 @@ All devices in the network use the same ICOM CI-V mode byte encoding. No convers
 
 ## Web configuration
 
-Open **`http://ic705.local/setup`** and find the **TrxNet** section.
+Open **`http://wifilt.local/setup`** and find the **TrxNet** section.
 
 | Field | Format | Default | Description |
 |-------|--------|---------|-------------|
@@ -84,7 +84,7 @@ The read-only **Device name** field shows the assembled device name (e.g. `705.0
 
 - `NET_ID = 0x00` is a **reserved sentinel** meaning *disabled*. Never assign it as a real device ID.
 - Each device type (`705`, `OI3`, `ROT`, …) has its own ID space. IDs only need to be unique within a type — `705.01` and `OI3.01` can coexist.
-- The IC-705 Interface uses the prefix `705`. OI3 keyesr (k3ng) use the prefix `OI3`.
+- The WIFILT uses the prefix `705`. OI3 keyesr (k3ng) use the prefix `OI3`.
 
 ---
 
@@ -98,7 +98,7 @@ The OI3 Open Interface running the k3ng firmware uses TrxNet to share frequency 
 
 On the keyer, the NET_ID is displayed on the LCD during boot and is set via the keyer's setup menu. It is shown as a hex byte (e.g. `ff`, `01`).
 
-**2. Configure TrxNet peers on the IC-705 Interface.**
+**2. Configure TrxNet peers on the WIFILT.**
 
 In the SETUP page TrxNet section:
 
@@ -117,7 +117,7 @@ On the **BD** page, set the frequency source for each band decoder row:
 
 **4. Save & Restart.**
 
-After restart the IC-705 Interface will broadcast a discovery probe. The k3ng keyer will respond within ~100 ms. The BD source indicator on the BD page will show the peer as connected once the first `/hz` message arrives.
+After restart the WIFILT will broadcast a discovery probe. The k3ng keyer will respond within ~100 ms. The BD source indicator on the BD page will show the peer as connected once the first `/hz` message arrives.
 
 ### What the OI3 keyer publishes
 
@@ -134,13 +134,13 @@ After restart the IC-705 Interface will broadcast a discovery probe. The k3ng ke
 | `/s-mode` | `uint8_t` | Set mode command |
 | `/s-cw` | `char[]` | CW text to key (reliable delivery, CON) |
 
-The IC-705 Interface sends `/s-cw` and `/s-hz` to the configured OI3 peer when LOG/DXC controls target TRX2 or TRX3. It does not publish `/s-mode`.
+The WIFILT sends `/s-cw` and `/s-hz` to the configured OI3 peer when LOG/DXC controls target TRX2 or TRX3. It does not publish `/s-mode`.
 
 ---
 
 ## Remote VFO control (`/s-hz`)
 
-Any device on the network can set the IC-705's VFO by publishing a `uint32_t` frequency (Hz, little-endian) on the `/s-hz` topic. The IC-705 Interface will forward it to the radio via Bluetooth CI-V.
+Any device on the network can set the IC-705's VFO by publishing a `uint32_t` frequency (Hz, little-endian) on the `/s-hz` topic. The WIFILT will forward it to the radio via Bluetooth CI-V.
 
 Example using a Linux command-line tool that can send raw UDP CoAP packets, or from another TrxNet-enabled device:
 
@@ -165,7 +165,7 @@ The command is ignored if:
 | Peer timeout (no keepalive) | ~95 s (~3 missed keepalives) |
 | Time to first peer visible | < 100 ms (normal conditions) |
 
-After a WiFi reconnect, the IC-705 Interface automatically re-broadcasts a discovery probe and re-establishes peer connections without a reboot.
+After a WiFi reconnect, the WIFILT automatically re-broadcasts a discovery probe and re-establishes peer connections without a reboot.
 
 ---
 

@@ -6,7 +6,7 @@
  * Based on cty.dat country file by Jim Reisert, AD1C — http://country-files.com/
  * Free software under GNU General Public License.
  *
- * JavaScript port for IC-705 Interface contest logger.
+ * JavaScript port for WIFILT contest logger.
  */
 
 (function (global) {

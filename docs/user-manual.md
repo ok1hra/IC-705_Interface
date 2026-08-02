@@ -1,6 +1,9 @@
-# IC-705 IP Interface — User Manual
+# WIFILT — Web interface for Icom LAN Transceivers — User Manual
 
-The IC-705 IP Interface connects an ICOM IC-705 to your local network and exposes browser-based JS8Call, logging and configuration tools. All pages are served at **`http://ic705/`**, **`http://ic705.local`** or the device IP address. In station mode the bare address redirects to JS8LAN; in AP mode it opens SETUP. The navigation bar links to:
+> Icom is a registered trademark of Icom Incorporated. WIFILT is an independent software project
+> and is not affiliated with, endorsed by, or sponsored by Icom Incorporated.
+
+WIFILT connects an Icom transceiver to your local network and exposes browser-based JS8Call, WSPR, logging and configuration tools. IC-705 is the tested radio; other Icom models with Network Control and LAN audio use the same protocol. All pages are served at **`http://wifilt/`**, **`http://wifilt.local`** or the device IP address. In station mode the bare address redirects to JS8LAN; in AP mode it opens SETUP. The navigation bar links to:
 
 | Tab | URL | Purpose |
 |-----|-----|---------|
@@ -14,7 +17,7 @@ The IC-705 IP Interface connects an ICOM IC-705 to your local network and expose
 
 ## 1. SETUP Page
 
-**`http://ic705.local/setup`**
+**`http://wifilt.local/setup`**
 
 ![SETUP page](SETUP.png)
 
@@ -61,7 +64,7 @@ Published payload example: `{"freq":14074000,"mode":"USB"}`
 
 ### TrxNet `eeprom`
 
-TrxNet is a peer-to-peer telemetry protocol that links IC-705 Interface devices and OI3 keyers over the local network using CoAP/UDP.
+TrxNet is a peer-to-peer telemetry protocol that links WIFILT devices and OI3 keyers over the local network using CoAP/UDP.
 
 | Field | Description |
 |-------|-------------|
@@ -145,14 +148,14 @@ interface itself.
 
 At the bottom of the SETUP page:
 
-- **Download config** — saves all EEPROM and LittleFS settings as a dated JSON file (`yyyymmdd-hhmm-ic705-config.json`).
+- **Download config** — saves all EEPROM and LittleFS settings as a dated JSON file (`yyyymmdd-hhmm-wifilt-config.json`).
 - **Upload config** — restores settings from a previously downloaded JSON file and restarts the device.
 
 ---
 
 ## 2. QRPLog Page
 
-**`http://ic705.local/log`**
+**`http://wifilt.local/log`**
 
 ![QRPLog page](LOG.png)
 
@@ -283,7 +286,7 @@ Press the **?** button in the bottom bar to show this table at any time.
 
 ## 3. DXC Page
 
-**`http://ic705.local/dxc.html`** — opens as a separate popup window.
+**`http://wifilt.local/dxc.html`** — opens as a separate popup window.
 
 ![DXC page](DXC.png)
 
@@ -337,7 +340,7 @@ Type a DX cluster command (e.g. `sh/dx 20` or `set/filter`) in the command field
 
 ## 4. LOGSYNC Page
 
-**`http://ic705.local/datasync`**
+**`http://wifilt.local/datasync`**
 
 ![LOGSYNC page](LOGSYNC.png)
 
@@ -351,7 +354,7 @@ The storage location is tied to the exact URL used to open the interface. Each o
 
 - `http://192.168.1.50`
 - `http://192.168.1.50:80`
-- `http://ic705.local`
+- `http://wifilt.local`
 
 ### How sync works
 

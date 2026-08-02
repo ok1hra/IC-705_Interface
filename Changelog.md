@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to **IC-705_Interface**, grouped by firmware revision (`#define REV`) and
+All notable changes to **WIFILT**, grouped by firmware revision (`#define REV`) and
 broken down per commit.
 
 Newest first. Dates are local (CEST). A firmware revision is the `REV` value flashed with that
@@ -10,6 +10,36 @@ published.
 ---
 
 ## Working tree — not committed
+
+* **The project has a name now: WIFILT — Web interface for Icom LAN Transceivers.** It had six
+  before, none of them canonical: *IC-705 IP interface* on the SETUP page and the serial banner,
+  *IC-705 IP Interface* in the manual, *IC-705 Interface* on the flasher and in the licence
+  notices, *IC-705_Interface* in the repository, *ESP32 QRPlog for IC-705* in the README. Page
+  titles were just as uneven — four carried a project name and three (`WSPR beacon`,
+  `JS8Call-ICOM`, `DXC`) carried none at all.
+  Every page is now **`<Page> — WIFILT`**, with the distinguishing word first on purpose: DXC and
+  QRPLog open as separate windows, so three or four tabs of the same device is normal, and a
+  browser truncates the title from the *end*. `WIFILT · Setup` would have produced four
+  indistinguishable tabs. The full name with its tagline appears only where someone meets the
+  project for the first time — SETUP heading, README, manual title, flasher heading, serial
+  banner. The banner had to become two lines: one row would have run to 101 characters and
+  wrapped through the middle of the name on an 80-column console.
+  **Trademark notice** — *Icom is a registered trademark of Icom Incorporated. WIFILT is an
+  independent software project and is not affiliated with, endorsed by, or sponsored by Icom
+  Incorporated.* — is in the README, the manual, `THIRD-PARTY-NOTICES.txt` served by the device,
+  and the flasher page. SETUP gained the `GitHub | Licenses` footer it never had, because it is
+  the one page that shows the tagline and in AP mode the first page a new operator sees; a page
+  that uses another company's trademark descriptively has to be able to say so.
+  **Also fixed, because the rename exposed it: an IC-7760 could not transmit WSPR at all.** The
+  full-power table had no entry for it, `fullPowerWatts()` returned null, and the page refused to
+  start rather than guess — correctly, but for a radio that is simply 200 W. Added. IC-7300MK2
+  needs no entry of its own; the prefix match already resolves it to 100 W. Three more UI strings
+  stopped naming a radio that may not be connected: *IC-705 LAN is offline* and *Waiting for
+  IC-705 LAN audio* now say **ICOM-LAN**, and the power test hook no longer defaults to `IC-705`.
+  Left alone deliberately: the `IC-705` keys in the power table (they are matched against what the
+  radio reports about *itself*), the default TRX1 label, every setup instruction that is genuinely
+  about the radio, and the TrxNet device prefix `705.XX` — that one is on the wire and shared with
+  the k3ng OI3 keyer, so renaming it would break interop with keyers already in the field.
 
 * **⚠️ The device answers to a new name: `wifilt`, not `ic705`.** First step of the rename to
   **WIFILT — Web interface for Icom LAN Transceivers**; the project stopped being IC-705-only when

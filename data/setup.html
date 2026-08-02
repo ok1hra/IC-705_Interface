@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>IC-705 Setup</title>
+  <title>Setup — WIFILT</title>
   <link rel="stylesheet" href="/setup.css?v=20260802a">
 </head>
 <body>
@@ -34,7 +34,7 @@
     <section class="setup-card">
       <header class="setup-head">
         <p class="eyebrow">Configuration</p>
-        <h1>IC-705 IP interface</h1>
+        <h1>WIFILT<span class="setup-tagline">Web interface for Icom LAN Transceivers</span></h1>
         <p class="meta" id="setupMeta">Loading setup data</p>
       </header>
 
@@ -405,6 +405,13 @@
 
     </section>
   </main>
+
+  <!-- SETUP is the one page that shows the full name and its tagline, and in AP mode it is the
+       first thing a new operator sees -- so the licence and trademark notices have to be reachable
+       from here. Same footer as the DATA and WSPR pages. -->
+  <footer class="setup-page-footer">
+    <a href="https://github.com/ok1hra/IC-705_Interface" target="_blank" rel="noopener">GitHub</a><span aria-hidden="true">|</span><a href="/THIRD-PARTY-NOTICES.txt" target="_blank" rel="noopener">Licenses</a>
+  </footer>
 
   <style>
     .setup-local-badge {

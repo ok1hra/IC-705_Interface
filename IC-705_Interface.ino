@@ -6192,7 +6192,10 @@ void runLanCivTest(){
 //-------------------------------------------------------------------------------------------------------
 void ListCommands(){
   Serial.println("");
-  Serial.println("-------- DivaDroid International | IC-705 IP interface status  --------");
+  // Two lines, not one: the full name on the same row as the rule would run to 101 characters
+  // and wrap in the middle of itself on an 80-column console.
+  Serial.println("-------- DivaDroid International | WIFILT status --------");
+  Serial.println("  WIFILT - Web interface for Icom LAN Transceivers");
   Serial.print("  Uptime: ");
   if(millis() < 60000){
     Serial.print( String(millis()/1000) );

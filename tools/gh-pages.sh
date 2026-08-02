@@ -13,7 +13,7 @@ GZIP_ASSETS_SCRIPT="${ROOT_DIR}/tools/gzip-assets.sh"
 # Custom sketch-local partition layout (No OTA — 1.375MB APP / 2.56MB SPIFFS,
 # coredump dropped). Located via SKETCH_PARTITIONS_CSV below, not the core tree.
 PARTITIONS_CSV_NAME="custom"
-# IMPORTANT: DIO, not QIO. These IC-705 interface boards ship a Zbit (0x5e) clone
+# IMPORTANT: DIO, not QIO. These WIFILT interface boards ship a Zbit (0x5e) clone
 # flash chip whose QIO reads are unreliable — a QIO bootloader makes the ROM loader
 # read garbage after the first segment and the board never boots. DIO 80 MHz is
 # stable. The bootloader's flash mode is baked in at elf2image time below (its
@@ -314,7 +314,7 @@ cp "$FIRMWARE_BIN"   "${OUTPUT_DIR}/firmware.bin"
 echo "==> Building merged binary"
 MERGE_ARGS=(
   --chip esp32 merge_bin
-  -o "${OUTPUT_DIR}/ic705-${FW_REV}-full.bin"
+  -o "${OUTPUT_DIR}/wifilt-${FW_REV}-full.bin"
   --flash_mode "$FLASH_MODE"
   --flash_freq "$FLASH_FREQ"
   --flash_size "$FLASH_SIZE"
@@ -346,7 +346,7 @@ fi
 
 cat > "${OUTPUT_DIR}/manifest.json" <<EOF
 {
-  "name": "IC-705 Interface",
+  "name": "WIFILT",
   "version": "${FW_REV}",
   "new_install_prompt_erase": true,
   "new_install_improv_wait_time": 0,
@@ -376,7 +376,7 @@ cat > "${OUTPUT_DIR}/index.html" <<EOF
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
-  <title>IC-705 Interface — firmware installer</title>
+  <title>Firmware installer — WIFILT</title>
   <script type="module" src="https://unpkg.com/esp-web-tools@10.4.0/dist/web/install-button.js?module"></script>
   <style>
     :root {
@@ -499,13 +499,23 @@ cat > "${OUTPUT_DIR}/index.html" <<EOF
       --esp-tools-button-border-radius: 999px;
     }
     .muted { color: #64748b; font-size: 0.88rem; margin-top: 0.75rem; }
+    /* The tagline names Icom descriptively, so the trademark notice has to sit on
+       the same page -- this is the project's public front door. */
+    h1 .tagline {
+      display: block;
+      margin-top: 0.35rem;
+      color: #94a3b8;
+      font-size: 0.95rem;
+      font-weight: 400;
+    }
+    .legal { margin-top: 1.75rem; font-size: 0.78rem; line-height: 1.5; }
     a { color: #60a5fa; }
   </style>
 </head>
 <body>
   <main>
     <div class="card">
-      <h1>IC-705 Interface</h1>
+      <h1>WIFILT<span class="tagline">Web interface for Icom LAN Transceivers</span></h1>
       <p class="subtitle">
         Firmware installer &mdash; version <code>${FW_REV}</code> &nbsp;&bull;&nbsp;
         <a href="https://github.com/ok1hra/IC-705_Interface" target="_blank">GitHub</a>
@@ -559,7 +569,7 @@ cat > "${OUTPUT_DIR}/index.html" <<EOF
       </p>
       <ul>
         <li>After connecting, select the correct <code>CP210x</code> / <code>CH340</code> / <code>JTAG</code> serial device.</li>
-        <li>Choose <strong>Install IC-705 Interface</strong> and follow the prompts.</li>
+        <li>Choose <strong>Install WIFILT</strong> and follow the prompts.</li>
       </ul>
 
       <div class="cta">
@@ -572,15 +582,19 @@ cat > "${OUTPUT_DIR}/index.html" <<EOF
       <ol>
         <li>On its first boot, the device creates the WiFi network <code>WIFILT-AP</code>. Connect to it using password <code>remoteqth</code>.</li>
         <li>Open <code>http://192.168.4.1/setup</code> in your browser. You can also try <code>http://wifilt.local/setup</code>; some phones open the setup portal automatically.</li>
-        <li>Configure your normal WiFi and the IC-705 <strong>TRX1 LAN</strong> address, username, and password. Select <strong>Save &amp; Restart</strong>, then reconnect your phone or computer to the normal WiFi.</li>
+        <li>Configure your normal WiFi and the radio's <strong>TRX1 LAN</strong> address, username, and password. Select <strong>Save &amp; Restart</strong>, then reconnect your phone or computer to the normal WiFi.</li>
         <li>Find the interface's new IP address in your router's DHCP client list, or open the installer serial console at <code>9600 baud</code> and press <strong>Reset Device</strong> to read it from the boot log.</li>
         <li>Open <code>http://&lt;assigned-IP&gt;/</code> or try <code>http://wifilt.local/</code>. Bookmark the working address.</li>
       </ol>
 
       <p class="muted">
         Flashes: bootloader, partition table, boot_app0, firmware$(if [[ -n "$SPIFFS_BIN" ]]; then echo ", LittleFS filesystem"; fi).
-        For manual flashing use <code>ic705-${FW_REV}-full.bin</code> at offset <code>0x0</code>
+        For manual flashing use <code>wifilt-${FW_REV}-full.bin</code> at offset <code>0x0</code>
         with <code>esptool.py</code>.
+      </p>
+      <p class="muted legal">
+        Icom is a registered trademark of Icom Incorporated. WIFILT is an independent software
+        project and is not affiliated with, endorsed by, or sponsored by Icom Incorporated.
       </p>
     </div>
   </main>
@@ -622,7 +636,7 @@ if ! git -C "$ROOT_DIR" remote get-url "$PUBLISH_REMOTE" >/dev/null 2>&1; then
 fi
 
 [[ -z "$PUBLISH_MESSAGE" ]] && \
-  PUBLISH_MESSAGE="Publish IC-705 Interface firmware ${FW_REV} — $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  PUBLISH_MESSAGE="Publish WIFILT firmware ${FW_REV} — $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 TMP_DIR="$(mktemp -d)"
 cleanup() { rm -rf "$TMP_DIR"; }
@@ -642,7 +656,7 @@ fi
 
 find "$TMP_DIR" -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
 for release_file in .nojekyll index.html manifest.json bootloader.bin partitions.bin \
-  boot_app0.bin firmware.bin spiffs.bin "ic705-${FW_REV}-full.bin"; do
+  boot_app0.bin firmware.bin spiffs.bin "wifilt-${FW_REV}-full.bin"; do
   require_file "${OUTPUT_DIR}/${release_file}" "release artifact ${release_file}"
   cp "${OUTPUT_DIR}/${release_file}" "$TMP_DIR/${release_file}"
 done
@@ -654,7 +668,7 @@ if git -C "$TMP_DIR" diff --cached --quiet; then
   exit 0
 fi
 
-GIT_NAME="$(git -C "$ROOT_DIR" config user.name  2>/dev/null || echo "IC-705 Publisher")"
+GIT_NAME="$(git -C "$ROOT_DIR" config user.name  2>/dev/null || echo "WIFILT Publisher")"
 GIT_EMAIL="$(git -C "$ROOT_DIR" config user.email 2>/dev/null || echo "publish@example.invalid")"
 git -C "$TMP_DIR" config user.name  "$GIT_NAME"
 git -C "$TMP_DIR" config user.email "$GIT_EMAIL"

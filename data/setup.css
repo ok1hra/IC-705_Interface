@@ -1084,3 +1084,31 @@ button.icom-scan-hit:hover {
 .trxnet-peer-self .trxnet-peer-ip {
   font-style: italic;
 }
+
+/* Footer and the tagline under the page heading. SETUP is where the full name
+   WIFILT - Web interface for Icom LAN Transceivers appears, so it is also where
+   the licence and trademark notices have to be reachable from. */
+.setup-head h1 .setup-tagline {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.01em;
+}
+.setup-page-footer {
+  display: flex;
+  justify-content: center;
+  gap: 9px;
+  padding: 0 10px 24px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.setup-page-footer a {
+  color: var(--muted);
+  text-decoration: none;
+}
+.setup-page-footer a:hover,
+.setup-page-footer a:focus-visible {
+  color: var(--text);
+}

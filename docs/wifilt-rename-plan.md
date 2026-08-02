@@ -187,8 +187,8 @@ Mrtvý papír, neplést s živým kódem: `"ic705if"` existuje **jen** jako navr
 v [`icom-lan-implementace.md:293`](icom-lan-implementace.md#L293), nikdy se to neimplementovalo
 (`lanClient.begin()` žádný identity string nebere).
 
-`docs/how-to-regenerate-manual.md:107` generuje screenshoty z `http://ic705.local/setup`
-a `ic705.local` je v manuálu na 6 místech → **regenerace všech screenshotů manuálu**.
+`docs/how-to-regenerate-manual.md:107` generuje screenshoty z `http://wifilt.local/setup`
+a hostname je v manuálu na 6 místech → **regenerace všech screenshotů manuálu**.
 
 ---
 
@@ -234,6 +234,11 @@ replace smete. Bez tohoto seznamu bude grep `ic705` hlásit falešné nálezy na
 - `prototype/*/build*` CMake artefakty s absolutními cestami (mazané v commitu 1)
 - `wfview-master/`, `mercury/…/hamlib-*/`, `JS8Call-improved-master/`
 - ~125 prozaických zmínek vrstvy 4 v `docs/`
+- **tento dokument.** Zaplaceno chybou při commitu 3: sweep `ic705.local → wifilt.local`
+  přes `docs/*.md` zasáhl i plán, a protože plán je z poloviny *tabulka starý→nový*, zbyly
+  z něj řádky jako `wifilt-config.json → wifilt-config.json` a z varování „export the log
+  from `http://ic705.local`" bezcenné „z `wifilt.local`". Dokument **o** přejmenování musí
+  být ze sweepu vyňatý, jinak si smaže vlastní obsah. Totéž platí pro záznam v `Changelog.md`.
 
 ---
 

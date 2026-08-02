@@ -1281,7 +1281,7 @@ function txBlockReasons(needsRecipient,allowFileTransfer=false) {
   const busy=!['idle','completed','aborted','fault'].includes(state.txStatus);
   const mediaLocked=Boolean(audioSource && audioSource.state().timebase.media.status==="locked");
   const reasons=[];
-  if(busy)reasons.push("TX is busy"); if(!connected)reasons.push("IC-705 LAN is offline");
+  if(busy)reasons.push("TX is busy"); if(!connected)reasons.push("ICOM-LAN is offline");
   if(state.radio.tx&&!busy)reasons.push("TRX PTT is active");
   if(!["USB","USB-D"].includes(state.radio.mode))reasons.push("TRX mode must be USB or USB-D");
   if(!state.txWasmReady)reasons.push("TX core is loading");
@@ -2447,7 +2447,7 @@ async function openJs8Log() {
 
 function renderDiagnostics() {
   const tb=audioSource ? audioSource.state().timebase : null;
-  if (!tb) { dom.diagnosticSummary.textContent="Audio link unavailable"; dom.diagnostics.innerHTML="<span>Transport</span><code>Waiting for IC-705 LAN audio</code>"; return; }
+  if (!tb) { dom.diagnosticSummary.textContent="Audio link unavailable"; dom.diagnostics.innerHTML="<span>Transport</span><code>Waiting for ICOM-LAN audio</code>"; return; }
   dom.diagnosticSummary.textContent=`${tb.clock.status} · ${tb.media.status} · gaps ${tb.transport.sequenceGaps}`;
   dom.diagnostics.innerHTML=`<span>Audio WebSocket</span><code>${esc(state.audioStatus)}</code><span>Browser/system clock</span><code>${esc(tb.clock.status)} · epoch ${tb.clock.epoch} · jumps ${tb.clock.jumps} <button id="confirmClock" type="button">Confirm synchronized</button></code><span>Media epoch</span><code>${tb.media.epoch} · ${esc(tb.media.reason)} · ${esc(tb.media.status)}</code><span>Packets</span><code>${tb.transport.acceptedPackets} accepted · ${tb.transport.duplicatePackets} duplicate · ${tb.transport.sequenceGaps} gaps</code><span>Timing correction</span><code>manual ${signed(tb.correction.manualMs)} ms · auto ${signed(tb.correction.autoMs)} ms · ${esc(tb.correction.status)} <button id="resetTiming" type="button">Reset</button></code>`;
   $("confirmClock").addEventListener("click",()=>{audioSource.confirmClock();renderDiagnostics();renderHeader();});
@@ -4469,7 +4469,7 @@ async function init() {
     setAudioLive(live){state.lastAudioMs=live?performance.now():0;renderHeader();},
     activityCounts(){return {messages:state.activity.messages.length,calls:state.activity.calls.length};},
     setRadioMode(mode){state.radio.mode=mode;renderHeader();},
-    setRadioPower(rfPower,rfPowerSeen=true,radioName="IC-705"){state.radio.rfPower=Number(rfPower)||0;state.radio.rfPowerSeen=rfPowerSeen===true;state.radio.radioName=radioName;renderHeader();},
+    setRadioPower(rfPower,rfPowerSeen=true,radioName=""){state.radio.rfPower=Number(rfPower)||0;state.radio.rfPowerSeen=rfPowerSeen===true;state.radio.radioName=radioName;renderHeader();},
     setRadioTx(tx){state.radio.tx=Boolean(tx);renderHeader();},
     ttSlotNow(){return slotIndexNow();},
     ttSet(index,hz,band){setTimetableSlot(Number(index),Number(hz),band||null);},

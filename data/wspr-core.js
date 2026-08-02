@@ -301,9 +301,14 @@
   // so trusting the profile name instead of /state.radioName is a factor-of-ten
   // error. An unknown model deliberately has no entry: the UI must refuse to
   // start rather than guess.
+  // IC-7760 was missing, which is not a cosmetic gap: with no entry fullPowerWatts()
+  // returns null and the page refuses to transmit at all ("unknown model"). 200 W is
+  // the radio's own default (IC-7760 basic manual: "Default: 200W (AM: 50W)").
+  // IC-7300MK2 needs no separate key -- the prefix match below catches it on "IC-7300",
+  // and 100 W is right for both.
   const RADIO_FULL_POWER_W = {
     "IC-705": 10, "IC-7610": 100, "IC-9700": 100, "IC-7300": 100,
-    "IC-7100": 100, "IC-7851": 200, "IC-9100": 100,
+    "IC-7100": 100, "IC-7851": 200, "IC-9100": 100, "IC-7760": 200,
   };
 
   function fullPowerWatts(radioName) {

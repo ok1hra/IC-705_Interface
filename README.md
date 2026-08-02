@@ -1,8 +1,13 @@
-# ESP32 QRPlog for IC-705
+# WIFILT — Web interface for Icom LAN Transceivers
+
+> Icom is a registered trademark of Icom Incorporated. WIFILT is an independent software project
+> and is not affiliated with, endorsed by, or sponsored by Icom Incorporated.
 
 ## Key features
 - running on ESP32
-- connected to IC-705 via bluetooth (no wire)
+- connects to the radio over Icom network control (LAN/WLAN) — commands and bidirectional audio, no wire to the radio
+- CI-V and TrxNet transports for radios without network control; up to three transceivers (TRX1–TRX3)
+- the radio model is read from the radio itself, so power limits and setup guidance follow whichever transceiver is connected
 - QRPlog web based (multiplatform) logbook
 - logbook database stored directly in web browser
 - works decentralized/offline, without internet usable on portable
@@ -10,16 +15,15 @@
 - network synchronization between web browsers in local network - same database on multiple devices (phone, tablet, pc)
 - integrated DX cluster client and band map
 - option to backup settings or entire logbook database
-- self-healing WiFi — escalating recovery (targeted reconnect → radio reset → automatic restart), designed around ESP32 Bluetooth/WiFi coexistence limits
+- self-healing WiFi — escalating recovery (targeted reconnect → radio reset → automatic restart)
 - red OFFLINE warning in the web page top bar when the browser loses connection to the interface
-- adaptive Bluetooth polling — fast refresh for live web clients, low BT traffic otherwise (less interference with WiFi)
 
 <img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/docs/LOG.png" height="400"><img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/docs/DXC.png" height="400">
 
 <img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/docs/SETUP.png" height="300"><img src="https://raw.githubusercontent.com/ok1hra/IC-705_Interface/main/docs/LOGSYNC.png" height="300">
 
 ## Hardware required
-- ICOM IC-705
+- an Icom transceiver with network remote control. **IC-705 is the tested model.** IC-7610, IC-9700, IC-7300MK2 and IC-7760 provide the same Network Control and LAN AF/IF audio functions and are expected to work, but have not been verified on air yet.
 - any ESP32 or RemoteQTH interface for extended functions
 - web client (phone/tablet/pc)
 

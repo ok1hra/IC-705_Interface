@@ -1,4 +1,4 @@
-# IC-705 Interface — TRX HTTP API
+# WIFILT — TRX HTTP API
 
 Popis komunikačního protokolu mezi webovým logem a TRX zařízením.
 Dokument slouží jako referenční specifikace pro implementaci API adaptéru do TRX2 a TRX3.
