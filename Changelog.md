@@ -103,14 +103,22 @@ published.
   The path was reduced from 3307 to 1648 characters by converting to absolute coordinates, rounding
   to two decimals — which bounds the error instead of accumulating it along the path — and baking
   the Inkscape layer transform into the coordinates; the result differs from the original by 0.67 %
-  RMSE, invisible at 15× the size it is drawn. Total cost **+6334 B** of the LittleFS image
-  (819 kB still free). Clicking it opens `data/about.html` in a browser pop-up the same way the DXC
-  tab does, showing **WIFILT** over *Web interface for Icom LAN transceivers*, the whole block a
-  link to the GitHub repository in a new tab. The anchor also carries `target="_blank"`, which the
-  DXC tab does not: without JavaScript the fallback navigation would otherwise leave the page and
-  drop the radio session. Checks added to `tools/data-browser-smoke.js` (DATA and SETUP) and
-  `tools/wspr-browser-smoke.js`; they assert the link target, the 26 px height, that the mark is no
-  taller than a text tab, and that `currentColor` resolves to the same colour the tabs use.
+  RMSE, invisible at 15× the size it is drawn. Clicking it drops an **About panel** under the mark
+  — a panel anchored to its own trigger that an outside click puts away, the same behaviour and the
+  same styling as the WSPR timetable, rather than a browser pop-up or a second tab. The disclosure
+  is a native `<details>`, so opening and closing costs no script at all and the mark stays operable
+  with keyboard and assistive technology for free; the one line of script per page exists only to
+  close the panel on an outside click. The panel reads **WIFILT** over *Web interface for Icom LAN
+  transceivers*, that block linking to the GitHub repository, and under it *by RemoteQTH.com*
+  linking to the site — both in a new tab. Total cost **+8682 B** of the LittleFS image (806 kB
+  still free). Checks added to `tools/data-browser-smoke.js` (DATA and SETUP) and
+  `tools/wspr-browser-smoke.js`: the 26 px height, that the mark is no taller than a text tab, that
+  `currentColor` resolves to the same colour the tabs use, and that the panel starts closed, opens
+  under the mark and closes again on a click outside it. Two traps found while writing those: a
+  closed `<details>` still gives its content a box, so a rect cannot tell open from closed —
+  `checkVisibility()` can, but it reads cached style and needs a rect read in front of it to flush
+  layout; and asserting the outside click with `body.click()` reached the page's own document
+  handlers and knocked the TX sequence off course, so the click goes to the nav instead.
 * **Design notes in `docs/`** (22 files untracked), including `wspr-page-redesign.md`,
   `wspr-timetable-redesign.md`, `wspr-majak-implementace.md`, `wspr-band-rotation-plan.md`,
   `aprsis-cmd.md`, `aprsis-implementace.md`, `js8-tx-resend-plan.md`,

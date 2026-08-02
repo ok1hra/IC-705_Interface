@@ -262,15 +262,34 @@ f.onload=()=>{
         recentMessageWhite:getComputedStyle(d.querySelector('#traffic .message-text')).color==='rgb(255, 255, 255)',
         operationalDim:d.querySelectorAll('#traffic .message.operational').length===1,
         noDebugNav:![...d.querySelectorAll('.tabs .tab')].some(link=>link.textContent.trim()==='DEBUG'),
-        // The brand mark opens the About window and must never make the bar
-        // taller than the text tabs already do -- hence padding:0 on the link.
-        // Its fill is currentColor, so it has to land on the same muted colour
-        // the tabs use; a hard-coded grey would vanish on the light LOGSYNC page.
-        brandLogo:(()=>{const logo=d.querySelector('.tabs')?.firstElementChild,text=d.querySelector('.tabs a[href="/log"]');
-          return logo?.getAttribute('href')==='/about.html'&&logo.target==='_blank'&&!!logo.querySelector('svg path')&&
-            Math.round(logo.querySelector('svg').getBoundingClientRect().height)===26&&
-            logo.getBoundingClientRect().height<=text.getBoundingClientRect().height&&
-            getComputedStyle(logo.querySelector('svg')).fill===getComputedStyle(text).color;})(),
+        // The brand mark must never make the bar taller than the text tabs
+        // already do -- hence padding:0 on the disclosure. Its fill is
+        // currentColor, so it has to land on the same muted colour the tabs use;
+        // a hard-coded grey would be one more thing to keep in step per theme.
+        brandLogo:(()=>{const box=d.querySelector('.tabs')?.firstElementChild,logo=box?.querySelector('summary svg'),text=d.querySelector('.tabs a[href="/log"]');
+          return box?.tagName==='DETAILS'&&!!logo?.querySelector('path')&&
+            Math.round(logo.getBoundingClientRect().height)===26&&
+            box.getBoundingClientRect().height<=text.getBoundingClientRect().height&&
+            getComputedStyle(logo).fill===getComputedStyle(text).color&&
+            box.querySelector('a[href^="https://github.com/"]')?.target==='_blank'&&
+            box.querySelector('a[href="https://remoteqth.com"]')?.target==='_blank'&&
+            box.querySelector('a[href="https://remoteqth.com"]')?.textContent.trim()==='by RemoteQTH.com';})(),
+        // The About panel behaves like the timetable one: it hangs under its own
+        // trigger and an outside click puts it away. Closed means not rendered at
+        // all, which is what <details> buys instead of a hidden overlay.
+        brandAboutPanel:(()=>{const box=d.querySelector('.brand-about'),panel=box.querySelector('div');
+          // A closed <details> still gives its content a box, so a rect cannot
+          // tell open from closed here -- checkVisibility can, because Chrome
+          // hides the content slot. It reads cached style though, so every call
+          // below follows a rect read that flushes layout first.
+          const visible=()=>{panel.getBoundingClientRect();return panel.checkVisibility({contentVisibilityAuto:true,visibilityProperty:true});};
+          const closed=!box.open&&!visible();
+          box.querySelector('summary').click();
+          const opened=box.open&&panel.getBoundingClientRect().top>=box.getBoundingClientRect().bottom&&visible();
+          // Clicking the nav, not the body: a stray body click reaches the page's
+          // own document handlers and knocked the TX sequence off course.
+          d.querySelector('.tabs').click();
+          return closed&&opened&&!box.open&&!visible();})(),
         removedPagesAbsentFromNav:!d.querySelector('.bd-nav,.tab-cat-muted,a[href="/bd"],a[href="/"]'),
         messagePresets:d.querySelectorAll('[data-message-preset]').length>=18&&!!d.querySelector('#messagePresetsButton')&&
           ['qsl-query','yes','no','tu','dit-dit','grid-query','info-query','status-query']
@@ -350,9 +369,10 @@ f.onload=()=>{
       checks.lanGateNoLeaveWarning=(()=>{const event=new lanGateFrame.contentWindow.Event('beforeunload',{cancelable:true});return lanGateFrame.contentWindow.dispatchEvent(event)!==false&&!event.defaultPrevented;})();
       checks.setupJs8Nav=sd.querySelector('a[href="/data"]')?.textContent.trim()==='DATA'&&sd.querySelector('a[href="/data"]')?.title==='JS8Call-ICOM and WSPR over ICOM-LAN'&&!sd.querySelector('a[href="/wspr.html"]');
       checks.setupRemovedPagesAbsentFromNav=!sd.querySelector('.bd-nav,.tab-cat-muted,a[href="/bd"],a[href="/"]');
-      checks.setupBrandLogo=(()=>{const logo=sd.querySelector('.tabs')?.firstElementChild;
-        return logo?.getAttribute('href')==='/about.html'&&logo.target==='_blank'&&!!logo.querySelector('svg path')&&
-          getComputedStyle(logo.querySelector('svg')).fill===getComputedStyle(sd.querySelector('.tabs a[href="/log"]')).color;})();
+      checks.setupBrandLogo=(()=>{const box=sd.querySelector('.tabs')?.firstElementChild,logo=box?.querySelector('summary svg');
+        return box?.tagName==='DETAILS'&&!!logo?.querySelector('path')&&
+          getComputedStyle(logo).fill===getComputedStyle(sd.querySelector('.tabs a[href="/log"]')).color&&
+          box.querySelector('a[href="https://remoteqth.com"]')?.target==='_blank';})();
       const missingInputs=[...sd.querySelectorAll('[name="trx1lanip"],[name="trx1lanuser"],[name="trx1lanpass"]')];
       const setupMissingObserved=radioSection?.open===true&&lanWarning?.hidden===false&&missingInputs.length===3&&missingInputs.every(input=>input.classList.contains('setup-radio-field-missing')&&input.getAttribute('aria-invalid')==='true');
       const setupValues={trx1lanip:'192.168.1.60',trx1lanuser:'operator',trx1lanpass:'secret123'};
