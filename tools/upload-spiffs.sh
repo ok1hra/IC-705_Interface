@@ -45,7 +45,15 @@ if [[ -z "$ARDUINO15_DIR" ]]; then
 fi
 
 ESP32_HW_ROOT="$(find "$ARDUINO15_DIR/packages/esp32/hardware/esp32" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
-PARTITION_CSV="$ESP32_HW_ROOT/tools/partitions/no_ota.csv"
+# The sketch-local partitions.csv wins whenever it exists, because that is the
+# layout the firmware is actually built and flashed with: app0 is shrunk to
+# 0x160000 and the reclaimed space handed to spiffs, which moves the filesystem to
+# offset 0x170000 and grows it to 0x290000. Reading the core's no_ota.csv instead
+# produced a 0x1E0000 image written at 0x210000 -- 640 kB past the start of the
+# real partition, so LittleFS found no filesystem and the stored configuration went
+# with it. upload-firmware-spiffs.sh and gh-pages.sh already use the local file.
+PARTITION_CSV="$ROOT_DIR/partitions.csv"
+[[ -f "$PARTITION_CSV" ]] || PARTITION_CSV="$ESP32_HW_ROOT/tools/partitions/no_ota.csv"
 MKLITTLEFS_BIN="$(find "$ARDUINO15_DIR/packages/esp32/tools/mklittlefs" -type f -name mklittlefs -perm -u+x | sort -V | tail -1)"
 ESPTOOL_PY="$(find "$ARDUINO15_DIR/packages/esp32/tools/esptool_py" -type f -name esptool.py | sort -V | tail -1)"
 
