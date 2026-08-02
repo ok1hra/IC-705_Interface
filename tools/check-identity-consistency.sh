@@ -28,14 +28,26 @@ if command -v brotli >/dev/null 2>&1; then
   done
 fi
 
-# A source newer than its served copy means the pipeline has not been re-run.
+# Compare CONTENT, not timestamps. mtime looked like the obvious signal until a
+# fast-forward proved otherwise: git rewrites the tracked sources (mtime = now) and
+# leaves the gitignored .br and untracked .gz alone, so every branch switch produced
+# a page of false alarms -- exactly when the check most needs to be trusted.
+#
+# The .gz/.br of a .js holds the *minified* companion when one exists, so that is
+# what it must be compared against.
 behind=0
-for src in data/*.js data/*.html data/*.css; do
-  [[ "$src" == *.min ]] && continue
-  for out in "$src.gz" "$src.br"; do
-    [[ -f "$out" ]] || continue
-    [[ "$src" -nt "$out" ]] && { echo "OLDER  $out is older than $src"; behind=1; }
-  done
+for src in data/*.js data/*.html data/*.css data/*.txt; do
+  [[ -f "$src" ]] || continue
+  case "$src" in *.min) continue ;; esac
+  reference="$src"
+  [[ -f "$src.min" ]] && reference="$src.min"
+  if [[ -f "$src.gz" ]] && ! cmp -s <(zcat "$src.gz" 2>/dev/null) "$reference"; then
+    echo "STALE  $src.gz does not match $reference"; behind=1
+  fi
+  if [[ -f "$src.br" ]] && command -v brotli >/dev/null 2>&1 &&
+     ! cmp -s <(brotli -dc "$src.br" 2>/dev/null) "$reference"; then
+    echo "STALE  $src.br does not match $reference"; behind=1
+  fi
 done
 
 if (( stale || behind )); then
