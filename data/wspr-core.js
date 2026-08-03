@@ -230,7 +230,33 @@
       this.reset();
     }
 
-    reset() { this.phase = 0; this.sample = 0; this.sequence = 0; }
+    reset() { this.phase = 0; this.sample = 0; this.sequence = 0; this.ramp = null; }
+
+    // Change the level of a transmission already in flight. Only the gain
+    // calibration and the ALC limiter do this, and both need the SAME ramp: a
+    // step change in a constant-envelope signal is a click, which is energy
+    // outside the 6 Hz this signal is supposed to occupy. The frame's own
+    // raised-cosine edges cover the start and the end; this covers the middle.
+    //
+    // Linear in amplitude rather than in dB. Over 120 ms the difference is
+    // inaudible to any decoder, and it keeps the per-sample cost to one
+    // multiply-add in a loop that runs 48 000 times a second.
+    setAmplitude(target, rampSamples = 0) {
+      const to = Number(target);
+      if (!(to > 0 && to <= 1)) throw new WsprError("amplitude must be in (0, 1]");
+      if (!(rampSamples > 0)) { this.ramp = null; this.amplitude = to; return; }
+      this.ramp = {from: this.amplitudeAt(this.sample), to,
+                   start: this.sample, samples: rampSamples};
+      this.amplitude = to;
+    }
+
+    amplitudeAt(sample) {
+      const ramp = this.ramp;
+      if (!ramp) return this.amplitude;
+      if (sample <= ramp.start) return ramp.from;
+      if (sample >= ramp.start + ramp.samples) return ramp.to;
+      return ramp.from + (ramp.to - ramp.from) * ((sample - ramp.start) / ramp.samples);
+    }
 
     get totalSamples() { return SIGNAL_SAMPLES; }
     get totalPackets() { return Math.ceil(SIGNAL_SAMPLES / this.samplesPerPacket); }
@@ -241,12 +267,13 @@
     nextSamples(count) {
       const wanted = Math.min(count, SIGNAL_SAMPLES - this.sample);
       const out = new Int16Array(wanted);
+      const ramping = Boolean(this.ramp);
       const scale = this.amplitude * 32767;
       for (let i = 0; i < wanted; i++) {
         const at = this.sample + i;
         const symbol = this.symbols[(at / SAMPLES_PER_SYMBOL) | 0];
         const step = TWO_PI * (this.baseHz + symbol * TONE_SPACING_HZ) / SAMPLE_RATE;
-        let gain = scale;
+        let gain = ramping ? this.amplitudeAt(at) * 32767 : scale;
         if (at < RAMP_SAMPLES)
           gain *= 0.5 - 0.5 * Math.cos(Math.PI * at / RAMP_SAMPLES);
         else if (at >= SIGNAL_SAMPLES - RAMP_SAMPLES)
@@ -256,6 +283,9 @@
         if (this.phase >= TWO_PI) this.phase -= TWO_PI;
       }
       this.sample += wanted;
+      // Drop the ramp once it is behind us, so the common case stays one
+      // multiply for the whole block instead of a call per sample.
+      if (this.ramp && this.sample >= this.ramp.start + this.ramp.samples) this.ramp = null;
       return out;
     }
 

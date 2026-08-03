@@ -125,7 +125,7 @@
     // Arms one transmission for `slotUtcMs` (one second past an even UTC
     // minute). Call at least prepareLeadMs before the slot.
     queue({symbols, slotUtcMs, baseHz = 1500, amplitude = 0.25,
-           leadMs = this.prepareLeadMs},
+           leadMs = this.prepareLeadMs, alcFast = false},
           nowUtcMs = this.wallNow()) {
       if (!["idle", "completed", "failed"].includes(this.state))
         throw new WsprTxError(`cannot queue while ${this.state}`);
@@ -162,10 +162,14 @@
       // (extractJsonBool(json, "unattended", false)) and the flag can only ever
       // restrict, never unlock -- so an absent field is exactly decision 9's
       // "operator-initiated", and tools/wspr-browser-smoke.js pins that.
+      // `alcFast` is forwarded rather than defaulted here: it asks the firmware
+      // to poll ALC at 2 Hz for this transmission, which only the gain
+      // calibration wants and which the firmware clears again the moment the
+      // transmission ends, however it ends.
       const ready = this.sink.prepare(this.txId, {
         samples: this.totalSamples, packets: this.totalPackets,
         slotUtcMs, prebufferSamples: this.prebufferMs * 48, packetMs: 20,
-        mode: "WSPR", toneHz: baseHz});
+        mode: "WSPR", toneHz: baseHz, alcFast});
       this.emit("prepared", {txId: this.txId, slotUtcMs, delayMs});
       if (ready && typeof ready.then === "function")
         return ready.then(value => {

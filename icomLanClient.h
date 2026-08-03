@@ -307,7 +307,24 @@ public:
     return audioRuntime ? audioRuntime->maxSendUs : 0;
   }
   bool txTrafficActive() const { return civTxTrafficActive; }
-  void setTxTrafficActive(bool active) { civTxTrafficActive = active; }
+  void setTxTrafficActive(bool active) {
+    civTxTrafficActive = active;
+    // Ending TX traffic always ends the fast-ALC rotation. Every path that
+    // stops a transmission -- drained, abort, link loss -- comes through here,
+    // so the calibration metering cannot be left latched on by a run that died
+    // between arming it and finishing.
+    if (!active) setAlcFast(false);
+  }
+
+  // Gain calibration asks for ALC at twice the normal rate. Phase is reset with
+  // the mode so a run always starts on an ALC slot rather than wherever the
+  // previous transmission happened to leave the counter.
+  bool alcFast() const { return civAlcFast; }
+  void setAlcFast(bool fast) {
+    if (civAlcFast == fast) return;
+    civAlcFast = fast;
+    txAuxRot = 0;
+  }
 
   static const char* audioTxFaultName(IcomLanAudioTx::Fault fault) {
     switch (fault) {
@@ -459,14 +476,28 @@ public:
         if (civGotReady && civOpenSent && civGotData && !civHealthProbePending
             && scopeOff && now - lastFreqPoll >= pollPeriod
             && civCanSendRequest(now)) {
-          if (civTxTrafficActive) {
+          if (civTxTrafficActive && civAlcFast) {
+            // Gain calibration. ALC lands in every other slot -- 2 Hz at this
+            // 250 ms pace -- because the search spends one step per reading and
+            // the carrier it runs on is capped. SWR keeps a slot of its own
+            // (worst case 1.5 s) precisely because this is the one mode that
+            // deliberately drives the level up; Po stays in as the independent
+            // confirmation that the ALC knee is where the power stops rising.
+            switch (txAuxRot++ % 6) {
+              case 1: { uint8_t b[]={0x1C,0x00}; sendCiv(b,2); break; } // PTT
+              case 3: { uint8_t b[]={0x15,0x12}; sendCiv(b,2); break; } // SWR
+              case 5: { uint8_t b[]={0x15,0x11}; sendCiv(b,2); break; } // power
+              default:{ uint8_t b[]={0x15,0x13}; sendCiv(b,2); break; } // ALC
+            }
+          } else if (civTxTrafficActive) {
             // During browser TX retain only state/safety metering. Frequency,
             // mode and slow station telemetry cannot change without ending the
             // protected TX session, so they do not compete with audio/WiFi.
-            switch (txAuxRot++ % 3) {
+            switch (txAuxRot++ % 4) {
               case 0: { uint8_t b[]={0x1C,0x00}; sendCiv(b,2); break; } // PTT
               case 1: { uint8_t b[]={0x15,0x11}; sendCiv(b,2); break; } // power
-              default:{ uint8_t b[]={0x15,0x12}; sendCiv(b,2); break; } // SWR
+              case 2: { uint8_t b[]={0x15,0x12}; sendCiv(b,2); break; } // SWR
+              default:{ uint8_t b[]={0x15,0x13}; sendCiv(b,2); break; } // ALC
             }
           } else {
             switch (auxRot) {
@@ -574,6 +605,7 @@ private:
   uint8_t auxRot = 0;
   uint8_t txAuxRot = 0;
   bool civTxTrafficActive = false;
+  bool civAlcFast = false;
 
   static const size_t CIV_COMMAND_MAX_BYTES = 32;
   static const size_t CIV_COMMAND_QUEUE_SIZE = 12;

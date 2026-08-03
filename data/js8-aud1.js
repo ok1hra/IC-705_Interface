@@ -44,6 +44,7 @@
       this.wallNow = wallNow;
       this.socket = null; this.running = false; this.hello = null; this.ptt = false;
       this.sampleCallback = null; this.statusCallback = null; this.packetCallback = null;
+      this.controlCallback = null;
       this.pendingPrepare = new Map(); this.drained = new Set(); this.activeTxId = 0;
       this.txFault = null;
     }
@@ -51,6 +52,13 @@
     onSamples(callback) { this.sampleCallback = callback; return this; }
     onPacket(callback) { this.packetCallback = callback; return this; }
     onStatus(callback) { this.statusCallback = callback; return this; }
+    // Every control frame, verbatim, including the ones this class has no
+    // opinion about. `tx-level` is the important one: it carries the credit
+    // count that paces WSPR and the ALC reading the gain limiter acts on, and
+    // neither is expressible as a status event. WSPR used to reach it through a
+    // subclass of its own -- fine while one page needed it, two mechanisms for
+    // one need once JS8LAN needs it too.
+    onControl(callback) { this.controlCallback = callback; return this; }
     status(type, detail = {}) { if (this.statusCallback) this.statusCallback({type, ...detail}); }
 
     start() {
@@ -139,7 +147,16 @@
         this.txFault = {txId:message.txId, reason:message.reason || "remote TX error"};
         this.ptt = false; this.status("tx-error", {txId:message.txId, reason:message.reason, ptt:false});
       }
+      // After the built-in handling, never instead of it: a listener must be
+      // able to see tx-error and tx-drained too, and it must see them with this
+      // object's own state already settled.
+      if (this.controlCallback) this.controlCallback(message);
     }
+
+    // The socket's own backlog. WSPR treats a growing figure as proof that the
+    // link cannot carry the pace and gives up rather than transmitting a frame
+    // that will arrive in pieces.
+    get bufferedAmount() { return this.socket ? this.socket.bufferedAmount : 0; }
 
     sendControl(message) {
       if (!this.socket || this.socket.readyState !== this.WebSocketImpl.OPEN)
@@ -154,10 +171,14 @@
           metadata.packetMs !== 20)
         return Promise.reject(new Error("TX prepare requires slot and 20 ms pacing"));
       this.activeTxId = txId; this.drained.delete(txId); this.txFault = null;
+      // `alcFast` asks the firmware for the calibration metering rotation (ALC
+      // at 2 Hz instead of 1 Hz) for the duration of this transmission only.
+      // Deliberately explicit rather than inferred from `mode`: a beacon slot
+      // and a calibration carrier are the same thing on the wire.
       this.sendControl({type:"tx.prepare", txId, sampleRate:48000,
         samples:metadata.samples, packets:metadata.packets, mode:metadata.mode,
         toneHz:metadata.toneHz, slotUtcMs:metadata.slotUtcMs,
-        clientUtcMs:this.wallNow(),
+        clientUtcMs:this.wallNow(), alcFast:Boolean(metadata.alcFast),
         prebufferSamples:metadata.prebufferSamples, packetMs:metadata.packetMs});
       return new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {

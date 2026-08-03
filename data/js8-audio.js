@@ -28,6 +28,7 @@ function (Transport, Timebase) {
       this._packetCallback = null;
       this._epochCallback = null;
       this._statusCallback = null;
+      this._controlCallback = null;
       this._session = null;
       this._pending = [];
       this._announcedEpoch = 0;
@@ -41,6 +42,11 @@ function (Transport, Timebase) {
     onPacket(callback) { this._packetCallback = callback; return this; }
     onEpoch(callback) { this._epochCallback = callback; return this; }
     onStatus(callback) { this._statusCallback = callback; return this; }
+    // Raw control frames, for what the status events cannot express. tx-level is
+    // the one that matters: it carries the ALC reading the gain limiter acts on,
+    // five times a second, and unlike a timer it keeps arriving in a background
+    // tab.
+    onControl(callback) { this._controlCallback = callback; return this; }
 
     start() {
       if (this._running) return;
@@ -52,7 +58,10 @@ function (Transport, Timebase) {
         now:this.monotonicNow, wallNow:this.wallNow})
         .onSamples((samples, rate, metadata) =>
           this._receiveSamples(samples, rate, metadata))
-        .onStatus(status => this._receiveStatus(status));
+        .onStatus(status => this._receiveStatus(status))
+        .onControl(message => {
+          if (this._controlCallback) this._controlCallback(message);
+        });
       this._session.start();
     }
 

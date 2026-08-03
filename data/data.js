@@ -158,7 +158,8 @@ const dom = {
   stationHead:document.querySelector(".traffic-table thead"), reply:document.querySelector('[data-section="reply"]'),
   stationSummary:$("stationSummary"), myCall:$("myCall"), myGrid:$("myGrid"),
   followSpeed:$("followSpeed"), clockCorrection:$("clockCorrection"), autoTiming:$("autoTiming"),
-  txGain:$("txGain"), txSafety:$("txSafety"), storageState:$("storageState"),
+  txGain:$("txGain"), calResolved:$("calResolved"),
+  txSafety:$("txSafety"), storageState:$("storageState"),
   txQueueState:$("txQueueState"),
   hbEnabled:$("hbEnabled"), hbMinutes:$("hbMinutes"), hbAck:$("hbAck"), hbState:$("hbState"),
   groups:$("groups"), cqRepeat:$("cqRepeat"), cqState:$("cqState"),
@@ -453,6 +454,100 @@ function speedDetail(mode) {
 }
 function callOf(message) { return (message.callsigns || []).find(call => call && !call.startsWith("@") && call !== currentJs8().myCall) || ""; }
 function currentJs8() { return settings.modems.js8call; }
+
+// ---- calibrated TX gain -----------------------------------------------------
+//
+// This page never calibrates -- its tune carrier is pre-rendered into one buffer,
+// so the level cannot be moved while it plays. It only USES the station's table
+// and runs the limiter half of the design (docs/tx-auto-gain-implementace.md).
+// Calibration happens on the WSPR page, which has a streaming generator, and it
+// deliberately measures the radio as it stands -- so calibrating for JS8 means
+// setting this page's band and power first, then calibrating there.
+const gainStore = new TxGainCal.TxGainStore();
+const alcGuard = new TxAlcGuard.TxAlcGuard();
+
+// What the table says for the radio's CURRENT band and power, or the manual
+// value with a reason. Never a guess: a level filed under a model we have not
+// been told or a power the radio has not confirmed would be applied silently.
+function resolvedGain() {
+  const manual = Number(currentJs8().txGain) || 0.25;
+  const model = state.radio.radioName || "";
+  const band = TxGainCal.bandOf(state.radio.frequency);
+  const percent = WsprCore.civPercent(state.radio.rfPower);
+  if (!model || !band || state.radio.rfPowerSeen !== true)
+    return {gain:manual, calibrated:false, key:"", band, percent,
+            why:"the radio has not reported its model, band or power yet"};
+  const key = TxGainCal.entryKey(model, band, percent);
+  const entry = gainStore.entry(key);
+  if (!entry)
+    return {gain:manual, calibrated:false, key, band, percent,
+            why:`not calibrated for ${band} @ ${percent} %`};
+  return {gain:Number(entry.gain), calibrated:true, key, band, percent, entry, why:""};
+}
+
+function stampGain(frames) {
+  const resolved = resolvedGain();
+  for (const frame of frames) frame.gain = resolved.gain;
+  return frames;
+}
+
+function beginAlcGuard() {
+  const resolved = resolvedGain();
+  // Nothing to protect and nothing to learn without an entry: the manual level
+  // is the operator's own choice, and trimming it behind their back would be
+  // this page arguing with the slider they set.
+  if (!resolved.calibrated) return;
+  alcGuard.beginTx({key:resolved.key, gain:resolved.gain});
+}
+
+function endAlcGuard() {
+  const outcome = alcGuard.endTx();
+  if (!outcome || !outcome.reduced) return;
+  state.alcTrim = {key:outcome.key, gain:outcome.gain, witnesses:outcome.witnesses,
+                   needsRecalibration:outcome.needsRecalibration};
+  if (outcome.persistGain === null) { renderControls(); return; }
+  // Second witness: the stored level really does not hold any more. Only ever
+  // downwards, and only ever to a level a transmission actually finished at.
+  const entry = gainStore.entry(outcome.key);
+  if (!entry) { renderControls(); return; }
+  gainStore.put(outcome.key, {...entry, gain:Number(outcome.persistGain.toFixed(4)),
+                              autoTrimmed:true, at:Date.now()})
+    .catch(() => {})
+    .then(() => renderControls());
+}
+
+// Read-only, beside the manual field and never inside it: a calibrated level can
+// be 0.006 or 0.63 and the field steps in 0.05, so writing it there would round
+// the measurement away the first time the operator touched it.
+function renderResolvedGain() {
+  if (!dom.calResolved) return;
+  const resolved = resolvedGain();
+  const trim = state.alcTrim && state.alcTrim.key === resolved.key ? state.alcTrim : null;
+  if (resolved.calibrated) {
+    const entry = resolved.entry || {};
+    dom.calResolved.textContent =
+      `calibrated ${resolved.gain} — ${resolved.band} @ ${resolved.percent} %` +
+      (entry.autoTrimmed ? ", trimmed on air" : "") +
+      (trim && trim.needsRecalibration ? " — ALC still acting 6 dB down, recalibrate" : "");
+  } else {
+    dom.calResolved.textContent = `${resolved.why} — using the manual ${resolved.gain}`;
+  }
+  dom.calResolved.classList.toggle("uncalibrated",
+    !resolved.calibrated || Boolean(trim && trim.needsRecalibration));
+}
+
+// Every control frame from the firmware. Only tx-level matters here, and only
+// while a calibrated transmission is in flight.
+function onAudioControl(message) {
+  if (!message || message.type !== "tx-level" || !alcGuard.active) return;
+  const before = alcGuard.gain;
+  const after = alcGuard.noteLevel({consumed:message.consumed, alc:message.alc,
+                                    alcSeq:message.alcSeq});
+  // No mid-frame correction on this page: the modulator has already baked the
+  // level into the frame that is playing. The reduction reaches the air on the
+  // next frame, through frameGain().
+  if (after !== before) renderControls();
+}
 function sameCall(left,right) {
   return Boolean(right) && String(left||"").toUpperCase()===String(right).toUpperCase();
 }
@@ -604,17 +699,33 @@ function loadTxModule() {
   return txModulePromise;
 }
 
+// The level for a frame, decided when the frame was BUILT and only ever lowered
+// afterwards.
+//
+// Both halves matter. The baseline is stamped at queue time because the band can
+// change between queueing a message and modulating its third frame, and the
+// calibration is per band -- reading the table at modulation time would put one
+// band's level on another band's transmission. The cap is applied here because
+// the ALC limiter cannot reach into a frame that is already modulated: JS8 bakes
+// the gain into the whole frame, so a reduction it decides during frame two can
+// only take effect on frame three.
+function frameGain(frame) {
+  const baseline = Number(frame && frame.gain) > 0 ? Number(frame.gain) : resolvedGain().gain;
+  const limited = alcGuard.active ? alcGuard.gain : baseline;
+  return Math.min(baseline, limited > 0 ? limited : baseline);
+}
+
 function modulateFrame(frame, mode, toneHz) {
   if(frame.role==="tune"){
     const count=48000*Math.max(1,Math.min(10,Number(frame.durationSeconds)||10));
-    const pcm=new Int16Array(count), amplitude=Math.round(currentJs8().txGain*32767);
+    const pcm=new Int16Array(count), amplitude=Math.round(frameGain(frame)*32767);
     for(let i=0;i<count;i++)pcm[i]=Math.round(amplitude*Math.sin(2*Math.PI*toneHz*i/48000));
     return pcm;
   }
   if (!txWasm) throw new Error("JS8 TX core is not ready");
   const framePtr = txWasm._malloc(12);
   for (let i = 0; i < 12; i++) txWasm.HEAPU8[framePtr + i] = frame.raw.charCodeAt(i);
-  const gain = currentJs8().txGain;
+  const gain = frameGain(frame);
   const count = txWasm._js8_proto_modulate_frame48k(framePtr, frame.frameType, mode, toneHz, gain, 0, 0);
   if (count <= 0) { txWasm._free(framePtr); throw new Error("JS8 modulator rejected frame"); }
   const outputPtr = txWasm._malloc(count * 2);
@@ -638,9 +749,10 @@ const adapter = createJs8ModemAdapter({
   DecoderBase:Decoder, EncoderBase:Encoder, workerInit,
   createWorker:() => new Worker(assetUrl("/js8-worker.js")),
   getStreamId:() => audioSource ? audioSource.state().readyStreamId : 0,
-  createTxController:() => new Js8Tx.TxController({buildFrames:request=>request.kind==="tune"
+  createTxController:() => new Js8Tx.TxController({buildFrames:request=>stampGain(
+    request.kind==="tune"
     ? [{raw:"",frameType:0,role:"tune",durationSeconds:TEST_MODE?2:10}]
-    : Js8Protocol.buildTxFrames(request),
+    : Js8Protocol.buildTxFrames(request)),
     encoder:modulateFrame, sink:sinkProxy, clockCorrectionMs:currentJs8().clockCorrectionMs,
     prebufferMs:1000, maxCatchupPackets:25, wallNow:() => js8Clock.now()}) // Tolerate a 500 ms mobile-browser pause before the TX slot.
 });
@@ -731,6 +843,13 @@ function handleEncoderEvent(event) {
   state.txState = event.state; state.txStatus = event.state.status;
   updateOutgoingTxProgress(event.state);
   const running = !["idle","completed","aborted","fault"].includes(state.txStatus);
+  // One message, one witness. The limiter is bracketed by the CONTROLLER's run,
+  // not by PTT: a three-frame message is three keyings of the radio, and
+  // counting them separately would let a single event -- one gust of ALC on one
+  // message -- look like the two independent witnesses the table demands before
+  // it rewrites a measured level.
+  if (running && !alcGuard.active) beginAlcGuard();
+  if (!running && alcGuard.active) endAlcGuard();
   state.tuneActive=running && Boolean(event.state.frames?.some(frame=>frame.role==="tune"));
   dom.abort.hidden = !running;
   if (!running) { stopTxTicking(); queueMicrotask(()=>{drainTxQueue();renderTxQueue();}); }
@@ -760,7 +879,8 @@ function ensureAudio() {
   if (audioSource) return;
   audioSource = new Js8WsAudioSource.WsAudioSource(AUDIO_RATE,
     {url:audioUrl(), wallNow:() => js8Clock.now()})
-    .onSamples(onSamples).onStatus(onAudioStatus).onEpoch(() => renderDiagnostics());
+    .onSamples(onSamples).onStatus(onAudioStatus).onEpoch(() => renderDiagnostics())
+    .onControl(onAudioControl);
   audioSource.configure({clockCorrectionMs:currentJs8().clockCorrectionMs, autoTiming:currentJs8().autoTiming});
   audioSource.start();
 }
@@ -1569,6 +1689,7 @@ function renderControls() {
   if(document.activeElement!==dom.clockCorrection)dom.clockCorrection.value=js8.clockCorrectionMs;
   dom.autoTiming.checked=js8.autoTiming;
   if(document.activeElement!==dom.txGain)dom.txGain.value=state.settingsDraft.txGain===null?js8.txGain:state.settingsDraft.txGain;
+  renderResolvedGain();
   dom.txSafety.checked=js8.txSafetyAccepted;
   if(document.activeElement!==dom.infoText)dom.infoText.value=js8.infoText;
   if(document.activeElement!==dom.statusText)dom.statusText.value=js8.statusText;
@@ -4536,6 +4657,10 @@ async function init() {
   scheduler.every("sessionPing",SESSION_PING_MS,pingJs8Session);
   scheduler.every("utcClock",250,()=>{dom.utcClock.textContent=`UTC ${new Date().toISOString().slice(11,19)}`;});
   renderRhythm(); scheduler.every("rhythm",100,renderRhythm);
+  // The station's calibration table. Read once here and re-read before every
+  // write; a stale copy costs at most an older level or a false "not
+  // calibrated", never a level in the wrong direction.
+  gainStore.load().then(renderResolvedGain);
   pollRadio(); scheduler.every("pollRadio",500,pollRadio);
   scheduler.every("txQueue",1000,()=>{drainTxQueue();renderTxQueue();renderRetryCountdowns();});
   // Audio windows normally age out partial receptions inside the worker; when audio stops
@@ -4587,6 +4712,18 @@ async function init() {
     feedInbox(frame){handleDecodedFrame({kind:"directed",...frame});},
     feedAssembled(message){dispatchAssembledMessage(message);},
     txStatus(){return state.txStatus;},
+    // Automatic TX gain. The limiter is driven by tx-level frames, which no
+    // harness can make a real radio send, so the control path is fed directly --
+    // through the same function the WebSocket calls, not around it.
+    gainState(){return {resolved:resolvedGain(), frame:frameGain({}),
+                        guard:{active:alcGuard.active, gain:alcGuard.gain},
+                        trim:state.alcTrim||null,
+                        text:dom.calResolved?dom.calResolved.textContent:"",
+                        amber:Boolean(dom.calResolved&&dom.calResolved.classList.contains("uncalibrated"))};},
+    gainReload(){return gainStore.load().then(()=>{renderResolvedGain();return gainStore.doc;});},
+    alcBegin(){beginAlcGuard();return alcGuard.active;},
+    alcFeed(message){onAudioControl({type:"tx-level",...message});return alcGuard.gain;},
+    alcEnd(){endAlcGuard();return state.alcTrim||null;},
     // Failure injection. The harness cannot key a radio, and clicking ABORT produces an
     // OPERATOR abort -- precisely the one case that earns no RESEND -- so without these
     // hooks not a single resend path could be exercised in a browser.

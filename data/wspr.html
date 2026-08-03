@@ -235,7 +235,26 @@
         </label>
         <label>TX audio gain <input id="txGain" type="number" min="0.1" max="0.8" step="0.05">
           <small>shared with JS8Call-ICOM &mdash; one MOD input, one level</small>
+          <!-- Read-only beside the field, never inside it: the calibrated level
+               can be 0.006 or 0.63, and the field steps in 0.05, so writing it
+               there would round the measurement away on the first click. -->
+          <small id="calResolved" class="cal-resolved"></small>
         </label>
+        <!-- Auto gain. The panel is the whole feature on this page: SETUP only
+             links here, because the audio path, the pledge and the lock all
+             already live on this side. -->
+        <div class="cal-field" id="calField" hidden>
+          <b>Automatic TX gain</b>
+          <p id="calIntro">Keys a carrier for up to 20 s on the band and power the
+             radio is set to <em>now</em>, raises the audio level until ALC just
+             starts to act, and stores the level below that. Nothing else about
+             the radio is changed.</p>
+          <p id="calTarget" class="cal-target"></p>
+          <p><button id="calStart" type="button">START CALIBRATION</button></p>
+          <p id="calLive" class="cal-live" hidden></p>
+          <p id="calResult" class="cal-result" hidden></p>
+          <p id="calMessage" class="form-error" role="alert" hidden></p>
+        </div>
         <label class="reference-field">TUNE power references
           <span class="reference-row"><b id="referenceCount">no bands measured</b><button id="referenceClear" type="button">Clear</button></span>
           <small>a transmission whose forward power drifts more than 20 % from the
@@ -265,6 +284,10 @@
 <script src="/js8-presets.js?v=20260719d"></script>
 <script src="/spectrum.js?v=20260728a"></script>
 <script src="/js8-aud1.js?v=20260726a"></script>
+<!-- ALC gain search and the station's calibration table. Shared with the
+     JS8Call-ICOM page, which runs the limiter half of the same design. -->
+<script src="/tx-gain-cal.js?v=20260803a"></script>
+<script src="/tx-alc-guard.js?v=20260803a"></script>
 <!-- One table of Icom models: watts for WSPR, menu paths for the setup guides. -->
 <script src="/icom-models.js?v=20260802a"></script>
 <script src="/trx-help.js?v=20260802a"></script>

@@ -1112,3 +1112,61 @@ button.icom-scan-hit:hover {
 .setup-page-footer a:focus-visible {
   color: var(--text);
 }
+
+/* TX gain calibrations. Laid out like the TrxNet peer list above: same row
+   rhythm, same monospace for the measured figures, because both are "what the
+   station currently knows" rather than settings to type into. */
+.txgain-body { padding: 4px 0; }
+.txgain-empty {
+  display: block;
+  padding: 10px 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.txgain-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1.2fr) auto auto;
+  gap: 12px;
+  align-items: center;
+  padding: 6px 12px;
+  font-size: 13px;
+}
+.txgain-row + .txgain-row { border-top: 1px solid rgba(59, 69, 65, 0.5); }
+.txgain-what { font-family: monospace; color: var(--text); }
+.txgain-level { font-family: monospace; color: #9fd39f; font-variant-numeric: tabular-nums; }
+.txgain-trim {
+  font-size: 10px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--amber);
+}
+.txgain-advice { color: var(--muted); }
+.txgain-when { color: var(--muted); font-variant-numeric: tabular-nums; }
+.txgain-drop {
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 1;
+  padding: 2px 7px;
+}
+.txgain-drop:hover { color: var(--text); border-color: var(--muted); }
+.txgain-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.txgain-link {
+  color: #9fd39f;
+  text-decoration: none;
+  font-weight: 600;
+  letter-spacing: .04em;
+}
+.txgain-link:hover { text-decoration: underline; }
+.txgain-forget { cursor: pointer; }
+@media (max-width: 620px) {
+  .txgain-row { grid-template-columns: minmax(0, 1fr) auto auto; }
+  .txgain-advice, .txgain-when { grid-column: 1 / -1; font-size: 12px; }
+}

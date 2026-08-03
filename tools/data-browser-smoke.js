@@ -25,6 +25,9 @@ function unattendedState(){return{armed:!unaReboot,remainingMs:unaReboot?0:43200
 let lanStateRequests=0, primaryStateRequests=0, primaryCommands=[];
 // The radio's own power level and link, as far as this fixture is concerned.
 let radioRfPower=128, radioConnected=true;
+// The station calibration table, as the firmware stores it: a blob it never
+// looks inside.
+let txgainDoc='{"v":1,"entries":{}}';
 // Decoded exactly as the radio decodes 14 0A: two BCD bytes, 0..255 (02 55).
 // The page confirms its writes by reading this back, so getting it wrong here
 // would make every power test pass on a number the page itself invented.
@@ -82,6 +85,9 @@ const server=http.createServer((req,res)=>{
   if(url.pathname==="/commands"){res.setHeader("Content-Type","application/json");res.end(JSON.stringify(commands));return;}
   // The JS8 page must ask for the LAN radio by name -- plain /state means TRX1,
   // which is a different radio whenever LAN sits on TRX2/TRX3.
+  if(url.pathname==="/txgain.json"){
+    if(req.method==="POST"){let body="";req.on("data",c=>body+=c);req.on("end",()=>{txgainDoc=body;res.setHeader("Content-Type","application/json");res.end('{"ok":true}');});return;}
+    res.setHeader("Content-Type","application/json");res.setHeader("Cache-Control","no-store");res.end(txgainDoc);return;}
   if(url.pathname==="/state"){if(url.searchParams.get("radio")==="lan")lanStateRequests++;else primaryStateRequests++;/* fw-version.js badge, shared by every page */res.setHeader("Content-Type","application/json");res.end(JSON.stringify({connected:radioConnected,lanStatus:radioConnected?"linked":"disconnected",transceiverType:"ICOM-LAN",power:true,frequency:7078000,mode:"USB",tx:false,rfPower:radioRfPower,rfPowerSeen:true,radioName:"IC-705",fwRev:"20260718",wifiRssi:-51,bdSupported:true}));return;}
   // fixture=trx2 moves LAN to the second slot with one credential still blank:
   // the page must name TRX 2 and read that slot's fields, while staying gated so
@@ -168,6 +174,53 @@ f.onload=()=>{
       editingGrid.value='JO70';editingGrid.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));
       editingTxGain.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));
       const savedTxGain=JSON.parse(f.contentWindow.localStorage.getItem('wifilt.data.js8-settings')).modems.js8call.txGain;
+
+      // ---- automatic TX gain: the limiter half of the design -------------
+      //
+      // This page never calibrates -- its tune carrier is one pre-rendered
+      // buffer, so the level cannot move while it plays. What it must do is USE
+      // the station's table, keep the level per band and power, and take the
+      // level DOWN when the radio reports ALC. All three are checked through the
+      // page's own functions rather than by poking the DOM, because the paths
+      // that matter (frame gain, guard, persistence) have no DOM at all.
+      const T=f.contentWindow.__dataTest;
+      T.setRadioPower(128,true,'IC-705');
+      T.setRadioFrequency(7078000);
+      await T.gainReload();
+      const gainUncalibrated=T.gainState();
+      // Seed the station table for exactly this radio, band and power.
+      const percent=gainUncalibrated.resolved.percent;
+      await f.contentWindow.fetch('/txgain.json',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({v:1,entries:{['IC-705|40m|'+percent]:{knee:0.62,gain:0.62,band:'40m',percent,model:'IC-705',at:Date.now()}}})});
+      await T.gainReload();
+      const gainCalibrated=T.gainState();
+      // A band the table says nothing about: the manual level, said out loud.
+      T.setRadioFrequency(14078000);
+      const gainOtherBand=T.gainState();
+      T.setRadioFrequency(7078000);
+      T.gainState();
+      // The limiter. One reading takes a dB off; the readings that arrive while
+      // the meter is still falling must not take another.
+      T.alcBegin();
+      const guardStart=T.gainState().guard.gain;
+      T.alcFeed({consumed:8000,alc:30,alcSeq:1});
+      const guardAfterOne=T.gainState().guard.gain;
+      T.alcFeed({consumed:9600,alc:30,alcSeq:2});
+      T.alcFeed({consumed:11200,alc:20,alcSeq:3});
+      const guardAfterDecay=T.gainState().guard.gain;
+      // And it reaches the air: the next frame is modulated at the reduced level.
+      const frameGainDuring=T.gainState().frame;
+      const firstWitness=T.alcEnd();
+      // One witness is not evidence: the stored level is untouched.
+      await T.gainReload();
+      const tableAfterOne=JSON.parse(JSON.stringify(T.gainState().resolved.entry||{}));
+      // A second, independent transmission saying the same thing is.
+      T.alcBegin();
+      T.alcFeed({consumed:8000,alc:30,alcSeq:1});
+      T.alcEnd();
+      await new Promise(resolve=>setTimeout(resolve,200));
+      await T.gainReload();
+      const tableAfterTwo=JSON.parse(JSON.stringify(T.gainState().resolved.entry||{}));
       const currentPreset=d.querySelector('[data-frequency="14078000"]');
       const stationObserved={speed:d.querySelector('#stationRows tr[data-call="K0OG"] td:nth-child(5)')?.textContent.trim(),fallbackTitle:d.querySelector('#stationRows tr[data-call="K0OG"] .station-direction span')?.title,gridTitle:d.querySelector('#stationRows tr[data-call="KN4CRD"] .station-direction span')?.title,distance:d.querySelector('#stationRows tr[data-call="K0OG"] .station-distance')?.textContent};
       const overlay=d.querySelector('#waterfallOverlay'),overlayContext=overlay.getContext('2d'),hzX=hz=>Math.round((hz-500)/(2700-500)*overlay.width);
@@ -221,6 +274,14 @@ f.onload=()=>{
         defaultTxGain,
         txGainEditingStable,
         txGainSaved:savedTxGain===0.35,
+        gainAmberWithoutCalibration:gainUncalibrated.resolved.calibrated===false&&gainUncalibrated.amber&&gainUncalibrated.text.includes('not calibrated'),
+        gainUsesTheStationTable:gainCalibrated.resolved.calibrated===true&&Math.abs(gainCalibrated.frame-0.62)<1e-9&&!gainCalibrated.amber,
+        gainIsPerBand:gainOtherBand.resolved.calibrated===false&&Math.abs(gainOtherBand.frame-0.35)<1e-9,
+        alcLimiterTakesOneDbOff:Math.abs(guardAfterOne-0.62*Math.pow(10,-1/20))<1e-6&&guardStart===0.62,
+        alcLimiterIgnoresAFallingMeter:guardAfterDecay===guardAfterOne,
+        alcLimiterReachesTheNextFrame:Math.abs(frameGainDuring-guardAfterOne)<1e-9,
+        alcOneWitnessDoesNotRewriteTheTable:firstWitness&&firstWitness.witnesses===1&&Math.abs((tableAfterOne.gain||0)-0.62)<1e-9,
+        alcTwoWitnessesDo:Math.abs((tableAfterTwo.gain||0)-0.62*Math.pow(10,-1/20))<5e-4&&tableAfterTwo.autoTrimmed===true,
         reconnectVisible,
         reconnectRequested,
         trxPowerHiddenOffline,
@@ -378,6 +439,34 @@ f.onload=()=>{
       const setupValues={trx1lanip:'192.168.1.60',trx1lanuser:'operator',trx1lanpass:'secret123'};
       missingInputs.forEach(input=>{input.value=setupValues[input.name];input.dispatchEvent(new setupFrame.contentWindow.Event('input',{bubbles:true}));});
       checks.setupLanWarning=setupMissingObserved&&lanWarning.hidden===true&&missingInputs.every(input=>!input.classList.contains('setup-radio-field-missing')&&input.getAttribute('aria-invalid')==='false');
+      // ---- SETUP: the station's TX gain calibrations --------------------
+      //
+      // SETUP shows them and links to where they are measured; it must never
+      // key anything itself. Three things worth guarding: the section only
+      // exists when a slot actually carries ICOM-LAN (without it there is no
+      // audio path to calibrate), the link goes to the page that owns the
+      // carrier, and the knee is translated into an instruction about the
+      // radio's MOD level rather than shown as a bare number.
+      const txGainSection=sd.querySelector('#txGainSection');
+      await setupFrame.contentWindow.fetch('/txgain.json',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({v:1,entries:{'IC-705|20m|1':{knee:0.031,gain:0.031,band:'20m',percent:1,model:'IC-705',at:Date.now(),autoTrimmed:true}}})});
+      txGainSection.open=true;
+      txGainSection.dispatchEvent(new setupFrame.contentWindow.Event('toggle'));
+      await new Promise(resolve=>setTimeout(resolve,300));
+      const txGainRow=sd.querySelector('#txGainTable .txgain-row');
+      checks.setupTxGainVisibleWithLan=!txGainSection.hidden;
+      checks.setupTxGainShowsTheTable=!!txGainRow&&txGainRow.textContent.includes('IC-705')&&
+        txGainRow.textContent.includes('20m')&&txGainRow.textContent.includes('0.031');
+      checks.setupTxGainSaysWhenItWasTrimmed=!!txGainRow&&txGainRow.textContent.toLowerCase().includes('trimmed');
+      // 0.031 against the 0.7 target is about 27 dB of surplus MOD level.
+      checks.setupTxGainTranslatesTheKnee=!!txGainRow&&/MOD level 2[0-9]\.[0-9] dB too high/.test(txGainRow.textContent);
+      checks.setupTxGainLinksToTheCarrier=sd.querySelector('.txgain-link')?.getAttribute('href')==='/wspr.html#autogain';
+      // Dropping one entry is a read-modify-write, so this also proves the page
+      // does not write back a copy it opened before the click.
+      sd.querySelector('.txgain-drop').click();
+      await new Promise(resolve=>setTimeout(resolve,300));
+      checks.setupTxGainCanForgetOne=!sd.querySelector('#txGainTable .txgain-row')&&
+        sd.querySelector('#txGainTable').textContent.includes('Nothing measured yet');
       // Icom LAN scan: the firmware finds the radio so the operator does not
       // have to read the address off the radio's own menu. The result list is
       // rebuilt on every poll, so the row click also proves the delegation

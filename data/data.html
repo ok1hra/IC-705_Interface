@@ -335,7 +335,13 @@
                    until the next SET.</small>
             <small id="rfPercentState" class="power-mismatch" hidden></small>
           </label>
-          <label>TX audio gain <input id="txGain" type="number" min="0.1" max="0.8" step="0.05"></label>
+          <label>TX audio gain <input id="txGain" type="number" min="0.1" max="0.8" step="0.05">
+            <!-- What is actually in force: the station's measured level for this
+                 band and power, or the manual one with the reason. Calibration
+                 itself lives on the WSPR page, which can move the level while a
+                 carrier plays. -->
+            <small id="calResolved" class="cal-resolved"></small>
+          </label>
           <label class="safety-setting">Enable radio TX <input id="txSafety" type="checkbox"><small>I will use safe RF power and a suitable load/antenna.</small></label>
           <label>INFO answer <input id="infoText" maxlength="40" autocomplete="off" placeholder="50W VERT"></label>
           <label>STATUS answer <input id="statusText" maxlength="40" autocomplete="off" placeholder="MONITORING"></label>
@@ -380,6 +386,9 @@
   <script src="/js8-timebase.js?v=20260719d"></script>
   <script src="/spectrum.js?v=20260728a"></script>
   <script src="/js8-aud1.js?v=20260724c"></script>
+  <!-- The station's calibration table and the ALC limiter, shared with WSPR. -->
+  <script src="/tx-gain-cal.js?v=20260803a"></script>
+  <script src="/tx-alc-guard.js?v=20260803a"></script>
   <script src="/js8-audio.js?v=20260719d"></script>
   <script src="/js8-tx.js?v=20260724b"></script>
   <script src="/js8-core.js?v=20260719d"></script>

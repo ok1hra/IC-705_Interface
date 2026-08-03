@@ -759,3 +759,9 @@ button { color: inherit; cursor: pointer; }
 .inbox-text{max-width:16rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .inbox-delivered{opacity:.55}
 .inbox-empty{text-align:center;opacity:.6}
+
+/* The level actually in force, beside the manual field. Amber when nothing is
+   on file for this band and power: not an error, but not what was asked for
+   either. See docs/tx-auto-gain-implementace.md. */
+.cal-resolved { display:block; font-size:11px; color:#9fd39f; }
+.cal-resolved.uncalibrated { color:var(--amber); }

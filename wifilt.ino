@@ -474,6 +474,14 @@ struct LanRadioSnapshot {
   bool     rfPowerSeen = false;   // false until the radio answered 14 0A at least once
   uint16_t smeterRaw = 0;
   uint16_t powerMeterRaw = 0;
+  // Raw ALC, and a counter that only moves when the radio actually answered
+  // 15 13. The browser's gain search cannot tell a fresh reading from the
+  // previous one repeated -- and mistaking one for the other makes it step
+  // twice on a single observation -- so the sequence, not the value, is what
+  // says "this is new". Deliberately absent from /state: it is only meaningful
+  // while the browser is keying, and that is exactly when tx-level is flowing.
+  uint16_t alcRaw = 0;
+  uint32_t alcSeq = 0;
   float    swr = 1.0f;
   float    supplyVolts = 0.0f;
   char     mode[8] = "";          // includes the -D suffix, unlike g_trxMode
@@ -576,6 +584,20 @@ int incomingByte = 0;   // for incoming serial data
   String DxcLocator = "";
 
   static const char* LOG_CONFIG_PATH = "/log-config.json";
+
+  // Measured ALC knees, one entry per model|band|percent. Deliberately opaque
+  // to the firmware: it serves the file and overwrites it, and never parses a
+  // byte of it. The schema belongs to the browser, which is the only party that
+  // can decide what a calibration means -- and a parser here would be a second
+  // opinion about it, needing RAM, a version field and a migration path for a
+  // table the radio itself has no use for.
+  //
+  // Firmware-side rather than in localStorage because the knee is a property of
+  // the station -- radio, band, power -- not of the browser that measured it. An
+  // unattended beacon started from a phone must not transmit at a level that was
+  // only ever calibrated on the shack PC.
+  static const char* TXGAIN_CONFIG_PATH = "/txgain.json";
+  static const size_t TXGAIN_MAX_BYTES = 6144;   // ~40 entries; a full band plan
 
   // In-memory cache of log-config.json fields used by setupTemplateProcessor.
   String g_lcTrx1Label = "TRX1";   // replaced by the radio's own model once known
@@ -760,6 +782,8 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   void handleConfigUpload(void);
   void handleGetLogConfig(void);
   void handlePostLogConfig(void);
+  void handleGetTxGain(void);
+  void handlePostTxGain(void);
   void handleOi3State(void);
   void handleOi3Send(void);
   void handleOi3SetHz(void);
@@ -2805,6 +2829,22 @@ void handleConfigDownload() {
     j += ",\"logConfig\":";
     j += lc;
   }
+  // Calibrations are measurements, and the first full flash wipes the
+  // filesystem -- so without this a reflash silently costs every band and power
+  // the operator ever calibrated, each of them a 20 s carrier on the air to get
+  // back. Embedded verbatim, exactly like radioConfig and logConfig above.
+  if (LittleFS.exists(TXGAIN_CONFIG_PATH)) {
+    File txgainFile = LittleFS.open(TXGAIN_CONFIG_PATH, "r");
+    if (txgainFile) {
+      String txgainJson = txgainFile.readString();
+      txgainFile.close();
+      txgainJson.trim();
+      if (txgainJson.startsWith("{")) {
+        j += ",\"txGain\":";
+        j += txgainJson;
+      }
+    }
+  }
   if (bdEnabled) {
     j += ",\"bd\":{\"source\":"; j += bdSource;
     j += ",\"rows\":[";
@@ -2957,6 +2997,16 @@ void handleConfigUpload() {
     }
   }
 
+  {
+    // Same key the download writes. A mismatch here would restore everything
+    // except the calibrations and say nothing about it.
+    String txgainCfg = extractJsonObject(body, "txGain");
+    if (txgainCfg.length() > 0 && txgainCfg.length() <= TXGAIN_MAX_BYTES) {
+      File f = LittleFS.open(TXGAIN_CONFIG_PATH, "w");
+      if (f) { f.print(txgainCfg); f.close(); }
+    }
+  }
+
   if (bdEnabled) {
     int bdIdx = body.indexOf("\"bd\":{");
     if (bdIdx >= 0) {
@@ -3072,6 +3122,50 @@ void handlePostLogConfig() {
   f.print(body);
   f.close();
   loadLogConfigVars();
+  webServer.send(200, "application/json", "{\"ok\":true}");
+}
+
+// ---- TX gain calibration table ----------------------------------------------
+//
+// A blob store, not a config endpoint. See TXGAIN_CONFIG_PATH.
+
+void handleGetTxGain() {
+  webServer.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  webServer.sendHeader("Connection", "close");
+  webServer.client().setNoDelay(true);
+  String json;
+  if (LittleFS.exists(TXGAIN_CONFIG_PATH)) {
+    File f = LittleFS.open(TXGAIN_CONFIG_PATH, "r");
+    if (f) { json = f.readString(); f.close(); json.trim(); }
+  }
+  // An empty document rather than a 404. A radio that has never been calibrated
+  // is the normal first state, not an error, and every caller would otherwise
+  // have to treat "missing" and "empty" as the same thing anyway -- one of them
+  // eventually forgetting to.
+  if (json.length() < 2 || json[0] != '{') json = "{\"v\":1,\"entries\":{}}";
+  webServer.send(200, "application/json", json);
+}
+
+void handlePostTxGain() {
+  webServer.sendHeader("Connection", "close");
+  webServer.client().setNoDelay(true);
+  String body = webServer.arg("plain");
+  body.trim();
+  if (body.length() == 0 || body.length() > TXGAIN_MAX_BYTES) {
+    webServer.send(400, "application/json", "{\"error\":\"bad_request\"}");
+    return;
+  }
+  // The only two things worth checking here. Anything deeper would be the
+  // firmware forming an opinion about a schema it does not own, and the browser
+  // that wrote it is the same one that will read it back.
+  if (body[0] != '{' || body[body.length()-1] != '}') {
+    webServer.send(400, "application/json", "{\"error\":\"not_json\"}");
+    return;
+  }
+  File f = LittleFS.open(TXGAIN_CONFIG_PATH, "w");
+  if (!f) { webServer.send(500, "application/json", "{\"error\":\"write\"}"); return; }
+  f.print(body);
+  f.close();
   webServer.send(200, "application/json", "{\"ok\":true}");
 }
 
@@ -3259,6 +3353,8 @@ void setupWebServer(void){
   webServer.on("/config/upload",   HTTP_POST, handleConfigUpload);
   webServer.on("/log-config", HTTP_GET,  handleGetLogConfig);
   webServer.on("/log-config", HTTP_POST, handlePostLogConfig);
+  webServer.on("/txgain.json", HTTP_GET,  handleGetTxGain);
+  webServer.on("/txgain.json", HTTP_POST, handlePostTxGain);
   webServer.on("/oi3/state",    HTTP_GET,  handleOi3State);
   webServer.on("/oi3/send",     HTTP_POST, handleOi3Send);
   webServer.on("/oi3/abort-cw", HTTP_POST, handleOi3AbortCw);
@@ -5242,6 +5338,7 @@ void lanRadioCivSnapshot(const uint8_t *frame, size_t len) {
     if (pl[0] == 0x02) lanRadioSnap.smeterRaw = (uint16_t)raw;
     else if (pl[0] == 0x11) lanRadioSnap.powerMeterRaw = (uint16_t)raw;
     else if (pl[0] == 0x12) lanRadioSnap.swr = 1.0f + ((float)raw * 3.0f / 120.0f);
+    else if (pl[0] == 0x13) { lanRadioSnap.alcRaw = (uint16_t)raw; lanRadioSnap.alcSeq++; }
     else if (pl[0] == 0x15) lanRadioSnap.supplyVolts = ((float)raw * 16.0f) / 241.0f;
   }
 }
@@ -7542,6 +7639,8 @@ void aud1TxTick(bool deferPrebufferMiss){
                       ",\"replays\":" + String((unsigned long)txSnapshot.replayedPackets) +
                       ",\"sendFailures\":" + String((unsigned long)txSnapshot.sendFailures) +
                       ",\"rxDropped\":" + String((unsigned long)txClient->audioRxDropped()) +
+                      ",\"alc\":" + String((unsigned long)lanRadioSnap.alcRaw) +
+                      ",\"alcSeq\":" + String((unsigned long)lanRadioSnap.alcSeq) +
                       ",\"ptt\":false}");
       }
       return;
@@ -7602,6 +7701,8 @@ void aud1TxTick(bool deferPrebufferMiss){
                   ",\"replays\":" + String((unsigned long)txSnapshot.replayedPackets) +
                   ",\"sendFailures\":" + String((unsigned long)txSnapshot.sendFailures) +
                   ",\"rxDropped\":" + String((unsigned long)txClient->audioRxDropped()) +
+                  ",\"alc\":" + String((unsigned long)lanRadioSnap.alcRaw) +
+                  ",\"alcSeq\":" + String((unsigned long)lanRadioSnap.alcSeq) +
                   ",\"ptt\":true}");
   }
   audioTxLastMs = now;
@@ -7700,6 +7801,16 @@ static void aud1HandleControl(const String& json){
   if(!lanRadioClient()->prepareAudioTx()){
     aud1TxId = txId; aud1TxAbort("audio channel not ready"); return;
   }
+  // Fast ALC metering is opt-in per transmission and never inferred from the
+  // mode: a beacon slot and a calibration carrier look identical on the wire.
+  // setTxTrafficActive(false) clears it again on every ending, so an aborted
+  // calibration cannot leave the rotation starved of frequency and SWR.
+  lanRadioClient()->setAlcFast(extractJsonBool(json, "alcFast", false));
+  // The counter belongs to this transmission. Reset it with the id rather than
+  // with PTT: an abort between prepare and keying would otherwise hand the next
+  // run a sequence that has already moved, and its first reading -- taken at
+  // the old drive level -- would be accepted as fresh.
+  lanRadioSnap.alcRaw = 0; lanRadioSnap.alcSeq = 0;
   aud1TxId = txId; aud1TxTotalSamples = totalSamples; aud1TxExpectedPackets = packets;
   aud1TxPrebufferSamples = prebuffer; aud1TxTargetMs = millis() + uint32_t(delayMs);
   aud1TxDeadlineMs = aud1TxTargetMs + uint32_t(totalSamples / 48) + 2500;

@@ -57,6 +57,8 @@
     "powerPercent", "powerSet", "stationError", "radioModelOverride", "fullPowerWatts",
     "fullPowerSource", "clockCorrection", "powerField", "powerMismatch",
     "txGain", "txSafety", "tuneButton", "powerMeter", "swr", "tuneReference",
+    "calField", "calTarget", "calStart", "calLive", "calResult", "calMessage",
+    "calResolved",
     "referenceCount", "referenceClear",
     "periodHint", "scheduleAdd", "scheduleClear", "scheduleUndo",
     "scheduleList", "schedulePopover",
@@ -725,6 +727,11 @@
 
   async function applyAutoPower() {
     if (autoPowerBusy || !autoPowerArmed || knobTouched) return;
+    // A calibration measures the radio as the operator set it up -- including a
+    // JS8 power level, which is the whole reason this page can calibrate for the
+    // other mode at all. Writing WSPR's own target here would file the result
+    // under a percentage the radio was never on.
+    if (calArmed) return;
     if (Date.now() < autoPowerRetryMs) return;
     // The same gate as SET. The TX pledge is deliberately not part of it:
     // writing power is not transmitting, and this write moves towards the safe
@@ -1045,20 +1052,11 @@
 
   // ---- AUD1 session ---------------------------------------------------------
   //
-  // Aud1WebSocketSession swallows tx-level: it only reacts to hello, tx-ready,
-  // tx-state, tx-drained and tx-error. tx-level is what paces the credit loop, so
-  // it has to be observed -- and a subclass does that without touching the shared
-  // file that JS8LAN also depends on.
-  class WsprSession extends Js8Aud1Transport.Aud1WebSocketSession {
-    constructor(options) { super(options); this.controlCallback = null; }
-    onControl(callback) { this.controlCallback = callback; return this; }
-    receiveControl(message) {
-      super.receiveControl(message);
-      if (this.controlCallback) this.controlCallback(message);
-    }
-    get bufferedAmount() { return this.socket ? this.socket.bufferedAmount : 0; }
-  }
-
+  // `onControl` and `bufferedAmount` lived here as a WSPR-only subclass, because
+  // Aud1WebSocketSession acts on hello/tx-ready/tx-state/tx-drained/tx-error and
+  // passes nothing else on -- while tx-level is what paces the credit loop. Both
+  // are now in the shared class: JS8LAN needs the same frames for the ALC gain
+  // limiter, and one hook is better than two that can drift.
   let session = null, tx = null, beaconTimer = null, beaconPreparing = false;
 
   function audioUrl() {
@@ -1069,9 +1067,14 @@
 
   function openSession() {
     if (session) return session;
-    session = new WsprSession({url: audioUrl(), WebSocketImpl: WebSocket, wallNow: utcNow})
+    session = new Js8Aud1Transport.Aud1WebSocketSession(
+        {url: audioUrl(), WebSocketImpl: WebSocket, wallNow: utcNow})
       .onStatus(status => { if (status.type === "closed") render(); })
-      .onControl(message => { if (tx) tx.onControl(message); render(); });
+      .onControl(message => {
+        if (tx) tx.onControl(message);
+        if (message && message.type === "tx-level") { onCalLevel(message); onBeaconLevel(message); }
+        render();
+      });
     session.onSamples(onSamples);
     session.start();
     // The stream identity comes from the firmware's hello and is re-minted on
@@ -1161,6 +1164,11 @@
   }
 
   function onTxEvent(event) {
+    // The limiter's bracket. Every ending goes through here -- completed,
+    // failed, or the deliberate abort a STOP produces -- so the guard cannot be
+    // left holding a transmission that finished.
+    if (["completed", "failed"].includes(event.type) && beaconGuard.active)
+      endBeaconGuard();
     // stopBeacon() aborts the transmission on purpose, which arrives back here as
     // a failure. Without this guard the handler re-arms the beacon and STOP does
     // not stop -- it just skips one slot.
@@ -1452,7 +1460,7 @@
         powerSamples: [],
       };
       tx.queue({symbols: frame.symbols, slotUtcMs: next.slotUtcMs,
-                baseHz, amplitude: txGain(), leadMs});
+                baseHz, amplitude: beginBeaconGuard().gain, leadMs});
       state.beacon = "transmitting";
       // A frame that made it is proof the link can sustain the pace, so the
       // spacing imposed after three failures is lifted again here.
@@ -1510,8 +1518,11 @@
       // A steady tone in the middle of the WSPR window. The 162 symbols are a
       // full frame's worth of audio; stopTune aborts long before it runs out.
       const symbols = new Uint8Array(162).fill(1);
+      // The same level the beacon would transmit at, calibrated or manual. A
+      // tune carrier that used a different one would be measuring something the
+      // beacon never sends.
       tx.queue({symbols, slotUtcMs: utcNow() + TUNE_LEAD_MS, baseHz: 1500,
-                amplitude: txGain(), leadMs: TUNE_LEAD_MS});
+                amplitude: resolvedGain().gain, leadMs: TUNE_LEAD_MS});
       state.beacon = "tuning";
       // Armed on the same line as the deadline the timer counts down, so the
       // two cannot drift apart. Anywhere earlier and the awaited retune would
@@ -1539,6 +1550,272 @@
     if (tx && ["preparing", "waiting-slot", "prebuffering", "streaming"].includes(tx.state))
       tx.fail(reason);
     render();
+  }
+
+  // ---- TX gain calibration ---------------------------------------------------
+  //
+  // The carrier is a tune carrier and nothing more: 162 symbols of one tone,
+  // aborted when the search is done. What differs from TUNE is the pacing and
+  // what happens to the level while it runs.
+  //
+  //  * the ring is HALVED. What the browser writes reaches the radio a ring
+  //    depth later, so the deeper the ring the slower each step; 4000 bytes is
+  //    0.5 s of latency instead of 1 s, and still half a second of protection
+  //    against a stalled tab. An underrun here costs a retry, not a slot.
+  //  * the carrier is TWENTY seconds, not ten. A cold search brackets in 6 dB
+  //    steps and then bisects to 0.375 dB, which is eight or nine steps at about
+  //    a second each -- and a run that has to be repeated is 10 s of carrier
+  //    wasted, which is worse than 20 s spent once.
+  //  * the radio is left ALONE. No band change, no power write (applyAutoPower
+  //    stands down while armed), because the point is to measure the station as
+  //    the operator has set it up -- including a JS8 power level this page would
+  //    otherwise overwrite with its own.
+  const CAL_MAX_MS = 20000;
+  const CAL_TARGET_FILL_BYTES = 4000;      // 0.5 s of audio ahead of the radio
+  const CAL_RAMP_SAMPLES = 5760;           // 120 ms at 48 kHz
+  const CAL_SWR_LIMIT = 3.0;               // in the firmware's own (pessimistic) units
+
+  const gainStore = new TxGainCal.TxGainStore();
+  const beaconGuard = new TxAlcGuard.TxAlcGuard();
+  let cal = null;                 // a TxGainCal while a run is in flight
+  let calArmed = false;           // #autogain: suppress the automatic power write
+  let calTimer = null;
+  let calRestoreMode = "";        // mode to put back afterwards, "" if untouched
+  const calRun = {key: "", band: "", percent: 0, dbm: null, model: "",
+                  message: "", result: null, poPeak: 0, swrPeak: 0};
+
+  const calModel = () => settings.modelOverride || state.radio.radioName || "";
+
+  // The key this radio, band and power belong under. Null whenever any part of
+  // it is unknown -- a calibration filed under a guessed model or a fabricated
+  // power would be worse than none, because it would be applied silently.
+  function calKeyNow() {
+    const model = calModel();
+    const band = TxGainCal.bandOf(state.radio.frequency);
+    if (!model || !band || state.radio.rfPowerSeen !== true) return null;
+    return {key: TxGainCal.entryKey(model, band, radioPercent()),
+            model, band, percent: radioPercent()};
+  }
+
+  // The level for the transmission about to be queued. Resolved per
+  // transmission, not per page load: the schedule changes band -- and with it
+  // the power percentage -- as often as every frame, and the table is keyed by
+  // both.
+  function resolvedGain() {
+    const manual = txGain();
+    const identity = calKeyNow();
+    if (!identity) return {gain: manual, calibrated: false, key: ""};
+    const entry = gainStore.entry(identity.key);
+    if (!entry) return {gain: manual, calibrated: false, key: identity.key};
+    return {gain: Number(entry.gain), calibrated: true, key: identity.key, entry};
+  }
+
+  function beginBeaconGuard() {
+    const resolved = resolvedGain();
+    // An uncalibrated level is the operator's own manual choice. Trimming that
+    // behind their back would be the page arguing with the slider they set.
+    if (resolved.calibrated) beaconGuard.beginTx({key: resolved.key, gain: resolved.gain});
+    return resolved;
+  }
+
+  function endBeaconGuard() {
+    const outcome = beaconGuard.endTx();
+    if (!outcome || !outcome.reduced || outcome.persistGain === null) return;
+    const entry = gainStore.entry(outcome.key);
+    if (!entry) return;
+    gainStore.put(outcome.key, {...entry, gain: Number(outcome.persistGain.toFixed(4)),
+                                autoTrimmed: true, at: Date.now()})
+      .catch(() => {}).then(render);
+  }
+
+  // Unlike JS8, WSPR generates its audio a packet at a time, so a reduction can
+  // reach the air inside the frame it was decided in -- ramped, never stepped.
+  // The frame is never aborted: 6 dB down still decodes, a truncated frame is a
+  // burnt slot.
+  function onBeaconLevel(message) {
+    if (!beaconGuard.active || state.beacon !== "transmitting") return;
+    const before = beaconGuard.gain;
+    const after = beaconGuard.noteLevel({consumed: message.consumed, alc: message.alc,
+                                         alcSeq: message.alcSeq});
+    if (after !== before && tx.stream) tx.stream.setAmplitude(after, CAL_RAMP_SAMPLES);
+  }
+
+  function calBlockingReason() {
+    const radio = radioBlockingReason();
+    if (radio) return radio;
+    if (!calKeyNow()) {
+      if (!calModel()) return "the radio has not reported its model yet";
+      if (!TxGainCal.bandOf(state.radio.frequency)) return "the radio is not on an amateur band";
+      return "the radio has not reported its power setting yet";
+    }
+    return "";
+  }
+
+  async function startGainCal() {
+    const problem = calBlockingReason();
+    if (problem) { calRun.message = problem; render(); return; }
+    const identity = calKeyNow();
+    Object.assign(calRun, {...identity, message: "", result: null,
+                           dbm: radioPower().dbm, poPeak: 0, swrPeak: 0});
+    try {
+      // The only write this makes. Without USB-D the LAN audio never reaches the
+      // modulator, the search runs to the ceiling and reports "ALC never acted"
+      // -- a true statement pointing at entirely the wrong cause. Snapshot and
+      // restore, the way announceIpViaCw does it in the firmware.
+      calRestoreMode = "";
+      if (state.radio.mode !== "USB-D") {
+        calRestoreMode = state.radio.mode;
+        await ensureUsbDataMode();
+        await waitForState(radio => radio.mode === "USB-D");
+      }
+      const stored = gainStore.entry(calRun.key);
+      cal = new TxGainCal.TxGainCal();
+      cal.begin({knownKnee: stored ? Number(stored.knee) || 0 : 0});
+      tx.targetFillBytes = CAL_TARGET_FILL_BYTES;
+      const symbols = new Uint8Array(162).fill(1);
+      tx.queue({symbols, slotUtcMs: utcNow() + TUNE_LEAD_MS, baseHz: 1500,
+                amplitude: cal.gain, leadMs: TUNE_LEAD_MS, alcFast: true});
+      state.beacon = "calibrating";
+      state.tuneEndsAtMs = utcNow() + TUNE_LEAD_MS + CAL_MAX_MS;
+      calTimer = setTimeout(() => stopGainCal("the carrier ran out before the search finished"),
+                            TUNE_LEAD_MS + CAL_MAX_MS);
+    } catch (error) {
+      cal = null;
+      calRun.message = String(error.message || error);
+      state.beacon = "stopped";
+      await restoreModeAfterCal();
+    }
+    render();
+  }
+
+  // Every reading the firmware sends during the run, and the only clock the
+  // search has: the byte counts in tx-level say what the radio has actually
+  // played, which is the one thing a timer here cannot know.
+  function onCalLevel(message) {
+    if (!cal || (cal.state !== "searching" && cal.state !== "holding")) return;
+    cal.noteSent(tx.sentUlaw);
+    cal.noteLevel({consumed: message.consumed, alc: message.alc, alcSeq: message.alcSeq});
+    if (tx.stream && Math.abs(tx.stream.amplitude - cal.gain) > 1e-6)
+      tx.stream.setAmplitude(cal.gain, CAL_RAMP_SAMPLES);
+    if (cal.state === "done") finishGainCal();
+    else if (cal.state === "failed") stopGainCal(cal.error);
+  }
+
+  async function finishGainCal() {
+    const result = cal.result;
+    cal = null;
+    calRun.result = result;
+    calRun.message = "";
+    stopCalCarrier();
+    try {
+      await gainStore.put(calRun.key, {
+        knee: Number(result.knee.toFixed(4)),
+        gain: Number(result.gain.toFixed(4)),
+        po: calRun.poPeak, swrMax: Number(calRun.swrPeak.toFixed(1)),
+        model: calRun.model, band: calRun.band, percent: calRun.percent,
+        reachedCeiling: result.reachedCeiling, autoTrimmed: false, at: Date.now(),
+      });
+    } catch (error) {
+      calRun.message = String(error.message || error);
+    }
+    // The forward-power reading taken during the final hold is a better
+    // reference than TUNE's peak-hold, because the level it was measured at is
+    // known and steady rather than whatever the operator's slider happened to be.
+    if (calRun.poPeak > 0 && calRun.dbm !== null)
+      storeReference(calRun.band, calRun.dbm, calRun.poPeak);
+    await restoreModeAfterCal();
+    render();
+  }
+
+  function stopGainCal(reason = "operator stop") {
+    if (!cal && !calTimer && state.beacon !== "calibrating") return;
+    cal = null;
+    calRun.message = reason;
+    stopCalCarrier();
+    restoreModeAfterCal().then(render);
+    render();
+  }
+
+  function stopCalCarrier() {
+    if (calTimer) { clearTimeout(calTimer); calTimer = null; }
+    state.tuneEndsAtMs = 0;
+    state.beacon = "stopped";
+    tx.targetFillBytes = WsprTx.TARGET_FILL_BYTES;
+    if (tx && ["preparing", "waiting-slot", "prebuffering", "streaming"].includes(tx.state))
+      tx.fail("calibration finished");
+  }
+
+  async function restoreModeAfterCal() {
+    if (!calRestoreMode || calRestoreMode === "USB-D") { calRestoreMode = ""; return; }
+    const wanted = calRestoreMode;
+    calRestoreMode = "";
+    // Best effort on purpose: a failed restore must not turn a successful
+    // measurement into an error. The operator can see the mode on the page.
+    try { await command({type: "setMode", mode: wanted}); } catch (_error) {}
+  }
+
+  function renderGainCal() {
+    // Hidden until asked for. The panel keys the transmitter, so it does not sit
+    // on the page waiting to be clicked by someone who came here for a beacon.
+    dom.calField.hidden = !calArmed;
+
+    const identity = calKeyNow();
+    const stored = identity ? gainStore.entry(identity.key) : null;
+    // The level actually in force, said once, in the same words on both pages.
+    if (stored) {
+      const when = new Date(Number(stored.at) || 0);
+      dom.calResolved.textContent =
+        `calibrated ${stored.gain} — ${stored.band} @ ${stored.percent} %` +
+        (stored.autoTrimmed ? ", trimmed on air" : "") +
+        (Number.isFinite(when.getTime()) && stored.at ? `, ${when.toISOString().slice(0, 10)}` : "");
+      dom.calResolved.classList.remove("uncalibrated");
+    } else {
+      dom.calResolved.textContent = identity
+        ? `not calibrated for ${identity.band} @ ${identity.percent} % — using the manual ${txGain()}`
+        : "";
+      dom.calResolved.classList.add("uncalibrated");
+    }
+    if (!calArmed) return;
+
+    const running = state.beacon === "calibrating";
+    const problem = calBlockingReason();
+    dom.calTarget.textContent = identity
+      ? `Will measure ${identity.model} on ${identity.band} at ${identity.percent} %` +
+        (stored ? ` (previous knee ${stored.knee})` : " (never calibrated)")
+      : problem || "";
+    dom.calStart.textContent = running ? "STOP" : "START CALIBRATION";
+    dom.calStart.disabled = !running && Boolean(problem);
+
+    dom.calLive.hidden = !running;
+    if (running && cal) {
+      const left = Math.max(0, Math.round((state.tuneEndsAtMs - utcNow()) / 1000));
+      dom.calLive.textContent =
+        `${cal.phase || cal.state} · level ${cal.gain.toFixed(4)} · ALC ${cal.alcMax}` +
+        ` · step ${cal.steps} · Po ${calRun.poPeak}/255 · ${left} s left`;
+    }
+
+    const result = calRun.result;
+    dom.calResult.hidden = !result;
+    if (result) {
+      const correction = result.modLevelCorrectionDb;
+      // The measured answer to "what should the MOD level in the radio menu be",
+      // which is the question this whole feature was asked for. A number, not a
+      // recommendation copied from a manual.
+      const advice = Math.abs(correction) < 3
+        ? "the radio's MOD level is about right for this power"
+        : `the radio's MOD level is ${Math.abs(correction).toFixed(1)} dB too ` +
+          `${correction > 0 ? "low" : "high"} for this power ` +
+          `(aim for a knee near 0.7)`;
+      dom.calResult.textContent =
+        `knee ${result.knee.toFixed(4)}, stored ${result.gain.toFixed(4)}` +
+        (result.reachedCeiling
+          ? " — ALC never acted, even at the maximum level: check that the radio's" +
+            " MOD input is the LAN one, that its MOD level is not too low, and that" +
+            " RF power is not set higher than the audio path can drive"
+          : ` — ${advice}`);
+    }
+    dom.calMessage.hidden = !calRun.message;
+    dom.calMessage.textContent = calRun.message;
   }
 
   // Everything that must be true before this page may key the transmitter at
@@ -1740,6 +2017,8 @@
     dom.referenceCount.textContent = bandCount
       ? `${bandCount} band${bandCount === 1 ? "" : "s"} measured` : "no bands measured";
     dom.referenceClear.disabled = !bandCount;
+
+    renderGainCal();
 
     dom.txSafety.checked = txSafetyAccepted();
     if (document.activeElement !== dom.clockCorrection)
@@ -2096,6 +2375,9 @@
     dom.tuneButton.addEventListener("click", () => {
       if (state.beacon === "tuning") stopTune(); else startTune();
     });
+    dom.calStart.addEventListener("click", () => {
+      if (state.beacon === "calibrating") stopGainCal(); else startGainCal();
+    });
     dom.sessionTakeover.addEventListener("click", () => claimSession(true));
     dom.activityDays.addEventListener("change", () => {
       state.activityRange = ACTIVITY_RANGES[dom.activityDays.value] ? dom.activityDays.value : "6h";
@@ -2162,6 +2444,14 @@
     WsprLog.prune().then(refreshActivity).catch(() => refreshActivity());
 
     claimSession();
+    // #autogain only ARMS the panel. Arriving at a URL -- from SETUP, from a
+    // bookmark, from browser history -- must never put RF on the air by itself,
+    // so the carrier still waits for a click.
+    const readCalHash = () => { calArmed = location.hash === "#autogain"; };
+    readCalHash();
+    window.addEventListener("hashchange", () => { readCalHash(); render(); });
+    gainStore.load().then(render);
+
     pollState();
     setInterval(pollState, STATE_POLL_MS);
     setInterval(renderClock, 1000);
@@ -2182,6 +2472,17 @@
       // polled when the operator let go of the button.
       if (tx && tx.ptt && state.beacon === "tuning")
         state.tunePeakRaw = Math.max(state.tunePeakRaw, state.radio.powerMeterRaw);
+      // The same, for the calibration carrier -- plus the SWR watch. This is the
+      // one thing on the page that deliberately drives the level UP, so it is
+      // also the one place that must not keep doing so into a mismatched
+      // antenna. The figure is the firmware's own approximation, which
+      // overstates SWR, so the limit trips early rather than late.
+      if (tx && tx.ptt && state.beacon === "calibrating") {
+        calRun.poPeak = Math.max(calRun.poPeak, state.radio.powerMeterRaw);
+        calRun.swrPeak = Math.max(calRun.swrPeak, state.radio.swr);
+        if (state.radio.swr >= CAL_SWR_LIMIT)
+          stopGainCal(`SWR reached ${state.radio.swr.toFixed(1)} — check the antenna`);
+      }
       render();
     }, 500);
 
@@ -2196,6 +2497,14 @@
                            return {appliedPercent, knobTouched, armed: autoPowerArmed};
                          },
                          referenceFor, storeReference, txGain,
+                         // For tools/wspr-browser-smoke.js: the calibration is
+                         // driven entirely by tx-level frames, so the harness
+                         // needs to see where the search got to.
+                         startGainCal, stopGainCal, calBlockingReason, calKeyNow,
+                         gainStore, resolvedGain, beaconGuard,
+                         get cal() { return cal; },
+                         get calArmed() { return calArmed; },
+                         get calRun() { return calRun; },
                          scheduleView, addChange, saveSettings,
                          get editingSlot() { return editingSlot; },
                          get tx() { return tx; },

@@ -373,6 +373,28 @@
           </div>
         </details>
 
+        <!-- Measured ALC knees. This page only SHOWS them and links to where they
+             are measured: calibration keys the transmitter, and the audio path,
+             the TX pledge and the single-operator lock all live on the WSPR page
+             already. Hidden entirely unless some slot carries ICOM-LAN, because
+             without it there is no audio path to calibrate. -->
+        <details class="setup-section" id="txGainSection" hidden>
+          <summary class="setup-section-title">TX audio gain <span class="setup-local-badge">littlefs</span></summary>
+          <div class="setup-section-body">
+            <p class="setup-hint">The highest audio level the radio accepts without its
+               ALC acting, measured per radio, band and power setting. Both DATA modes
+               read it: JS8Call-ICOM and the WSPR beacon.</p>
+            <div id="txGainTable" class="txgain-body"><span class="txgain-empty">…</span></div>
+            <p class="txgain-actions">
+              <a class="txgain-link" href="/wspr.html#autogain" target="_blank" rel="noopener">CALIBRATE ON THE WSPR PAGE &#8599;</a>
+              <button type="button" id="txGainForget" class="txgain-forget">Forget all</button>
+            </p>
+            <p class="footnote">Set the band and the power you want to measure <em>first</em> —
+               a calibration describes the radio as it stands, and it is filed under that
+               band and that power.</p>
+          </div>
+        </details>
+
         <details class="setup-section" id="unattendedSection">
           <summary class="setup-section-title">Remote management of JS8 unattended operation <span class="setup-local-badge">live</span></summary>
           <div class="setup-section-body">
@@ -771,6 +793,108 @@
         if (section.open) start(); else stop();
       });
       if (section.open) start();
+    }());
+  </script>
+
+  <script>
+    // The station's TX gain calibrations. Read-only here: the table is written by
+    // the page that measures it, and this one only has to be honest about what is
+    // on file and how old it is.
+    (function () {
+      var section = document.getElementById('txGainSection');
+      var body = document.getElementById('txGainTable');
+      var forget = document.getElementById('txGainForget');
+      if (!section || !body) return;
+
+      function esc(t) {
+        return String(t).replace(/[&<>"]/g, function (c) {
+          return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+        });
+      }
+      // Whether any slot is on ICOM-LAN. Read from this page's own form rather
+      // than from /setup-data.json: SETUP owns the setting, and asking the
+      // firmware what it just told SETUP would only add a way for the two to
+      // disagree.
+      function lanConfigured() {
+        for (var slot = 1; slot <= 3; slot++) {
+          var select = document.querySelector('[name="trx' + slot + 'transport"]');
+          if (select && String(select.value).toLowerCase() === 'lan') return true;
+        }
+        return false;
+      }
+      // The whole point of measuring: turn the knee into an instruction about the
+      // radio's own MOD level, instead of a recommended number that cannot know
+      // this radio, this band or this power.
+      function advice(knee) {
+        if (!(knee > 0)) return '';
+        var db = 20 * Math.log(knee / 0.7) / Math.LN10;
+        if (Math.abs(db) < 3) return 'MOD level about right';
+        return 'MOD level ' + Math.abs(db).toFixed(1) + ' dB too ' + (db > 0 ? 'low' : 'high');
+      }
+      function when(at) {
+        var ms = Number(at) || 0;
+        return ms ? new Date(ms).toISOString().slice(0, 10) : '';
+      }
+      function render(doc) {
+        var entries = (doc && doc.entries) || {};
+        var keys = Object.keys(entries).sort();
+        if (!keys.length) {
+          body.innerHTML = '<span class="txgain-empty">Nothing measured yet</span>';
+          forget.disabled = true;
+          return;
+        }
+        forget.disabled = false;
+        body.innerHTML = keys.map(function (key) {
+          var e = entries[key] || {};
+          return '<div class="txgain-row">' +
+            '<span class="txgain-what">' + esc(e.model || '?') + ' · ' + esc(e.band || '?') +
+              ' · ' + esc(String(e.percent == null ? '?' : e.percent)) + ' %</span>' +
+            '<span class="txgain-level">' + esc(String(e.gain)) +
+              (e.autoTrimmed ? ' <span class="txgain-trim">trimmed</span>' : '') + '</span>' +
+            '<span class="txgain-advice">' + esc(advice(Number(e.knee))) + '</span>' +
+            '<span class="txgain-when">' + esc(when(e.at)) + '</span>' +
+            '<button type="button" class="txgain-drop" data-key="' + esc(key) + '" title="Forget this one">&times;</button>' +
+            '</div>';
+        }).join('');
+      }
+      function load() {
+        return fetch('/txgain.json', { cache: 'no-store' })
+          .then(function (r) { return r.json(); })
+          .then(function (doc) { render(doc); return doc; })
+          .catch(function () {
+            body.innerHTML = '<span class="txgain-empty">Calibration table unavailable</span>';
+            return null;
+          });
+      }
+      function save(doc) {
+        return fetch('/txgain.json', { method: 'POST',
+          headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(doc) })
+          .then(load);
+      }
+      // Read-modify-write, because the file is replaced whole: a browser that
+      // calibrated another band in the meantime must not be erased by a stale
+      // copy held open in this tab.
+      body.addEventListener('click', function (event) {
+        var button = event.target.closest('[data-key]');
+        if (!button) return;
+        var key = button.getAttribute('data-key');
+        load().then(function (doc) {
+          if (!doc || !doc.entries) return;
+          delete doc.entries[key];
+          save(doc);
+        });
+      });
+      forget.addEventListener('click', function () { save({ v: 1, entries: {} }); });
+
+      function refresh() {
+        section.hidden = !lanConfigured();
+        if (!section.hidden && section.open) load();
+      }
+      section.addEventListener('toggle', function () { if (section.open) load(); });
+      document.addEventListener('change', function (event) {
+        if (event.target && /^trx[123]transport$/.test(event.target.name || '')) refresh();
+      });
+      refresh();
     }());
   </script>
 
