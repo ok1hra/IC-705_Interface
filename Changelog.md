@@ -11,6 +11,33 @@ published.
 
 ## Working tree — not committed
 
+* **Recent traffic now shows where in the waterfall each row's signal sat.** A dark grey bar
+  under every row, on the *same axis* as the waterfall above it: 500 Hz at the left edge,
+  2700 Hz at the right, as wide as that submode's modulation actually is (25–250 Hz). Read
+  downwards it answers "whose is that signal", read upwards "where in the band is this
+  station", and read across the list it shows at a glance who is parked next to whom. The
+  alignment is not approximate — the bar is absolutely positioned, so its containing block is
+  the row's *padding* box, which is exactly the width the canvas is stretched to; 1500 Hz
+  therefore lands on the same screen column in both, and it stays that way if the row padding
+  is ever changed. It costs no height either, living in the 7 px bottom padding that was
+  always empty, sitting on the row separator which serves as its axis. The bar starts at the
+  reported offset and grows right because the offset *is* the lowest tone, the same
+  convention the modulator uses and the decoder reports back. Own transmissions get one too,
+  drawn from the tone the encoder was actually configured with rather than from the current
+  setting — a heartbeat picks its own tone inside 500–1000 Hz, and so do the email gateway
+  and a file transfer, so reading `txOffsetHz` at render time would have drawn all of them
+  wherever the operator last typed. Colour stays inside the feed's existing vocabulary: grey
+  for a received signal, red for an own transmission that went on air, faint grey for one
+  that did not. A row whose offset was never recorded draws nothing rather than invent a
+  position. The hover tooltip (range, width, age, SNR) is written on hover instead of baked
+  into the feed, because `renderActivity()` only runs when the decoder reports activity and a
+  pre-rendered "4 min" would sit frozen on a dead band. Design and the rejected alternatives
+  are in `docs/js8-signal-stripe-plan.md`. `tools/data-browser-smoke.js` grows five checks;
+  the three that matter measure the bar's box and the canvas's box *on screen* and require
+  them to agree within 1 px, at full width and at the 320 px minimum — a percentage computed
+  against the wrong reference would look correct in the DOM and point tens of pixels away
+  from the signal. 198 checks, and the only red ones are the five that were already red.
+
 * **A received message now remembers its own SNR, and the protocol knows how wide a signal
   is.** Two additions to `js8-protocol.js` that the Recent-traffic signal stripe needs
   (`docs/js8-signal-stripe-plan.md`), landed on their own because they change the store rather

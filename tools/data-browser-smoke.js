@@ -1114,6 +1114,72 @@ f.onload=()=>{
                     // and it must sit where the frames were lost, not at the end
                     gapNode.previousSibling.textContent.slice(-6)==='BROKEN'&&
                     torsoRow.querySelector('.message-text').textContent.indexOf('OFF HERE')>=0;
+                  // The signal stripe is only worth drawing if its axis IS the waterfall's
+                  // axis, so this measures both boxes on screen instead of trusting the
+                  // percentage string. A stripe positioned against the wrong reference --
+                  // the row's content box instead of its padding box, say -- would still
+                  // carry a "correct" left:45.45% and pass any DOM-level check while
+                  // pointing tens of pixels away from the signal it belongs to.
+                  const sn=Date.now();
+                  f.contentWindow.__dataTest.setActivity({frames:[],timing:[],calls:[],channels:[],
+                    messages:[
+                      {id:'stripeA',text:'K0OG: OK1HRA NARROW',callsigns:['K0OG','OK1HRA'],
+                       kinds:['directed','data'],submode:0,offsetHz:1500,snr:-11,
+                       firstSlotUtcMs:sn-4000,lastSlotUtcMs:sn-4000,gaps:[],complete:true},
+                      {id:'stripeI',text:'DL1ABC: OK1HRA WIDE',callsigns:['DL1ABC','OK1HRA'],
+                       kinds:['directed','data'],submode:8,offsetHz:600,snr:3,
+                       firstSlotUtcMs:sn-3000,lastSlotUtcMs:sn-3000,gaps:[],complete:true}]});
+                  const canvas=d.querySelector('#waterfallCanvas');
+                  // Deliberately the DISPLAYED box, not the drawing buffer: Waterfall clamps
+                  // canvas.width to minWidth 320, so on a narrow window the buffer is wider
+                  // than what is on screen. Both are linear maps of the same 500..2700 Hz, so
+                  // the displayed box is the one the operator's eye actually uses.
+                  const stripeError=(hz,widthHz)=>{
+                    const node=[...d.querySelectorAll('#traffic .signal-stripe')]
+                      .find(item=>Number(item.dataset.stripeOffset)===hz);
+                    if(!node)return null;
+                    const box=canvas.getBoundingClientRect(),rect=node.getBoundingClientRect();
+                    return {left:Math.abs(rect.left-(box.left+(hz-500)/2200*box.width)),
+                            width:Math.abs(rect.width-widthHz/2200*box.width)};
+                  };
+                  // Two submodes an order of magnitude apart in width, and two offsets: a
+                  // single sample would pass on a wrong slope through the right point.
+                  const wideA=stripeError(1500,50),wideI=stripeError(600,250);
+                  checks.stripeAlignedToWaterfall=Boolean(wideA&&wideI)&&
+                    wideA.left<=1&&wideI.left<=1;
+                  checks.stripeWidthIsBandwidth=Boolean(wideA&&wideI)&&
+                    wideA.width<=1&&wideI.width<=1;
+                  // The same identity at the narrowest window the page supports, where the
+                  // .data-page padding media query fires and the canvas buffer stops matching
+                  // its displayed width. Percentages re-lay out synchronously, and only the
+                  // displayed boxes are read, so no wait is needed; the drawing buffer may
+                  // still be catching up and that is fine.
+                  const frameWidth=f.style.width;
+                  f.style.width='320px';
+                  void d.body.offsetWidth;
+                  const narrowA=stripeError(1500,50),narrowI=stripeError(600,250);
+                  checks.stripeAlignedWhenNarrow=Boolean(narrowA&&narrowI)&&
+                    narrowA.left<=1&&narrowI.left<=1&&narrowA.width<=1&&narrowI.width<=1;
+                  f.style.width=frameWidth;
+                  void d.body.offsetWidth;
+                  // A row whose offset was never recorded -- own TX restored from a session
+                  // written before the encoder's tone was logged -- must draw nothing rather
+                  // than invent a position. And an own transmission that did go on air wears
+                  // the feed's TX colour, not the received-signal grey.
+                  f.contentWindow.__dataTest.setActivity({frames:[],timing:[],calls:[],channels:[],messages:[]});
+                  f.contentWindow.__dataTest.setOutgoingLog([
+                    {id:901,direction:'outgoing',to:'K0OG',text:'ON AIR',status:'completed',
+                     utcMs:sn-2000,offsetHz:1200,submode:0,frequencyHz:0,restored:true},
+                    {id:902,direction:'outgoing',to:'K0OG',text:'NO OFFSET',status:'completed',
+                     utcMs:sn-1000,frequencyHz:0,restored:true}]);
+                  const txRows=[...d.querySelectorAll('#traffic .message-tx')];
+                  const withOffset=txRows.find(row=>row.textContent.indexOf('ON AIR')>=0);
+                  const withoutOffset=txRows.find(row=>row.textContent.indexOf('NO OFFSET')>=0);
+                  checks.stripeAbsentWithoutOffset=Boolean(withoutOffset)&&
+                    !withoutOffset.querySelector('.signal-stripe');
+                  checks.stripeCarriesTxColour=Boolean(withOffset)&&
+                    withOffset.querySelector('.signal-stripe')?.classList.contains('stripe-tx-on-air')===true&&
+                    getComputedStyle(withOffset.querySelector('.signal-stripe')).backgroundColor==='rgb(255, 107, 107)';
                   // CLEAR cannot reach the store inside the worker, so without the watermark
                   // the live row pops straight back and CLEAR reads as a broken button.
                   d.querySelector('[data-traffic-clear]').click();

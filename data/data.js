@@ -842,9 +842,9 @@ function drawTxMarker(overlayCtx, view) {
   overlayCtx.strokeStyle="rgba(185,195,191,.52)"; overlayCtx.lineWidth=1; overlayCtx.setLineDash([3,3]);
   overlayCtx.beginPath(); overlayCtx.moveTo(Math.round(heartbeatRight)+.5,0); overlayCtx.lineTo(Math.round(heartbeatRight)+.5,dom.overlay.height); overlayCtx.stroke();
   overlayCtx.setLineDash([]); overlayCtx.fillStyle="rgba(210,220,216,.68)"; overlayCtx.font="bold 9px monospace"; overlayCtx.fillText("HB 500–1000",5,12);
-  const mode=selectedMode(), widths={0:50,1:80,2:160,4:25,8:250};
+  const mode=selectedMode();
   const start=hzToX(currentJs8().txOffsetHz);
-  const width=(widths[mode] || 50)/(RX_HIGH-RX_LOW)*dom.overlay.width;
+  const width=Js8Protocol.bandwidthHz(mode)/(RX_HIGH-RX_LOW)*dom.overlay.width;
   overlayCtx.fillStyle="rgba(255,0,36,.28)"; overlayCtx.fillRect(start,0,Math.max(3,width),dom.overlay.height);
   overlayCtx.strokeStyle="#ff1838"; overlayCtx.lineWidth=2; overlayCtx.beginPath(); overlayCtx.moveTo(start+1,0); overlayCtx.lineTo(start+1,dom.overlay.height); overlayCtx.stroke();
   const label=`TX ${currentJs8().txOffsetHz} Hz`, labelX=Math.min(start+5,dom.overlay.width-96);
@@ -1825,6 +1825,11 @@ function outgoingTrafficItems(){
     outgoing:true, status:item.status, emitted:["completed","unconfirmed"].includes(item.status),
     to:item.to||"", text:item.text, lastSlotUtcMs:Number(item.utcMs)||0,
     restored:Boolean(item.restored), item,
+    // Where this transmission actually sat in the audio passband, recorded by the
+    // encoder rather than read from the current setting: a heartbeat picks its own
+    // tone, and so do the email gateway and file transfer. Items logged before this
+    // existed carry neither, and simply get no stripe.
+    offsetHz:Number(item.offsetHz), submode:Number(item.submode),
     callsigns:[own,item.to].filter(Boolean)}));
 }
 
@@ -1854,6 +1859,38 @@ function receptionState(message){
   if(message.checksumOk===false)return "bad crc";
   if((message.gaps||[]).length)return "gap";
   return "";
+}
+
+// Where this row's signal sat in the audio passband, drawn on the same axis as the
+// waterfall above: 500 Hz is the left edge of the row, 2700 Hz the right one, exactly as
+// Spectrum.hzToX maps them onto the canvas. That only holds because the block is absolutely
+// positioned -- its containing block is the row's PADDING box, which is the section's inner
+// width, the same width the canvas is stretched to. A grid item would need the row's 10px
+// padding negated by hand, and would silently drift the day that padding changes.
+//
+// The block starts at the reported offset and grows right, because the offset IS the lowest
+// tone (js8_core.cpp: frequency = base + tone * spacing) and a signal occupies
+// offset..offset+bandwidth. Same convention as drawTxMarker, same as the decoder reports.
+//
+// Not drawn at all when the offset is unknown -- a row restored from a session written
+// before own-TX offsets were recorded. An invented position would be worse than none.
+function renderSignalStripe(message){
+  const offsetHz=Number(message.offsetHz);
+  if(!Number.isFinite(offsetHz)||!offsetHz)return "";
+  const submode=Number(message.submode);
+  const widthHz=Js8Protocol.bandwidthHz(submode);
+  const span=RX_HIGH-RX_LOW;
+  const left=Math.max(0,Math.min(100,(offsetHz-RX_LOW)/span*100));
+  // Clamped so a signal near the top of the passband cannot paint past the row edge and
+  // claim bandwidth outside the decoder's range.
+  const width=Math.max(0,Math.min(100-left,widthHz/span*100));
+  const kind=message.outgoing?(message.emitted?"tx-on-air":"tx-off-air"):"rx";
+  // The tooltip is filled in on hover (see the mouseover handler): age has to be computed
+  // when it is read, not when the feed happens to be redrawn.
+  return `<span class="signal-stripe stripe-${kind}" data-stripe-offset="${Math.round(offsetHz)}"`
+    +` data-stripe-width="${widthHz}" data-stripe-slot="${Number(message.lastSlotUtcMs)||0}"`
+    +(Number.isFinite(Number(message.snr))?` data-stripe-snr="${Math.round(Number(message.snr))}"`:"")
+    +` style="left:${left.toFixed(3)}%;width:${width.toFixed(3)}%"></span>`;
 }
 
 // Holes are drawn from the slot gaps the store recorded alongside the text, never from
@@ -1952,7 +1989,7 @@ function renderActivity() {
       const retryUntil=Number(item&&item.retryUntilMs)||0;
       const resend=txResendable(item)
         ? `<button type="button" class="tx-resend" data-resend-id="${esc(String(item.id))}" title="${esc(resendTitle(item))}">↻ RESEND</button>` : "";
-      return divider+`<article class="message message-tx ${cls}" data-tx-status="${esc(message.status)}" data-tx-attempts="${attempts}"><span class="message-meta"><span>${when}</span><span>TX</span><span>${esc(message.status)}${attempts>1?` ×${attempts}`:""}</span><span class="tx-retry" data-retry-until="${retryUntil}"></span></span><strong>${target}</strong><span class="message-text">${item?renderOutgoingText(item):esc(message.text)}</span>${resend}</article>`;
+      return divider+`<article class="message message-tx ${cls}" data-tx-status="${esc(message.status)}" data-tx-attempts="${attempts}"><span class="message-meta"><span>${when}</span><span>TX</span><span>${esc(message.status)}${attempts>1?` ×${attempts}`:""}</span><span class="tx-retry" data-retry-until="${retryUntil}"></span></span><strong>${target}</strong><span class="message-text">${item?renderOutgoingText(item):esc(message.text)}</span>${resend}${renderSignalStripe(message)}</article>`;
     }
     const sender=senderOf(message);
     const call=sender.call;
@@ -1969,7 +2006,7 @@ function renderActivity() {
     const classes=`message${operational?" operational":""}${aprsReply?" aprs-reply":""}`
       +(message.partial&&message.live?" message-receiving":"")
       +(status==="incomplete"?" message-incomplete":"")+(status==="bad crc"?" message-badcrc":"");
-    return divider+`<article class="${classes}"${status?` data-rx-state="${esc(status)}"`:""}><span class="message-meta"><span>${when}</span><span>${MODE_TO_SPEED[message.submode]||"?"}</span><span>${Math.round(message.offsetHz)} Hz</span>${status?`<span class="rx-state">${esc(status)}</span>`:""}</span><strong${sender.clickable?` data-call="${esc(call)}"`:""}${ownCall?' class="own-callsign" data-own-call="true"':""}>${esc(call || "JS8")}</strong><span class="message-text">${aprsReply}${renderReceivedText(message,currentJs8().myCall)}${ended?'<span class="rx-eot" title="End of message confirmed">♢</span>':""}</span></article>`;
+    return divider+`<article class="${classes}"${status?` data-rx-state="${esc(status)}"`:""}><span class="message-meta"><span>${when}</span><span>${MODE_TO_SPEED[message.submode]||"?"}</span><span>${Math.round(message.offsetHz)} Hz</span>${status?`<span class="rx-state">${esc(status)}</span>`:""}</span><strong${sender.clickable?` data-call="${esc(call)}"`:""}${ownCall?' class="own-callsign" data-own-call="true"':""}>${esc(call || "JS8")}</strong><span class="message-text">${aprsReply}${renderReceivedText(message,currentJs8().myCall)}${ended?'<span class="rx-eot" title="End of message confirmed">♢</span>':""}</span>${renderSignalStripe(message)}</article>`;
   }).join("") : '<div class="empty-row">Waiting for JS8 activity…</div>';
   renderRetryCountdowns();   // the 1 s tick owns it afterwards; this fills the first second
   dom.stationRows.innerHTML=sortedStations(calls).map(item=>{
@@ -4033,6 +4070,13 @@ function updateOutgoingTxProgress(txState) {
   // txState does not survive a reload.
   item.frameCount=Number(txState.frameCount)||0;
   item.framesSent=Math.max(Number(item.framesSent)||0,Number(txState.frameIndex)||0);
+  // The tone the encoder was actually configured with, captured here rather than read
+  // from settings when the feed is drawn. Six call sites set it and they disagree on
+  // purpose: a heartbeat picks its own tone inside the 500-1000 Hz sub-band, the email
+  // gateway uses the gateway's, a file transfer its own. Reading txOffsetHz at render
+  // time would draw every one of them at whatever the operator last typed.
+  if(Number.isFinite(txState.toneHz))item.offsetHz=Number(txState.toneHz);
+  if(Number.isFinite(txState.mode))item.submode=Number(txState.mode);
   // Before the render key, because the verdict may rewrite the status to "unconfirmed".
   if(["aborted","fault"].includes(txState.status))noteTxOutcome(item,txState.status,txState.error);
   const renderKey=`${item.status}|${item.sentChars}|${Math.round(item.activeFraction*20)}`;
@@ -4432,6 +4476,25 @@ function bind() {
   // passed through the composer once, and the queue is what keeps the click from
   // colliding with a frame that is still on air.
   dom.traffic.addEventListener("click",event=>{const button=event.target.closest("[data-resend-id]");if(!button)return;event.stopPropagation();resendOutgoing(button.dataset.resendId);});
+  // The signal stripe's tooltip is written on hover rather than baked into the feed:
+  // renderActivity() only runs when the decoder reports new activity, so on a dead band a
+  // pre-rendered "4 min" would sit there for half an hour. A one-second tick rewriting a
+  // hundred titles was the alternative, on the page whose encoder must not be kept waiting.
+  // Hover is the only moment the text is read, so it is the only moment worth computing.
+  dom.traffic.addEventListener("mouseover",event=>{
+    const stripe=event.target.closest(".signal-stripe");
+    if(!stripe)return;
+    const offsetHz=Number(stripe.dataset.stripeOffset)||0;
+    const widthHz=Number(stripe.dataset.stripeWidth)||0;
+    const slotUtcMs=Number(stripe.dataset.stripeSlot)||0;
+    const snr=stripe.dataset.stripeSnr;
+    const parts=[`${offsetHz}–${offsetHz+widthHz} Hz`,`${widthHz} Hz wide`];
+    if(slotUtcMs)parts.push(`${age(slotUtcMs)} ago`);
+    // Own transmissions never carry an SNR: we do not hear ourselves. The field is left
+    // out rather than shown as a dash, which would read as "measured, and it was nothing".
+    if(snr!==undefined)parts.push(`SNR ${signed(Number(snr))} dB`);
+    stripe.title=parts.join(" · ");
+  });
   dom.abort.addEventListener("click",()=>activeEncoder&&activeEncoder.abort());
   dom.logQso.addEventListener("click",()=>{ if(dom.logQso.dataset.action==="view")openJs8Log(); else handleLogQso(); });
   window.addEventListener("focus",refreshJs8Log);
@@ -4549,6 +4612,9 @@ async function init() {
       kind:item.recipe?item.recipe.kind:"",frequencyHz:Number(item.frequencyHz)||0,
       retryUntilMs:Number(item.retryUntilMs)||0,resendable:txResendable(item)}));},
     resendRow(id){return resendOutgoing(id);},
+    // Own-TX feed rows without going through the encoder, so a restored log -- including
+    // one written before the transmit tone was recorded -- can be put on screen and read.
+    setOutgoingLog(items){state.outgoingLog=items.map(item=>({...item}));renderActivity();},
     trafficTxRows(){return [...dom.traffic.querySelectorAll(".message-tx")].map(node=>({
       status:node.dataset.txStatus||"",attempts:Number(node.dataset.txAttempts)||1,
       emitted:node.classList.contains("tx-emitted"),

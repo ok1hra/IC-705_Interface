@@ -506,7 +506,20 @@ button { color: inherit; cursor: pointer; }
 .bin-transfer-panel > footer .danger { border-color:var(--red); color:var(--red); background:#241012; }
 .bin-transfer-panel > footer .primary { border-color:var(--cyan); color:var(--cyan); }
 .bin-transfer-panel > footer button:disabled { cursor:not-allowed; opacity:.4; }
-.message { display:grid; grid-template-columns:auto auto minmax(0,1fr); align-items:baseline; gap:8px; padding:7px 10px; border-bottom:1px solid #1d322e; }
+.message { position:relative; display:grid; grid-template-columns:auto auto minmax(0,1fr); align-items:baseline; gap:8px; padding:7px 10px; border-bottom:1px solid #1d322e; }
+/* Where this row's signal sits in the audio passband, on the same axis as the waterfall
+   above: the containing block of an absolutely positioned child is the row's PADDING box,
+   which is exactly the width the canvas is stretched to, so 1500 Hz lands on the same
+   screen column in both. It lives in the 7px bottom padding, which is always empty, so the
+   feed does not grow by 100 rows' worth of height -- and it sits directly on the row
+   separator, which serves as its axis. min-width is the same 3px floor drawTxMarker uses;
+   at body's 320px minimum the narrowest real signal (mode E, 25 Hz) is already 3.5px, so
+   it never fires and never over-claims a width. */
+.signal-stripe { position:absolute; bottom:0; height:3px; min-width:3px; background:#6b7d78; }
+.signal-stripe.stripe-tx-on-air { background:var(--red); }
+/* Grey means "did not go on air" in this feed, so an unsent transmission's stripe must be
+   visibly fainter than a received signal's, not the same shade. */
+.signal-stripe.stripe-tx-off-air { background:#6b7d78; opacity:.45; }
 .restore-divider { margin:2px 0; padding:4px 10px; border-top:1px dashed var(--line); border-bottom:1px dashed var(--line); background:rgba(255,191,105,0.06); color:var(--amber); font-size:10px; letter-spacing:0.05em; text-transform:uppercase; text-align:center; }
 .chat-resend { margin-left:8px; padding:1px 7px; border:1px solid var(--amber); border-radius:10px; background:transparent; color:var(--amber); font-size:9px; cursor:pointer; }
 .chat-resend:hover { background:rgba(255,191,105,0.12); }
