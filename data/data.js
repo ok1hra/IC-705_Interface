@@ -6,7 +6,20 @@
 const PAGE_PARAMS = new URLSearchParams(location.search);
 const TEST_MODE = PAGE_PARAMS.has("test");
 const ASSET_REV = "20260719d";
-const assetUrl = path => `${path}?v=${ASSET_REV}`;
+// Two of the files the worker importScripts() are also loaded by this page with
+// its own <script> tag, and each carried an independent version: the tag in
+// data.html and ASSET_REV here. Nothing forced them to agree, and js8-protocol.js
+// had already drifted (20260801a in the tag, 20260719d here) -- with
+// Cache-Control: max-age=3600 on static assets that lets the page run for an hour
+// on a newer protocol than its own worker, which is where the ActivityStore
+// actually lives. The page's tag is therefore the single truth wherever the
+// document loads the file at all; ASSET_REV still serves the worker-only assets
+// (the wasm blobs, the worker runtime, the JSC dictionary), which have one URL
+// and cannot drift.
+const PAGE_ASSETS = new Map([...document.querySelectorAll("script[src]")]
+  .map(node => node.getAttribute("src"))
+  .map(src => [src.split("?")[0], src]));
+const assetUrl = path => PAGE_ASSETS.get(path) || `${path}?v=${ASSET_REV}`;
 const TRX_HELP_SEEN_KEY = "wifilt.data.trx-help-seen.v1";
 // This page drives the LAN radio, which the operator may have put on any of the
 // three TRX slots, so it asks the firmware for that radio by name rather than

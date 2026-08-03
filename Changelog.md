@@ -11,6 +11,23 @@ published.
 
 ## Working tree — not committed
 
+* **The page and its worker can no longer run two different versions of the same file.** Two of
+  the files the DATA worker `importScripts()` are also loaded by the page with its own `<script>`
+  tag, and each carried an independent version tag: the one written in `data.html` and the shared
+  `ASSET_REV` in `data.js`. Nothing forced them to agree, and for `js8-protocol.js` they had
+  already drifted apart — the page asked for `?v=20260801a`, the worker for `?v=20260719d`. With
+  `Cache-Control: public, max-age=3600` on static assets that is not cosmetic: after a firmware
+  update the page could spend an hour running a newer protocol module than its own worker, which
+  is where `ActivityStore` actually lives, so a store-level change would appear to have no effect
+  at all. `assetUrl()` now takes the page's own `<script>` tag as the single truth wherever the
+  document loads the file, and falls back to `ASSET_REV` for the worker-only assets (the wasm
+  blobs, the worker runtime, the JSC dictionary) which have one URL and cannot drift. Bumping
+  `ASSET_REV` would have fixed the symptom at the price of re-downloading the decoder (895 kB) and
+  the JSC dictionary (1.9 MB) onto every client, and would have left the mechanism able to drift
+  again on the next edit. Found while planning the Recent-traffic signal stripe
+  (`docs/js8-signal-stripe-plan.md`), which needs a new field to reach the store in the worker.
+  `tools/data-browser-smoke.js`: 193 checks, unchanged against the baseline.
+
 * **The setup help now explains *your* radio, and it can be switched by hand.** This is the part
   of the rename that the operator actually sees: until now the help dialog was one hand-written
   IC-705 procedure, so an IC-7610 owner was told to open `MENU → SET → WLAN Set` — a menu that
