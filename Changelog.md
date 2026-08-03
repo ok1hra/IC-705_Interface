@@ -11,6 +11,26 @@ published.
 
 ## Working tree — not committed
 
+* **A received message now remembers its own SNR, and the protocol knows how wide a signal
+  is.** Two additions to `js8-protocol.js` that the Recent-traffic signal stripe needs
+  (`docs/js8-signal-stripe-plan.md`), landed on their own because they change the store rather
+  than the page. SNR was carried by the *frame* and thrown away at reassembly: the finished
+  message never had one, and the only surviving copy was the *station's* latest value in
+  `calls`. Reading that at render time would stamp a two-hour-old row with the number from the
+  last heartbeat, so the channel now keeps `snr` and the spread in `finalizeChannel()` carries
+  it into the message, the snapshot and the live partials — no schema bump, since restore
+  copies items wholesale. It is the **last** frame's SNR on purpose, not a mean: every other
+  number on that row (timestamp, age) is the last slot too, and a mean would be the single
+  field pointing somewhere else. `MODE_BANDWIDTH_HZ`/`bandwidthHz()` publish the occupied
+  audio width per submode — 50/80/160/25/250 Hz — which until now existed only as a literal
+  buried inside `drawTxMarker()`, where nothing could reuse it and nothing checked it.
+  `reassembly_smoke.js` gains two checks: a rising-SNR reception must report the last frame's
+  value (a channel that captured SNR at construction would report the conditions it opened
+  in), and each published width must equal 8 × 12000/`samplesPerSymbol12k` from `kSubmodes` in
+  `js8_core.cpp` — checked against the C++ arithmetic rather than against a second copy of the
+  same table. Mirrored to `protocol/protocol_runtime.js`; `check-runtime-sync.sh` green.
+  `tools/data-browser-smoke.js`: 193 checks, unchanged against the baseline.
+
 * **The page and its worker can no longer run two different versions of the same file.** Two of
   the files the DATA worker `importScripts()` are also loaded by the page with its own `<script>`
   tag, and each carried an independent version tag: the one written in `data.html` and the shared

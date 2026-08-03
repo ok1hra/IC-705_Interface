@@ -627,8 +627,17 @@
   // unrelated messages and cannot be joined again by hand. Three consecutive missed
   // slots also mean the path is gone anyway.
   const REASSEMBLY_TIMEOUT_PERIODS = 4;
+  // Occupied audio width per submode: eight tones spaced 12000/samplesPerSymbol12k
+  // apart, i.e. SubmodeSpec::bandwidthHz() in js8_core.cpp evaluated for the five
+  // submodes (1920 -> 50, 1200 -> 80, 600 -> 160, 3840 -> 25, 384 -> 250). The
+  // reported offset is the LOWEST tone, so a signal occupies offset .. offset+width
+  // -- the same convention the modulator uses and the decoder reports back.
+  const MODE_BANDWIDTH_HZ = {0: 50, 1: 80, 2: 160, 4: 25, 8: 250};
   function slotPeriodMs(submode) {
     return (MODE_PERIOD_SECONDS[Number(submode)] || 15) * 1000;
+  }
+  function bandwidthHz(submode) {
+    return MODE_BANDWIDTH_HZ[Number(submode)] || 50;
   }
 
   class ActivityStore {
@@ -727,6 +736,12 @@
       channel.raw.push(frame.raw);
       channel.kinds.push(decoded.kind);
       channel.lastSlotUtcMs = frame.slotUtcMs;
+      // SNR of the LAST frame, deliberately not a mean over the reception: every other
+      // number the finished message carries (timestamp, age) is the last slot too, and a
+      // mean would be the single field pointing at a different moment than the rest. It
+      // rides into the message through the spread in finalizeChannel(), so nothing
+      // downstream has to be told about it.
+      channel.snr = frame.snr;
       channel.callsigns = [...new Set([...channel.callsigns, ...(decoded.callsigns || [])])];
       this.channels.set(channelKey, channel);
       for (const call of decoded.callsigns || []) {
@@ -762,9 +777,9 @@
     }
   }
 
-  return {ActivityStore, FRAME, JscDictionary, MODE_PERIOD_SECONDS,
+  return {ActivityStore, FRAME, JscDictionary, MODE_PERIOD_SECONDS, MODE_BANDWIDTH_HZ,
           REASSEMBLY_TIMEOUT_PERIODS, buildCqFrames, buildHeartbeatFrames, buildReplyFrames,
           checksum16, formatDirectedMessage, normalizeAssembledCommand,
-          buildTxFrames, decodeFrame, slotPeriodMs,
+          buildTxFrames, decodeFrame, slotPeriodMs, bandwidthHz,
           pack72, unpack72};
 });
