@@ -765,3 +765,4 @@ button { color: inherit; cursor: pointer; }
    either. See docs/tx-auto-gain-implementace.md. */
 .cal-resolved { display:block; font-size:11px; color:#9fd39f; }
 .cal-resolved.uncalibrated { color:var(--amber); }
+.groups-refused { color:var(--amber); }

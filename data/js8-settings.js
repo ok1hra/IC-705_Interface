@@ -23,7 +23,14 @@
   // @ALLCALL and @HB are always joined: the first is how anyone addresses
   // everybody, the second is what makes the heartbeat network work at all.
   const ALWAYS_GROUPS = ["@ALLCALL", "@HB"];
+  // @ plus up to eight characters is not an arbitrary limit: the compound frame packs
+  // eleven characters with two of them reserved as separators, so nine is everything
+  // that survives a round trip on the air.
   const GROUP_RE = /^@[A-Z0-9/]{1,8}$/;
+  // Gateways, not nets. Upstream refuses to join these too (Varicode::isGroupAllowed):
+  // they answer to a server, so a station calling itself a member would be lying.
+  const RESERVED_GROUPS = ["@APRSIS", "@JS8NET"];
+  const MAX_GROUPS = 8;
   // Minutes between repeated CQ calls; 0 means the repeat is off.
   const CQ_REPEAT_MIN = [0, 2, 5, 10, 15];
 
@@ -32,6 +39,36 @@
     const number = Number(value);
     return Number.isFinite(number) ? Math.max(low, Math.min(high, number)) : fallback;
   };
+
+  // Splits a group list the way the operator typed it and says WHY an entry was
+  // refused, instead of dropping it silently the way this field used to. `sendable`,
+  // when supplied, is the set of names this build can actually put on the air: a
+  // well-formed name outside it would otherwise be joinable but never transmittable,
+  // which is exactly the inconsistency that made this rewrite necessary.
+  function validateGroups(input, sendable = null) {
+    const raw = Array.isArray(input) ? input : String(input || "").split(/[\s,]+/);
+    const allowed = sendable
+      ? new Set([...sendable].map(group => String(group).toUpperCase())) : null;
+    const groups = [], rejected = [];
+    for (const entry of raw) {
+      const trimmed = String(entry || "").toUpperCase().trim();
+      if (!trimmed) continue;
+      const group = trimmed.startsWith("@") ? trimmed : `@${trimmed}`;
+      if (groups.includes(group)) continue;
+      if (!GROUP_RE.test(group))
+        rejected.push({value: group, reason: "not a group name: @ plus up to 8 of A-Z 0-9 /"});
+      else if (RESERVED_GROUPS.includes(group))
+        rejected.push({value: group, reason: "a gateway, not a net — it cannot be joined"});
+      else if (ALWAYS_GROUPS.includes(group))
+        rejected.push({value: group, reason: "always joined, listing it changes nothing"});
+      else if (allowed && !allowed.has(group))
+        rejected.push({value: group, reason: "a custom group costs a second frame — not supported yet"});
+      else if (groups.length >= MAX_GROUPS)
+        rejected.push({value: group, reason: `at most ${MAX_GROUPS} groups`});
+      else groups.push(group);
+    }
+    return {groups, rejected};
+  }
 
   function defaults() {
     return {schemaVersion: SCHEMA_VERSION, activeModem: "js8call",
@@ -109,13 +146,10 @@
         hb:js8.hb === true, hbAck:js8.hbAck !== false,
         hbMinutes:HB_MINUTES.includes(Number(js8.hbMinutes)) ? Number(js8.hbMinutes) : 60,
         // Custom groups only; the always-joined ones are added at use time so a
-        // stored profile can never accidentally drop them.
-        groups:Array.isArray(js8.groups)
-          ? [...new Set(js8.groups
-              .map(g => String(g || "").toUpperCase().trim())
-              .map(g => g.startsWith("@") ? g : `@${g}`)
-              .filter(g => GROUP_RE.test(g) && !ALWAYS_GROUPS.includes(g)))].slice(0, 8)
-          : [],
+        // stored profile can never accidentally drop them. Deliberately validated
+        // WITHOUT the sendable list: which names this build can transmit to changes
+        // between stages, and a stored profile must not be silently emptied by it.
+        groups:validateGroups(Array.isArray(js8.groups) ? js8.groups : []).groups,
         cqRepeatMin:CQ_REPEAT_MIN.includes(Number(js8.cqRepeatMin)) ? Number(js8.cqRepeatMin) : 0,
         // Only 1..100 is settable: the radio's step is one percent, so a
         // stored 0.5 would be written as something else entirely.
@@ -223,6 +257,7 @@
   }
 
   return {STORAGE_KEY, SCHEMA_VERSION, ARM_HOURS, HB_MINUTES, CQ_REPEAT_MIN, ALWAYS_GROUPS,
+    RESERVED_GROUPS, MAX_GROUPS, GROUP_RE, validateGroups,
     TIMETABLE_SLOTS, TIMETABLE_MIN_HZ, TIMETABLE_MAX_HZ, normalizeTimetable,
     defaults, normalize, migrate, load, save, reset, clone};
 });

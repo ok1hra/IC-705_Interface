@@ -348,7 +348,7 @@
           <label class="safety-setting">Answer queries automatically <input id="autoReply" type="checkbox"><small>Replies to SNR?, GRID?, INFO?, STATUS?, HEARING? and AGN?. Off: the answer is placed in the message box for you to send.</small></label>
           <label>Unattended for <select id="armHours"></select><small id="autoState">disarmed</small></label>
           <label>Repeat CQ <select id="cqRepeat"></select><small id="cqState">off</small></label>
-          <label>My groups <input id="groups" maxlength="80" autocomplete="off" placeholder="@ARESGA @EMCOMM"><small>@ALLCALL and @HB are always joined.</small></label>
+          <label>My groups <input id="groups" maxlength="80" autocomplete="off" list="groupNames" placeholder="@NET @EMCOMM"><datalist id="groupNames"></datalist><small id="groupsHint">@ALLCALL and @HB are always joined.</small></label>
           <label class="safety-setting">Send heartbeats <input id="hbEnabled" type="checkbox"><small>Announces the station to the @HB network. Slow, Normal and Fast only; a random offset in 500–1000 Hz.</small></label>
           <label>Heartbeat every <select id="hbMinutes"></select><small id="hbState">off</small></label>
           <label class="safety-setting">Acknowledge heartbeats <input id="hbAck" type="checkbox"><small>Replies HEARTBEAT SNR to stations you hear, at most once per 55 minutes each.</small></label>

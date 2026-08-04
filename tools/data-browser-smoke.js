@@ -798,22 +798,43 @@ f.onload=()=>{
       // stored directly above.)
       const inboxNow=f.contentWindow.__dataTest.inboxState();
       checks.inboxLoad=inboxNow.items.some(item=>item.to==='K0OG');
-      // Groups: the always-joined pair must be present without being stored, a
-      // custom group must be answered, and one we never joined must be ignored.
+      // Groups: the always-joined pair must be present without being stored, a joined
+      // group must be answered and get a row of its own in the stations table, and one
+      // we never joined must be ignored. A custom group is refused OUT LOUD -- stage 1
+      // packs the recipient into a single frame, so it can only carry the built-in
+      // names, and accepting @ARESGA here is what used to leave a station believing it
+      // was in a group it could never transmit to.
       const groupsField=d.querySelector('#groups');
-      groupsField.value='@ARESGA';
+      groupsField.value='@NET';
       groupsField.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));
       const joined=f.contentWindow.__dataTest.myGroups();
+      const groupRow=[...d.querySelectorAll('#stationRows tr')].some(tr=>tr.dataset.call==='@NET');
       f.contentWindow.__dataTest.resetAutoReplyLock();
       const composerG=d.querySelector('#messageInput'); composerG.value='';
-      f.contentWindow.__dataTest.feedDirected({from:'OK5GRP',to:'@ARESGA',command:' SNR?'});
+      f.contentWindow.__dataTest.feedDirected({from:'OK5GRP',to:'@NET',command:' SNR?'});
       const groupAnswer=composerG.value;
       composerG.value='';
       f.contentWindow.__dataTest.resetAutoReplyLock();
       f.contentWindow.__dataTest.feedDirected({from:'OK6GRP',to:'@NOTMINE',command:' SNR?'});
       const strangerGroup=composerG.value;
+      groupsField.value='@NET @ARESGA';
+      groupsField.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));
+      const customRefused=!f.contentWindow.__dataTest.myGroups().includes('@ARESGA')&&
+        /@ARESGA refused/.test(d.querySelector('#groupsHint').textContent);
+      // A joined group is selectable; a gateway never is, whatever gets typed.
+      f.contentWindow.__dataTest.chooseCall('@NET');
+      const groupSelected=d.querySelector('#recipient').value==='@NET';
+      f.contentWindow.__dataTest.chooseCall('@APRSIS');
+      const gatewayRefused=d.querySelector('#recipient').value==='@NET';
+      const groupLogRefused=d.querySelector('#logQsoButton').disabled;
+      // clearRecipient() focuses the field, and renderControls() refuses to rewrite a
+      // focused input -- in a real browser the next click moves focus by itself, here
+      // it would leave the recipient stale for every later check.
+      f.contentWindow.__dataTest.chooseCall('');
+      d.querySelector('#recipient').blur();
       checks.groupsWiring=joined.includes('@ALLCALL')&&joined.includes('@HB')&&
-        joined.includes('@ARESGA')&&groupAnswer.startsWith('OK5GRP SNR')&&strangerGroup==='';
+        joined.includes('@NET')&&groupRow&&groupAnswer.startsWith('OK5GRP SNR')&&
+        strangerGroup===''&&customRefused&&groupSelected&&gatewayRefused&&groupLogRefused;
       groupsField.value='';
       groupsField.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));
       checks.autoReplySettings=!!d.querySelector('#infoText')&&!!d.querySelector('#statusText')&&

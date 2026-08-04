@@ -640,6 +640,49 @@
     return MODE_BANDWIDTH_HZ[Number(submode)] || 50;
   }
 
+  // FNV-1a. Any stable hash would do; what matters is that it is a pure function of the
+  // callsign, so the offset a station picks is reproducible in a test instead of being
+  // a different number on every run.
+  function callsignHash(call) {
+    let hash = 0x811c9dc5;
+    for (const character of String(call || "").toUpperCase()) {
+      hash ^= character.charCodeAt(0);
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    return hash >>> 0;
+  }
+
+  // Where to answer a query that was addressed to a group. Every member answers the same
+  // question in the same slot, so keying on our own fixed offset means two members who
+  // never moved off the default collide every single time.
+  //
+  // Occupancy is exact -- it comes from decoded frames, not from a guess -- but it
+  // describes the PAST. The other members are silent right now, so their free-slot lists
+  // look like ours, and "take the first free one" would send us all to the same place.
+  // The difference therefore has to appear in the CHOICE among free slots, and hashing
+  // our own callsign produces it without randomness.
+  //
+  // Returns null when nothing is free, which is a real state on TURBO: 250 Hz signals
+  // leave only about six slots in the whole range. The caller then keys on its own
+  // offset and says so, because silently colliding is worse than colliding out loud.
+  function pickGroupReplyOffsetHz({frames, myCall, submode, nowMs,
+                                   lowHz = 1000, highHz = 2700, periods = 4}) {
+    const width = bandwidthHz(submode);
+    const horizon = slotPeriodMs(submode) * periods;
+    const busy = [];
+    for (const frame of frames || []) {
+      const offset = Number(frame && frame.offsetHz);
+      if (!Number.isFinite(offset)) continue;
+      if (Number.isFinite(Number(nowMs)) && Number.isFinite(Number(frame.slotUtcMs))
+          && Number(nowMs) - Number(frame.slotUtcMs) > horizon) continue;
+      busy.push([offset, offset + bandwidthHz(frame.submode)]);
+    }
+    const free = [];
+    for (let hz = lowHz; hz + width <= highHz; hz += width)
+      if (!busy.some(([low, high]) => hz < high && hz + width > low)) free.push(hz);
+    return free.length ? free[callsignHash(myCall) % free.length] : null;
+  }
+
   class ActivityStore {
     constructor(dictionary = null) {
       this.dictionary = dictionary;
@@ -777,9 +820,10 @@
     }
   }
 
-  return {ActivityStore, FRAME, JscDictionary, MODE_PERIOD_SECONDS, MODE_BANDWIDTH_HZ,
+  return {ActivityStore, FRAME, JscDictionary, SPECIAL_CALLS, MODE_PERIOD_SECONDS, MODE_BANDWIDTH_HZ,
           REASSEMBLY_TIMEOUT_PERIODS, buildCqFrames, buildHeartbeatFrames, buildReplyFrames,
           checksum16, formatDirectedMessage, normalizeAssembledCommand,
+          callsignHash, pickGroupReplyOffsetHz,
           buildTxFrames, decodeFrame, slotPeriodMs, bandwidthHz,
           pack72, unpack72};
 });

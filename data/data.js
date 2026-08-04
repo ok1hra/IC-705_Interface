@@ -162,7 +162,8 @@ const dom = {
   txSafety:$("txSafety"), storageState:$("storageState"),
   txQueueState:$("txQueueState"),
   hbEnabled:$("hbEnabled"), hbMinutes:$("hbMinutes"), hbAck:$("hbAck"), hbState:$("hbState"),
-  groups:$("groups"), cqRepeat:$("cqRepeat"), cqState:$("cqState"),
+  groups:$("groups"), groupNames:$("groupNames"), groupsHint:$("groupsHint"),
+  cqRepeat:$("cqRepeat"), cqState:$("cqState"),
   infoText:$("infoText"), statusText:$("statusText"), autoReply:$("autoReply"),
   inboxRows:$("inboxRows"), inboxSummary:$("inboxSummary"), inboxQueryMsgs:$("inboxQueryMsgs"), inboxRefresh:$("inboxRefresh"),
   armHours:$("armHours"), autoState:$("autoState"),
@@ -1697,7 +1698,12 @@ function renderControls() {
   if(!dom.armHours.options.length)
     dom.armHours.innerHTML=Js8Settings.ARM_HOURS.map(h=>`<option value="${h}">${h} h</option>`).join("");
   dom.armHours.value=String(js8.armHours);
-  if(document.activeElement!==dom.groups)dom.groups.value=(js8.groups||[]).join(" ");
+  if(dom.groupNames && !dom.groupNames.options.length)
+    dom.groupNames.innerHTML=joinableGroups().map(g=>`<option value="${g}"></option>`).join("");
+  if(document.activeElement!==dom.groups){
+    dom.groups.value=(js8.groups||[]).join(" ");
+    if(!dom.groupsHint.dataset.refused)renderGroupsHint(null);
+  }
   if(!dom.cqRepeat.options.length)
     dom.cqRepeat.innerHTML=Js8Settings.CQ_REPEAT_MIN.map(m=>`<option value="${m}">${m?m+" min":"off"}</option>`).join("");
   dom.cqRepeat.value=String(js8.cqRepeatMin||0);
@@ -1750,9 +1756,17 @@ function renderControls() {
 
 function chooseCall(call) {
   if (!call) return clearRecipient();
-  if (call.startsWith("@")) return;
+  const target=String(call).toUpperCase();
+  // A group is a legitimate recipient, but only one we have joined. Answering to
+  // @NET and calling into it are the same membership, and a group we are not in has
+  // nobody there to hear us. @ALLCALL and @HB stay unselectable: a CQ addresses the
+  // first by itself and the beacon owns the second.
+  const group=target.startsWith("@");
+  if (group && !isMyGroup(target)) return;
   if (sameCall(call,currentJs8().myCall)) return rejectOwnCall();
-  state.selectedCall=call;binState.peerDraft=call;
+  state.selectedCall=group?target:call;
+  // A file transfer needs a station that can acknowledge frames; a group cannot.
+  if (!group) binState.peerDraft=call;
   state.txSessionMode="CHAT";
   const station=state.activity.calls.find(item=>item.call===call);
   if (station && currentJs8().followSpeed && currentJs8().speed!=="AUTO") currentJs8().speed=MODE_TO_SPEED[station.submode] || currentJs8().speed;
@@ -2148,7 +2162,7 @@ function renderActivity() {
     const heard=item.heardDirectly!==false;
     const heardTitle=heard?"":' title="Heard about only — never decoded here"';
     return `<tr data-call="${esc(item.call)}" class="${item.call===state.selectedCall?"selected":""}${ban?" station-restricted":""}${heard?"":" station-indirect"}"${heardTitle}><td class="call${ownCall?" own-callsign":""}${reacted?" reacted":""}"${ownCall?' data-own-call="true"':""}${reacted?' title="Reacted to your transmission"':""}>${reacted?"← ":""}${esc(item.call)}${banMark}</td><td class="station-country"${country?` title="${esc(country)}"`:""}>${esc(country||"—")}</td><td>${heard?signed(item.snr):"—"}</td><td>${heard?Math.round(item.offsetHz):"—"}</td><td>${heard?speedDetail(item.submode):"—"}</td><td class="station-direction">${directionHtml}</td><td>${age(item.lastSlotUtcMs)}</td></tr>`;
-  }).join("");
+  }).join("")+groupRowsHtml();
   openSectionsForNewOwnCall(recent,calls);
   renderStationSort();
   renderStationMap(calls,responders);
@@ -2365,12 +2379,20 @@ function messageBelongsToConversation(message) {
   // in the traffic feed, where its state is spelled out, not in a conversation.
   if(message.incomplete)return false;
   const calls=message.callsigns||[];
+  // A group thread is the mirror image of a station thread: the selection is the
+  // RECIPIENT and the senders are many, so the test moves from calls[0] to calls[1].
+  // Our own transmissions are excluded because they already arrive from the outgoing
+  // side of the thread -- a decoded copy of our own frame would show up twice.
+  if(isMyGroup(state.selectedCall))
+    return sameCall(calls[1],state.selectedCall) && !sameCall(calls[0],currentJs8().myCall);
   if(!sameCall(calls[0],state.selectedCall))return false;
   const directed=Array.isArray(message.kinds)&&message.kinds.includes("directed");
   return !directed || !calls[1] || sameCall(calls[1],currentJs8().myCall);
 }
 function conversationItems() {
-  const received=(state.activity.messages||[]).filter(messageBelongsToConversation).map(message=>({direction:"incoming",time:new Date(message.lastSlotUtcMs||0).toISOString().slice(11,19),text:message.text,status:"received"}));
+  // `from` matters only for a group thread, where every bubble may have a different
+  // sender; on a station thread it is always the selected call anyway.
+  const received=(state.activity.messages||[]).filter(messageBelongsToConversation).map(message=>({direction:"incoming",from:senderOf(message).call,time:new Date(message.lastSlotUtcMs||0).toISOString().slice(11,19),text:message.text,status:"received"}));
   return [...received,...(state.conversations[state.selectedCall]||[])].sort((a,b)=>a.time.localeCompare(b.time));
 }
 function renderOutgoingText(item) {
@@ -2402,8 +2424,12 @@ function renderConversation() {
   // A station we have only been told about carries no signal numbers of its own; saying
   // so is better than printing the zeros left behind by the missing values.
   const indirect=Boolean(station) && station.heardDirectly===false;
+  // A group has no signal of its own to report, so the line says what it is instead of
+  // leaving the "choose a callsign" prompt up while a recipient is plainly selected.
+  const group=isMyGroup(state.selectedCall);
   dom.sessionMeta.textContent=blockedCountry
     ? `blocked · ${blockedCountry} — TX refused`
+    : group ? "group broadcast · no QSO, no log"
     : indirect ? "heard about only — never decoded here"
     : station ? `${signed(station.snr)} dB · ${Math.round(station.offsetHz)} Hz · speed ${speedDetail(station.submode)}` : "Choose a callsign from traffic or stations";
   dom.sessionMeta.classList.toggle("session-blocked",Boolean(blockedCountry));
@@ -2417,7 +2443,7 @@ function renderConversation() {
     const resend=item.direction!=="outgoing" ? ""
       : txResendable(item) ? `<button type="button" class="chat-resend" data-resend-id="${esc(String(item.id))}">↻ resend</button>`
       : item.status==="interrupted" ? `<button type="button" class="chat-resend" data-resend-text="${esc(item.sourceText||item.text)}">↻ resend</button>` : "";
-    return `<div class="chat-row ${item.direction}"><article class="chat-bubble" data-message-status="${esc(item.status)}"><header><strong>${item.direction==="incoming"?esc(state.selectedCall):esc(currentJs8().myCall)}</strong><time>${esc(item.time)}</time></header><div class="chat-message">${item.direction==="outgoing"?renderOutgoingText(item):esc(item.text)}</div><footer>${esc(item.status)}${resend}</footer></article></div>`;
+    return `<div class="chat-row ${item.direction}"><article class="chat-bubble" data-message-status="${esc(item.status)}"><header><strong>${item.direction==="incoming"?esc(item.from||state.selectedCall):esc(currentJs8().myCall)}</strong><time>${esc(item.time)}</time></header><div class="chat-message">${item.direction==="outgoing"?renderOutgoingText(item):esc(item.text)}</div><footer>${esc(item.status)}${resend}</footer></article></div>`;
   }).join("") : '<div class="chat-empty">No messages in this session.</div>';
   dom.chat.scrollTop=dom.chat.scrollHeight;
 }
@@ -2544,6 +2570,9 @@ function updateLogQsoButton(station) {
   // LOG QSO: manual logging is always available once a station is selected.
   button.dataset.action="log";button.textContent="LOG QSO";
   if(!call){button.disabled=true;button.title="Select a station to log";return;}
+  // A group is a target, not a station on the other end: there is nobody to have
+  // worked, so the button says why rather than writing "@NET" into the log.
+  if(isMyGroup(call)){button.disabled=true;button.title=`${call} is a group, not a station — nothing to log`;return;}
   button.disabled=false;
   button.title=`Log ${call} to ${JS8_LOG_NAME}`;
 }
@@ -2561,6 +2590,9 @@ function pushSystemMessage(call, text) {
 // Shared by the manual button and the automatic both-SNR trigger.
 async function logQsoFor(call, {manual=false}={}) {
   if(!call || !window.LogDB)return;
+  // Last line of defence: no path may write a group into the log, whichever layer
+  // above decided to call this.
+  if(String(call).startsWith("@"))return;
   const frequencyHz=Number(state.radio.frequency)||0;
   const band=bandOf(frequencyHz);
   const key=loggedKey(call,band);
@@ -2607,6 +2639,9 @@ function maybeAutoLogQsos() {
   for(const item of state.activity.calls||[]) if(item && item.call)candidates.add(item.call);
   for(const call of candidates){
     if(!call || sameCall(call,my))continue;
+    // Groups arrive here by themselves the moment one gets a conversation thread, and
+    // an auto-logged QSO with "@NET" is not a mistake anyone would spot in the log.
+    if(String(call).startsWith("@"))continue;
     const key=loggedKey(call,band);
     if(state.loggedCalls.has(key) || state.autoLogInFlight.has(key))continue;
     if(blockedCountryForCall(call))continue;
@@ -3286,6 +3321,70 @@ function myGroups() {
   return [...Js8Settings.ALWAYS_GROUPS, ...(currentJs8().groups || [])];
 }
 
+// Groups the operator may actually select as a recipient: the joined ones, minus
+// @ALLCALL and @HB. Those two are always joined so that we ANSWER to them, which is
+// not the same as offering them as a target -- a CQ already goes to @ALLCALL by
+// itself, and @HB belongs to the beacon.
+function selectableGroups() {
+  return (currentJs8().groups || []).slice();
+}
+function isMyGroup(call) {
+  return Boolean(call) && selectableGroups().includes(String(call).toUpperCase());
+}
+
+// Offset for a reply triggered by a group-directed query. Null means the band left
+// nothing free, in which case we key on our own offset — and say so, because that is
+// the one case where members can still land on top of each other.
+function groupReplyToneHz() {
+  const js8=currentJs8();
+  const picked=Js8Protocol.pickGroupReplyOffsetHz({
+    frames:state.activity.frames, myCall:js8.myCall,
+    submode:selectedMode(), nowMs:js8Clock.now()});
+  if(picked===null)
+    console.info("[js8-groups] no free offset, answering on",js8.txOffsetHz,"Hz");
+  return picked;
+}
+
+// Joined groups sit under the stations, the way upstream lists them under the callsigns.
+// They are targets, not stations, so every column that describes a received signal stays
+// a dash: a group has never transmitted anything and never will.
+function groupRowsHtml() {
+  return selectableGroups().sort().map(group =>
+    `<tr data-call="${esc(group)}" class="station-group${group===state.selectedCall?" selected":""}">`
+    + `<td class="call">${esc(group)}</td><td class="station-country">group</td>`
+    + `<td>—</td><td>—</td><td>—</td><td class="station-direction">—</td><td>—</td></tr>`).join("");
+}
+
+// The group names this build can put on the air. Stage 1 is the built-in table only:
+// every one of those packs into the single directed frame. Anything else needs the
+// compound pair (stage 2), so it is refused where it is typed instead of being
+// accepted and then quietly undeliverable -- which is what the field did until now.
+function joinableGroups() {
+  return Js8Protocol.SPECIAL_CALLS.filter(call => call.startsWith("@")
+    && !Js8Settings.RESERVED_GROUPS.includes(call)
+    && !Js8Settings.ALWAYS_GROUPS.includes(call));
+}
+
+// Says what happened to what the operator typed. Silence used to be the answer to a
+// refused group, which is how a station could believe it was in @ARESGA while every
+// frame for that group went past it unread.
+function renderGroupsHint(result) {
+  if (!dom.groupsHint) return;
+  const joined = selectableGroups();
+  const refused = result && result.rejected.length ? result.rejected : [];
+  const parts = refused.map(item => `${item.value} refused — ${item.reason}.`);
+  parts.push(joined.length ? `Joined: ${joined.join(" ")} · one frame each.`
+                           : "No groups joined.");
+  parts.push("@ALLCALL and @HB are always joined.");
+  dom.groupsHint.textContent = parts.join(" ");
+  dom.groupsHint.classList.toggle("groups-refused", refused.length > 0);
+  // A refusal outlives the next render on purpose: renderControls() runs on every
+  // decode, so a message cleared by the next frame would be a message nobody reads.
+  // It goes away when the operator edits the field again, not before.
+  if (refused.length) dom.groupsHint.dataset.refused = "1";
+  else delete dom.groupsHint.dataset.refused;
+}
+
 // The inbox is durable and read from any device; the operator needs to see what
 // the station is holding and be able to pull mail from another station manually.
 function renderInbox() {
@@ -3543,7 +3642,11 @@ function handleDirectedFrame(decoded) {
   const outcome = autoReply.handle(
     {from: decoded.from, to: decoded.to, command: decoded.command,
      snr: station ? station.snr : 0, complete: true},
-    {nowMs: now, myCall: js8.myCall, groups: myGroups(), selectedCall: state.selectedCall,
+    // selectedCall drives the QSO-lock window, which is about the station we are
+    // working. A selected group is not a station, so it must not shorten that window
+    // for whoever happens to be asking.
+    {nowMs: now, myCall: js8.myCall, groups: myGroups(),
+     selectedCall: isMyGroup(state.selectedCall) ? "" : state.selectedCall,
      auto: js8.auto === true, grid: js8.grid, infoText: js8.infoText,
      statusText: js8.statusText, hearing: heard});
   autoReply.noteDirectedFrame(now);
@@ -3563,9 +3666,13 @@ function handleDirectedFrame(decoded) {
   // Queue rather than transmit directly: the radio may be mid-transfer. The
   // entry carries the current submode so it expires after two of its periods —
   // an SNR report that waited out a ten minute file transfer is worthless.
+  // A query addressed to a group is answered by every member in the same slot, so this
+  // one moves off our own offset. See docs/js8-skupiny-implementace.md, decisions 4-6.
+  const groupTone = isMyGroup(decoded.to) ? groupReplyToneHz() : null;
   txQueue.push({source: "autoreply", text: outcome.text,
     to: outcome.to, nowMs: now, submode: selectedMode(),
-    meta: {command: outcome.command}});
+    meta: groupTone === null ? {command: outcome.command}
+                             : {command: outcome.command, toneHz: groupTone}});
   drainTxQueue();
   renderTxQueue();
 }
@@ -3879,16 +3986,23 @@ function encodeForRecipe(recipe,item){
     driveEncoder(activeEncoder.encode("",{kind:"heartbeat",grid:js8.grid,toneHz:tone}),error=>failOutgoing(item,error));
     return;
   }
-  activeEncoder.setToneOffset(js8.txOffsetHz).configure({myCall:js8.myCall,toCall:recipe.to,mode:selectedMode(),clockCorrectionMs:js8.clockCorrectionMs});
+  // A reply to a group query carries its own offset, picked away from the other members
+  // answering the same question in the same slot; everything else keys where the operator
+  // put us. A resend replays recipe, so a second attempt stays on the announced offset.
+  const tone=Number.isFinite(recipe.toneHz)?recipe.toneHz:js8.txOffsetHz;
+  activeEncoder.setToneOffset(tone).configure({myCall:js8.myCall,toCall:recipe.to,mode:selectedMode(),clockCorrectionMs:js8.clockCorrectionMs});
   driveEncoder(activeEncoder.encode(recipe.text),error=>failOutgoing(item,error));
 }
 
 // First attempt: a new row in the feed.
 function beginOutgoing(recipe){
-  // A group call has no conversation of its own: @APRSIS traffic belongs in the
-  // recent-traffic feed, like CQ and HB, not in a chat thread that would then
-  // claim a LOG QSO button and an SNR history.
-  const conversationCall=recipe.kind==="directed"&&!String(recipe.to).startsWith("@")?recipe.to:"";
+  // A joined group now keeps a thread of its own -- its LOG QSO button is disabled
+  // explicitly, so the old objection no longer holds and the operator can see what was
+  // sent into the net. A gateway like @APRSIS is still not joinable, so its traffic
+  // stays where it was: in the recent-traffic feed, like CQ and HB.
+  const target=String(recipe.to||"");
+  const conversationCall=recipe.kind==="directed"&&(!target.startsWith("@")||isMyGroup(target))
+    ?recipe.to:"";
   const item=queueOutgoing(outgoingTextFor(recipe),conversationCall,recipe.to||"",recipe);
   item.sourceText=recipe.sourceText||recipe.text; // raw operator text, replayed verbatim by a resend
   item.txMeta=recipe.meta||null;
@@ -3929,7 +4043,10 @@ function restartOutgoing(item,{manual=false}={}){
 function startTxTo(toCall, text, txMeta = null, sourceText = text, source = "operator") {
   const cq=cqType(text);
   if(cq)return beginOutgoing({kind:"cq",cq,to:"",text,sourceText,meta:txMeta,source});
-  beginOutgoing({kind:"directed",to:toCall,text,sourceText,meta:txMeta,source});
+  // The queue entry may carry an offset of its own (a group reply does); undefined
+  // leaves encodeForRecipe on the operator's own TX offset.
+  const toneHz=txMeta&&Number.isFinite(txMeta.toneHz)?txMeta.toneHz:undefined;
+  beginOutgoing({kind:"directed",to:toCall,text,sourceText,meta:txMeta,source,toneHz});
 }
 
 function startHeartbeat(offsetHz, auto=false) {
@@ -4484,7 +4601,12 @@ function bind() {
   dom.freqTimetablePopover.addEventListener("keydown",event=>{if(event.key!=="Enter"||event.target.id!=="ttCustom")return;event.preventDefault();const hz=Math.round((Number(event.target.value)||0)*1000);if(hz>=Js8Settings.TIMETABLE_MIN_HZ&&hz<=Js8Settings.TIMETABLE_MAX_HZ){setTimetableSlot(ttRuntime.editSlot,hz,null);closeTimetablePopover();}});
   document.addEventListener("click",event=>{if(dom.freqTimetablePopover.hidden)return;if(event.target.closest(".tt-popover")||event.target.closest("[data-slot]"))return;closeTimetablePopover();});
   dom.waterfall.addEventListener("click",event=>{const rect=dom.waterfall.getBoundingClientRect();setJs8Setting("txOffsetHz",Math.round(RX_LOW+(event.clientX-rect.left)/rect.width*(RX_HIGH-RX_LOW)));activeEncoder&&activeEncoder.setToneOffset(currentJs8().txOffsetHz);});
-  dom.recipient.addEventListener("change",()=>chooseCall(dom.recipient.value.toUpperCase().replace(/[^A-Z0-9/]/g,"")));
+  // The @ used to be stripped here so that @APRSIS could never land in this field.
+  // Joined groups now belong in it, so the guard moved into chooseCall(), where it is
+  // both narrower and stronger: only a group we have joined is accepted, and a gateway
+  // like @APRSIS cannot be joined at all. Without this the field would show @NET after
+  // a click in the table and then destroy it on the first keystroke.
+  dom.recipient.addEventListener("change",()=>chooseCall(dom.recipient.value.toUpperCase().replace(/[^A-Z0-9/@]/g,"")));
   dom.recipientClear.addEventListener("click",clearRecipient);
   dom.messagePresetsButton.addEventListener("click",()=>{
     const opening=dom.messagePresetsMenu.hidden;
@@ -4569,7 +4691,14 @@ function bind() {
   dom.infoText.addEventListener("change",()=>setJs8Setting("infoText",dom.infoText.value));
   dom.statusText.addEventListener("change",()=>setJs8Setting("statusText",dom.statusText.value));
   dom.armHours.addEventListener("change",()=>{setJs8Setting("armHours",Number(dom.armHours.value)||1);if(currentJs8().auto)armUnattended("extend");});
-  dom.groups.addEventListener("change",()=>setJs8Setting("groups",dom.groups.value.split(/[\s,]+/).filter(Boolean)));
+  dom.groups.addEventListener("change",()=>{
+    const result=Js8Settings.validateGroups(dom.groups.value,joinableGroups());
+    // A group that is dropped must not stay in the field pretending to be joined.
+    setJs8Setting("groups",result.groups);
+    dom.groups.value=result.groups.join(" ");
+    renderGroupsHint(result);
+    renderActivity();
+  });
   dom.inboxRefresh.addEventListener("click",()=>{loadInbox();renderInbox();});
   dom.inboxQueryMsgs.addEventListener("click",queryStoredMessages);
   dom.cqRepeat.addEventListener("change",()=>{setJs8Setting("cqRepeatMin",Number(dom.cqRepeat.value)||0);renderCqState();});
@@ -4709,6 +4838,7 @@ async function init() {
     relayState(){return relay.snapshot(js8Clock.now());},
     inboxState(){return inbox.snapshot();},
     myGroups(){return myGroups();},
+    chooseCall(call){chooseCall(call);},
     feedInbox(frame){handleDecodedFrame({kind:"directed",...frame});},
     feedAssembled(message){dispatchAssembledMessage(message);},
     txStatus(){return state.txStatus;},
