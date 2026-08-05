@@ -19,10 +19,16 @@
   if (typeof module === "object" && module.exports) module.exports = value;
   else root.Js8TxQueue = value;
 })(typeof globalThis !== "undefined" ? globalThis : self, function () {
-  const PRIORITY = {operator: 1, relay: 2, inbox: 2, autoreply: 3, heartbeat: 4};
+  const PRIORITY = {operator: 1, relay: 2, inbox: 2, msgbox: 2, autoreply: 3, heartbeat: 4};
 
   // How long an entry stays worth sending. `null` = never expires.
+  //
+  // `inbox` answers somebody's question, so half an hour late is still an answer.
+  // `msgbox` is the opposite: it transmits BECAUSE a station just showed up, and
+  // a fetch or a deferred message arriving twenty minutes after that moment aims
+  // at nobody. Four slot periods is the opportunity; the MSG BOX owns the retry.
   const TTL_MS = {operator: null, relay: 30 * 60000, inbox: 30 * 60000,
+    msgbox: null /* computed from the submode period, like autoreply */,
     autoreply: null /* computed from the submode period */, heartbeat: 0};
 
   // JS8 slot periods per submode, used to express the auto-reply TTL as
@@ -79,7 +85,8 @@
       }
 
       const ttl = entry.ttlMs !== undefined ? entry.ttlMs
-        : source === "autoreply" ? autoReplyTtlMs(entry.submode) : TTL_MS[source];
+        : source === "autoreply" ? autoReplyTtlMs(entry.submode)
+        : source === "msgbox" ? resendTtlMs(entry.submode) : TTL_MS[source];
       const item = {id: ++this.sequence, source, priority, text: entry.text,
         to: entry.to || "", meta: entry.meta || null, queuedAtMs: entry.nowMs,
         expiresAtMs: ttl === null ? null : entry.nowMs + ttl};

@@ -230,6 +230,7 @@
               <button type="button" role="menuitem" class="preset-aprs" data-message-preset="aprsis"><strong>@APRSIS</strong><small>Build an APRS-IS command</small></button>
             </span></span>
             <small id="sendHint" class="send-hint">Enter sends</small>
+            <button id="sendLaterButton" type="button" class="send-later" disabled title="Hold this message in the MSG BOX and send it when the recipient shows up on the band">SEND LATER</button>
             <button id="sendButton" type="submit" hidden disabled aria-hidden="true" tabindex="-1">Send</button>
           </form>
         </section>
@@ -293,13 +294,21 @@
       </details>
 
       <details class="compact-section" data-section="inbox">
-        <summary><span>Inbox</span><span id="inboxSummary" class="summary-status">empty</span></summary>
+        <summary><span>MSG BOX</span><span id="inboxSummary" class="summary-status">empty</span></summary>
         <div class="inbox-actions">
+          <span id="msgBoxFilters" class="traffic-filter" role="group" aria-label="Filter messages">
+            <button type="button" data-msgbox-filter="all" aria-pressed="true">ALL</button>
+            <button type="button" data-msgbox-filter="mine" aria-pressed="false" title="Messages addressed to me">FOR ME</button>
+            <button type="button" data-msgbox-filter="waiting" aria-pressed="false" title="My messages waiting for the recipient to show up">WAITING</button>
+            <button type="button" data-msgbox-filter="held" aria-pressed="false" title="Mail this station holds for other callsigns">HELD</button>
+          </span>
           <button type="button" id="inboxQueryMsgs" disabled title="Ask the selected station for stored messages">QUERY MSGS</button>
           <button type="button" id="inboxRefresh">Refresh</button>
         </div>
+        <div id="msgBoxUndo" class="msgbox-undo" hidden role="status">Message deleted.<button type="button" id="msgBoxUndoButton">UNDO</button></div>
+        <div id="msgBoxHint" class="msgbox-hint" hidden role="status"></div>
         <div class="table-scroll"><table class="traffic-table"><thead><tr>
-          <th>ID</th><th>From</th><th>To</th><th>Message</th><th></th>
+          <th>ID</th><th>State</th><th>Station</th><th>Message</th><th title="Time since the message arrived">Age</th><th></th>
         </tr></thead><tbody id="inboxRows"></tbody></table></div>
       </details>
 
@@ -376,7 +385,8 @@
   <script src="/js8-file-transfer.js?v=20260719d"></script>
   <script src="/js8-presets.js?v=20260719d"></script>
   <script src="/js8-scheduler.js?v=20260719d"></script>
-  <script src="/js8-inbox.js?v=20260723a"></script>
+  <script src="/js8-inbox.js?v=20260804a"></script>
+  <script src="/js8-msgbox.js?v=20260804a"></script>
   <script src="/js8-relay.js?v=20260723a"></script>
   <script src="/js8-heartbeat.js?v=20260724b"></script>
   <script src="/js8-txqueue.js?v=20260719d"></script>

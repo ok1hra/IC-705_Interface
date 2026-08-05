@@ -404,6 +404,9 @@ button { color: inherit; cursor: pointer; }
 .aprs-status.warn { color:var(--amber); }
 .send-hint { grid-column:4; justify-self:end; margin-top:-5px; color:var(--muted); font-size:10px; }
 .send-hint.warn { color:var(--amber); }
+/* Parking a message is not sending it: quieter than SEND, and it stays usable
+   when the TX gates are shut, which is exactly when it is wanted. */
+.send-later { grid-column:4; justify-self:end; padding:3px 8px; font-size:10px; letter-spacing:.04em; }
 .aprs-param-preview { display:grid; grid-template-columns:140px minmax(0,1fr); gap:9px; align-items:center; margin:0 14px; color:var(--muted); font-size:12px; }
 .aprs-param-preview output { min-height:42px; padding:9px; border:1px solid #31574f; border-radius:4px; background:#07100f; color:#fff; font:12px/1.45 ui-monospace,monospace; overflow-wrap:anywhere; white-space:pre-wrap; }
 .aprs-param-cost { min-height:1.3em; margin:6px 14px 0; color:var(--muted); font-size:11px; text-align:right; }
@@ -755,10 +758,26 @@ button { color: inherit; cursor: pointer; }
 .tx-queue{font-size:.8rem;opacity:.85;margin-right:.5rem;cursor:help}
 
 /* Inbox reader. */
-.inbox-actions{display:flex;gap:.4rem;margin:.3rem 0}
+.inbox-actions{display:flex;gap:.4rem;margin:.3rem 0;flex-wrap:wrap;align-items:center}
 .inbox-text{max-width:16rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .inbox-delivered{opacity:.55}
 .inbox-empty{text-align:center;opacity:.6}
+/* Unread mail has to be findable without reading the table: red in the header,
+   red state cell in the row. Everything already dealt with fades instead. */
+.msgbox-new,.msgbox-full{color:var(--red)}
+.msgbox-row{cursor:pointer}
+.msgbox-unread td{font-weight:600}
+.msgbox-unread .msgbox-state{color:var(--red)}
+.msgbox-read td,.msgbox-delivered td{opacity:.55}
+.msgbox-state{white-space:nowrap;font-size:.85em;text-transform:uppercase;letter-spacing:.03em}
+.msgbox-actions{white-space:nowrap;text-align:right}
+.msgbox-actions button{font-size:.75rem;padding:.1rem .35rem;margin-left:.25rem}
+.msgbox-undo{display:flex;gap:.5rem;align-items:center;margin:.3rem 0;font-size:.85em;opacity:.85}
+.msgbox-hint{margin:.2rem 0;font-size:.85em;opacity:.75}
+/* A pointer to mail held elsewhere, not mail we have: dashed, so the row cannot
+   be mistaken for something already in hand. */
+.msgbox-pickup td{border-bottom:1px dashed currentColor;opacity:.8}
+.msgbox-pickup .msgbox-state{font-style:italic}
 
 /* The level actually in force, beside the manual field. Amber when nothing is
    on file for this band and power: not an error, but not what was asked for

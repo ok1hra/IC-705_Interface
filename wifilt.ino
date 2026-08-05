@@ -562,12 +562,17 @@ int incomingByte = 0;   // for incoming serial data
   uint8_t* unaLogQueue = nullptr;
   size_t   unaLogHead = 0, unaLogTail = 0, unaLogLen = 0;
   bool     unaLogOverflow = false;                 // oldest lines dropped since last flush
-  // Store-and-forward mail. Decision 10 keeps it here rather than in the tab so
-  // it survives a reload, a different computer and a cleared browser cache, and
-  // can be read from a phone. 64 messages x ~120 chars fits well inside the
-  // 256 KiB runtime reserve the deployment gate keeps free.
-  static const char* INBOX_PATH = "/inbox.jsonl";
-  static const size_t INBOX_MAX_BYTES = 24576;
+  // MSG BOX: store-and-forward mail, unread mail for the operator and our own
+  // deferred outgoing messages, one typed record per line. Decision 10 keeps it
+  // here rather than in the tab so it survives a reload, a different computer
+  // and a cleared browser cache, and can be read from a phone. 96 messages x
+  // ~120 chars fits well inside the 256 KiB runtime reserve the deployment gate
+  // keeps free.
+  static const char* MSGBOX_PATH = "/msgbox.jsonl";
+  // Pre-type file. Read once so mail survives the upgrade, then removed; the
+  // browser is what knows how to tell the old record kinds apart.
+  static const char* MSGBOX_LEGACY_PATH = "/inbox.jsonl";
+  static const size_t MSGBOX_MAX_BYTES = 24576;
   bool lanLinkWasUp = false;               // LAN link-up edge for the PTT safety un-key
   uint32_t aud1TxLevelNextMs = 0;          // B3: periodic TX buffer level while streaming
   // Survives a WDT/panic reset (not power loss) so a reset that happened with
@@ -837,8 +842,8 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   void handleJs8SessionClaim(void);
   void handleJs8SessionPing(void);
   void handleJs8SessionRelease(void);
-  void handleInboxGet(void);
-  void handleInboxPost(void);
+  void handleMsgboxGet(void);
+  void handleMsgboxPost(void);
   void aud1TxAbort(const String& reason, bool notify = true);
   void aud1TxTick(bool deferPrebufferMiss = false);
   void AudioDisconnectWs(void);
@@ -3334,8 +3339,8 @@ void setupWebServer(void){
   webServer.on("/js8/session/claim",   HTTP_POST, handleJs8SessionClaim);
   webServer.on("/js8/session/ping",    HTTP_POST, handleJs8SessionPing);
   webServer.on("/js8/session/release", HTTP_POST, handleJs8SessionRelease);
-  webServer.on("/inbox", HTTP_GET, handleInboxGet);
-  webServer.on("/inbox", HTTP_POST, handleInboxPost);
+  webServer.on("/msgbox", HTTP_GET, handleMsgboxGet);
+  webServer.on("/msgbox", HTTP_POST, handleMsgboxPost);
   webServer.on("/cmd", HTTP_POST, handlePostCmd);
   webServer.on("/lan/reconnect", HTTP_POST, [](){
     webServer.sendHeader("Connection", "close");
@@ -7212,31 +7217,43 @@ void audioFlush(){
 
 
 
-// ── Inbox storage ────────────────────────────────────────────────────────────
+// ── MSG BOX storage ──────────────────────────────────────────────────────────
 // The browser owns the protocol decisions; this is only the durable copy. It is
 // written whole rather than incrementally: at this size a rewrite costs one
 // flash page more than an append and removes every partial-write failure mode.
-void handleInboxGet(){
-  if(!LittleFS.exists(INBOX_PATH)){ webServer.send(200, "text/plain", ""); return; }
-  File f = LittleFS.open(INBOX_PATH, FILE_READ);
-  if(!f){ webServer.send(500, "text/plain", "inbox unavailable"); return; }
+void handleMsgboxGet(){
+  // Serve the current file, or the pre-type one while it is still all we have.
+  // Which record was mail for the operator and which was stock held for a third
+  // station is decided in the browser, so the migration is a plain read here.
+  const char* path = LittleFS.exists(MSGBOX_PATH) ? MSGBOX_PATH
+                   : (LittleFS.exists(MSGBOX_LEGACY_PATH) ? MSGBOX_LEGACY_PATH : nullptr);
+  if(!path){ webServer.send(200, "text/plain", ""); return; }
+  File f = LittleFS.open(path, FILE_READ);
+  if(!f){ webServer.send(500, "text/plain", "msgbox unavailable"); return; }
   webServer.sendHeader("Cache-Control", "no-store");
   webServer.streamFile(f, "text/plain");
   f.close();
 }
 
-void handleInboxPost(){
+void handleMsgboxPost(){
   String body = webServer.hasArg("plain") ? webServer.arg("plain") : String();
-  if(body.length() > INBOX_MAX_BYTES){
-    webServer.send(413, "application/json", "{\"error\":\"inbox too large\"}");
-    unattendedLogEvent(UEV_BLOCK, "inbox write refused: too large");
+  if(body.length() > MSGBOX_MAX_BYTES){
+    webServer.send(413, "application/json", "{\"error\":\"msgbox too large\"}");
+    unattendedLogEvent(UEV_BLOCK, "msgbox write refused: too large");
     return;
   }
-  File f = LittleFS.open(INBOX_PATH, "w");
+  File f = LittleFS.open(MSGBOX_PATH, "w");
   if(!f){ webServer.send(500, "application/json", "{\"error\":\"write failed\"}"); return; }
   f.print(body);
   f.close();
-  Serial.print("INBOX | stored "); Serial.print(body.length()); Serial.println(" B");
+  // The typed file now holds everything the old one did, so the old one is dead
+  // weight -- and leaving it would resurrect deleted mail if the new file were
+  // ever lost.
+  if(LittleFS.exists(MSGBOX_LEGACY_PATH)){
+    LittleFS.remove(MSGBOX_LEGACY_PATH);
+    Serial.println("MSGBOX | migrated, /inbox.jsonl removed");
+  }
+  Serial.print("MSGBOX | stored "); Serial.print(body.length()); Serial.println(" B");
   webServer.send(200, "application/json", "{\"ok\":true}");
 }
 

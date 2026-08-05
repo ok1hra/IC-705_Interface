@@ -17,16 +17,34 @@
 // us nothing but flash, so MSG is accepted even when unattended mode is off.
 // Only the replies need a transmitter, and delivering somebody else's stored
 // message is treated like relaying -- it needs arming.
+//
+// Every record carries a TYPE, the same four the reference implementation uses
+// (mainwindow.cpp addCommandToStorage): STORE is third-party mail we hold,
+// DELIVERED is a STORE we handed over, UNREAD/READ is mail for this operator.
+// Without it one hopper held both kinds and `QUERY MSGS` answered out of all of
+// them -- so a station that sent us a bare MSG got its own message offered back.
+// Upstream avoids that by querying STORE alone, and so do we now.
 
 (function (root, factory) {
   const value = factory();
   if (typeof module === "object" && module.exports) module.exports = value;
   else root.Js8Inbox = value;
 })(typeof globalThis !== "undefined" ? globalThis : self, function () {
+  // Record types. STORE/DELIVERED/UNREAD/READ mirror the reference
+  // implementation; DEFERRED is ours -- own outgoing mail waiting for the
+  // recipient to show up, which upstream has no concept of.
+  const TYPE = {STORE: "STORE", DELIVERED: "DELIVERED", UNREAD: "UNREAD",
+    READ: "READ", DEFERRED: "DEFERRED"};
+
   const DEFAULTS = {
-    maxMessages: 64,
+    maxMessages: 96,
     maxTextLength: 120,
-    maxPerSender: 8,   // one station must not be able to fill the whole store
+    maxPerSender: 8,       // undelivered STORE per sender: one station must not
+                           // be able to fill the whole store
+    maxStore: 32,          // third-party mail may not crowd out our own
+    maxUnreadPerSender: 16,
+    maxDeferred: 16,
+    dedupWindowMs: 24 * 3600000,  // the same message twice is a lost ACK, not new mail
   };
 
   const CALL_RE = /^[A-Z0-9]{2,6}(?:\/[A-Z0-9]{1,2})?$/;
@@ -57,13 +75,41 @@
   }
 
   // A tiny in-memory store used by the tests and as the browser-side mirror.
+  // Every query is typed: mail held FOR somebody is keyed by `to`, mail addressed
+  // to this operator is keyed by `from`, exactly as upstream indexes them.
   class MemoryStore {
     constructor() { this.items = []; this.nextId = 1; }
-    add(record) { const item = {...record, id: this.nextId++}; this.items.push(item); return item; }
-    forCall(call) { return this.items.filter(i => i.to === norm(call) && !i.delivered); }
+    add(record) {
+      const item = {type: TYPE.STORE, delivered: false, ...record, id: this.nextId++};
+      this.items.push(item);
+      return item;
+    }
+    // Third-party mail still waiting for this callsign. Never our own inbox:
+    // handing somebody their own message back is what the type separates.
+    forCall(call) {
+      return this.items.filter(i => i.type === TYPE.STORE && i.to === norm(call));
+    }
     byId(id) { return this.items.find(i => i.id === Number(id)) || null; }
-    countFrom(from) { return this.items.filter(i => i.from === norm(from) && !i.delivered).length; }
-    markDelivered(id) { const i = this.byId(id); if (i) i.delivered = true; return i; }
+    countFrom(from) {
+      return this.items.filter(i => i.type === TYPE.STORE && i.from === norm(from)).length;
+    }
+    countType(type, from) {
+      const sender = from === undefined ? null : norm(from);
+      return this.items.filter(i => i.type === type &&
+        (sender === null || i.from === sender)).length;
+    }
+    // A STORE that went out becomes DELIVERED; `delivered` stays for anything
+    // still reading the old field.
+    markDelivered(id) {
+      const i = this.byId(id);
+      if (i) { i.delivered = true; if (i.type === TYPE.STORE) i.type = TYPE.DELIVERED; }
+      return i;
+    }
+    remove(id) {
+      const index = this.items.findIndex(i => i.id === Number(id));
+      if (index < 0) return null;
+      return this.items.splice(index, 1)[0];
+    }
     size() { return this.items.length; }
     all() { return this.items.slice(); }
   }
@@ -84,6 +130,27 @@
     }
 
     /**
+     * Ordinary human traffic addressed to us: a plain directed message, or text
+     * a relay handed over. Upstream leaves these in the RX window only, which is
+     * exactly how a message goes unnoticed after three days away -- the traffic
+     * feed is capped and CLEAR wipes it, so the MSG BOX is the only place a
+     * message can wait. No ACK: nothing was promised, we simply keep it.
+     *
+     * @param frame {from, to, text}
+     * @param ctx   {nowMs, myCall}
+     */
+    fileIncoming(frame, ctx) {
+      const from = norm(frame && frame.from);
+      const to = norm(frame && frame.to);
+      const myCall = norm(ctx && ctx.myCall);
+      const text = String(frame && frame.text || "").trim();
+      if (!from || !myCall) return this._refuse("invalid", "missing callsign");
+      if (to !== myCall) return this._refuse("not-addressed", `for ${to || "nobody"}`);
+      const outcome = this._store(from, myCall, text, ctx, TYPE.UNREAD);
+      return outcome.ack ? {...outcome, ack: null} : outcome;
+    }
+
+    /**
      * @param frame {from, to, command, text, complete}
      * @param ctx   {nowMs, myCall, armed, hearing:[calls]}
      */
@@ -101,7 +168,10 @@
       if (frame.complete === false) return this._refuse("incomplete", `${command} still arriving`);
 
       switch (command) {
-        case "MSG":       return this._store(from, from, payload, ctx);
+        // A bare MSG is mail for this operator: filed under my own callsign as
+        // UNREAD, not as third-party stock. Upstream files the whole command the
+        // same way and looks it up by sender.
+        case "MSG":       return this._store(from, myCall, payload, ctx, TYPE.UNREAD);
         case "MSG TO:":   return this._storeFor(from, payload, ctx);
         case "QUERY MSGS":
         case "QUERY MSGS?": return this._queryMsgs(from, ctx);
@@ -111,17 +181,37 @@
       }
     }
 
-    _store(from, to, text, ctx) {
+    _store(from, to, text, ctx, type = TYPE.STORE) {
       if (!text) return this._refuse("empty", "no message text");
       if (text.length > this.config.maxTextLength)
         return this._refuse("too-long", `${text.length} characters, limit ${this.config.maxTextLength}`);
       if (this.store.size() >= this.config.maxMessages)
         return this._refuse("full", `inbox holds ${this.config.maxMessages} messages`);
-      if (this.store.countFrom(from) >= this.config.maxPerSender)
-        return this._refuse("sender-quota",
-          `${from} already has ${this.config.maxPerSender} undelivered messages here`);
 
-      const record = this.store.add({from, to, text, atMs: ctx.nowMs, delivered: false});
+      if (type === TYPE.STORE) {
+        if (this.store.countType(TYPE.STORE) >= this.config.maxStore)
+          return this._refuse("store-quota",
+            `already holding ${this.config.maxStore} messages for other stations`);
+        if (this.store.countFrom(from) >= this.config.maxPerSender)
+          return this._refuse("sender-quota",
+            `${from} already has ${this.config.maxPerSender} undelivered messages here`);
+      } else if (type === TYPE.UNREAD) {
+        if (this.store.countType(TYPE.UNREAD, from) >= this.config.maxUnreadPerSender)
+          return this._refuse("sender-quota",
+            `${from} already has ${this.config.maxUnreadPerSender} unread messages here`);
+        // A repeat inside the window is a lost ACK coming back around, not a
+        // second message. Swallow the copy and let the caller acknowledge again.
+        const twin = this.store.all().find(item =>
+          (item.type === TYPE.UNREAD || item.type === TYPE.READ) &&
+          item.from === from && item.text === text &&
+          Number(ctx.nowMs) - Number(item.atMs) < this.config.dedupWindowMs);
+        if (twin) {
+          this._emit({type: "duplicate", id: twin.id, from, text});
+          return {action: "duplicate", record: twin, ack: {to: from, text: "ACK"}};
+        }
+      }
+
+      const record = this.store.add({type, from, to, text, atMs: ctx.nowMs, delivered: false});
       this.stats.stored += 1;
       this._emit({type: "stored", id: record.id, from, to, text});
       // Storing costs nothing to transmit, so it works while disarmed; only the
@@ -137,8 +227,10 @@
         const skip = this._refuse("malformed", "expected MSG TO:CALL text");
         return {...skip, nack: {to: from, text: "NACK"}};
       }
-      if (parsed.to === norm(ctx.myCall)) return this._store(from, parsed.to, parsed.text, ctx);
-      return this._store(from, parsed.to, parsed.text, ctx);
+      // Addressed to us it is our own mail, not stock we hold for a stranger.
+      if (parsed.to === norm(ctx.myCall))
+        return this._store(from, parsed.to, parsed.text, ctx, TYPE.UNREAD);
+      return this._store(from, parsed.to, parsed.text, ctx, TYPE.STORE);
     }
 
     _queryMsgs(from, ctx) {
@@ -160,6 +252,12 @@
       if (!Number.isInteger(id) || id <= 0) return this._refuse("malformed", "expected a message id");
       const record = this.store.byId(id);
       if (!record) return this._refuse("unknown-id", `no message ${id}`);
+      // Only stock we hold for somebody else may be handed over. Our own mail
+      // and messages already delivered are not for the asking, whoever asks.
+      if (record.type === TYPE.DELIVERED)
+        return this._refuse("already-delivered", `message ${id} was handed over`);
+      if (record.type !== TYPE.STORE)
+        return this._refuse("not-yours", `message ${id} is not held for anybody`);
       if (record.to !== from)
         return this._refuse("not-yours", `message ${id} is not addressed to ${from}`);
       // Handing over a message we are holding for somebody else is transmitting
@@ -205,10 +303,11 @@
     }
     snapshot() {
       return {...this.stats, size: this.store.size(),
-        items: this.store.all().map(i => ({id: i.id, from: i.from, to: i.to,
-          text: i.text, atMs: i.atMs, delivered: Boolean(i.delivered)}))};
+        items: this.store.all().map(i => ({id: i.id, type: i.type || TYPE.STORE,
+          from: i.from, to: i.to, text: i.text, atMs: i.atMs,
+          delivered: Boolean(i.delivered)}))};
     }
   }
 
-  return {Js8Inbox, MemoryStore, DEFAULTS, parseMsgTo, isCallsign};
+  return {Js8Inbox, MemoryStore, DEFAULTS, TYPE, parseMsgTo, isCallsign};
 });

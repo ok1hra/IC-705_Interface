@@ -63,12 +63,15 @@ const server=http.createServer((req,res)=>{
   if(url.pathname==="/setup/save"&&req.method==="POST"){let body="";req.on("data",c=>body+=c);req.on("end",()=>{setupSaveBody=body;res.setHeader("Content-Type","application/json");res.end('{"ok":true}');});return;}
   if(url.pathname==="/restart"&&req.method==="POST"){setupRestartRequests++;res.setHeader("Content-Type","application/json");res.end('{"ok":true}');return;}
   if(url.pathname==="/lan/reconnect"&&req.method==="POST"){lanReconnectRequests++;res.setHeader("Content-Type","application/json");res.end('{"ok":true}');return;}
-  if(url.pathname==="/inbox"&&req.method==="POST"){let body="";req.on("data",c=>body+=c);req.on("end",()=>{inboxWrites.push(body);res.setHeader("Content-Type","application/json");res.end('{"ok":true}');});return;}
-  if(url.pathname==="/inbox"){res.setHeader("Content-Type","text/plain");res.end(inboxSeed);return;}
+  if(url.pathname==="/msgbox"&&req.method==="POST"){let body="";req.on("data",c=>body+=c);req.on("end",()=>{inboxWrites.push(body);res.setHeader("Content-Type","application/json");res.end('{"ok":true}');});return;}
+  if(url.pathname==="/msgbox"){res.setHeader("Content-Type","text/plain");res.end(inboxSeed);return;}
   if(url.pathname==="/js8/session/claim"&&req.method==="POST"){return sessionBody(req,res,(body)=>{if(session.token&&!sessionOwns(body.token)&&!body.force){session.refusals++;return sessionReply(res,409);}session.token=body.token||"";session.claims++;sessionReply(res,200);});}
   if(url.pathname==="/js8/session/ping"&&req.method==="POST"){return sessionBody(req,res,(body)=>{if(session.token&&!sessionOwns(body.token))return sessionReply(res,409);session.token=body.token||"";sessionReply(res,200);});}
   if(url.pathname==="/js8/session/release"&&req.method==="POST"){return sessionBody(req,res,(body)=>{if(sessionOwns(body.token)){session.token="";session.releases++;}res.writeHead(200,{"Content-Type":"application/json"});res.end('{"ok":true}');});}
   if(url.pathname==="/fixture/unattended-reboot"&&req.method==="POST"){unaReboot=true;res.setHeader("Content-Type","application/json");res.end('{"ok":true}');return;}
+  // What the page actually wrote back, so the migration can be asserted on the
+  // wire rather than on the mirror it lives in.
+  if(url.pathname==="/fixture/msgbox-writes"){res.setHeader("Content-Type","application/json");res.end(JSON.stringify({count:inboxWrites.length,last:inboxWrites[inboxWrites.length-1]||""}));return;}
   if(url.pathname==="/unattended"&&req.method==="POST"){let body="";req.on("data",c=>body+=c);req.on("end",()=>{try{const post=JSON.parse(body);unattendedPosts.push({...post,afterReboot:unaReboot});if(post.action==="arm"||post.action==="extend")unaReboot=false;}catch(_error){}res.setHeader("Content-Type","application/json");res.end(JSON.stringify(unattendedState()));});return;}
   if(url.pathname==="/unattended"){res.setHeader("Content-Type","application/json");res.end(JSON.stringify(unattendedState()));return;}
   if(url.pathname==="/unattended/log"){res.setHeader("Content-Type","text/plain");res.end("1200 ARM 12 h\n90500 BLOCK liveness lost before keying\n");return;}
@@ -698,6 +701,37 @@ f.onload=()=>{
       checks.inboxUiWiring=inboxRows.some(row=>row.textContent.includes('OK8HB'))&&
         Boolean(d.querySelector('#inboxQueryMsgs'));
 
+      // MSG BOX: unread mail must be findable without reading the table (header
+      // badge + tab title), a click is what marks it read, and DELETE must be
+      // undoable back to the SAME id -- the id is what NEXT MSG ID quotes on air.
+      dt.storeInboxDirect({type:'UNREAD',from:'OK5MAIL',to:'OK1HRA',text:'CALL ME BACK'});
+      dt.msgBoxSetFilter('mine');
+      const unreadState=dt.msgBoxState();
+      const unreadRow=[...d.querySelectorAll('#inboxRows tr[data-msg-id]')]
+        .find(row=>row.textContent.includes('OK5MAIL'));
+      checks.msgBoxUnreadBadge=unreadState.unread===1&&
+        d.querySelector('#inboxSummary').textContent.includes('1 NEW')&&
+        unreadState.title.indexOf('(1)')===0;
+      unreadRow.querySelector('.inbox-text').click();
+      await new Promise(resolve=>setTimeout(resolve,60));
+      const readState=dt.msgBoxState();
+      checks.msgBoxClickMarksRead=readState.unread===0&&readState.read===1&&
+        readState.title.indexOf('(')!==0;
+      const readRow=[...d.querySelectorAll('#inboxRows tr[data-msg-id]')]
+        .find(row=>row.textContent.includes('OK5MAIL'));
+      const readId=Number(readRow.dataset.msgId);
+      readRow.querySelector('[data-msg-action="delete"]').click();
+      await new Promise(resolve=>setTimeout(resolve,60));
+      const deletedState=dt.msgBoxState();
+      const undoVisible=!d.querySelector('#msgBoxUndo').hidden;
+      d.querySelector('#msgBoxUndoButton').click();
+      await new Promise(resolve=>setTimeout(resolve,60));
+      const restored=dt.inboxState().items.find(item=>item.id===readId);
+      checks.msgBoxDeleteUndo=deletedState.read===0&&undoVisible&&
+        Boolean(restored)&&restored.from==='OK5MAIL'&&
+        d.querySelector('#msgBoxUndo').hidden===true;
+      dt.msgBoxSetFilter('all');
+
       // CQ interval selector: values offered and the setting applied.
       const cqSel=d.querySelector('#cqRepeat');
       const cqFlag=()=>[...d.querySelectorAll('#settingsFlags .summary-flag')].find(node=>node.textContent.trim()==='CQ');
@@ -758,6 +792,111 @@ f.onload=()=>{
         payload:'SHOULD BE DROPPED',checksumOk:false});
       checks.reassemblyChecksum=dt.inboxState().size===afterStore.size;
 
+      // MSG BOX stage E2. An ordinary message somebody typed at us is mail: it
+      // has to survive in the box, not only scroll past in the traffic feed.
+      const beforePlain=dt.inboxState().size;
+      dt.feedAssembled({directed:{from:'OK4TXT',to:'OK1HRA',command:' '},
+        payload:'ARE YOU AT THE RADIO',checksumOk:true});
+      const afterPlain=dt.inboxState();
+      checks.msgBoxFilesPlainText=afterPlain.size===beforePlain+1&&
+        afterPlain.items.some(item=>item.type==='UNREAD'&&item.from==='OK4TXT'&&
+          item.text==='ARE YOU AT THE RADIO');
+      // Machine chatter is not mail; filing SNR reports would bury the one line
+      // that matters.
+      dt.feedAssembled({directed:{from:'OK4TXT',to:'OK1HRA',command:' SNR'},
+        payload:'-12',checksumOk:true});
+      checks.msgBoxIgnoresMachineTraffic=dt.inboxState().size===afterPlain.size;
+
+      // An advertisement inside ordinary traffic ("... MSG ID 32") is a pointer
+      // to mail held elsewhere. AUTO and Radio TX are on here, so the station
+      // must ask for it by itself -- upstream announces this and waits forever.
+      dt.clearTxCaptured();
+      dt.feedAssembled({directed:{from:'OK6HLD',to:'OK1HRA',command:' HEARTBEAT SNR'},
+        payload:'-12 MSG ID 32',checksumOk:true});
+      const waiting=dt.msgBoxState().waitingMail;
+      const fetchTx=dt.txCaptured().find(item=>item.to==='OK6HLD'&&item.text==='QUERY MSG 32');
+      checks.msgBoxAdvertNoted=waiting.some(item=>item.station==='OK6HLD'&&item.id===32);
+      checks.msgBoxAutoFetch=Boolean(fetchTx);
+      const pickupRow=[...d.querySelectorAll('#inboxRows tr[data-pickup-key]')]
+        .find(row=>row.textContent.includes('OK6HLD'));
+      checks.msgBoxPickupRow=Boolean(pickupRow)&&
+        Boolean(pickupRow.querySelector('[data-msg-action="fetch"]'));
+      // The delivery clears the pointer, keeps the text readable and turns the
+      // NEXT MSG ID tail into the following pickup instead of leaving it in the
+      // operator's mail.
+      dt.feedAssembled({directed:{from:'OK6HLD',to:'OK1HRA',command:' MSG'},
+        payload:'BRING THE ANTENNA FROM OK7ORIG NEXT MSG ID 33',checksumOk:true});
+      const afterDelivery=dt.msgBoxState();
+      checks.msgBoxDeliveryUnwrapped=dt.inboxState().items.some(item=>
+        item.text==='BRING THE ANTENNA FROM OK7ORIG'&&item.type==='UNREAD')&&
+        !afterDelivery.waitingMail.some(item=>item.id===32)&&
+        afterDelivery.waitingMail.some(item=>item.station==='OK6HLD'&&item.id===33);
+      // Those adverts queued real transmissions (the fetch, the chained fetch and
+      // the ACK for the delivery). Leave the arbiter empty, or they key the radio
+      // in the middle of the manual-TX checks further down and those time out.
+      dt.clearTxQueue();
+      d.querySelector('#abortButton').click();
+      await new Promise(resolve=>setTimeout(resolve,150));
+
+      // MSG BOX stage E3: a message parked for a station that is not here, and
+      // the appearance that releases it. SEND LATER must work with the recipient
+      // absent -- that is the whole point -- so it is driven through the button.
+      const laterButton=d.querySelector('#sendLaterButton');
+      const messageBox=d.querySelector('#messageInput');
+      dt.selectCallForLog('OK8LTE');
+      messageBox.value='SKED ON 40M AT 1900';
+      messageBox.dispatchEvent(new f.contentWindow.Event('input',{bubbles:true}));
+      checks.msgBoxSendLaterEnabled=laterButton.disabled===false;
+      laterButton.click();
+      await new Promise(resolve=>setTimeout(resolve,60));
+      const deferred=dt.msgBoxDeferred();
+      checks.msgBoxDeferred=deferred.length===1&&deferred[0].to==='OK8LTE'&&
+        deferred[0].state==='waiting'&&messageBox.value==='';
+      // A group can never show up, so it can never be parked for one.
+      dt.selectCallForLog('@NET');
+      messageBox.value='HELLO GROUP';
+      messageBox.dispatchEvent(new f.contentWindow.Event('input',{bubbles:true}));
+      checks.msgBoxRefusesGroupDefer=laterButton.disabled===true&&
+        laterButton.title.includes('group');
+      messageBox.value='';
+      messageBox.dispatchEvent(new f.contentWindow.Event('input',{bubbles:true}));
+
+      // Nothing goes out until that station proves it is listening. A frame from
+      // somebody else must not release it.
+      dt.clearTxCaptured();
+      dt.feedHeartbeat({from:'OK9OTH',to:'@HB',command:'HEARTBEAT',grid:'JO70'});
+      checks.msgBoxWaitsForTheRightStation=
+        !dt.txCaptured().some(item=>item.text.includes('SKED ON 40M'));
+      dt.clearTxQueue(); dt.clearTxCaptured();
+      // Its own heartbeat is the invitation.
+      dt.feedHeartbeat({from:'OK8LTE',to:'@HB',command:'HEARTBEAT',grid:'JO70'});
+      const sent=dt.txCaptured().find(item=>item.to==='OK8LTE'&&
+        item.text==='MSG SKED ON 40M AT 1900');
+      checks.msgBoxSendsOnAppearance=Boolean(sent);
+      checks.msgBoxDeferredCountsAttempt=dt.msgBoxDeferred()[0]?.attempts===1;
+      // The ACK is the proof of delivery, and it is what removes the record.
+      dt.feedInbox({from:'OK8LTE',to:'OK1HRA',command:' ACK'});
+      await new Promise(resolve=>setTimeout(resolve,60));
+      checks.msgBoxAckClosesDeferred=dt.msgBoxDeferred().length===0;
+
+      // MSG BOX stage E4. Mail we hold for a third station is pushed the moment
+      // that station shows up -- upstream waits to be asked with QUERY MSG, and
+      // nobody ever asks, so it would rot in the store.
+      dt.clearTxQueue(); dt.clearTxCaptured();
+      dt.storeInboxDirect({type:'STORE',from:'OK7DEP',to:'OK5RCV',text:'PARCEL ARRIVED'});
+      dt.feedHeartbeat({from:'OK5RCV',to:'@HB',command:'HEARTBEAT',grid:'JO70'});
+      const pushed=dt.txCaptured().find(item=>item.to==='OK5RCV'&&
+        item.text==='MSG PARCEL ARRIVED FROM OK7DEP');
+      checks.msgBoxPushesHeldMail=Boolean(pushed);
+      dt.feedInbox({from:'OK5RCV',to:'OK1HRA',command:' ACK'});
+      await new Promise(resolve=>setTimeout(resolve,60));
+      checks.msgBoxPushAckDelivers=dt.inboxState().items.some(item=>
+        item.to==='OK5RCV'&&item.type==='DELIVERED');
+
+      dt.clearTxQueue();
+      d.querySelector('#abortButton').click();
+      await new Promise(resolve=>setTimeout(resolve,150));
+
             // The answer really did go out; stop it so the page is idle again for the
       // BIN and TX checks that follow.
       d.querySelector('#abortButton').click();
@@ -793,11 +932,17 @@ f.onload=()=>{
       await new Promise(resolve=>setTimeout(resolve,120));
       if(!rAutoWas){rAuto.click();}
       if(!rSafetyWas){rSafety.checked=false;rSafety.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));}
-      // Inbox durable copy: the message seeded by the firmware /inbox fixture must
-      // have been restored on load. (The K0OG entry from the seed; plus OK8HB we
-      // stored directly above.)
+      // Durable copy: the record seeded by the firmware /msgbox fixture must have
+      // been restored on load. (The K0OG entry from the seed; plus OK8HB we stored
+      // directly above.) The seed carries no type -- it is a pre-MSG-BOX record,
+      // so restoring it also proves the migration: filed for a third station, it
+      // must come back as held stock and be written back in the typed shape.
       const inboxNow=f.contentWindow.__dataTest.inboxState();
-      checks.inboxLoad=inboxNow.items.some(item=>item.to==='K0OG');
+      const seeded=inboxNow.items.find(item=>item.to==='K0OG');
+      checks.inboxLoad=Boolean(seeded);
+      const writes=await (await fetch('/fixture/msgbox-writes')).json();
+      checks.msgBoxMigration=Boolean(seeded)&&seeded.type==='STORE'&&
+        writes.count>0&&writes.last.includes('"type":"STORE"');
       // Groups: the always-joined pair must be present without being stored, a joined
       // group must be answered and get a row of its own in the stations table, and one
       // we never joined must be ignored. A custom group is refused OUT LOUD -- stage 1
@@ -1180,6 +1325,31 @@ f.onload=()=>{
                     f.contentWindow.__dataTest.snapshotBuild().hearingLinksVisible===false;
                   d.querySelector('#stationMapLinks').click();
                   checks.hearingToggleBack=hearLinks().length===1&&d.querySelector('#stationMapLinks').getAttribute('aria-pressed')==='true';
+                  // MSG BOX stage E4: the same "who hears whom" evidence decides
+                  // where to park a message for a station we cannot reach. SN9GK
+                  // reported a signal to MM0VIK, so SN9GK hears MM0VIK.
+                  {
+                    const dtE4=f.contentWindow.__dataTest;
+                    const txSafe=d.querySelector('#txSafety'), txSafeWas=txSafe.checked;
+                    if(!txSafeWas){txSafe.checked=true;txSafe.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));}
+                    dtE4.msgBoxDefer('MM0VIK','BRING THE KEY');
+                    checks.msgBoxHearingEvidence=dtE4.msgBoxHeardBy('SN9GK').includes('MM0VIK');
+                    dtE4.clearTxQueue(); dtE4.clearTxCaptured();
+                    const parkRefusal=dtE4.msgBoxParkVia('SN9GK',{manual:true});
+                    const parked=dtE4.txCaptured().find(item=>item.to==='SN9GK'&&
+                      item.text==='MSG TO:MM0VIK BRING THE KEY');
+                    checks.msgBoxParksViaHearingStation=parkRefusal===''&&Boolean(parked);
+                    // Its ACK proves storage at SN9GK, never delivery to MM0VIK,
+                    // so the automation stops there and records who has it.
+                    dtE4.feedInbox({from:'SN9GK',to:'OK1HRA',command:' ACK'});
+                    const handed=dtE4.msgBoxDeferred().find(item=>item.to==='MM0VIK');
+                    checks.msgBoxHandoffIsTerminal=Boolean(handed)&&handed.state==='handed'&&
+                      handed.via==='SN9GK';
+                    checks.msgBoxNoSecondHandoff=dtE4.msgBoxParkVia('SN9GK',{manual:true})==='nothing waiting';
+                    dtE4.clearTxQueue();
+                    d.querySelector('#abortButton').click();
+                    if(!txSafeWas){txSafe.checked=false;txSafe.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));}
+                  }
                   // Partial receptions: a long message must be readable while it arrives,
                   // and one that never ended must say so instead of vanishing. Fed the way
                   // the worker's ActivityStore reports it -- reassembly in progress in
@@ -1245,7 +1415,10 @@ f.onload=()=>{
                   // than what is on screen. Both are linear maps of the same 500..2700 Hz, so
                   // the displayed box is the one the operator's eye actually uses.
                   const stripeError=(hz,widthHz)=>{
-                    const node=[...d.querySelectorAll('#traffic .signal-stripe')]
+                    // Received rows only. Own transmissions carry stripes too, and
+                    // one of them sitting on the same offset at a different speed
+                    // would be measured against this fixture's width.
+                    const node=[...d.querySelectorAll('#traffic .signal-stripe.stripe-rx')]
                       .find(item=>Number(item.dataset.stripeOffset)===hz);
                     if(!node)return null;
                     const box=canvas.getBoundingClientRect(),rect=node.getBoundingClientRect();

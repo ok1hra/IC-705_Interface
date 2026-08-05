@@ -11,6 +11,81 @@ published.
 
 ## Working tree — not committed
 
+* **Deferred messages: write it now, the station sends it when the recipient turns up (stages
+  E3 and E4 of `docs/msgbox-implementace.md`).** A second button beside SEND — `SEND LATER`, not
+  a checkbox, because a switch that survives one message is how the next one gets parked by
+  accident — holds the message in the MSG BOX instead of transmitting it. It leaves as `MSG`, so
+  the recipient's station files and acknowledges it with nobody at the keyboard, and that ACK is
+  the only proof of delivery this protocol can produce: it is what removes the record. What
+  releases it is narrow on purpose — a heartbeat, a CQ, or a frame aimed at us, all of which mean
+  "I am here and receiving"; a station heard mid-QSO with somebody else is not an invitation, and
+  the trigger reads live decodes only, never the stations table (which would fire a salvo at
+  everybody who was on the band an hour ago, on every reload). Sending needs arming like every
+  other unattended transmission, one attempt per appearance, an hour between attempts, five and
+  then it stops and says so; seven days is the outside limit, which is exactly the longest arming
+  window the firmware offers. When the recipient never shows but somebody who *hears* them does —
+  the same "who hears whom" evidence the map draws arrows from — the message is parked there with
+  `MSG TO:`, and that intermediary's ACK ends the automation: it proves storage, never delivery,
+  and further attempts would only manufacture duplicates in a network where nobody can say "I
+  already have it". The same appearance also pushes mail we hold for the station that just showed
+  up, instead of waiting for a `QUERY MSG` that upstream never sends. **Two traps found by the
+  tests:** a callsign longer than six characters cannot be packed into a directed frame, so
+  parking mail for one waited politely and then threw inside the encoder at the moment it was
+  supposed to go out (`defer()` now refuses it up front); and the browser gate's signal-stripe
+  check looked a stripe up by offset alone, so own transmissions at the default 1500 Hz — and
+  heartbeat acks in the 500–1000 Hz band — were being measured against the fixture's width. It
+  now selects received rows only. `tools/data-browser-smoke.js`: 235 checks, 23 of them MSG BOX.
+
+* **The station now collects its own mail (stage E2 of `docs/msgbox-implementace.md`).** Three
+  things that used to fall on the floor no longer do. First, an ordinary message somebody types
+  at us is filed as unread mail instead of only scrolling past in the traffic feed — that feed is
+  capped and CLEAR wipes it, which is exactly how a message goes unseen after three days away.
+  Machine chatter (SNR, ACK, GRID, STATUS, QUERY…) is never filed, or the one line that matters
+  would be buried under telemetry. Second, `MSG ID 32` inside somebody's heartbeat or `YES`
+  answer is finally read: it becomes a pickup row with a FETCH button, and while unattended
+  operation is armed the station sends `QUERY MSG 32` on its own. Upstream announces mail this
+  way and then waits for a human to click, so mail left at a station for an unattended operator
+  was never collected by anyone. Third, the delivery is unwrapped — `BRING THE ANTENNA FROM
+  OK7ORIG NEXT MSG ID 33` stores the text with its origin and turns the tail into the next
+  pickup, chaining at most three messages per appearance so a station holding eight cannot take
+  the channel for eight exchanges. The discipline is a shared ledger (one attempt per
+  opportunity, an hour between attempts on the same message, five and then it stops) that stages
+  E3/E4 will reuse; fetches ride a new `msgbox` queue source at relay priority whose TTL is four
+  slot periods, because a transmission made *because a station just showed up* is worthless
+  twenty minutes later. Manual FETCH works with AUTO off — the operator clicking is the
+  attendance — and the panel prints why a fetch is not happening rather than staying silent.
+  **A trap found while testing:** a base callsign longer than six characters cannot be packed
+  into a directed frame, so an advertisement from one would have thrown inside the decode path;
+  pickups are only registered for addressable callsigns. `tools/data-browser-smoke.js` grows six
+  checks and gains a `clearTxQueue` hook — the adverts queue real transmissions, which keyed the
+  radio during the later manual-TX checks and timed them out.
+
+* **Inbox becomes MSG BOX, and every record now says what it is (stage E1 of
+  `docs/msgbox-implementace.md`).** Records carry a `type` — `STORE` for mail held for other
+  stations, `UNREAD`/`READ` for mail addressed to this operator, `DELIVERED` for stock handed
+  over — the same four the reference implementation keeps, plus `DEFERRED` reserved for the
+  outgoing mail stages E3/E4 will add. That separation fixes a real defect rather than only
+  tidying the model: `forCall()` used to search every record, so a station that sent us a bare
+  `MSG` was offered **its own message back** on the next `QUERY MSGS`, and would have been given
+  it on `QUERY MSG`. Upstream avoids this by answering out of `STORE` alone, and now so do we.
+  Quotas split with the types (96 records, `STORE` ≤ 32, 8 undelivered per depositor, 16 unread
+  per sender), and a repeated `MSG` inside 24 h is recognised as a lost ACK: de-duplicated, but
+  acknowledged again. Storage moved to `/msgbox.jsonl` behind `GET`/`POST /msgbox`; the firmware
+  serves the old `/inbox.jsonl` once when the new file is missing, the browser migrates it
+  (a record filed against its own sender was mail for me, one filed against a third station was
+  stock) and the first write-back makes the firmware delete the old file. Eviction is driven by
+  **bytes**, not by the record count, because the firmware refuses an oversized body with 413 and
+  the tab would otherwise keep running against a copy flash no longer has; the ladder drops
+  `DELIVERED`, then `READ`, then `STORE`, then finished `DEFERRED`, oldest first, and never
+  touches unread mail or a deferred message still trying — when only those are left the box
+  reports FULL and refuses instead. The panel gained filters (ALL / FOR ME / WAITING / HELD), an
+  age column, per-row REPLY and DEL with a 10 s UNDO that restores the *same id* (the id is what
+  `NEXT MSG ID` quotes on the air), a red `N NEW` badge in the header and the same count in the
+  tab title — a click on the row is what marks mail read, never the section merely being open.
+  `prototype/js8-core-prototype/protocol/msgbox_smoke.js` is new (migration, ladder, byte budget,
+  undo); `tools/data-browser-smoke.js` grows five checks (badge, click-marks-read, delete+undo,
+  migration on the wire, durable load) and is otherwise unchanged against the baseline.
+
 * **Recent traffic now shows where in the waterfall each row's signal sat.** A dark grey bar
   under every row, on the *same axis* as the waterfall above it: 500 Hz at the left edge,
   2700 Hz at the right, as wide as that submode's modulation actually is (25–250 Hz). Read

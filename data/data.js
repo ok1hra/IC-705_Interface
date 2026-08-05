@@ -166,6 +166,9 @@ const dom = {
   cqRepeat:$("cqRepeat"), cqState:$("cqState"),
   infoText:$("infoText"), statusText:$("statusText"), autoReply:$("autoReply"),
   inboxRows:$("inboxRows"), inboxSummary:$("inboxSummary"), inboxQueryMsgs:$("inboxQueryMsgs"), inboxRefresh:$("inboxRefresh"),
+  inboxFilters:$("msgBoxFilters"), inboxUndo:$("msgBoxUndo"), inboxUndoButton:$("msgBoxUndoButton"),
+  inboxHint:$("msgBoxHint"), inboxSection:document.querySelector('[data-section="inbox"]'),
+  sendLater:$("sendLaterButton"),
   armHours:$("armHours"), autoState:$("autoState"),
   resetSettings:$("resetSettings"), settingsSummary:$("settingsSummary"), settingsFlags:$("settingsFlags"),
   diagnosticSummary:$("diagnosticSummary"), diagnostics:$("diagnostics"),
@@ -197,40 +200,62 @@ const restrictions = new Js8Restrictions.Js8Restrictions({
   onEvent: event => console.warn("[js8-restrictions]", event.type, event)});
 // The firmware holds the durable copy (decision 10); this store is the working
 // mirror. Loaded once at start, written back whenever it changes, so mail
-// survives a reload and is readable from /inbox on any device.
+// survives a reload and is readable from /msgbox on any device.
 const inboxStore = new Js8Inbox.MemoryStore();
+// Types, eviction and the operator actions live here; the inbox engine above it
+// only decides what the protocol may do. Both work on this one store.
+let msgBoxFull = false;      // nothing evictable left and still over budget
+const msgBox = new Js8MsgBox.Js8MsgBox({store: inboxStore,
+  onEvent: event => console.info("[msgbox]", event.type, event.id || "",
+    event.recordType || "", event.from || "")});
 let inboxSyncPending = false;
 function syncInbox() {
   if (inboxSyncPending) return;
   inboxSyncPending = true;
-  const body = inboxStore.all().map(item => JSON.stringify(item)).join("\n");
-  fetch("/inbox", {method: "POST", headers: {"Content-Type": "text/plain"}, body})
+  // Trim BEFORE serializing: the firmware answers 413 over its cap, and a mirror
+  // that keeps growing past a refused write looks healthy until a reload finds
+  // flash still holding the last body that fit.
+  const outcome = msgBox.enforceBudget();
+  if (outcome.evicted.length)
+    console.info("[msgbox] evicted", outcome.evicted.length, "records to fit flash");
+  msgBoxFull = outcome.full;
+  const body = msgBox.toJsonl();
+  fetch("/msgbox", {method: "POST", headers: {"Content-Type": "text/plain"}, body})
     .then(response => { if (!response.ok) throw new Error(String(response.status)); })
-    .catch(error => console.warn("[js8-inbox] firmware did not store:", error.message))
+    .catch(error => {
+      // A refused write is a state the operator has to see, not a console line:
+      // from here on the durable copy and this tab disagree.
+      msgBoxFull = true;
+      console.warn("[msgbox] firmware did not store:", error.message);
+      renderInbox();
+    })
     .finally(() => { inboxSyncPending = false; });
 }
 function loadInbox() {
-  fetch("/inbox", {cache: "no-store"})
+  fetch("/msgbox", {cache: "no-store"})
     .then(response => response.ok ? response.text() : Promise.reject(new Error(String(response.status))))
     .then(text => {
-      let restored = 0;
-      for (const line of text.split("\n")) {
-        if (!line.trim()) continue;
-        try {
-          const item = JSON.parse(line);
-          inboxStore.items.push(item);
-          inboxStore.nextId = Math.max(inboxStore.nextId, Number(item.id) + 1);
-          restored += 1;
-        } catch (_error) { /* one bad line must not lose the rest */ }
+      const result = msgBox.loadJsonl(text);
+      if (result.restored)
+        console.info("[msgbox] restored", result.restored, "records from firmware");
+      // The pre-type file comes back through the same endpoint; writing it out
+      // once in the new shape is what completes the migration and lets the
+      // firmware drop the old file.
+      if (result.migrated) {
+        console.info("[msgbox] migrated", result.migrated, "records to typed records");
+        syncInbox();
       }
-      if (restored) console.info("[js8-inbox] restored", restored, "messages from firmware");
+      if (result.dropped) console.warn("[msgbox]", result.dropped, "unreadable lines dropped");
       renderInbox();
     })
-    .catch(error => console.warn("[js8-inbox] could not load:", error.message));
+    .catch(error => console.warn("[msgbox] could not load:", error.message));
 }
 const inbox = new Js8Inbox.Js8Inbox({store: inboxStore,
   onEvent: event => { console.info("[js8-inbox]", event.type, event.id || "",
-    event.reason || "", event.detail || ""); syncInbox(); }});
+    event.reason || "", event.detail || "");
+    // Mail arriving is exactly when the header has to light up, so the panel is
+    // redrawn here rather than waiting for the next decode to redraw the page.
+    syncInbox(); renderInbox(); }});
 const relay = new Js8Relay.Js8Relay({
   onEvent: event => console.info("[js8-relay]", event.type,
     event.to || "", event.reason || "", event.detail || event.text || "")});
@@ -1731,6 +1756,23 @@ function renderControls() {
   }
   renderSendHint(aprsDraft);
   dom.send.disabled=txBlocks.length>0; dom.send.title=txBlocks.join("; ");
+  // SEND LATER only needs a message and a real station -- deliberately NOT the
+  // TX gates, because parking mail is what you do when you cannot transmit to
+  // that station now. It refuses a group, since a group never shows up.
+  if(dom.sendLater){
+    const draft=dom.message.value.trim();
+    const target=String(state.selectedCall||"");
+    const reasons=[];
+    if(!draft)reasons.push("type a message first");
+    if(!target)reasons.push("select a station");
+    else if(target.startsWith("@"))reasons.push("a group never shows up on the band");
+    else if(!Js8Inbox.isCallsign(target))reasons.push(`${target} cannot be addressed in a directed frame`);
+    if(draft.length>120)reasons.push(`${draft.length} characters, limit 120`);
+    if(state.txSessionMode!=="CHAT")reasons.push("only in CHAT");
+    dom.sendLater.disabled=reasons.length>0;
+    dom.sendLater.title=reasons.length?reasons.join("; ")
+      :`Hold this message and send it when ${target} shows up on the band`;
+  }
   dom.heartbeat.disabled=heartbeatBlocks.length>0; dom.heartbeat.title=heartbeatBlocks.join("; ");
   dom.heartbeatOffset.textContent=`${js8.txOffsetHz} Hz`;
   dom.tune.disabled=!state.tuneActive && tuneBlocks.length>0;
@@ -3277,12 +3319,24 @@ async function pollUnattended() {
 // Routes a decoded frame to whichever engine owns it. Any traffic at all pushes
 // our own beacon back, because a heartbeat landing in the middle of somebody's
 // conversation is exactly what upstream warns against.
-function handleDecodedFrame(decoded) {
+function handleDecodedFrame(decoded, {live = true} = {}) {
   if (!decoded) return;
   const now = js8Clock.now();
   if (decoded.kind === "directed" || decoded.kind === "heartbeat" || decoded.kind === "cq")
     heartbeat.noteBandActivity(now);
   if (decoded.kind === "directed") noteCqReply(decoded);
+  // MSG BOX: a heartbeat, a CQ or a frame aimed at us is a station saying it is
+  // here and listening -- the only moment worth spending a deferred message or a
+  // mail pickup on. `live` is false for a command another station relayed to us:
+  // that proves the relay is on the band, not the originator.
+  if (live) {
+    const mine = decoded.kind === "directed" && sameCall(decoded.to, currentJs8().myCall);
+    if (decoded.kind === "heartbeat" || decoded.kind === "cq" || mine)
+      noteStationAppearance(decoded.from, now);
+    // A bare ACK/NACK is single-frame, so it never reaches the assembled path.
+    if (mine && (decoded.command === " ACK" || decoded.command === " NACK"))
+      noteMailAck(decoded.from, now, {negative: decoded.command === " NACK"});
+  }
   if (decoded.kind === "heartbeat") { handleHeartbeatFrame(decoded, now); return; }
   // Single-frame queries (SNR?/GRID?/...) are answered here per frame. MSG, MSG
   // TO:, QUERY MSG/CALL and relay carry a multi-frame payload and are dispatched
@@ -3308,11 +3362,333 @@ function dispatchAssembledMessage(message) {
     console.info("[js8-reassembly] checksum failed, dropping", message.directed.command);
     return;
   }
-  const norm = Js8Protocol.normalizeAssembledCommand(message.directed.command, message.payload);
-  if (!norm) return; // single-frame query, already handled per frame
   const now = js8Clock.now();
+  // Mail somebody is holding for us is announced inside ordinary traffic --
+  // "HEARTBEAT SNR -12 MSG ID 32", "YES MSG ID 7 +2" -- so the whole payload is
+  // inspected before it is routed by command.
+  noteMailAdvert(message.directed, message.payload, now);
+  const norm = Js8Protocol.normalizeAssembledCommand(message.directed.command, message.payload);
+  if (!norm) {
+    // Not a command any engine owns: an ordinary message somebody typed at us.
+    // It belongs in the MSG BOX, otherwise three days away means never seeing it.
+    fileIncomingMessage(message.directed, message.payload, now);
+    return;
+  }
   if (norm.kind === "relay") handleRelayAssembled(message.directed, norm.text, now);
   else if (norm.kind === "inbox") handleInboxAssembled(message.directed, norm, now);
+}
+
+// Machine chatter carries no message: filing an SNR report as mail would bury
+// the one line the operator actually has to read. Free text is command " ".
+const MSGBOX_MACHINE_COMMANDS = new Set([" SNR", " HEARTBEAT SNR", " ACK", " NACK",
+  " GRID", " INFO", " STATUS", " HEARING", " YES", " NO", " RR", " QSL", " 73",
+  " SK", " FB", " AGN?", " DIT DIT", " HW CPY?", " QUERY", " QUERY MSGS",
+  " QUERY MSGS?", " QUERY CALL", " SNR?", " GRID?", " INFO?", " STATUS?", " HEARING?"]);
+function fileIncomingMessage(directed, payload, now) {
+  const js8 = currentJs8();
+  const text = String(payload || "").trim();
+  if (!text || !js8.myCall) return;
+  if (!sameCall(directed.to, js8.myCall)) return;   // group traffic is not mail
+  if (MSGBOX_MACHINE_COMMANDS.has(directed.command)) return;
+  if (isBlockedCall(directed.from)) return;
+  const outcome = inbox.fileIncoming({from: directed.from, to: directed.to, text},
+    {nowMs: now, myCall: js8.myCall});
+  if (outcome.action === "store") { syncInbox(); renderInbox(); }
+}
+
+// ---- mail somebody else is holding for us ----------------------------------
+// Upstream announces it ("HEARTBEAT SNR -12 MSG ID 32") and then waits for a
+// human to click. A station meant to run for a week unattended cannot; if we do
+// not ask, the message is never collected. So we ask -- under the same arming
+// that governs every other unattended transmission, and under a hard attempt cap
+// so a station whose delivery keeps failing cannot make us transmit forever.
+const mailAttempts = new Js8MsgBox.AttemptLedger();   // key: "STATION|id"
+const mailWaiting = new Map();                        // key -> {station, id, more, atMs}
+const mailPending = new Map();                        // station -> {id, sinceMs}
+const mailChain = new Map();                          // station -> {sinceMs, count}
+const MSGBOX_CHAIN_MAX = 3;        // messages pulled from one station per appearance
+const MSGBOX_CHAIN_WINDOW_MS = 15 * 60000;
+const mailKey = (station, id) => `${String(station).toUpperCase()}|${id}`;
+
+function noteMailAdvert(directed, payload, now) {
+  const js8 = currentJs8();
+  if (!js8.myCall || !sameCall(directed.to, js8.myCall)) return;
+  if (isBlockedCall(directed.from)) return;
+  const advert = Js8MsgBox.parseMailAdvert(payload);
+  if (!advert) return;
+  registerMailWaiting(directed.from, advert.id, advert.more, now);
+}
+
+function registerMailWaiting(station, id, more, now) {
+  const call = String(station || "").toUpperCase();
+  if (!call || !Number.isInteger(id) || id <= 0) return;
+  // A directed frame packs the recipient into 28 bits, so a base callsign longer
+  // than six characters cannot be addressed at all -- packDirectedHeader throws.
+  // Registering a pickup we could never ask for would turn every advertisement
+  // from such a station into an exception inside the decode path.
+  if (!Js8Inbox.isCallsign(call)) {
+    console.info("[msgbox] cannot fetch from", call, "-- callsign is not packable");
+    return;
+  }
+  const key = mailKey(call, id);
+  if (!mailWaiting.has(key))
+    mailWaiting.set(key, {station: call, id, more: Number(more) || 0, atMs: now});
+  renderInbox();
+  fetchWaitingMail(call, now);
+}
+
+// One open mail transaction per station: an ACK and a delivery carry no message
+// id, so two overlapping exchanges with the same station cannot be told apart
+// (decision 12). The window is the same four periods everything else uses.
+function mailTransactionOpen(station, now) {
+  const open = mailPending.get(station);
+  if (!open) return false;
+  if (now - open.sinceMs > Js8TxQueue.resendTtlMs(selectedMode())) {
+    mailPending.delete(station);
+    return false;
+  }
+  return true;
+}
+
+function mailChainRoom(station, now) {
+  const chain = mailChain.get(station);
+  if (!chain || now - chain.sinceMs > MSGBOX_CHAIN_WINDOW_MS) return true;
+  return chain.count < MSGBOX_CHAIN_MAX;
+}
+function noteMailChain(station, now) {
+  const chain = mailChain.get(station);
+  if (!chain || now - chain.sinceMs > MSGBOX_CHAIN_WINDOW_MS)
+    mailChain.set(station, {sinceMs: now, count: 1});
+  else chain.count += 1;
+}
+
+// Returns the reason it did not transmit, or "" when a fetch was queued -- the
+// panel prints it, because a FETCH button that does nothing without saying why
+// is the silent suppression decision 13 exists to forbid.
+function fetchWaitingMail(station, now, {manual = false, probe = false} = {}) {
+  const js8 = currentJs8();
+  const call = String(station || "").toUpperCase();
+  const waiting = [...mailWaiting.values()]
+    .filter(item => item.station === call)
+    .sort((left, right) => left.id - right.id);
+  if (!waiting.length) return "nothing waiting";
+  if (!js8.txSafetyAccepted || !activeEncoder) return "tx not enabled";
+  // Collecting our own mail still means keying the transmitter unattended.
+  if (!manual && js8.auto !== true) return "waiting for AUTO";
+  if (mailTransactionOpen(call, now)) return "exchange in progress";
+  if (!manual && !mailChainRoom(call, now)) return "three already fetched";
+  const next = waiting.find(item => manual || mailAttempts.due(mailKey(call, item.id), now));
+  if (!next) return waiting.some(item => mailAttempts.exhausted(mailKey(call, item.id)))
+    ? "gave up after 5 tries" : "waiting for the retry window";
+  if (probe) return "";   // the panel asks whether it COULD go, without sending
+
+  const key = mailKey(call, next.id);
+  mailAttempts.note(key, now);
+  noteMailChain(call, now);
+  mailPending.set(call, {id: next.id, sinceMs: now});
+  txQueue.push({source: "msgbox", text: `QUERY MSG ${next.id}`, to: call, nowMs: now,
+    submode: selectedMode(), meta: {command: "QUERY MSG", msgboxFetch: key}});
+  drainTxQueue(); renderTxQueue(); renderInbox();
+  return "";
+}
+
+// A delivered message arrives as "TEXT FROM <origin> NEXT MSG ID 33". The tail
+// is protocol, not mail: it is turned into the next pickup and taken out of the
+// text, so what the operator reads is what somebody wrote.
+//
+// The shape alone must not be enough to trigger this -- "GREETINGS FROM PRAGUE"
+// is an ordinary sentence. It counts as a delivery only when we asked this
+// station for mail, or when the tail is actually there.
+function unwrapDeliveredMail(from, norm, now) {
+  const text = String(norm.text || "");
+  if (norm.command !== "MSG") return text;
+  const call = String(from || "").toUpperCase();
+  const asked = mailPending.has(call);
+  if (!asked && !/NEXT MSG ID/i.test(text)) return text;
+  const delivery = Js8MsgBox.parseDeliveredMail(text);
+  if (!delivery) return text;
+  const open = mailPending.get(call);
+  if (open) clearMailWaiting(call, open.id);
+  if (delivery.nextId) {
+    registerMailWaiting(call, delivery.nextId, delivery.more, now);
+    console.info("[msgbox] more mail waiting at", call, "id", delivery.nextId);
+  }
+  return `${delivery.text} FROM ${delivery.origin}`;
+}
+
+// ---- our own mail, waiting for the recipient to show up ---------------------
+// A deferred message is not a slow send: it is mail parked until there is a
+// reason to believe somebody is listening. The reason is narrow on purpose --
+// a heartbeat, a CQ or a frame aimed at us, all of which mean "I am here and
+// receiving". A station heard mid-QSO with somebody else is not an invitation.
+//
+// It goes out as MSG, so the recipient's station files and acknowledges it even
+// with nobody at the keyboard, and that ACK is the only real proof of delivery
+// the protocol can produce (decision 3).
+const deferredAttempts = new Js8MsgBox.AttemptLedger();  // key: record id
+
+function deferMessage(toCall, text) {
+  const js8 = currentJs8();
+  const now = js8Clock.now();
+  const outcome = msgBox.defer({to: toCall, text, nowMs: now, myCall: js8.myCall});
+  if (outcome.refused) return outcome.refused;
+  if (isBlockedCall(toCall)) { msgBox.remove(outcome.id); return "blocked"; }
+  syncInbox(); renderInbox();
+  console.info("[msgbox] deferred", outcome.id, "for", outcome.to);
+  return "";
+}
+
+// Called only from a live decode. Reading it from the stations table instead
+// would fire a salvo at everybody who was on the band an hour ago, every reload.
+// Order matters and is the agreed one: my own mail first, then a direct send,
+// then what I hold for this station, and only last the roundabout way. Each step
+// is gated by the one-open-transaction rule, so at most one of them transmits.
+function noteStationAppearance(call, now) {
+  const station = String(call || "").toUpperCase();
+  if (!station || isBlockedCall(station)) return;
+  if (mailWaiting.size) fetchWaitingMail(station, now);
+  sendDeferredTo(station, now);
+  pushHeldMailTo(station, now);
+  parkDeferredVia(station, now);
+}
+
+// Stations this one is currently copying, from the same evidence the map draws
+// its arrows with: a signal report, an answer that only makes sense as a
+// reaction, or a HEARING list. Nothing older than the hour -- propagation moves.
+function stationsHeardBy(listener, now) {
+  const js8 = currentJs8();
+  const links = hearingLinks(state.activity.messages || [], js8.myCall, now);
+  const call = String(listener || "").toUpperCase();
+  return links.filter(link => link.to === call).map(link => link.from);
+}
+
+// Mail we hold for somebody who has just shown up. Upstream waits to be asked
+// with QUERY MSG -- and nobody ever asks, so the message rots in the store. This
+// is the same authority QUERY MSG already needs (transmitting for a third
+// party), spent at a moment we know the recipient is listening.
+function pushHeldMailTo(station, now, {manual = false, probe = false} = {}) {
+  const js8 = currentJs8();
+  const call = String(station || "").toUpperCase();
+  const held = inbox.pending(call).filter(item => !isBlockedCall(item.from));
+  if (!held.length) return "nothing held";
+  if (!js8.txSafetyAccepted || !activeEncoder) return "tx not enabled";
+  if (!manual && js8.auto !== true) return "waiting for AUTO";
+  if (mailTransactionOpen(call, now)) return "exchange in progress";
+  const next = held.find(item => manual || deferredAttempts.due(`held-${item.id}`, now));
+  if (!next) return "waiting for the retry window";
+  if (probe) return "";
+
+  deferredAttempts.note(`held-${next.id}`, now);
+  mailPending.set(call, {id: next.id, sinceMs: now, held: true});
+  txQueue.push({source: "msgbox", text: `MSG ${next.text} FROM ${next.from}`, to: call,
+    nowMs: now, submode: selectedMode(),
+    meta: {command: "MSG", msgboxHeldId: next.id}});
+  drainTxQueue(); renderTxQueue(); renderInbox();
+  return "";
+}
+
+// The station that just appeared hears somebody we are waiting for. Leaving the
+// message in its inbox costs one exchange and does not need the recipient to be
+// on the band at this instant -- unlike a relay hop, which needs both ends lucky
+// at once (decision 4). Its ACK proves storage, and that ends the automation.
+function parkDeferredVia(station, now, {manual = false, probe = false} = {}) {
+  const js8 = currentJs8();
+  const call = String(station || "").toUpperCase();
+  const waiting = msgBox.items("waiting")
+    .filter(item => (item.state || "waiting") === "waiting" && item.to !== call);
+  if (!waiting.length) return "nothing waiting";
+  const heard = stationsHeardBy(call, now);
+  const next = waiting.find(item => heard.includes(item.to));
+  if (!next) return "does not hear anybody we are waiting for";
+  if (!js8.txSafetyAccepted || !activeEncoder) return "tx not enabled";
+  if (!manual && js8.auto !== true) return "waiting for AUTO";
+  if (mailTransactionOpen(call, now)) return "exchange in progress";
+  if (!manual && !deferredAttempts.due(`via-${next.id}`, now)) return "waiting for the retry window";
+  if (probe) return "";
+
+  deferredAttempts.note(`via-${next.id}`, now);
+  mailPending.set(call, {id: next.id, sinceMs: now, handoff: true});
+  txQueue.push({source: "msgbox", text: `MSG TO:${next.to} ${next.text}`, to: call,
+    nowMs: now, submode: selectedMode(),
+    meta: {command: "MSG TO:", msgboxHandoffId: next.id}});
+  drainTxQueue(); renderTxQueue(); renderInbox();
+  console.info("[msgbox] parking", next.id, "for", next.to, "at", call);
+  return "";
+}
+
+// Same shape as fetchWaitingMail: returns the reason it did not transmit, or ""
+// when a message was queued. Silence with no reason is what decision 13 forbids.
+function sendDeferredTo(station, now, {manual = false, probe = false} = {}) {
+  const js8 = currentJs8();
+  const call = String(station || "").toUpperCase();
+  const waiting = msgBox.deferredFor(call, now);
+  if (!waiting.length) return "nothing waiting";
+  if (!js8.txSafetyAccepted || !activeEncoder) return "tx not enabled";
+  // Transmitting mail the operator wrote days ago, with nobody watching, is
+  // unattended operation whatever the content is (decision 8).
+  if (!manual && js8.auto !== true) return "waiting for AUTO";
+  if (mailTransactionOpen(call, now)) return "exchange in progress";
+  const next = waiting.find(item => manual || deferredAttempts.due(String(item.id), now));
+  if (!next) return waiting.some(item => deferredAttempts.exhausted(String(item.id)))
+    ? "gave up after 5 tries" : "waiting for the retry window";
+  if (probe) return "";
+
+  deferredAttempts.note(String(next.id), now);
+  msgBox.noteDeferredAttempt(next.id, now);
+  mailPending.set(call, {id: next.id, sinceMs: now, deferred: true});
+  txQueue.push({source: "msgbox", text: `MSG ${next.text}`, to: call, nowMs: now,
+    submode: selectedMode(), meta: {command: "MSG", msgboxDeferredId: next.id}});
+  drainTxQueue(); renderTxQueue(); syncInbox(); renderInbox();
+  return "";
+}
+
+// ACK carries no message id -- not here, not upstream -- so it can only be read
+// as "the one exchange open with this station succeeded" (decision 12). That is
+// exactly why never more than one is allowed to be open.
+function noteMailAck(from, now, {negative = false} = {}) {
+  const call = String(from || "").toUpperCase();
+  const open = mailPending.get(call);
+  if (!open || (!open.deferred && !open.handoff && !open.held)) return;
+  if (now - open.sinceMs > Js8TxQueue.resendTtlMs(selectedMode())) {
+    mailPending.delete(call);
+    return;   // too late to belong to our transmission
+  }
+  mailPending.delete(call);
+  if (negative) {
+    console.info("[msgbox] NACK from", call, "-- attempt failed");
+    renderInbox();
+    return;
+  }
+  if (open.handoff) {
+    // The intermediary stored it. That is all its ACK can mean -- nobody will
+    // ever tell us whether the recipient got it -- so the automation stops here
+    // and the record stays visible for the operator to act on (decision 5).
+    const record = msgBox.handOffDeferred(open.id, call);
+    if (record) console.info("[msgbox] parked", record.id, "for", record.to, "at", call);
+  } else if (open.held) {
+    if (inbox.confirmDelivered(open.id)) {
+      deferredAttempts.clear(`held-${open.id}`);
+      console.info("[msgbox] handed over", open.id, "to", call);
+    }
+  } else {
+    const record = msgBox.confirmDeferred(open.id);
+    if (record) {
+      deferredAttempts.clear(String(open.id));
+      console.info("[msgbox] delivered to", call, ":", record.text);
+    }
+  }
+  syncInbox(); renderInbox();
+}
+
+// The delivery answers the fetch. Whatever the reason it stopped waiting, the
+// pointer goes: either the mail is now ours, or it was never there.
+function clearMailWaiting(station, id) {
+  const call = String(station || "").toUpperCase();
+  mailWaiting.delete(mailKey(call, id));
+  mailAttempts.clear(mailKey(call, id));
+  const open = mailPending.get(call);
+  if (open && open.id === id) mailPending.delete(call);
+  renderInbox();
 }
 
 // Everything we answer to besides our own callsign. The always-joined pair is
@@ -3385,24 +3761,127 @@ function renderGroupsHint(result) {
   else delete dom.groupsHint.dataset.refused;
 }
 
-// The inbox is durable and read from any device; the operator needs to see what
-// the station is holding and be able to pull mail from another station manually.
+// MSG BOX. Durable and read from any device: the operator needs to see mail that
+// arrived while nobody was here, what the station is holding for others, and be
+// able to pull mail from another station by hand.
+const MSGBOX_STATE_LABEL = {UNREAD: "new", READ: "read", STORE: "held",
+  DELIVERED: "sent", DEFERRED: "waiting"};
+let msgBoxFilter = "all";
+let msgBoxUndo = null, msgBoxUndoTimer = 0;
+const MSGBOX_BASE_TITLE = typeof document === "object" ? document.title : "";
+
+// Unread mail is the one thing on this page that has to be noticeable from a tab
+// the operator is not looking at, so the count rides in the title as well.
+function renderMsgBoxTitle(unread) {
+  if (typeof document !== "object") return;
+  document.title = unread > 0 ? `(${unread}) ${MSGBOX_BASE_TITLE}` : MSGBOX_BASE_TITLE;
+}
+
 function renderInbox() {
   if (!dom.inboxRows) return;
   // Hide messages to/from a blocked DXCC entity, like everywhere else in JS8LAN.
-  const items = inbox.snapshot().items
-    .filter(item => !isBlockedCall(item.from) && !isBlockedCall(item.to));
-  const undelivered = items.filter(item => !item.delivered);
-  dom.inboxSummary.textContent = undelivered.length
-    ? `${undelivered.length} stored` : "empty";
-  dom.inboxRows.innerHTML = items.length
-    ? items.map(item => `<tr class="${item.delivered ? "inbox-delivered" : ""}">` +
-        `<td>${item.id}</td><td>${esc(item.from)}</td><td>${esc(item.to)}</td>` +
-        `<td class="inbox-text">${esc(item.text)}</td>` +
-        `<td>${item.delivered ? "sent" : "held"}</td></tr>`).join("")
-    : '<tr><td colspan="5" class="inbox-empty">No stored messages.</td></tr>';
+  const visible = item => !isBlockedCall(item.from) && !isBlockedCall(item.to);
+  const all = msgBox.items("all").filter(visible);
+  const items = msgBox.items(msgBoxFilter).filter(visible);
+  const unread = all.filter(item => item.type === "UNREAD").length;
+  const waiting = all.filter(item =>
+    item.type === "DEFERRED" && (item.state || "waiting") === "waiting").length;
+  const held = all.filter(item => item.type === "STORE").length;
+
+  const parts = [];
+  if (unread) parts.push(`<strong class="msgbox-new">${unread} NEW</strong>`);
+  if (waiting) parts.push(`${waiting} waiting`);
+  if (held) parts.push(`${held} held`);
+  if (msgBoxFull) parts.push('<strong class="msgbox-full">FULL</strong>');
+  dom.inboxSummary.innerHTML = parts.length ? parts.join(" · ") : "empty";
+  renderMsgBoxTitle(unread);
+
+  // Mail another station says it holds for us. Not messages yet -- pointers --
+  // so they are rows of their own, above the mail we actually have.
+  const pickups = (msgBoxFilter === "all" || msgBoxFilter === "mine")
+    ? [...mailWaiting.values()].filter(item => !isBlockedCall(item.station))
+      .sort((left, right) => left.atMs - right.atMs)
+    : [];
+  const pickupRows = pickups.map(item => {
+    const key = mailKey(item.station, item.id);
+    const gaveUp = mailAttempts.exhausted(key);
+    const more = item.more ? ` +${item.more}` : "";
+    return `<tr class="msgbox-row msgbox-pickup" data-pickup-key="${esc(key)}">` +
+      `<td>${item.id}</td>` +
+      `<td class="msgbox-state">${gaveUp ? "gave up" : "at station"}</td>` +
+      `<td class="call" data-call="${esc(item.station)}">${esc(item.station)}</td>` +
+      `<td class="inbox-text">Mail waiting at ${esc(item.station)}${more}</td>` +
+      `<td>${age(item.atMs)}</td>` +
+      `<td class="msgbox-actions"><button type="button" data-msg-action="fetch">FETCH</button>` +
+      `<button type="button" data-msg-action="forget">DEL</button></td></tr>`;
+  }).join("");
+
+  dom.inboxRows.innerHTML = pickupRows + (items.length
+    ? items.map(item => {
+        const type = item.type || "STORE";
+        const mine = type === "UNREAD" || type === "READ";
+        // The other station: whoever wrote to me, or whoever the message is for.
+        const peer = mine ? item.from : item.to;
+        const label = type === "DEFERRED"
+          ? (item.state === "handed" ? `via ${esc(item.via || "?")}`
+            : item.state === "attention" ? "attention" : "waiting")
+          : MSGBOX_STATE_LABEL[type] || type.toLowerCase();
+        return `<tr class="msgbox-row msgbox-${type.toLowerCase()}" data-msg-id="${item.id}">` +
+          `<td>${item.id}</td>` +
+          `<td class="msgbox-state">${label}</td>` +
+          `<td class="call" data-call="${esc(peer)}">${esc(peer)}</td>` +
+          `<td class="inbox-text">${esc(item.text)}</td>` +
+          `<td>${age(item.atMs)}</td>` +
+          `<td class="msgbox-actions">` +
+            (mine ? `<button type="button" data-msg-action="reply" title="Answer ${esc(item.from)}">REPLY</button>` : "") +
+            (type === "DEFERRED" ? `<button type="button" data-msg-action="sendnow" title="Send it now instead of waiting for ${esc(item.to)} to show up">SEND NOW</button>` : "") +
+            `<button type="button" data-msg-action="delete" title="Delete this message">DEL</button>` +
+          `</td></tr>`;
+      }).join("")
+    : (pickupRows ? "" : `<tr><td colspan="6" class="inbox-empty">${
+        msgBoxFilter === "all" ? "No messages." : "Nothing under this filter."}</td></tr>`));
+
+  // Why a fetch is not happening, in the panel rather than the console.
+  if (dom.inboxHint) {
+    const blocked = pickups.length ? fetchWaitingMail(pickups[0].station, js8Clock.now(),
+      {probe: true}) : "";
+    dom.inboxHint.textContent = blocked && blocked !== "nothing waiting"
+      ? `Mail waiting: ${blocked}.` : "";
+    dom.inboxHint.hidden = !dom.inboxHint.textContent;
+  }
+  if (dom.inboxFilters) for (const button of dom.inboxFilters.querySelectorAll("[data-msgbox-filter]"))
+    button.setAttribute("aria-pressed", String(button.dataset.msgboxFilter === msgBoxFilter));
+  if (dom.inboxUndo) dom.inboxUndo.hidden = !msgBoxUndo;
   if (dom.inboxQueryMsgs)
     dom.inboxQueryMsgs.disabled = !state.selectedCall || !currentJs8().txSafetyAccepted || !activeEncoder;
+}
+
+// Reading is confirmed by a click, never by the section being open: a box that
+// marks everything read the moment it scrolls past is a box that loses messages.
+function markMsgRead(id) {
+  if (!msgBox.markRead(id)) return;
+  syncInbox(); renderInbox();
+}
+
+// Deletion is undoable instead of confirmed. The window is short on purpose --
+// long enough to catch the wrong row, short enough that the record does not
+// linger outside the store while mail keeps arriving.
+const MSGBOX_UNDO_MS = 10000;
+function deleteMsg(id) {
+  const record = msgBox.remove(id);
+  if (!record) return;
+  msgBoxUndo = record;
+  if (msgBoxUndoTimer) clearTimeout(msgBoxUndoTimer);
+  msgBoxUndoTimer = setTimeout(() => { msgBoxUndo = null; msgBoxUndoTimer = 0; renderInbox(); },
+    MSGBOX_UNDO_MS);
+  syncInbox(); renderInbox();
+}
+function undoDeleteMsg() {
+  if (!msgBoxUndo) return;
+  msgBox.restore(msgBoxUndo);
+  msgBoxUndo = null;
+  if (msgBoxUndoTimer) { clearTimeout(msgBoxUndoTimer); msgBoxUndoTimer = 0; }
+  syncInbox(); renderInbox();
 }
 
 // Ask the selected station whether it holds mail for us. Its answer
@@ -3464,9 +3943,10 @@ function handleInboxAssembled(directed, norm, now) {
   // Only stations decoded here may be offered as heard -- a callsign we merely saw named
   // in someone else's frame must never be relayed on air as one we copy.
   const heard = (state.activity.calls || []).filter(item => item && item.call && item.heardDirectly !== false);
+  const text = unwrapDeliveredMail(directed.from, norm, now);
   const outcome = inbox.handle(
     {from: directed.from, to: directed.to, command: norm.command,
-     text: norm.text, complete: true},
+     text, complete: true},
     {nowMs: now, myCall: js8.myCall, armed: js8.auto === true, hearing: heard});
 
   if (outcome.action === "skip") {
@@ -3507,10 +3987,15 @@ function handleRelayAssembled(directed, relayText, now) {
     // If the relayed payload is itself a directed command, act on it and answer
     // the originator, rather than only filing the text.
     const relayed = parseRelayedCommand(outcome.text, directed.from);
-    if (relayed) { handleDecodedFrame(relayed); return; }
+    // Not a live appearance: the relay is on the band, the originator may not be.
+    if (relayed) { handleDecodedFrame(relayed, {live: false}); return; }
     // Mail for us arrives regardless of unattended mode; only the ACK needs a
     // working transmitter.
     appendRelayMessage(directed.from, outcome.text);
+    // A relayed message is somebody writing to us the hard way -- it belongs in
+    // the MSG BOX for exactly the same reason a direct one does.
+    fileIncomingMessage({from: directed.from, to: js8.myCall, command: " "},
+      outcome.text, now);
     if (js8.txSafetyAccepted && activeEncoder && outcome.ack) {
       txQueue.push({source: "relay", text: outcome.ack.text, to: outcome.ack.to,
         nowMs: now, meta: {command: "ACK"}});
@@ -4701,6 +5186,59 @@ function bind() {
   });
   dom.inboxRefresh.addEventListener("click",()=>{loadInbox();renderInbox();});
   dom.inboxQueryMsgs.addEventListener("click",queryStoredMessages);
+  // One delegated handler: the rows are rebuilt on every decode, so per-row
+  // listeners would be attached and thrown away several times a minute.
+  dom.inboxRows.addEventListener("click",event=>{
+    const action=event.target.closest("[data-msg-action]");
+    const call=event.target.closest("[data-call]");
+    // Mail another station holds for us: fetch it by hand (this works with AUTO
+    // off -- the operator clicking IS the attendance) or drop the pointer.
+    const pickup=event.target.closest("tr[data-pickup-key]");
+    if(pickup){
+      const entry=mailWaiting.get(pickup.dataset.pickupKey);
+      if(!entry)return;
+      if(action&&action.dataset.msgAction==="fetch"){
+        const refused=fetchWaitingMail(entry.station,js8Clock.now(),{manual:true});
+        if(refused)console.info("[msgbox] fetch refused:",refused);
+      }else if(action&&action.dataset.msgAction==="forget"){
+        clearMailWaiting(entry.station,entry.id);
+      }else if(call)chooseCall(call.dataset.call);
+      return;
+    }
+    const row=event.target.closest("tr[data-msg-id]");
+    if(!row)return;
+    const id=Number(row.dataset.msgId);
+    if(action){
+      if(action.dataset.msgAction==="delete")deleteMsg(id);
+      else if(action.dataset.msgAction==="sendnow"){
+        // Deferring is not a prison sentence: the operator can always overrule
+        // the wait. Manual, so it does not need arming.
+        const record=inboxStore.byId(id);
+        if(record){
+          const refused=sendDeferredTo(record.to,js8Clock.now(),{manual:true});
+          if(refused)console.info("[msgbox] send now refused:",refused);
+        }
+      }
+      else if(action.dataset.msgAction==="reply"){
+        const record=inboxStore.byId(id);
+        // chooseCall() also opens the reply section and focuses the message
+        // field, which is the whole point of answering from here.
+        if(record){markMsgRead(id);chooseCall(record.from);}
+      }
+      return;
+    }
+    // A click on the callsign selects the station like everywhere else; anywhere
+    // else on the row is the read confirmation.
+    markMsgRead(id);
+    if(call)chooseCall(call.dataset.call);
+  });
+  if(dom.inboxFilters)dom.inboxFilters.addEventListener("click",event=>{
+    const button=event.target.closest("[data-msgbox-filter]");
+    if(!button)return;
+    msgBoxFilter=button.dataset.msgboxFilter;
+    renderInbox();
+  });
+  if(dom.inboxUndoButton)dom.inboxUndoButton.addEventListener("click",undoDeleteMsg);
   dom.cqRepeat.addEventListener("change",()=>{setJs8Setting("cqRepeatMin",Number(dom.cqRepeat.value)||0);renderCqState();});
   dom.hbEnabled.addEventListener("change",()=>{setJs8Setting("hb",dom.hbEnabled.checked);applyHeartbeatSettings();});
   dom.hbAck.addEventListener("change",()=>{setJs8Setting("hbAck",dom.hbAck.checked);applyHeartbeatSettings();});
@@ -4716,6 +5254,17 @@ function bind() {
   dom.heartbeat.addEventListener("click",()=>{if(!dom.heartbeat.disabled)startHeartbeat();});
   dom.tune.addEventListener("click",()=>{if(!dom.tune.disabled)toggleTune();});
   dom.composer.addEventListener("submit",event=>{event.preventDefault();const text=dom.message.value.trim();if (!text || dom.send.disabled)return;dom.message.value="";renderControls();startTx(text);});
+  // A button, not a checkbox: a switch that survives one message is how the next
+  // one gets parked by accident.
+  if(dom.sendLater)dom.sendLater.addEventListener("click",()=>{
+    const text=dom.message.value.trim();
+    if(!text||dom.sendLater.disabled)return;
+    const refused=deferMessage(state.selectedCall,text);
+    if(refused){dom.sendLater.title=`Refused: ${refused}`;return;}
+    dom.message.value="";
+    renderControls();persistSession();
+    if(dom.inboxSection)dom.inboxSection.open=true;
+  });
   dom.message.addEventListener("input",()=>{renderControls();persistSession();});
   dom.message.addEventListener("keydown",event=>{if(event.key!=="Enter" || event.isComposing)return;event.preventDefault();if(!dom.send.disabled)dom.composer.requestSubmit();});
   // Resend a transmission that was interrupted by leaving mid-frame: restage the
@@ -4897,13 +5446,32 @@ async function init() {
     resetAutoReplyLock(){autoReply.lastDirectedFrameMs=0;},
     txCaptured(){return txCaptured.slice();},
     clearTxCaptured(){txCaptured.length=0;},
+    clearTxQueue(){const dropped=txQueue.clear("test");renderTxQueue();return dropped;},
     renderInboxNow(){renderInbox();},
     unattendedPoll(){return pollUnattended();},
     autoExpiry(){return state.autoExpiryAt;},
     // EMAIL has no entry in the Mode selector any more, so the composer can only
     // be reached from here -- the module still ships and stays under test.
     setTxSessionMode(mode){state.txSessionMode=mode;renderControls();},
-    storeInboxDirect(rec){inboxStore.add({from:rec.from,to:rec.to,text:rec.text,atMs:0,delivered:false});renderInbox();},
+    storeInboxDirect(rec){inboxStore.add({type:rec.type||"STORE",from:rec.from,to:rec.to,
+      text:rec.text,atMs:Number(rec.atMs)||Date.now(),state:rec.state||"",delivered:false});renderInbox();},
+    msgBoxState(){return {...msgBox.counts(),filter:msgBoxFilter,full:msgBoxFull,
+      undo:msgBoxUndo?msgBoxUndo.id:0,title:document.title,
+      waitingMail:[...mailWaiting.values()].map(item=>({station:item.station,id:item.id,
+        attempts:(mailAttempts.entry(mailKey(item.station,item.id))||{attempts:0}).attempts}))};},
+    msgBoxFetch(station){return fetchWaitingMail(String(station||"").toUpperCase(),
+      js8Clock.now(),{manual:true});},
+    msgBoxDefer(to,text){return deferMessage(to,text);},
+    msgBoxSendDeferred(station,options){return sendDeferredTo(String(station||"").toUpperCase(),
+      js8Clock.now(),options||{});},
+    msgBoxDeferred(){return msgBox.items("waiting").map(item=>({id:item.id,to:item.to,
+      text:item.text,state:item.state,attempts:Number(item.attempts)||0,via:item.via||""}));},
+    msgBoxPushHeld(station,options){return pushHeldMailTo(String(station||"").toUpperCase(),
+      js8Clock.now(),options||{});},
+    msgBoxParkVia(station,options){return parkDeferredVia(String(station||"").toUpperCase(),
+      js8Clock.now(),options||{});},
+    msgBoxHeardBy(station){return stationsHeardBy(station,js8Clock.now());},
+    msgBoxSetFilter(filter){msgBoxFilter=filter;renderInbox();},
     autoReplyState(){return {...autoReply.snapshot(),
       restrictions:restrictions.snapshot(js8Clock.now())};},
     fileProtocol(){return {prepared:binState.prepared,active:binState.active,lastProtocol:binState.lastProtocol};},
