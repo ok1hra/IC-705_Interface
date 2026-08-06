@@ -11,6 +11,28 @@ published.
 
 ## Working tree — not committed
 
+* **Point at the waterfall and the feed answers "is anybody already there?"** Moving the
+  pointer over the waterfall now draws a thin white line where a click would put the
+  transmission — and the same line runs down the whole Recent-traffic list, on the same axis,
+  while every received row reveals a band showing what it occupies, shaded by SNR so a loud
+  station reads as a bigger obstacle than a weak one. The line crossing a band is the
+  collision, visible before keying anything. This is the question the waterfall alone cannot
+  answer: it holds sixteen seconds, so it says whether a frequency is busy *now*, while the
+  feed remembers who has been there for hours. The bands stay invisible until the pointer is
+  actually over the waterfall, because a hundred permanently tinted rows would be wallpaper,
+  and they are switched rather than faded — a transition puts the answer behind the pointer.
+  Getting them behind the text without wrapping the text in a box of its own needed
+  `z-index:-1` inside a row that establishes its own stacking context; that is the one layer
+  painted above a row's background and below its inline content. The line is a pseudo-element
+  on the list rather than a node per row, so it survives every re-render and costs nothing to
+  move. Own transmissions get no band: they are not an obstacle to themselves.
+
+* **The filter bar is now an occupancy histogram.** The same bars from every visible row,
+  overlaid inside the 5 min / ALL / MYCALL / TX strip on the waterfall's axis. Nothing is
+  bucketed or counted — translucent bars simply add up where stations share an offset, so a
+  peak sits directly above the frequency that produced it and needs no legend. Built from the
+  rows actually on screen, so changing the filter changes the histogram with it.
+
 * **A completed TX row no longer prints red text on a green background.** Two rules met in
   the recent-traffic feed and neither knew about the other: `.tx-copy-sent` carries the chat
   thread's live progress bar (`background:#176b52`, green filling up behind the text while a

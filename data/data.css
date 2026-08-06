@@ -509,7 +509,7 @@ button { color: inherit; cursor: pointer; }
 .bin-transfer-panel > footer .danger { border-color:var(--red); color:var(--red); background:#241012; }
 .bin-transfer-panel > footer .primary { border-color:var(--cyan); color:var(--cyan); }
 .bin-transfer-panel > footer button:disabled { cursor:not-allowed; opacity:.4; }
-.message { position:relative; display:grid; grid-template-columns:auto auto minmax(0,1fr); align-items:baseline; gap:8px; padding:7px 10px; border-bottom:1px solid #1d322e; }
+.message { position:relative; z-index:0; display:grid; grid-template-columns:auto auto minmax(0,1fr); align-items:baseline; gap:8px; padding:7px 10px; border-bottom:1px solid #1d322e; }
 /* Where this row's signal sits in the audio passband, on the same axis as the waterfall
    above: the containing block of an absolutely positioned child is the row's PADDING box,
    which is exactly the width the canvas is stretched to, so 1500 Hz lands on the same
@@ -519,6 +519,23 @@ button { color: inherit; cursor: pointer; }
    at body's 320px minimum the narrowest real signal (mode E, 25 Hz) is already 3.5px, so
    it never fires and never over-claims a width. */
 .signal-stripe { position:absolute; bottom:0; height:3px; min-width:3px; background:#6b7d78; }
+/* Occupancy band behind the row's text. z-index:-1 puts it in the layer between the row's
+   own background and its inline content, which is the only way to get "behind the text"
+   without moving the text into a positioned box of its own -- and .message carries z-index:0
+   so that -1 cannot escape the row and disappear behind the section's panel. Revealed only
+   while the pointer is over the waterfall: outside that moment nobody is asking.
+   Switched, not faded -- the bands answer a question the pointer is asking right now, and a
+   fade puts the answer behind the pointer. */
+.signal-band { position:absolute; top:0; bottom:0; z-index:-1; min-width:2px; opacity:0; }
+.collision-preview .signal-band { opacity:1; }
+/* The prospective TX frequency, run down the whole feed as one straight edge. A pseudo
+   element rather than a node per row: it survives innerHTML, costs nothing to move, and
+   crossing a band is exactly the collision the operator is looking for. */
+#traffic { position:relative; }
+#traffic.collision-preview::after {
+  content:""; position:absolute; top:0; bottom:0; left:var(--collision-x); width:1px;
+  background:rgba(255,255,255,.62); pointer-events:none;
+}
 /* Own transmissions are deliberately much quieter than received signals. The red the rest
    of a TX row uses turned out to shout from down here: the row already says "this went on
    air" three times over (red callsign, red copy, the end marker), and a fourth statement in
@@ -666,7 +683,19 @@ button { color: inherit; cursor: pointer; }
 .settings-storage a { color:var(--cyan); }
 .compact-diagnostics { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 14px; padding: 10px; color: var(--muted); }
 .compact-diagnostics code { color: var(--text); white-space: normal; }
-.traffic-filter { display:flex; flex-wrap:wrap; gap:5px; padding:7px 10px; border-bottom:1px solid #1d322e; }
+.traffic-filter { position:relative; z-index:0; display:flex; flex-wrap:wrap; gap:5px; padding:7px 10px; border-bottom:1px solid #1d322e; }
+/* Every visible row's bar, overlaid on the waterfall's axis inside the filter bar. Nothing
+   is bucketed or counted: translucent bars simply add up where stations share an offset, so
+   the strip reads as band occupancy without a scale to explain. inset:0 makes its box the
+   filter bar's padding box, the same width as the canvas, so a peak here sits directly above
+   the frequency that produced it. */
+.traffic-histogram { position:absolute; inset:0; z-index:-1; pointer-events:none; }
+.histogram-bar { position:absolute; top:0; bottom:0; min-width:2px; background:rgba(120,214,196,.15); }
+.histogram-bar.histogram-bar-tx { background:rgba(255,107,107,.13); }
+.traffic-filter.collision-preview::after {
+  content:""; position:absolute; top:0; bottom:0; left:var(--collision-x); width:1px;
+  background:rgba(255,255,255,.62); pointer-events:none;
+}
 .traffic-filter button { padding:3px 8px; border:1px solid var(--line); border-radius:999px; color:var(--muted); background:transparent; font-size:11px; line-height:1.4; cursor:pointer; }
 .traffic-filter button:hover:not(:disabled) { color:var(--text); border-color:#3d675e; }
 .traffic-filter button.active { color:var(--cyan); border-color:var(--cyan); background:#123029; }

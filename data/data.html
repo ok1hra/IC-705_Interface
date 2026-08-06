@@ -271,6 +271,9 @@
       <details class="compact-section" data-section="traffic">
         <summary><span>Recent traffic</span><span id="trafficSummary" class="summary-status">0 messages</span></summary>
         <div class="traffic-filter" role="group" aria-label="Filter recent traffic">
+          <!-- Occupancy strip behind the filter buttons: every visible row's bar on the
+               waterfall's own axis, overlaid so density shows through. -->
+          <div id="trafficHistogram" class="traffic-histogram" aria-hidden="true"></div>
           <button type="button" data-traffic-filter="5m" aria-pressed="false">5 min</button>
           <button type="button" data-traffic-filter="all" aria-pressed="true">ALL</button>
           <button type="button" data-traffic-filter="mycall" aria-pressed="false">MYCALL</button>

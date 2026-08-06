@@ -1490,6 +1490,35 @@ f.onload=()=>{
                     return c==='rgba(0, 0, 0, 0)'||c==='transparent';};
                   checks.txCopyPlainInFeed=Boolean(feedCopy&&chatCopy)&&
                     transparent(feedCopy)&&!transparent(chatCopy);
+                  // Hovering the waterfall proposes a TX frequency and asks the feed whether
+                  // anybody is already there. The hairline has to land on the SAME screen
+                  // column as the waterfall's own preview line, otherwise the collision it
+                  // draws is imaginary -- so it is measured against the canvas, like the bars.
+                  const wf=d.querySelector('#waterfall'),wfBox=wf.getBoundingClientRect();
+                  const hoverHz=1500,hoverX=wfBox.left+(hoverHz-500)/2200*wfBox.width;
+                  const feed=d.querySelector('#traffic');
+                  checks.collisionHiddenUntilHover=!feed.classList.contains('collision-preview')&&
+                    getComputedStyle(d.querySelector('#traffic .signal-band')).opacity==='0';
+                  wf.dispatchEvent(new f.contentWindow.MouseEvent('mousemove',
+                    {bubbles:true,clientX:hoverX,clientY:wfBox.top+10}));
+                  const hairline=getComputedStyle(feed,'::after');
+                  const hairlineX=feed.getBoundingClientRect().left+parseFloat(hairline.left);
+                  checks.collisionHairlineTracksWaterfall=feed.classList.contains('collision-preview')&&
+                    Math.abs(hairlineX-hoverX)<=1;
+                  checks.collisionBandsRevealed=
+                    getComputedStyle(d.querySelector('#traffic .signal-band')).opacity==='1'&&
+                    // behind the text, not over it
+                    getComputedStyle(d.querySelector('#traffic .signal-band')).zIndex==='-1';
+                  wf.dispatchEvent(new f.contentWindow.MouseEvent('mouseleave',{bubbles:true}));
+                  checks.collisionClearsOnLeave=!feed.classList.contains('collision-preview');
+                  // The histogram is the same bars again, so it must hold exactly one per
+                  // visible row that has an offset, on the same axis.
+                  const bars=[...d.querySelectorAll('#trafficHistogram .histogram-bar')];
+                  const rowStripes=[...d.querySelectorAll('#traffic .signal-stripe')];
+                  const barBox=d.querySelector('#trafficHistogram').getBoundingClientRect();
+                  checks.histogramMirrorsRows=bars.length===rowStripes.length&&bars.length>0&&
+                    Math.abs(barBox.left-feed.getBoundingClientRect().left)<=1&&
+                    Math.abs(barBox.width-feed.getBoundingClientRect().width)<=1;
                   // CLEAR cannot reach the store inside the worker, so without the watermark
                   // the live row pops straight back and CLEAR reads as a broken button.
                   d.querySelector('[data-traffic-clear]').click();

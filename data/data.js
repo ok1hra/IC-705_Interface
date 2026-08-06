@@ -149,6 +149,7 @@ const dom = {
   aprsParamCost:$("aprsParamCost"), aprsParamInsert:$("aprsParamInsert"),
   aprsRecentCalls:$("aprsRecentCalls"),
   traffic:$("traffic"), trafficSummary:$("trafficSummary"), stationRows:$("stationRows"),
+  trafficHistogram:$("trafficHistogram"),
   trafficSection:document.querySelector('[data-section="traffic"]'),
   trafficFilter:document.querySelector(".traffic-filter"),
   trafficClear:document.querySelector("[data-traffic-clear]"),
@@ -297,6 +298,7 @@ const state = {
   startup:{ready:false, failed:false, progress:0, label:"Loading JS8Call-ICOM modem",
     detail:"Preparing modem components…"},
   stationSort:{key:"lastSlotUtcMs", direction:"desc"}, trafficFilter:"all", testActivityLocked:false,
+  previewHz:null,
   hearingLinksVisible:true,
   txSessionMode:"CHAT", audioDb:-90, tuneActive:false, spectrumWasTransmitting:false,
   help:{incompatibleActive:false},
@@ -993,6 +995,14 @@ function drawTxMarker(overlayCtx, view) {
   const width=Js8Protocol.bandwidthHz(mode)/(RX_HIGH-RX_LOW)*dom.overlay.width;
   overlayCtx.fillStyle="rgba(255,0,36,.28)"; overlayCtx.fillRect(start,0,Math.max(3,width),dom.overlay.height);
   overlayCtx.strokeStyle="#ff1838"; overlayCtx.lineWidth=2; overlayCtx.beginPath(); overlayCtx.moveTo(start+1,0); overlayCtx.lineTo(start+1,dom.overlay.height); overlayCtx.stroke();
+  // Where a click would put the transmission. Drawn after the TX marker so it stays legible
+  // while the pointer is inside the marker's own band, and deliberately thin and white --
+  // it is a proposal, not a state, and must not be mistaken for the red TX marker itself.
+  if(state.previewHz!==null){
+    const at=Math.round(hzToX(state.previewHz))+.5;
+    overlayCtx.strokeStyle="rgba(255,255,255,.75)"; overlayCtx.lineWidth=1;
+    overlayCtx.beginPath(); overlayCtx.moveTo(at,0); overlayCtx.lineTo(at,dom.overlay.height); overlayCtx.stroke();
+  }
   const label=`TX ${currentJs8().txOffsetHz} Hz`, labelX=Math.min(start+5,dom.overlay.width-96);
   overlayCtx.fillStyle="#fff"; overlayCtx.font="bold 11px monospace";
   overlayCtx.shadowColor="#000"; overlayCtx.shadowBlur=3; overlayCtx.fillText(label,labelX,14);
@@ -2051,23 +2061,81 @@ function receptionState(message){
 //
 // Not drawn at all when the offset is unknown -- a row restored from a session written
 // before own-TX offsets were recorded. An invented position would be worse than none.
-function renderSignalStripe(message){
+function stripeGeometry(message){
   const offsetHz=Number(message.offsetHz);
-  if(!Number.isFinite(offsetHz)||!offsetHz)return "";
-  const submode=Number(message.submode);
-  const widthHz=Js8Protocol.bandwidthHz(submode);
+  if(!Number.isFinite(offsetHz)||!offsetHz)return null;
+  const widthHz=Js8Protocol.bandwidthHz(Number(message.submode));
   const span=RX_HIGH-RX_LOW;
   const left=Math.max(0,Math.min(100,(offsetHz-RX_LOW)/span*100));
   // Clamped so a signal near the top of the passband cannot paint past the row edge and
   // claim bandwidth outside the decoder's range.
-  const width=Math.max(0,Math.min(100-left,widthHz/span*100));
+  return {offsetHz,widthHz,left,width:Math.max(0,Math.min(100-left,widthHz/span*100))};
+}
+
+// How solid a signal's occupancy band looks. SNR drives it because the question the band
+// answers is "how much of an obstacle is this station" -- a +5 dB signal on your chosen
+// offset is a different problem from a -20 dB one. Anything without a recorded SNR (own
+// transmissions, rows restored from before SNR was kept) gets a flat middle value rather
+// than a guess in either direction.
+function stripeAlpha(snr){
+  const value=Number(snr);
+  if(!Number.isFinite(value))return .10;
+  return .06+Math.max(0,Math.min(1,(value+26)/36))*.22;
+}
+
+function renderSignalStripe(message){
+  const geometry=stripeGeometry(message);
+  if(!geometry)return "";
+  const {offsetHz,widthHz,left,width}=geometry;
   const kind=message.outgoing?(message.emitted?"tx-on-air":"tx-off-air"):"rx";
+  // Full-height occupancy band behind the text, revealed only while the pointer is over the
+  // waterfall. That is the moment the operator is asking "can I transmit here?", and the
+  // answer is whether the hairline at the prospective offset runs through anybody's band.
+  // Hidden the rest of the time on purpose: a hundred permanently tinted rows would be
+  // wallpaper. Own transmissions get none -- they are not an obstacle to themselves.
+  const band=message.outgoing ? ""
+    : `<span class="signal-band" style="left:${left.toFixed(3)}%;width:${width.toFixed(3)}%;`
+      +`background:rgba(120,214,196,${stripeAlpha(message.snr).toFixed(3)})"></span>`;
   // The tooltip is filled in on hover (see the mouseover handler): age has to be computed
   // when it is read, not when the feed happens to be redrawn.
-  return `<span class="signal-stripe stripe-${kind}" data-stripe-offset="${Math.round(offsetHz)}"`
+  return band+`<span class="signal-stripe stripe-${kind}" data-stripe-offset="${Math.round(offsetHz)}"`
     +` data-stripe-width="${widthHz}" data-stripe-slot="${Number(message.lastSlotUtcMs)||0}"`
     +(Number.isFinite(Number(message.snr))?` data-stripe-snr="${Math.round(Number(message.snr))}"`:"")
     +` style="left:${left.toFixed(3)}%;width:${width.toFixed(3)}%"></span>`;
+}
+
+// The same bars from every visible row, stacked into one strip in the filter bar. Nothing is
+// counted or bucketed: the bars are drawn translucent on top of each other, so where several
+// stations sit on the same offset the colour simply adds up. That is the histogram -- band
+// occupancy read at a glance, on the same axis as the waterfall and as every row below.
+function renderTrafficHistogram(messages){
+  return messages.map(message=>{
+    const geometry=stripeGeometry(message);
+    if(!geometry)return "";
+    const own=message.outgoing?" histogram-bar-tx":"";
+    return `<span class="histogram-bar${own}" style="left:${geometry.left.toFixed(3)}%;`
+      +`width:${geometry.width.toFixed(3)}%"></span>`;
+  }).join("");
+}
+
+// A thin line where a click on the waterfall would put the transmission, drawn in the
+// waterfall itself and repeated across the whole feed. On its own the waterfall answers
+// "is that frequency busy right now"; the feed answers "who has been there", which is the
+// question a 16-second-deep waterfall cannot. Same axis in both, so the line is one
+// straight edge from the canvas down through every row.
+function setCollisionPreview(hz){
+  const value=Number.isFinite(hz)?Math.round(hz):null;
+  if(state.previewHz===value)return;      // mousemove fires far faster than this needs to run
+  state.previewHz=value;
+  const active=value!==null;
+  dom.traffic.classList.toggle("collision-preview",active);
+  dom.trafficFilter.classList.toggle("collision-preview",active);
+  if(active){
+    const at=`${((value-RX_LOW)/(RX_HIGH-RX_LOW)*100).toFixed(3)}%`;
+    dom.traffic.style.setProperty("--collision-x",at);
+    dom.trafficFilter.style.setProperty("--collision-x",at);
+  }
+  waterfall.paintOverlay();
 }
 
 // Holes are drawn from the slot gaps the store recorded alongside the text, never from
@@ -2185,6 +2253,9 @@ function renderActivity() {
       +(status==="incomplete"?" message-incomplete":"")+(status==="bad crc"?" message-badcrc":"");
     return divider+`<article class="${classes}"${status?` data-rx-state="${esc(status)}"`:""}><span class="message-meta"><span>${when}</span><span>${MODE_TO_SPEED[message.submode]||"?"}</span><span>${Math.round(message.offsetHz)} Hz</span>${status?`<span class="rx-state">${esc(status)}</span>`:""}</span><strong${sender.clickable?` data-call="${esc(call)}"`:""}${ownCall?' class="own-callsign" data-own-call="true"':""}>${esc(call || "JS8")}</strong><span class="message-text">${aprsReply}${renderReceivedText(message,currentJs8().myCall)}${ended?'<span class="rx-eot" title="End of message confirmed">♢</span>':""}</span>${renderSignalStripe(message)}</article>`;
   }).join("") : '<div class="empty-row">Waiting for JS8 activity…</div>';
+  // Built from `recent`, the rows actually on screen, so the histogram and the list can
+  // never disagree -- change the filter and the strip follows.
+  dom.trafficHistogram.innerHTML=renderTrafficHistogram(recent);
   renderRetryCountdowns();   // the 1 s tick owns it afterwards; this fills the first second
   dom.stationRows.innerHTML=sortedStations(calls).map(item=>{
     const direction=stationDirection(item);
@@ -5086,6 +5157,13 @@ function bind() {
   dom.freqTimetablePopover.addEventListener("keydown",event=>{if(event.key!=="Enter"||event.target.id!=="ttCustom")return;event.preventDefault();const hz=Math.round((Number(event.target.value)||0)*1000);if(hz>=Js8Settings.TIMETABLE_MIN_HZ&&hz<=Js8Settings.TIMETABLE_MAX_HZ){setTimetableSlot(ttRuntime.editSlot,hz,null);closeTimetablePopover();}});
   document.addEventListener("click",event=>{if(dom.freqTimetablePopover.hidden)return;if(event.target.closest(".tt-popover")||event.target.closest("[data-slot]"))return;closeTimetablePopover();});
   dom.waterfall.addEventListener("click",event=>{const rect=dom.waterfall.getBoundingClientRect();setJs8Setting("txOffsetHz",Math.round(RX_LOW+(event.clientX-rect.left)/rect.width*(RX_HIGH-RX_LOW)));activeEncoder&&activeEncoder.setToneOffset(currentJs8().txOffsetHz);});
+  // Same arithmetic as the click above, so what the preview promises is exactly what the
+  // click delivers. Cleared on leave, and also whenever the click lands: the marker has
+  // moved to that frequency by then and a second line on top of it says nothing.
+  const previewFrom=event=>{const rect=dom.waterfall.getBoundingClientRect();
+    setCollisionPreview(RX_LOW+(event.clientX-rect.left)/rect.width*(RX_HIGH-RX_LOW));};
+  dom.waterfall.addEventListener("mousemove",previewFrom);
+  dom.waterfall.addEventListener("mouseleave",()=>setCollisionPreview(null));
   // The @ used to be stripped here so that @APRSIS could never land in this field.
   // Joined groups now belong in it, so the guard moved into chooseCall(), where it is
   // both narrower and stronger: only a group we have joined is accepted, and a gateway
