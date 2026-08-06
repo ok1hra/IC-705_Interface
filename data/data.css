@@ -696,8 +696,13 @@ button { color: inherit; cursor: pointer; }
    filter bar's padding box, the same width as the canvas, so a peak here sits directly above
    the frequency that produced it. */
 .traffic-histogram { position:absolute; inset:0; z-index:-1; pointer-events:none; }
-.histogram-bar { position:absolute; top:0; bottom:0; min-width:2px; background:rgba(120,214,196,.15); }
+/* Same two states as the bars in the rows below, for the same reason: a low strip along the
+   bottom edge while nobody is asking, the full height of the bar the moment the pointer is
+   over the waterfall and the question becomes "is this frequency taken". 3px matches the
+   row bars exactly, so at rest the whole column reads as one ruler. */
+.histogram-bar { position:absolute; bottom:0; height:3px; min-width:2px; background:rgba(120,214,196,.15); }
 .histogram-bar.histogram-bar-tx { background:rgba(255,107,107,.13); }
+.traffic-filter.collision-preview .histogram-bar { top:0; height:auto; }
 .traffic-filter.collision-preview::after {
   content:""; position:absolute; top:0; bottom:0; left:var(--collision-x); width:1px;
   background:rgba(255,255,255,.62); pointer-events:none;
@@ -833,3 +838,41 @@ button { color: inherit; cursor: pointer; }
 .cal-resolved { display:block; font-size:11px; color:#9fd39f; }
 .cal-resolved.uncalibrated { color:var(--amber); }
 .groups-refused { color:var(--amber); }
+/* A joined group is added in SETTINGS but left from the row it is shown on: the table
+   is where the operator is looking when they decide they are done with a net. */
+/* One palette, opened from SETTINGS and from STATIONS. The panel is a single node that
+   moves to whichever control opened it, so both places show the same thing and there is
+   only one renderer to keep honest. */
+.group-control { position:relative; justify-self:start; }
+.group-control-stations { margin:0 0 7px; }
+.group-button { padding:4px 9px; border:1px solid var(--line); border-radius:5px;
+  color:var(--muted); background:#10231f; font-size:11px; letter-spacing:.04em; cursor:pointer; }
+.group-button:hover, .group-button[aria-expanded="true"] { border-color:var(--cyan); color:var(--text); }
+.group-button.joined { border-color:var(--green); color:var(--green); }
+.group-panel { position:absolute; z-index:70; top:calc(100% + 5px); left:0;
+  width:min(430px, calc(100vw - 20px)); padding:11px 12px; border:1px solid var(--line);
+  border-radius:7px; background:#0c1a18; box-shadow:0 16px 44px #000c; }
+.group-panel header { margin:0 2px 9px; }
+.group-panel header strong { color:var(--cyan); }
+.group-panel header small, .group-panel > small { display:block; color:var(--muted); font-size:10px; }
+.group-panel > small { margin-top:8px; }
+.group-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(94px, 1fr));
+  gap:4px; max-height:44vh; overflow-y:auto; }
+.group-pill { padding:3px 5px; border:1px solid var(--line); border-radius:4px;
+  color:var(--muted); background:#0e1f1c; font:600 11px/1.2 ui-monospace, monospace;
+  text-align:left; cursor:pointer; }
+.group-pill:hover { border-color:var(--cyan); color:var(--text); }
+.group-pill[aria-pressed="true"] { border-color:var(--green); background:#0c2018; color:var(--green); }
+.group-pill .group-cost { float:right; }
+.group-add { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:6px; margin-top:9px; }
+.group-add button { padding:4px 10px; border:1px solid var(--line); border-radius:5px;
+  color:var(--muted); background:#10231f; font-size:11px; cursor:pointer; }
+.group-add button:hover { border-color:var(--cyan); color:var(--text); }
+.group-cost { font-size:9px; font-weight:700; color:var(--amber); cursor:help; }
+.station-group .call { display:flex; align-items:center; gap:6px; }
+/* Leaving from the row the group is shown on stays: the palette is for the overview, this
+   is for the one net you have finished with while looking straight at it. */
+.group-leave { margin-left:auto; padding:0 5px; border:1px solid var(--line); border-radius:4px;
+  color:var(--muted); background:#10231f; font-size:14px; line-height:1.35; cursor:pointer; }
+.group-leave:hover { color:var(--text); border-color:var(--cyan); }
+.group-mail { color:var(--amber); }

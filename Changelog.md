@@ -11,6 +11,22 @@ published.
 
 ## Working tree — not committed
 
+* **Three corrections after seeing the traffic feed in use.** The aprs.fi lookup now appears
+  only on messages carrying `@APRSIS GRID`. aprs.fi knows a station only once it has reached
+  APRS-IS, and that message is the one thing that proves it did — the sender is asking the
+  gateway to put their position on the network. On any other row the link was a guess, and a
+  link that lands on "no data" teaches the operator to stop trusting the underline. The
+  histogram in the filter bar now behaves like the bars in the rows underneath it: a low 3 px
+  ruler along the bottom edge at rest, growing to full height only while the pointer is over
+  the waterfall — at rest the whole column now reads as one ruler instead of a permanently
+  loud strip. And the message presets gained **INFO** without the question mark, which was
+  missing: the menu could ask another station to describe itself but had no way to send this
+  station's own description. It inserts exactly what the auto-reply sends for `INFO?`
+  (`INFO ` + the SETTINGS text), so answering by hand and answering automatically cannot
+  produce two different descriptions of the same station, and it is disabled with a reason
+  until that text exists rather than sending a bare `INFO` that means nothing. 246 checks,
+  same six reds as the baseline.
+
 * **The sender's callsign inside a decoded message links to aprs.fi.** A row carries the
   callsign twice — once in its own column, which is the button that picks whom to answer, and
   again at the head of the decoded text (`DL8KM: @APRSIS GRID`), where it had never done

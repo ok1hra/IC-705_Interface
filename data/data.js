@@ -164,6 +164,8 @@ const dom = {
   txQueueState:$("txQueueState"),
   hbEnabled:$("hbEnabled"), hbMinutes:$("hbMinutes"), hbAck:$("hbAck"), hbState:$("hbState"),
   groups:$("groups"), groupNames:$("groupNames"), groupsHint:$("groupsHint"),
+  groupsButton:$("groupsButton"), stationGroupsButton:$("stationGroupsButton"),
+  groupPanel:$("groupPanel"), groupPanelGrid:$("groupPanelGrid"), groupAddForm:$("groupAddForm"),
   cqRepeat:$("cqRepeat"), cqState:$("cqState"),
   infoText:$("infoText"), statusText:$("statusText"), autoReply:$("autoReply"),
   inboxRows:$("inboxRows"), inboxSummary:$("inboxSummary"), inboxQueryMsgs:$("inboxQueryMsgs"), inboxRefresh:$("inboxRefresh"),
@@ -1489,7 +1491,7 @@ function selectedEmailGateway() {
 function emailFrameEstimate(draft) {
   const transport=Js8Email.transportParts(draft.payload,draft.gateway.target);
   return Js8Protocol.buildReplyFrames({myCall:currentJs8().myCall,
-    toCall:transport.toCall,text:transport.text}).length;
+    toCall:transport.toCall,text:transport.text,mode:emailTxMode()}).length;
 }
 
 function emailTxMode() {
@@ -1735,10 +1737,11 @@ function renderControls() {
   dom.armHours.value=String(js8.armHours);
   if(dom.groupNames && !dom.groupNames.options.length)
     dom.groupNames.innerHTML=joinableGroups().map(g=>`<option value="${g}"></option>`).join("");
-  if(document.activeElement!==dom.groups){
-    dom.groups.value=(js8.groups||[]).join(" ");
-    if(!dom.groupsHint.dataset.refused)renderGroupsHint(null);
-  }
+  // The field only ever adds; what is joined lives in the palette, so nothing is written
+  // back into the input and a second name cannot overwrite the first.
+  renderGroupPanel();
+  if(document.activeElement!==dom.groups && !dom.groupsHint.dataset.refused)
+    renderGroupsHint(null);
   if(!dom.cqRepeat.options.length)
     dom.cqRepeat.innerHTML=Js8Settings.CQ_REPEAT_MIN.map(m=>`<option value="${m}">${m?m+" min":"off"}</option>`).join("");
   dom.cqRepeat.value=String(js8.cqRepeatMin||0);
@@ -2146,6 +2149,13 @@ function setCollisionPreview(hz){
 // never done anything. That second, inert copy is where the aprs.fi lookup goes -- the
 // selector keeps its click, and the underline promises a link only where there is one.
 const APRS_FI_CALL = /^[A-Z0-9]{1,3}[0-9][A-Z0-9]*(?:[-/][A-Z0-9]{1,3})?$/;
+// aprs.fi only knows a station that reached APRS-IS, and the one message that proves it did
+// is "@APRSIS GRID": the sender is asking the gateway to put their position on the network,
+// so from that moment there is a page to link to. Every other row would be a guess, and a
+// link that leads to "no data" teaches the operator to stop trusting the underline.
+function callIsOnAprs(message){
+  return /@APRSIS\s+GRID\b/i.test(String(message.text||""));
+}
 function senderLookupText(text,call,own){
   // Only the leading "CALL:" is linked, never a callsign quoted later in the body: aprs.fi
   // would answer for those too, but they are stations being talked ABOUT, and a row full of
@@ -2167,7 +2177,7 @@ function renderReceivedText(message,own){
   // A missing header means we tuned into the middle: the text does not begin with the
   // sender at all, and senderOf() has already refused to name one.
   const sender=message.headerMissing ? null : senderOf(message);
-  const lead=sender&&sender.clickable ? sender.call : "";
+  const lead=sender&&sender.clickable&&callIsOnAprs(message) ? sender.call : "";
   let at=0;
   for(const gap of gaps){
     const index=Math.max(at,Math.min(text.length,Number(gap.textIndex)||0));
@@ -3039,7 +3049,7 @@ function sendFileOffer(record) {
 }
 
 function transferFrameCount(peer,text) {
-  return Js8Protocol.buildReplyFrames({myCall:currentJs8().myCall,toCall:peer,text}).length;
+  return Js8Protocol.buildReplyFrames({myCall:currentJs8().myCall,toCall:peer,text,mode:selectedMode()}).length;
 }
 
 function sendNextFileWindow(record) {
@@ -3761,7 +3771,8 @@ function noteMailAck(from, now, {negative = false} = {}) {
     const record = msgBox.handOffDeferred(open.id, call);
     if (record) console.info("[msgbox] parked", record.id, "for", record.to, "at", call);
   } else if (open.held) {
-    if (inbox.confirmDelivered(open.id)) {
+    // The member matters for group mail: one message, delivered once to each.
+    if (inbox.confirmDelivered(open.id, call)) {
       deferredAttempts.clear(`held-${open.id}`);
       console.info("[msgbox] handed over", open.id, "to", call);
     }
@@ -3816,24 +3827,106 @@ function groupReplyToneHz() {
   return picked;
 }
 
+// The palette: every name that can be joined, with the joined ones lit. One renderer for
+// both places it opens from, so SETTINGS and STATIONS can never disagree about what this
+// station belongs to.
+function renderGroupPanel() {
+  if (!dom.groupPanelGrid) return;
+  const joined=selectableGroups(), builtins=joinableGroups();
+  // Built-ins in their own order first; a custom name is rarer and costs more, so it reads
+  // better at the end than sorted in among them.
+  const names=[...builtins, ...joined.filter(group => !builtins.includes(group))];
+  dom.groupPanelGrid.innerHTML=names.map(group => {
+    const on=joined.includes(group);
+    // A custom name costs a second frame on every message; the pill says so where the
+    // decision is made, rather than leaving it to be discovered on the air.
+    const mark=groupFrameCost(group)>1
+      ? '<span class="group-cost" title="Custom name: two frames per message, about 15 s more air time">2×</span>' : "";
+    return `<button type="button" class="group-pill" data-group="${esc(group)}"`
+      + ` aria-pressed="${on}" title="${on?`Leave ${esc(group)}`:`Join ${esc(group)}`}">`
+      + `${esc(group)}${mark}</button>`;
+  }).join("");
+  for (const button of [dom.groupsButton, dom.stationGroupsButton]) {
+    if (!button) continue;
+    const label=button===dom.groupsButton
+      ? (joined.length?`${joined.length} joined`:"none joined") : "GROUPS";
+    button.innerHTML=`${esc(label)} <span class="chevron">▾</span>`;
+    button.classList.toggle("joined", joined.length>0);
+    button.title=joined.length?`Joined: ${joined.join(" ")}`:"No groups joined";
+  }
+}
+
+// The panel is a single node that moves to whichever control opened it: two copies would
+// be two things to keep in step, and they would drift.
+function toggleGroupPanel(button) {
+  if (!dom.groupPanel) return;
+  const host=button.closest(".group-control");
+  const open=dom.groupPanel.hidden || dom.groupPanel.parentElement!==host;
+  if (open) host.appendChild(dom.groupPanel);
+  dom.groupPanel.hidden=!open;
+  for (const other of [dom.groupsButton, dom.stationGroupsButton])
+    if (other) other.setAttribute("aria-expanded", String(open && other===button));
+  if (open) { renderGroupPanel(); renderGroupsHint(null); dom.groups.focus({preventScroll:true}); }
+}
+function closeGroupPanel() {
+  if (!dom.groupPanel || dom.groupPanel.hidden) return;
+  dom.groupPanel.hidden=true;
+  for (const button of [dom.groupsButton, dom.stationGroupsButton])
+    if (button) button.setAttribute("aria-expanded","false");
+}
+
+// Joining from the palette. Leaving is the same click again, which is why a pill is a
+// toggle rather than a name with a separate × to hunt for.
+function joinGroup(group) {
+  const added=Js8Settings.validateGroups(group);
+  const merged=Js8Settings.validateGroups([...selectableGroups(), ...added.groups]);
+  setJs8Setting("groups", merged.groups);
+  renderGroupsHint({rejected:[...added.rejected, ...merged.rejected]});
+  renderGroupPanel(); renderActivity(); renderControls();
+}
+
 // Joined groups sit under the stations, the way upstream lists them under the callsigns.
 // They are targets, not stations, so every column that describes a received signal stays
 // a dash: a group has never transmitted anything and never will.
 function groupRowsHtml() {
+  // A flag where upstream puts one: mail is held here for this net and any member may
+  // come for it.
+  const held=new Set(inbox.snapshot().items
+    .filter(item=>item.type==="STORE"&&String(item.to||"").startsWith("@"))
+    .map(item=>item.to));
   return selectableGroups().sort().map(group =>
     `<tr data-call="${esc(group)}" class="station-group${group===state.selectedCall?" selected":""}">`
-    + `<td class="call">${esc(group)}</td><td class="station-country">group</td>`
+    + `<td class="call">${held.has(group)?'<span class="group-mail" title="Mail is held here for this group">⚑</span> ':""}`
+    + `${esc(group)}<button type="button" class="group-leave"`
+    + ` data-leave-group="${esc(group)}" title="Leave ${esc(group)}"`
+    + ` aria-label="Leave ${esc(group)}">×</button></td><td class="station-country">group</td>`
     + `<td>—</td><td>—</td><td>—</td><td class="station-direction">—</td><td>—</td></tr>`).join("");
 }
 
-// The group names this build can put on the air. Stage 1 is the built-in table only:
-// every one of those packs into the single directed frame. Anything else needs the
-// compound pair (stage 2), so it is refused where it is typed instead of being
-// accepted and then quietly undeliverable -- which is what the field did until now.
+// Leaving a group from the row it is displayed on. The settings field stays the source
+// of truth, but nobody goes looking for it there while staring at the stations table —
+// which is exactly how a joined group became something you could add and not remove.
+function leaveGroup(group) {
+  const name=String(group||"").toUpperCase();
+  setJs8Setting("groups",selectableGroups().filter(item=>item!==name));
+  if(state.selectedCall===name){state.selectedCall="";binState.peerDraft="";persistSession();}
+  renderGroupsHint(null);
+  renderGroupPanel(); renderActivity(); renderControls();
+}
+
+// The built-in group names. Since stage 2 these are a SUGGESTION, not the limit: any
+// well-formed name can be joined and transmitted to. They are still worth offering first,
+// because they are the ones that fit a single frame.
 function joinableGroups() {
   return Js8Protocol.SPECIAL_CALLS.filter(call => call.startsWith("@")
     && !Js8Settings.RESERVED_GROUPS.includes(call)
     && !Js8Settings.ALWAYS_GROUPS.includes(call));
+}
+// One frame or two. A name outside the built-in table does not fit the 28-bit callsign
+// field, so every message to it carries a compound pair instead — one extra slot, about
+// 15 s on Normal.
+function groupFrameCost(group) {
+  return Js8Protocol.needsCompoundTo(group) ? 2 : 1;
 }
 
 // Says what happened to what the operator typed. Silence used to be the answer to a
@@ -3844,8 +3937,11 @@ function renderGroupsHint(result) {
   const joined = selectableGroups();
   const refused = result && result.rejected.length ? result.rejected : [];
   const parts = refused.map(item => `${item.value} refused — ${item.reason}.`);
-  parts.push(joined.length ? `Joined: ${joined.join(" ")} · one frame each.`
-                           : "No groups joined.");
+  // Says how to USE a joined group; removing it is the × on the chip and on its row, so
+  // it does not need spelling out twice.
+  parts.push(joined.length
+    ? "Click a group under STATIONS to send to it."
+    : "Type any @NAME, or start with @ for the built-in list — those fit one transmission, a custom name costs two.");
   parts.push("@ALLCALL and @HB are always joined.");
   dom.groupsHint.textContent = parts.join(" ");
   dom.groupsHint.classList.toggle("groups-refused", refused.length > 0);
@@ -3860,7 +3956,7 @@ function renderGroupsHint(result) {
 // arrived while nobody was here, what the station is holding for others, and be
 // able to pull mail from another station by hand.
 const MSGBOX_STATE_LABEL = {UNREAD: "new", READ: "read", STORE: "held",
-  DELIVERED: "sent", DEFERRED: "waiting"};
+  DELIVERED: "sent", DEFERRED: "waiting", EXPIRED: "expired"};
 let msgBoxFilter = "all";
 let msgBoxUndo = null, msgBoxUndoTimer = 0;
 const MSGBOX_BASE_TITLE = typeof document === "object" ? document.title : "";
@@ -4042,7 +4138,10 @@ function handleInboxAssembled(directed, norm, now) {
   const outcome = inbox.handle(
     {from: directed.from, to: directed.to, command: norm.command,
      text, complete: true},
-    {nowMs: now, myCall: js8.myCall, armed: js8.auto === true, hearing: heard});
+    // Groups make a command addressed to @NET as much ours as one addressed to our
+    // callsign; the inbox needs the list to tell that from somebody else's net.
+    {nowMs: now, myCall: js8.myCall, groups: myGroups(), armed: js8.auto === true,
+     hearing: heard});
 
   if (outcome.action === "skip") {
     if (outcome.nack && js8.txSafetyAccepted && activeEncoder) {
@@ -4570,7 +4669,9 @@ function encodeForRecipe(recipe,item){
   // answering the same question in the same slot; everything else keys where the operator
   // put us. A resend replays recipe, so a second attempt stays on the announced offset.
   const tone=Number.isFinite(recipe.toneHz)?recipe.toneHz:js8.txOffsetHz;
-  activeEncoder.setToneOffset(tone).configure({myCall:js8.myCall,toCall:recipe.to,mode:selectedMode(),clockCorrectionMs:js8.clockCorrectionMs});
+  // grid rides along because an addressee that needs the compound pair puts our callsign
+  // and locator in the first of the two frames; for a plain directed frame it is unused.
+  activeEncoder.setToneOffset(tone).configure({myCall:js8.myCall,toCall:recipe.to,grid:js8.grid,mode:selectedMode(),clockCorrectionMs:js8.clockCorrectionMs});
   driveEncoder(activeEncoder.encode(recipe.text),error=>failOutgoing(item,error));
 }
 
@@ -4661,6 +4762,10 @@ function messagePresetValue(key) {
     "snr-query":"SNR?","copy-query":"HW CPY?",rr:"RR",fb:"FB",qsl:"QSL",
     "qsl-query":"QSL?",yes:"YES",no:"NO",tu:"TU","dit-dit":"DIT DIT",
     "grid-query":"GRID?","info-query":"INFO?","status-query":"STATUS?",
+    // Byte for byte what the auto-reply sends for INFO? (js8-autoreply.js): answering by
+    // hand and answering automatically must not produce two different descriptions of the
+    // same station.
+    info:currentJs8().infoText?`INFO ${currentJs8().infoText}`:"",
     again:"AGN?","73":"73",sk:"SK",aprsis:`${Js8Aprs.GROUP} `})[key] || "";
 }
 
@@ -4688,7 +4793,7 @@ function aprsFrameCount(payload) {
   if(!transport)return 0;
   try {
     return Js8Protocol.buildReplyFrames({myCall:currentJs8().myCall,
-      toCall:transport.toCall,text:transport.text}).length;
+      toCall:transport.toCall,text:transport.text,mode:selectedMode()}).length;
   } catch(_error) { return 0; }
 }
 
@@ -4761,6 +4866,14 @@ function renderMessagePresets() {
   const snrStation=state.activity.calls.find(item=>item.call===state.selectedCall && item.heardDirectly!==false);
   snrPreset.disabled=!snrStation;
   snrPreset.title=snrStation ? `Insert SNR ${formatJs8Snr(snrStation.snr)}` : "Select a heard station first";
+  // "INFO" without the question mark describes THIS station, so it has nothing to say until
+  // the operator has written that description in SETTINGS. Refused the same way the
+  // auto-reply refuses it, rather than sending a bare "INFO" that means nothing.
+  const infoPreset=dom.messagePresetsMenu.querySelector('[data-message-preset="info"]');
+  if(!infoPreset)return;
+  const infoText=currentJs8().infoText;
+  infoPreset.disabled=!infoText;
+  infoPreset.title=infoText ? `Insert INFO ${infoText}` : "Fill in INFO answer in SETTINGS first";
 }
 
 function setMessageDraft(value) {
@@ -5258,7 +5371,12 @@ function bind() {
   dom.binResume.addEventListener("click",resumeFileTransfer);
   dom.binStop.addEventListener("click",stopFileTransfer);
   dom.binDownload.addEventListener("click",downloadReceivedFile);
-  for (const container of [dom.traffic,dom.stationRows]) container.addEventListener("click",event=>{const node=event.target.closest("[data-call]");if(node)chooseCall(node.dataset.call);});
+  for (const container of [dom.traffic,dom.stationRows]) container.addEventListener("click",event=>{
+    // The leave button sits inside a row that also selects on click, so it has to be
+    // read first — otherwise leaving a group would select it on the way out.
+    const leave=event.target.closest("[data-leave-group]");
+    if(leave){leaveGroup(leave.dataset.leaveGroup);return;}
+    const node=event.target.closest("[data-call]");if(node)chooseCall(node.dataset.call);});
   dom.trafficFilter.addEventListener("click",event=>{const clearButton=event.target.closest("[data-traffic-clear]");if(clearButton){if(!clearButton.disabled)clearRecentTraffic();return;}const button=event.target.closest("[data-traffic-filter]");if(!button||button.disabled)return;state.trafficFilter=button.dataset.trafficFilter;renderActivity();persistSession();});
   dom.stationHead.addEventListener("click",event=>{const button=event.target.closest("[data-station-sort]");if(!button)return;const key=button.dataset.stationSort;if(state.stationSort.key===key)state.stationSort.direction=state.stationSort.direction==="asc"?"desc":"asc";else state.stationSort={key,direction:"asc"};renderActivity();persistSession();});
   dom.txSpeed.addEventListener("change",()=>setJs8Setting("speed",dom.txSpeed.value));
@@ -5278,13 +5396,39 @@ function bind() {
   dom.infoText.addEventListener("change",()=>setJs8Setting("infoText",dom.infoText.value));
   dom.statusText.addEventListener("change",()=>setJs8Setting("statusText",dom.statusText.value));
   dom.armHours.addEventListener("change",()=>{setJs8Setting("armHours",Number(dom.armHours.value)||1);if(currentJs8().auto)armUnattended("extend");});
-  dom.groups.addEventListener("change",()=>{
-    const result=Js8Settings.validateGroups(dom.groups.value,joinableGroups());
-    // A group that is dropped must not stay in the field pretending to be joined.
-    setJs8Setting("groups",result.groups);
-    dom.groups.value=result.groups.join(" ");
-    renderGroupsHint(result);
-    renderActivity();
+  // The field ADDS to what is already joined; it never replaces it. Anything else would
+  // mean that picking a second name from the autocomplete silently unjoins the first,
+  // because a datalist completes the whole field value rather than the word being typed.
+  dom.groupAddForm.addEventListener("submit",event=>{
+    event.preventDefault();
+    const typed=dom.groups.value.trim();
+    if(!typed)return;
+    // Only what was TYPED is held to the sendable list. Merging first would re-judge a
+    // custom group that a stored profile is legitimately carrying and delete it the
+    // moment the operator joined anything else.
+    // No sendable list any more: stage 2 can transmit to any well-formed name, so the
+    // only refusals left are bad syntax, a gateway, an always-joined name and the cap.
+    const added=Js8Settings.validateGroups(typed);
+    const merged=Js8Settings.validateGroups([...selectableGroups(),...added.groups]);
+    setJs8Setting("groups",merged.groups);
+    dom.groups.value="";
+    renderGroupsHint({rejected:[...added.rejected,...merged.rejected]});
+    renderGroupPanel(); renderActivity(); renderControls();
+  });
+  // One click joins, the same click again leaves.
+  dom.groupPanelGrid.addEventListener("click",event=>{
+    const pill=event.target.closest("[data-group]");
+    if(!pill)return;
+    const group=pill.dataset.group;
+    if(pill.getAttribute("aria-pressed")==="true")leaveGroup(group); else joinGroup(group);
+  });
+  for(const button of [dom.groupsButton,dom.stationGroupsButton])
+    button.addEventListener("click",()=>toggleGroupPanel(button));
+  // Clicking away closes it, like the brand panel and the frequency menu.
+  document.addEventListener("click",event=>{
+    if(dom.groupPanel.hidden)return;
+    if(event.target.closest("#groupPanel")||event.target.closest(".group-button"))return;
+    closeGroupPanel();
   });
   dom.inboxRefresh.addEventListener("click",()=>{loadInbox();renderInbox();});
   dom.inboxQueryMsgs.addEventListener("click",queryStoredMessages);
@@ -5415,7 +5559,7 @@ function bind() {
   document.addEventListener("visibilitychange",()=>{if(document.hidden&&activeEncoder)activeEncoder.abort();});
   // Escape inside a modal belongs to that dialog. Without this guard, dismissing
   // the APRS parameter popup would also abort a transmission already on air.
-  addEventListener("keydown",event=>{if(event.key==="Escape"){if(document.querySelector("dialog[open]"))return;if(activeEncoder)activeEncoder.abort();dom.frequencyMenu.hidden=true;closeMessagePresets();closeTimetablePopover();dom.freqTimetablePanel.hidden=true;dom.freqTimetableButton.setAttribute("aria-expanded","false");}});
+  addEventListener("keydown",event=>{if(event.key==="Escape"){if(document.querySelector("dialog[open]"))return;if(activeEncoder)activeEncoder.abort();dom.frequencyMenu.hidden=true;closeMessagePresets();closeTimetablePopover();closeGroupPanel();dom.freqTimetablePanel.hidden=true;dom.freqTimetableButton.setAttribute("aria-expanded","false");}});
 }
 
 async function init() {
@@ -5451,6 +5595,11 @@ async function init() {
     if(activeDecoder && activeDecoder.expire)activeDecoder.expire(js8Clock.now());
   });
   scheduler.every("heartbeat",5000,()=>{checkHeartbeat();renderHeartbeatState();});
+  // Group mail is the one record with a clock on it. A minute is often enough: the TTL is
+  // a day, and expiring visibly is the point, not expiring promptly.
+  scheduler.every("groupMail",60000,()=>{
+    if(inbox.expireGroupMail(js8Clock.now())){renderInbox();syncInbox();}
+  });
   scheduler.every("cqRepeat",5000,checkCqRepeat);
   pollUnattended().then(()=>reconcileUnattended("page load")); scheduler.every("unattended",5000,pollUnattended);
   renderTimetableButton(); scheduler.every("freqTimetable",5000,reconcileTimetable); reconcileTimetable();

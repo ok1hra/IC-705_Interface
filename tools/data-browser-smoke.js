@@ -949,10 +949,30 @@ f.onload=()=>{
       // packs the recipient into a single frame, so it can only carry the built-in
       // names, and accepting @ARESGA here is what used to leave a station believing it
       // was in a group it could never transmit to.
+      // The palette lives behind a button now, in SETTINGS and above STATIONS alike.
+      d.querySelector('#groupsButton').click();
+      const paletteOpen=!d.querySelector('#groupPanel').hidden&&
+        d.querySelectorAll('#groupPanel .group-pill').length>40;
       const groupsField=d.querySelector('#groups');
-      groupsField.value='@NET';
-      groupsField.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));
+      const addGroup=name=>{groupsField.value=name;
+        d.querySelector('#groupAddForm').dispatchEvent(
+          new f.contentWindow.Event('submit',{bubbles:true,cancelable:true}));};
+      addGroup('@NET');
+      // A pill is a toggle: one click joins, the same click leaves.
+      const pill=d.querySelector('#groupPanel .group-pill[data-group="@NET"]');
+      const pillLit=pill&&pill.getAttribute('aria-pressed')==='true';
+      // The field ADDS. A whole-list field cannot carry an autocomplete -- the datalist
+      // completes the entire value -- so joining a second group used to throw the first
+      // one away, which is the exact question this check now answers.
+      d.querySelector('#groupPanel .group-pill[data-group="@EMCOMM"]').click();
       const joined=f.contentWindow.__dataTest.myGroups();
+      const bothJoined=joined.includes('@NET')&&joined.includes('@EMCOMM')&&groupsField.value==='';
+      const chipNames=[...d.querySelectorAll('#groupPanel .group-pill[aria-pressed="true"]')]
+        .map(button=>button.dataset.group).sort().join(" ");
+      // Clicking a lit pill leaves exactly that group and keeps the rest.
+      d.querySelector('#groupPanel .group-pill[data-group="@EMCOMM"]').click();
+      const chipLeave=f.contentWindow.__dataTest.myGroups().includes('@NET')&&
+        !f.contentWindow.__dataTest.myGroups().includes('@EMCOMM');
       const groupRow=[...d.querySelectorAll('#stationRows tr')].some(tr=>tr.dataset.call==='@NET');
       f.contentWindow.__dataTest.resetAutoReplyLock();
       const composerG=d.querySelector('#messageInput'); composerG.value='';
@@ -962,24 +982,42 @@ f.onload=()=>{
       f.contentWindow.__dataTest.resetAutoReplyLock();
       f.contentWindow.__dataTest.feedDirected({from:'OK6GRP',to:'@NOTMINE',command:' SNR?'});
       const strangerGroup=composerG.value;
-      groupsField.value='@NET @ARESGA';
-      groupsField.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));
-      const customRefused=!f.contentWindow.__dataTest.myGroups().includes('@ARESGA')&&
-        /@ARESGA refused/.test(d.querySelector('#groupsHint').textContent);
+      // Since stage 2 a custom name joins like any other and is marked as the two-frame
+      // target it is, so the extra air time is visible where the choice is made.
+      addGroup('@ARESGA');
+      const customPill=d.querySelector('#groupPanel .group-pill[data-group="@ARESGA"]');
+      const customAccepted=f.contentWindow.__dataTest.myGroups().includes('@ARESGA')&&
+        !!customPill&&!!customPill.querySelector('.group-cost')&&
+        !d.querySelector('#groupPanel .group-pill[data-group="@NET"]').querySelector('.group-cost');
+      customPill.click();
       // A joined group is selectable; a gateway never is, whatever gets typed.
       f.contentWindow.__dataTest.chooseCall('@NET');
       const groupSelected=d.querySelector('#recipient').value==='@NET';
       f.contentWindow.__dataTest.chooseCall('@APRSIS');
       const gatewayRefused=d.querySelector('#recipient').value==='@NET';
       const groupLogRefused=d.querySelector('#logQsoButton').disabled;
-      // clearRecipient() focuses the field, and renderControls() refuses to rewrite a
-      // focused input -- in a real browser the next click moves focus by itself, here
-      // it would leave the recipient stale for every later check.
-      f.contentWindow.__dataTest.chooseCall('');
+      // Adding happens in the field, leaving on the row: a group you can join and not
+      // get rid of is how this first landed. The button has to be looked up HERE and not
+      // earlier -- every render rewrites #stationRows, so a node grabbed further up is
+      // detached by now and clicking it would do nothing while the test went green.
+      const leaveButton=[...d.querySelectorAll('#stationRows tr')]
+        .find(tr=>tr.dataset.call==='@NET')?.querySelector('[data-leave-group]');
+      leaveButton?.click();
+      // Leaving the selected group must also drop it as the recipient, otherwise the
+      // composer would go on pointing at a group we are no longer in.
+      const leftGroup=!f.contentWindow.__dataTest.myGroups().includes('@NET')&&
+        ![...d.querySelectorAll('#stationRows tr')].some(tr=>tr.dataset.call==='@NET')&&
+        d.querySelector('#recipient').value==='';
+      // renderControls() refuses to rewrite a focused input; in a real browser the next
+      // click moves focus by itself, here it would leave the field stale for every later
+      // check.
       d.querySelector('#recipient').blur();
       checks.groupsWiring=joined.includes('@ALLCALL')&&joined.includes('@HB')&&
-        joined.includes('@NET')&&groupRow&&groupAnswer.startsWith('OK5GRP SNR')&&
-        strangerGroup===''&&customRefused&&groupSelected&&gatewayRefused&&groupLogRefused;
+        joined.includes('@NET')&&paletteOpen&&pillLit&&bothJoined&&
+        chipNames==='@EMCOMM @NET'&&chipLeave&&
+        groupRow&&groupAnswer.startsWith('OK5GRP SNR')&&
+        strangerGroup===''&&customAccepted&&groupSelected&&gatewayRefused&&groupLogRefused&&
+        !!leaveButton&&leftGroup;
       groupsField.value='';
       groupsField.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));
       checks.autoReplySettings=!!d.querySelector('#infoText')&&!!d.querySelector('#statusText')&&
@@ -1050,6 +1088,28 @@ f.onload=()=>{
       d.querySelector('#messagePresetsButton').click();
       d.querySelector('[data-message-preset="cq"]').click();
       checks.cqPreset=d.querySelector('#messageInput').value==='CQ CQ CQ';
+      // INFO without the question mark describes THIS station, so it has nothing to say
+      // until SETTINGS carries that description -- and once it does, it must say exactly
+      // what the auto-reply would say, or the station describes itself two ways.
+      // renderMessagePresets() runs from renderControls(), so writing the field is enough to
+      // update the item -- no menu interaction, which would leave the open/closed state
+      // different from how the checks below expect to find it.
+      const infoPreset=()=>d.querySelector('[data-message-preset="info"]');
+      const infoField=d.querySelector('#infoText'),infoWas=infoField.value;
+      const setInfo=value=>{infoField.value=value;
+        infoField.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));};
+      setInfo('');
+      const infoRefused=infoPreset().disabled===true;
+      setInfo('50W VERT');
+      d.querySelector('#messagePresetsButton').click();
+      infoPreset().click();
+      checks.infoPreset=infoRefused&&infoPreset().disabled===false&&
+        d.querySelector('#messageInput').value==='INFO 50W VERT';
+      // Hand the composer back exactly as cqPreset left it: the APRS builder below derives
+      // its menu from this text.
+      setInfo(infoWas);
+      d.querySelector('#messagePresetsButton').click();
+      d.querySelector('[data-message-preset="cq"]').click();
       // ---- @APRSIS command builder (docs/aprsis-implementace.md) -------------
       // The menu is re-derived from the composer text, so walking it here proves
       // the parser, the catalogue and the DOM agree. KN4CRD is still selected:
@@ -1408,7 +1468,12 @@ f.onload=()=>{
                        firstSlotUtcMs:sn-4000,lastSlotUtcMs:sn-4000,gaps:[],complete:true},
                       {id:'stripeI',text:'DL1ABC: OK1HRA WIDE',callsigns:['DL1ABC','OK1HRA'],
                        kinds:['directed','data'],submode:8,offsetHz:600,snr:3,
-                       firstSlotUtcMs:sn-3000,lastSlotUtcMs:sn-3000,gaps:[],complete:true}]});
+                       firstSlotUtcMs:sn-3000,lastSlotUtcMs:sn-3000,gaps:[],complete:true},
+                      // The one message that proves its sender reached APRS-IS, and so the
+                      // only one that may carry an aprs.fi link.
+                      {id:'stripeAprs',text:'DL8KM: @APRSIS GRID',callsigns:['DL8KM'],
+                       kinds:['directed'],submode:0,offsetHz:900,snr:-4,
+                       firstSlotUtcMs:sn-2500,lastSlotUtcMs:sn-2500,gaps:[],complete:true}]});
                   const canvas=d.querySelector('#waterfallCanvas');
                   // Deliberately the DISPLAYED box, not the drawing buffer: Waterfall clamps
                   // canvas.width to minWidth 320, so on a narrow window the buffer is wider
@@ -1497,8 +1562,13 @@ f.onload=()=>{
                   const wf=d.querySelector('#waterfall'),wfBox=wf.getBoundingClientRect();
                   const hoverHz=1500,hoverX=wfBox.left+(hoverHz-500)/2200*wfBox.width;
                   const feed=d.querySelector('#traffic');
+                  const barHeight=()=>d.querySelector('#trafficHistogram .histogram-bar')
+                    .getBoundingClientRect().height;
+                  const barAtRest=barHeight();
                   checks.collisionHiddenUntilHover=!feed.classList.contains('collision-preview')&&
-                    getComputedStyle(d.querySelector('#traffic .signal-band')).opacity==='0';
+                    getComputedStyle(d.querySelector('#traffic .signal-band')).opacity==='0'&&
+                    // the histogram is a low ruler until asked, matching the row bars
+                    barAtRest<=4;
                   wf.dispatchEvent(new f.contentWindow.MouseEvent('mousemove',
                     {bubbles:true,clientX:hoverX,clientY:wfBox.top+10}));
                   const hairline=getComputedStyle(feed,'::after');
@@ -1509,6 +1579,9 @@ f.onload=()=>{
                     getComputedStyle(d.querySelector('#traffic .signal-band')).opacity==='1'&&
                     // behind the text, not over it
                     getComputedStyle(d.querySelector('#traffic .signal-band')).zIndex==='-1';
+                  // The histogram answers the same question at the same moment, so it grows
+                  // with the bands: a low ruler at rest, full height while the pointer asks.
+                  checks.histogramGrowsOnHover=barHeight()>barAtRest*2;
                   wf.dispatchEvent(new f.contentWindow.MouseEvent('mouseleave',{bubbles:true}));
                   checks.collisionClearsOnLeave=!feed.classList.contains('collision-preview');
                   // The histogram is the same bars again, so it must hold exactly one per
@@ -1519,17 +1592,23 @@ f.onload=()=>{
                   // aprs.fi lookup: on the callsign inside the text, never on the <strong>
                   // that picks whom to answer -- so the selector must still be a plain
                   // element with no href, or the primary interaction of the page is gone.
-                  const wideRow=[...d.querySelectorAll('#traffic .message:not(.message-tx)')]
-                    .find(row=>row.textContent.indexOf('WIDE')>=0);
-                  const lookup=wideRow&&wideRow.querySelector('.message-text .call-lookup');
+                  const rowWith=text=>[...d.querySelectorAll('#traffic .message:not(.message-tx)')]
+                    .find(row=>row.textContent.indexOf(text)>=0);
+                  const aprsRow=rowWith('@APRSIS GRID'),plainRow=rowWith('WIDE');
+                  const lookup=aprsRow&&aprsRow.querySelector('.message-text .call-lookup');
                   checks.senderLookupLink=Boolean(lookup)&&
-                    lookup.getAttribute('href')==='https://aprs.fi/DL1ABC'&&
+                    lookup.getAttribute('href')==='https://aprs.fi/DL8KM'&&
                     lookup.getAttribute('target')==='_blank'&&
-                    lookup.textContent==='DL1ABC'&&
+                    lookup.textContent==='DL8KM'&&
                     getComputedStyle(lookup).textDecorationLine==='underline';
-                  checks.senderSelectorStaysPlain=Boolean(wideRow)&&
-                    wideRow.querySelector('strong[data-call="DL1ABC"]')!==null&&
-                    !wideRow.querySelector('strong a')&&
+                  // aprs.fi only has a page for a station that reached APRS-IS. An ordinary
+                  // JS8 exchange is no evidence of that, and a link to "no data" would teach
+                  // the operator to stop trusting the underline.
+                  checks.senderLookupOnlyForAprs=Boolean(plainRow)&&
+                    !plainRow.querySelector('.call-lookup');
+                  checks.senderSelectorStaysPlain=Boolean(aprsRow)&&
+                    aprsRow.querySelector('strong[data-call="DL8KM"]')!==null&&
+                    !aprsRow.querySelector('strong a')&&
                     !d.querySelector('#stationRows a');
                   checks.histogramMirrorsRows=bars.length===rowStripes.length&&bars.length>0&&
                     Math.abs(barBox.left-feed.getBoundingClientRect().left)<=1&&

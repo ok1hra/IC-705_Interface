@@ -216,6 +216,7 @@
               <button type="button" role="menuitem" data-message-preset="qsl-query"><strong>QSL?</strong><small>Did you receive it?</small></button>
               <button type="button" role="menuitem" data-message-preset="grid-query"><strong>GRID?</strong><small>Request grid locator</small></button>
               <button type="button" role="menuitem" data-message-preset="info-query"><strong>INFO?</strong><small>Request station info</small></button>
+              <button type="button" role="menuitem" data-message-preset="info"><strong>INFO …</strong><small>Send your own station info</small></button>
               <button type="button" role="menuitem" data-message-preset="status-query"><strong>STATUS?</strong><small>Request status message</small></button>
               <button type="button" role="menuitem" data-message-preset="rr"><strong>RR</strong><small>Roger, received</small></button>
               <button type="button" role="menuitem" data-message-preset="fb"><strong>FB</strong><small>Fine business</small></button>
@@ -285,6 +286,15 @@
 
       <details class="compact-section" data-section="stations">
         <summary><span>Stations</span><span id="stationSummary" class="summary-status">0 active</span></summary>
+        <!-- The same palette as in SETTINGS: the groups are listed in this table, so this
+             is the other place where joining and leaving one is the obvious thing to do. -->
+        <div class="group-control group-control-stations"><button id="stationGroupsButton" class="group-button" type="button" aria-expanded="false" aria-controls="groupPanel">GROUPS <span class="chevron">▾</span></button></div>
+        <section id="groupPanel" class="group-panel" hidden aria-label="Callsign groups">
+          <header><div><strong>Callsign groups</strong><small>Click a name to join or leave it. @ALLCALL and @HB are always joined.</small></div></header>
+          <div id="groupPanelGrid" class="group-grid"></div>
+          <form id="groupAddForm" class="group-add"><input id="groups" maxlength="80" autocomplete="off" list="groupNames" placeholder="@OWNNAME"><datalist id="groupNames"></datalist><button type="submit">ADD</button></form>
+          <small id="groupsHint"></small>
+        </section>
         <div class="table-scroll"><table class="traffic-table"><thead><tr>
           <th><button type="button" data-station-sort="call">Call <span class="sort-arrow"></span></button></th>
           <th><button type="button" data-station-sort="country" title="DXCC entity from the callsign prefix" aria-label="DXCC entity">DXCC <span class="sort-arrow"></span></button></th>
@@ -360,7 +370,10 @@
           <label class="safety-setting">Answer queries automatically <input id="autoReply" type="checkbox"><small>Replies to SNR?, GRID?, INFO?, STATUS?, HEARING? and AGN?. Off: the answer is placed in the message box for you to send.</small></label>
           <label>Unattended for <select id="armHours"></select><small id="autoState">disarmed</small></label>
           <label>Repeat CQ <select id="cqRepeat"></select><small id="cqState">off</small></label>
-          <label>My groups <input id="groups" maxlength="80" autocomplete="off" list="groupNames" placeholder="@NET @EMCOMM"><datalist id="groupNames"></datalist><small id="groupsHint">@ALLCALL and @HB are always joined.</small></label>
+          <!-- One palette, opened from here and from STATIONS. A row of its own would have
+               to choose between showing the list and staying narrow; the panel shows every
+               name at once and the row stays a button. -->
+          <label>My groups <span class="group-control"><button id="groupsButton" class="group-button" type="button" aria-expanded="false" aria-controls="groupPanel">none joined <span class="chevron">▾</span></button></span></label>
           <label class="safety-setting">Send heartbeats <input id="hbEnabled" type="checkbox"><small>Announces the station to the @HB network. Slow, Normal and Fast only; a random offset in 500–1000 Hz.</small></label>
           <label>Heartbeat every <select id="hbMinutes"></select><small id="hbState">off</small></label>
           <label class="safety-setting">Acknowledge heartbeats <input id="hbAck" type="checkbox"><small>Replies HEARTBEAT SNR to stations you hear, at most once per 55 minutes each.</small></label>
