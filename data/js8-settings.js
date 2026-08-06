@@ -62,7 +62,10 @@
       else if (ALWAYS_GROUPS.includes(group))
         rejected.push({value: group, reason: "always joined, listing it changes nothing"});
       else if (allowed && !allowed.has(group))
-        rejected.push({value: group, reason: "a custom group costs a second frame — not supported yet"});
+        // "a second frame" was the first wording here and it read as "a second window".
+        // Say the cost in the thing the operator actually spends: air time.
+        rejected.push({value: group,
+          reason: "not one of the built-in group names — a custom one costs an extra 15 s of air time on every message and is not supported yet"});
       else if (groups.length >= MAX_GROUPS)
         rejected.push({value: group, reason: `at most ${MAX_GROUPS} groups`});
       else groups.push(group);

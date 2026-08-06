@@ -159,7 +159,7 @@ const dom = {
   stationHead:document.querySelector(".traffic-table thead"), reply:document.querySelector('[data-section="reply"]'),
   stationSummary:$("stationSummary"), myCall:$("myCall"), myGrid:$("myGrid"),
   followSpeed:$("followSpeed"), clockCorrection:$("clockCorrection"), autoTiming:$("autoTiming"),
-  txGain:$("txGain"), calResolved:$("calResolved"),
+  txGain:$("txGain"), calResolved:$("calResolved"), calField:$("calField"),
   txSafety:$("txSafety"), storageState:$("storageState"),
   txQueueState:$("txQueueState"),
   hbEnabled:$("hbEnabled"), hbMinutes:$("hbMinutes"), hbAck:$("hbAck"), hbState:$("hbState"),
@@ -300,7 +300,7 @@ const state = {
   startup:{ready:false, failed:false, progress:0, label:"Loading JS8Call-ICOM modem",
     detail:"Preparing modem components…"},
   stationSort:{key:"lastSlotUtcMs", direction:"desc"}, trafficFilter:"all", testActivityLocked:false,
-  previewHz:null,
+  previewHz:null, stationLabels:[], stationLabelsVisible:false, stationLabelsArmedMs:0,
   hearingLinksVisible:true,
   txSessionMode:"CHAT", audioDb:-90, tuneActive:false, spectrumWasTransmitting:false,
   help:{incompatibleActive:false},
@@ -313,6 +313,10 @@ const state = {
   autoExpiryAt:null, // epoch ms when unattended arming lapses (null = unknown/disarmed)
 };
 let audioSource = null, activeDecoder = null, activeEncoder = null;
+// Whether the modem ever came up in this page's life, and whether the one free
+// retry has been spent. Both are per page load: a retry loop would hide the
+// failure it is retrying.
+let modemEverReady = false, modemRetried = false;
 let radioPollInFlight = false;
 let frequencyMenuKey = "";
 const decoderActivitySeen = {messages:new Set(), frames:new Set(), calls:new Map()};
@@ -499,20 +503,75 @@ const alcGuard = new TxAlcGuard.TxAlcGuard();
 // What the table says for the radio's CURRENT band and power, or the manual
 // value with a reason. Never a guess: a level filed under a model we have not
 // been told or a power the radio has not confirmed would be applied silently.
+// The calibration tool, the same module the WSPR page mounts. This page used to
+// only USE the table and point at the other page for the measuring, which left an
+// operator who works in JS8 with an amber "not calibrated" line and no way
+// forward. The tool brings its own carrier -- a streamed WsprStream tone, because
+// this page's own tune carrier is pre-rendered and its level cannot move while it
+// plays -- so nothing in the JS8 TX path had to change to host it.
+let gainCal = null;
+function createGainCal() {
+  if (gainCal || !dom.calField || typeof TxGainCalUi === "undefined") return gainCal;
+  gainCal = TxGainCalUi.create({
+    mount: dom.calField,
+    store: gainStore,
+    // The JS8 sink plus the two methods the pacing driver needs. Built here
+    // rather than added to sinkProxy so the JS8 path keeps the surface it had.
+    sink: {
+      prepare:(...args) => requireAudio().prepare(...args),
+      begin:(...args) => requireAudio().begin(...args),
+      write:(...args) => requireAudio().write(...args),
+      end:(...args) => requireAudio().end(...args),
+      isDrained:(...args) => audioSource ? audioSource.isDrained(...args) : false,
+      complete:(...args) => requireAudio().complete(...args),
+      abort:(...args) => audioSource && audioSource.abort(...args),
+      sendControl:(...args) => requireAudio().sendControl(...args),
+      get bufferedAmount() { return audioSource ? audioSource.bufferedAmount : 0; },
+      get ptt() { return Boolean(audioSource && audioSource.ptt); },
+    },
+    streamId:() => audioSource ? audioSource.state().readyStreamId : 0,
+    wallNow:() => js8Clock.now(),
+    now:() => Date.now(),
+    radio:() => state.radio,
+    model:() => state.radio.radioName || "",
+    manualGain:() => Number(currentJs8().txGain) || 0.25,
+    dbm:() => null,          // WSPR files power references; this page has none to file
+    blockingReason:() => {
+      if (!(state.radio.connected && state.radio.transceiverType === "ICOM-LAN"))
+        return "ICOM-LAN is offline";
+      if (!sessionHeld || !sessionConfirmed) return "another page holds the radio";
+      if (!audioSource || !audioSource.state().readyStreamId)
+        return "the audio link is not ready";
+      if (!currentJs8().txSafetyAccepted) return "confirm Enable radio TX";
+      // One transmitter, two drivers. A calibration carrier queued into the same
+      // socket as a JS8 frame would put two transmissions into one slot.
+      if (!["idle","completed","aborted","fault"].includes(state.txStatus))
+        return "JS8 TX is busy";
+      if (state.radio.tx) return "TRX PTT is active";
+      return "";
+    },
+    ensureDataMode:async () => {
+      await ensureUsbDataMode();
+      for (let waited = 0; waited < 5000 && state.radio.mode !== "USB-D"; waited += 100)
+        await new Promise(resolve => setTimeout(resolve, 100));
+      if (state.radio.mode !== "USB-D") throw new Error("the radio did not confirm USB-D");
+    },
+    setMode:mode => fetch(RADIO_CMD_URL,{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({type:"setMode", mode})}),
+    onRunChange:running => { state.calRunning = running; renderControls(); },
+  });
+  gainCal.arm(true);
+  return gainCal;
+}
+
+// What the table says for the radio's CURRENT band and power, or the manual value
+// with a reason. Never a guess: a level filed under a model we have not been told
+// or a power the radio has not confirmed would be applied silently.
 function resolvedGain() {
+  if (gainCal) return gainCal.resolved();
   const manual = Number(currentJs8().txGain) || 0.25;
-  const model = state.radio.radioName || "";
-  const band = TxGainCal.bandOf(state.radio.frequency);
-  const percent = WsprCore.civPercent(state.radio.rfPower);
-  if (!model || !band || state.radio.rfPowerSeen !== true)
-    return {gain:manual, calibrated:false, key:"", band, percent,
-            why:"the radio has not reported its model, band or power yet"};
-  const key = TxGainCal.entryKey(model, band, percent);
-  const entry = gainStore.entry(key);
-  if (!entry)
-    return {gain:manual, calibrated:false, key, band, percent,
-            why:`not calibrated for ${band} @ ${percent} %`};
-  return {gain:Number(entry.gain), calibrated:true, key, band, percent, entry, why:""};
+  return {gain:manual, calibrated:false, key:"", why:"the calibration tool is not ready"};
 }
 
 function stampGain(frames) {
@@ -564,11 +623,16 @@ function renderResolvedGain() {
   }
   dom.calResolved.classList.toggle("uncalibrated",
     !resolved.calibrated || Boolean(trim && trim.needsRecalibration));
+  if (gainCal) gainCal.render();
 }
 
 // Every control frame from the firmware. Only tx-level matters here, and only
 // while a calibrated transmission is in flight.
 function onAudioControl(message) {
+  // One socket, two drivers, never at once. WsprTx acts on tx-ready/tx-state/
+  // tx-error without checking txId, so handing every frame to both would let one
+  // run's abort fault the other's idle driver.
+  if (gainCal && gainCal.running) { gainCal.onControl(message); return; }
   if (!message || message.type !== "tx-level" || !alcGuard.active) return;
   const before = alcGuard.gain;
   const after = alcGuard.noteLevel({consumed:message.consumed, alc:message.alc,
@@ -800,9 +864,42 @@ function populateModes() {
 
 function closeActiveModem() {
   stopTxTicking();
+  scheduler.cancel("modemStall");
   if (activeEncoder && activeEncoder.disconnect) activeEncoder.disconnect();
   if (activeDecoder && activeDecoder.close) activeDecoder.close();
   activeDecoder = null; activeEncoder = null;
+}
+
+// Starting the modem is three network fetches and two WASM instantiations deep
+// before anything can be decoded, and the failures divide in two. A worker whose
+// script cannot be loaded raises `error`, which the adapter now reports. A fetch
+// the radio accepts and then never answers raises nothing at all -- the ESP32
+// serves one request at a time, and a request that dies inside it dies silently.
+// This is the answer to the second kind: a startup that has stopped advancing is
+// broken, and the page says so instead of holding the operator on 0% for ever.
+// Re-armed by every progress report, so a slow link only ever costs patience.
+const MODEM_STALL_MS = 20000;
+function armModemWatchdog() {
+  scheduler.after("modemStall", MODEM_STALL_MS,
+    () => failModem(`no progress for ${Math.round(MODEM_STALL_MS / 1000)} s ` +
+      `while "${state.startup.label}" — the radio stopped answering`));
+}
+
+// One free retry, and only before the modem has ever been ready: the commonest
+// cause is a single dropped asset fetch, which costs nothing to repeat, while a
+// modem that broke after running is a fault the operator must see.
+function failModem(reason) {
+  scheduler.cancel("modemStall");
+  const retrying = !modemRetried && !modemEverReady;
+  state.decoderStatus = reason;
+  state.startup.failed = true; state.startup.ready = false;
+  state.startup.label = "Modem loading failed";
+  state.startup.detail = retrying ? `${reason} — retrying once` : reason;
+  stopAudio();
+  renderStartup(); renderControls(); renderDiagnostics();
+  if (!retrying) return;
+  modemRetried = true;
+  scheduler.after("modemRetry", 1500, () => selectMode(state.activeMode));
 }
 
 function selectMode(id) {
@@ -819,6 +916,7 @@ function selectMode(id) {
   state.startup = {ready:false, failed:false, progress:0,
     label:`Loading ${modem.label} modem`, detail:"Preparing modem components…"};
   renderStartup();
+  armModemWatchdog();
   activeDecoder = new modem.Decoder(AUDIO_RATE).onText(() => {}).onEvent(handleDecoderEvent);
   activeEncoder = new modem.Encoder(AUDIO_RATE).onEvent(handleEncoderEvent);
   activeEncoder.setToneOffset(currentJs8().txOffsetHz);
@@ -830,6 +928,7 @@ function handleDecoderEvent(event) {
   let activityChanged=false;
   if (event.type === "loading") {
     state.decoderStatus = "loading";
+    armModemWatchdog();   // progress proves the chain is alive; start the clock again
     state.startup.progress = Number(event.progress) || 0;
     state.startup.label = event.label || "Loading JS8Call-ICOM modem";
     state.startup.detail = event.total > 0
@@ -839,18 +938,14 @@ function handleDecoderEvent(event) {
   if (event.type === "status") {
     state.decoderStatus = event.status;
     if (event.status === "ready") {
+      scheduler.cancel("modemStall");
+      modemEverReady = true;
       state.startup.ready = true; state.startup.failed = false;
       state.startup.progress = 100; state.startup.label = "JS8Call-ICOM modem ready";
       ensureAudio();
     }
   }
-  if (event.type === "error") {
-    state.decoderStatus = event.message;
-    state.startup.failed = true; state.startup.ready = false;
-    state.startup.label = "Modem loading failed";
-    state.startup.detail = event.message;
-    stopAudio();
-  }
+  if (event.type === "error") failModem(event.message);
   if (event.type === "activity" && !state.testActivityLocked) {
     applyDecoderActivity(event.activity); activityChanged=true;
   }
@@ -1010,6 +1105,7 @@ function drawTxMarker(overlayCtx, view) {
   overlayCtx.shadowColor="#000"; overlayCtx.shadowBlur=3; overlayCtx.fillText(label,labelX,14);
   overlayCtx.shadowBlur=0;
   overlayCtx.lineWidth=1;
+  drawStationLabels(overlayCtx,hzToX);
 }
 
 function renderRhythm() {
@@ -1337,6 +1433,9 @@ async function writeRfPercent(percent) {
 
 async function applyAutoRfPower() {
   if(rfAutoBusy || !rfAutoArmed || rfKnobTouched)return;
+  // A calibration measures the radio as the operator set it up. Writing a target
+  // mid-run would file the result under a power the radio was never on.
+  if(state.calRunning)return;
   if(Date.now()<rfAutoRetryMs)return;
   const target=rfTargetPercent();
   // Nothing chosen, nothing to apply. There is no safe value to invent for a
@@ -1448,8 +1547,11 @@ function renderHeader() {
 function renderStartup() {
   // When a session was restored, drop the blocking full-screen gate so the
   // rebuilt history is visible immediately; the modem then warms up behind the
-  // inline modem-state line instead of hiding everything.
-  const pending=!state.startup.ready && !sessionRestored;
+  // inline modem-state line instead of hiding everything. A FAILED modem is the
+  // exception: that line lives in a section the page keeps hidden, so suppressing
+  // the gate would leave the operator with a dead page, no explanation and no
+  // reachable RETRY.
+  const pending=(!state.startup.ready && !sessionRestored) || state.startup.failed;
   document.body.classList.toggle("startup-pending",pending);
   dom.startup.hidden=!pending;
   const progress=Math.max(0,Math.min(100,state.startup.progress));
@@ -1805,7 +1907,9 @@ function renderControls() {
   dom.send.textContent=busy ? "QUEUED" : "SEND";
   dom.txSummary.textContent=state.txState ? `${state.txState.status}${state.txState.frameCount ? ` · frame ${Math.min(state.txState.frameIndex+1,state.txState.frameCount)}/${state.txState.frameCount}` : ""}${state.txState.error ? ` · ${state.txState.error}` : ""}` : "Idle";
   dom.modemState.textContent=state.decoderStatus === "ready" ? "JS8Call-ICOM ready · auto speed RX" : state.decoderStatus;
-  dom.modemState.className=`modem-state ${state.decoderStatus === "ready" ? "available" : state.decoderStatus.includes("error") ? "error" : ""}`;
+  // A stalled worker fetch is a failure whose text says nothing about "error", so
+  // the state flag decides the colour rather than the wording of the reason.
+  dom.modemState.className=`modem-state ${state.decoderStatus === "ready" ? "available" : state.startup.failed || state.decoderStatus.includes("error") ? "error" : ""}`;
   renderEmailControls(); renderBinControls(); renderTxPayload(); waterfall.paintOverlay(); renderHeader();
 }
 
@@ -2126,6 +2230,96 @@ function renderTrafficHistogram(messages){
 // "is that frequency busy right now"; the feed answers "who has been there", which is the
 // question a 16-second-deep waterfall cannot. Same axis in both, so the line is one
 // straight edge from the canvas down through every row.
+// Who was last heard where, as callsigns standing on the waterfall's own axis. Built from
+// the rows on screen, newest first, one entry per station -- the same list the bars and the
+// histogram come from, so nothing can disagree with anything. No age cut-off: a station that
+// has not been heard for an hour still owns that frequency until somebody else takes it, and
+// that is exactly what the operator needs to know before choosing where to call.
+function collectStationLabels(messages){
+  const seen=new Set(), labels=[];
+  for(const message of messages){
+    if(message.outgoing)continue;
+    const geometry=stripeGeometry(message);
+    if(!geometry)continue;
+    const sender=message.headerMissing ? null : senderOf(message);
+    if(!sender||!sender.clickable||seen.has(sender.call))continue;
+    seen.add(sender.call);
+    labels.push({call:sender.call, offsetHz:geometry.offsetHz,
+      lastSlotUtcMs:Number(message.lastSlotUtcMs)||0});
+  }
+  return labels;
+}
+
+// Visible while the operator is working the waterfall, gone shortly after they stop. Crossing
+// the edge shows them at once; every movement pushes the hiding back by three seconds; standing
+// still for three seconds, or leaving, takes them away. The timer HIDES -- two earlier attempts
+// had it revealing instead, and both were wrong for the same reason: choosing a frequency is
+// continuous movement, so the labels have to be up during the movement, not after it.
+const STATION_LABEL_IDLE_MS=3000;
+function showStationLabels(){
+  const appearing=!state.stationLabelsVisible;
+  state.stationLabelsVisible=true;
+  state.stationLabelsArmedMs=js8Clock.now();
+  // Re-registering the same id replaces the pending task, which is what makes every movement
+  // restart the countdown rather than queue another one.
+  scheduler.after("stationLabels",STATION_LABEL_IDLE_MS,()=>{
+    state.stationLabelsVisible=false;
+    waterfall.paintOverlay();
+  });
+  if(appearing)waterfall.paintOverlay();
+}
+function clearStationLabels(){
+  scheduler.cancel("stationLabels");
+  if(!state.stationLabelsVisible)return;
+  state.stationLabelsVisible=false;
+  // Repaints here rather than leaving it to setCollisionPreview(null): the pointer can leave
+  // without the hover frequency having changed, and the labels would then stay on a
+  // waterfall nobody is pointing at.
+  waterfall.paintOverlay();
+}
+
+// Vertical, reading upward, hanging from the top edge of the waterfall so the callsign sits
+// above the trace it names. Brightness is age: the most recent station is pure white and the
+// oldest fades to a dark grey, interpolated across whatever span is actually on screen -- with
+// one station that means white, which is honest, since there is nothing to be older than.
+// Drawn oldest first so a fresh station wins where two labels collide.
+function drawStationLabels(overlayCtx,hzToX){
+  const labels=state.stationLabels;
+  if(!state.stationLabelsVisible||!labels.length)return;
+  const times=labels.map(item=>item.lastSlotUtcMs);
+  const newest=Math.max(...times), oldest=Math.min(...times);
+  const span=newest-oldest;
+  overlayCtx.save();
+  overlayCtx.textBaseline="top";
+  for(const label of [...labels].sort((a,b)=>a.lastSlotUtcMs-b.lastSlotUtcMs)){
+    const t=span ? (newest-label.lastSlotUtcMs)/span : 0;
+    const level=Math.round(255-t*(255-0x55));
+    // A long compound callsign would run off the bottom of a 64 px canvas and be clipped into
+    // a different callsign, which is worse than being small. Drop a size instead.
+    let size=13;
+    overlayCtx.font=`bold ${size}px ui-monospace, monospace`;
+    let width=overlayCtx.measureText(label.call).width;
+    if(width>dom.overlay.height-6){
+      size=10;
+      overlayCtx.font=`bold ${size}px ui-monospace, monospace`;
+      width=overlayCtx.measureText(label.call).width;
+    }
+    overlayCtx.save();
+    overlayCtx.translate(hzToX(label.offsetHz),3+width);
+    overlayCtx.rotate(-Math.PI/2);
+    // Solid black under the text, not a tint and not a shadow. The waterfall's warm end is
+    // nearly white, and the dark-grey end of the age ramp was unreadable on top of it -- the
+    // plate has to owe nothing to whatever is behind it. In this rotated frame local +x runs
+    // up the screen and local +y runs right, so the plate is width-long and a line-height wide.
+    overlayCtx.fillStyle="#000";
+    overlayCtx.fillRect(-3,-2,width+6,size+5);
+    overlayCtx.fillStyle=`rgb(${level},${level+6},${level+3})`;
+    overlayCtx.fillText(label.call,0,0);
+    overlayCtx.restore();
+  }
+  overlayCtx.restore();
+}
+
 function setCollisionPreview(hz){
   const value=Number.isFinite(hz)?Math.round(hz):null;
   if(state.previewHz===value)return;      // mousemove fires far faster than this needs to run
@@ -2290,6 +2484,8 @@ function renderActivity() {
   // Built from `recent`, the rows actually on screen, so the histogram and the list can
   // never disagree -- change the filter and the strip follows.
   dom.trafficHistogram.innerHTML=renderTrafficHistogram(recent);
+  state.stationLabels=collectStationLabels(recent);
+  if(state.stationLabelsVisible)waterfall.paintOverlay();
   renderRetryCountdowns();   // the 1 s tick owns it afterwards; this fills the first second
   dom.stationRows.innerHTML=sortedStations(calls).map(item=>{
     const direction=stationDirection(item);
@@ -3894,12 +4090,13 @@ function groupRowsHtml() {
   const held=new Set(inbox.snapshot().items
     .filter(item=>item.type==="STORE"&&String(item.to||"").startsWith("@"))
     .map(item=>item.to));
+  // No leave button on the row: the palette above the table does that job better, and a
+  // second way to leave next to a row whose only other click SELECTS the group is a way
+  // to leave one by accident.
   return selectableGroups().sort().map(group =>
     `<tr data-call="${esc(group)}" class="station-group${group===state.selectedCall?" selected":""}">`
     + `<td class="call">${held.has(group)?'<span class="group-mail" title="Mail is held here for this group">⚑</span> ':""}`
-    + `${esc(group)}<button type="button" class="group-leave"`
-    + ` data-leave-group="${esc(group)}" title="Leave ${esc(group)}"`
-    + ` aria-label="Leave ${esc(group)}">×</button></td><td class="station-country">group</td>`
+    + `${esc(group)}</td><td class="station-country">group</td>`
     + `<td>—</td><td>—</td><td>—</td><td class="station-direction">—</td><td>—</td></tr>`).join("");
 }
 
@@ -5299,8 +5496,8 @@ function bind() {
   // moved to that frequency by then and a second line on top of it says nothing.
   const previewFrom=event=>{const rect=dom.waterfall.getBoundingClientRect();
     setCollisionPreview(RX_LOW+(event.clientX-rect.left)/rect.width*(RX_HIGH-RX_LOW));};
-  dom.waterfall.addEventListener("mousemove",previewFrom);
-  dom.waterfall.addEventListener("mouseleave",()=>setCollisionPreview(null));
+  dom.waterfall.addEventListener("mousemove",event=>{previewFrom(event);showStationLabels();});
+  dom.waterfall.addEventListener("mouseleave",()=>{clearStationLabels();setCollisionPreview(null);});
   // The @ used to be stripped here so that @APRSIS could never land in this field.
   // Joined groups now belong in it, so the guard moved into chooseCall(), where it is
   // both narrower and stronger: only a group we have joined is accepted, and a gateway
@@ -5371,12 +5568,7 @@ function bind() {
   dom.binResume.addEventListener("click",resumeFileTransfer);
   dom.binStop.addEventListener("click",stopFileTransfer);
   dom.binDownload.addEventListener("click",downloadReceivedFile);
-  for (const container of [dom.traffic,dom.stationRows]) container.addEventListener("click",event=>{
-    // The leave button sits inside a row that also selects on click, so it has to be
-    // read first — otherwise leaving a group would select it on the way out.
-    const leave=event.target.closest("[data-leave-group]");
-    if(leave){leaveGroup(leave.dataset.leaveGroup);return;}
-    const node=event.target.closest("[data-call]");if(node)chooseCall(node.dataset.call);});
+  for (const container of [dom.traffic,dom.stationRows]) container.addEventListener("click",event=>{const node=event.target.closest("[data-call]");if(node)chooseCall(node.dataset.call);});
   dom.trafficFilter.addEventListener("click",event=>{const clearButton=event.target.closest("[data-traffic-clear]");if(clearButton){if(!clearButton.disabled)clearRecentTraffic();return;}const button=event.target.closest("[data-traffic-filter]");if(!button||button.disabled)return;state.trafficFilter=button.dataset.trafficFilter;renderActivity();persistSession();});
   dom.stationHead.addEventListener("click",event=>{const button=event.target.closest("[data-station-sort]");if(!button)return;const key=button.dataset.stationSort;if(state.stationSort.key===key)state.stationSort.direction=state.stationSort.direction==="asc"?"desc":"asc";else state.stationSort={key,direction:"asc"};renderActivity();persistSession();});
   dom.txSpeed.addEventListener("change",()=>setJs8Setting("speed",dom.txSpeed.value));
@@ -5584,7 +5776,16 @@ async function init() {
   // The station's calibration table. Read once here and re-read before every
   // write; a stale copy costs at most an older level or a false "not
   // calibrated", never a level in the wrong direction.
+  createGainCal();
   gainStore.load().then(renderResolvedGain);
+  // The calibration carrier has its own pacing driver, so it needs its own pump
+  // and its own meter feed. Both are no-ops unless it is keying.
+  scheduler.every("gainCal",500,()=>{
+    if(!gainCal)return;
+    gainCal.tick();
+    if(state.calRunning)
+      gainCal.noteMeters({powerMeterRaw:state.radio.powerMeterRaw, swr:state.radio.swr});
+  });
   pollRadio(); scheduler.every("pollRadio",500,pollRadio);
   scheduler.every("txQueue",1000,()=>{drainTxQueue();renderTxQueue();renderRetryCountdowns();});
   // Audio windows normally age out partial receptions inside the worker; when audio stops
@@ -5631,6 +5832,23 @@ async function init() {
     feedAudio(samples,metadata={}){onSamples(samples,AUDIO_RATE,metadata);},
     decoderPushes(){return testDecoderPushes;},
     spectrumState(){return waterfall.state();},
+    // The labels are painted on canvas, so the DOM cannot be asked whether they are right.
+    // dueInMs proves the dwell is armed and how long it is without the test having to wait.
+    stationLabelState(){return {visible:state.stationLabelsVisible,
+      labels:state.stationLabels.map(item=>({...item})),
+      armedAtMs:state.stationLabelsArmedMs,
+      dueInMs:scheduler.dueIn("stationLabels")};},
+    // Startup failure injection. No harness can make the radio drop the worker
+    // fetch, so it asks the page to treat the modem as stalled instead. `retry`
+    // is off by default because the free retry re-fetches the JSC dictionary,
+    // which other checks count.
+    stallModem(reason="injected stall",{retry=false}={}){
+      modemEverReady=!retry; modemRetried=!retry; failModem(reason);
+      return this.modemStartup();},
+    modemStartup(){return {label:state.startup.label, detail:state.startup.detail,
+      progress:state.startup.progress, failed:state.startup.failed,
+      retryVisible:!dom.startupRetry.hidden, status:state.decoderStatus,
+      gateVisible:!dom.startup.hidden};},
     selectedCall(){return state.selectedCall;},
     feedDirected(frame){handleDirectedFrame({kind:"directed",...frame});},
     txQueueState(){return txQueue.snapshot(js8Clock.now());},

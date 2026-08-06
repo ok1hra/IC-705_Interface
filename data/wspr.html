@@ -240,21 +240,10 @@
                there would round the measurement away on the first click. -->
           <small id="calResolved" class="cal-resolved"></small>
         </label>
-        <!-- Auto gain. The panel is the whole feature on this page: SETUP only
-             links here, because the audio path, the pledge and the lock all
-             already live on this side. -->
-        <div class="cal-field" id="calField" hidden>
-          <b>Automatic TX gain</b>
-          <p id="calIntro">Keys a carrier for up to 20 s on the band and power the
-             radio is set to <em>now</em>, raises the audio level until ALC just
-             starts to act, and stores the level below that. Nothing else about
-             the radio is changed.</p>
-          <p id="calTarget" class="cal-target"></p>
-          <p><button id="calStart" type="button">START CALIBRATION</button></p>
-          <p id="calLive" class="cal-live" hidden></p>
-          <p id="calResult" class="cal-result" hidden></p>
-          <p id="calMessage" class="form-error" role="alert" hidden></p>
-        </div>
+        <!-- Mount point only: data/tx-gain-cal-ui.js carries the panel, its CSS
+             and the whole run, and the JS8Call page mounts the same module. A
+             hand-written copy here would be the thing that drifts. -->
+        <div id="calField" hidden></div>
         <label class="reference-field">TUNE power references
           <span class="reference-row"><b id="referenceCount">no bands measured</b><button id="referenceClear" type="button">Clear</button></span>
           <small>a transmission whose forward power drifts more than 20 % from the
@@ -278,7 +267,7 @@
 <script src="/wake-lock.js?v=20260727a"></script>
 <script src="/lan-gate.js?v=20260727a"></script>
 <script src="/fw-version.js?v=20260726a"></script>
-<script src="/js8-settings.js?v=20260726a"></script>
+<script src="/js8-settings.js?v=20260806a"></script>
 <!-- Only for formatFrequency(): the dotted grouping has to match the JS8Call
      page exactly, and one shared function is the way to guarantee that. -->
 <script src="/js8-presets.js?v=20260719d"></script>
@@ -294,6 +283,8 @@
 <script>TrxHelp.mount(document, {kind: "wspr"});</script>
 <script src="/wspr-core.js?v=20260730b"></script>
 <script src="/wspr-tx.js?v=20260728a"></script>
+<!-- The calibration tool: panel, carrier and verdict, shared with /data. -->
+<script src="/tx-gain-cal-ui.js?v=20260807a"></script>
 <script src="/wspr-log.js?v=20260726a"></script>
 <script src="/wspr.js?v=20260730b"></script>
 </body>

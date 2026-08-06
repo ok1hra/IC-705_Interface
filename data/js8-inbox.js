@@ -34,7 +34,7 @@
   // implementation; DEFERRED is ours -- own outgoing mail waiting for the
   // recipient to show up, which upstream has no concept of.
   const TYPE = {STORE: "STORE", DELIVERED: "DELIVERED", UNREAD: "UNREAD",
-    READ: "READ", DEFERRED: "DEFERRED"};
+    READ: "READ", DEFERRED: "DEFERRED", EXPIRED: "EXPIRED"};
 
   const DEFAULTS = {
     maxMessages: 96,
@@ -45,10 +45,20 @@
     maxUnreadPerSender: 16,
     maxDeferred: 16,
     dedupWindowMs: 24 * 3600000,  // the same message twice is a lost ACK, not new mail
+    // Group mail is the one record that survives its own delivery -- every member may
+    // still come for it -- so it needs a way out that per-recipient marking cannot give.
+    // 24 KiB of durable store is a hard ceiling, and a net message nobody has come for in
+    // a day is not worth the airtime it still promises. It expires VISIBLY (type EXPIRED,
+    // logged), never silently: the MSG BOX rule is that nothing confirmed disappears
+    // without a trace.
+    groupTtlMs: 24 * 3600000,
+    maxGroupRecipients: 8,
   };
 
   const CALL_RE = /^[A-Z0-9]{2,6}(?:\/[A-Z0-9]{1,2})?$/;
+  const GROUP_RE = /^@[A-Z0-9/]{1,8}$/;
   const isCallsign = v => CALL_RE.test(String(v || "").toUpperCase().trim());
+  const isGroup = v => GROUP_RE.test(String(v || "").toUpperCase().trim());
   const norm = v => String(v || "").toUpperCase().trim();
   const formatSnr = value => {
     const measured = Math.round(Number(value));
@@ -67,10 +77,10 @@
 
   // "TO:OK1ABC HELLO" -> {to:"OK1ABC", text:"HELLO"}; null when malformed.
   function parseMsgTo(payload) {
-    const match = /^TO:\s*([A-Z0-9/]+)\s+([\s\S]+)$/i.exec(String(payload || "").trim());
+    const match = /^TO:\s*(@?[A-Z0-9/]+)\s+([\s\S]+)$/i.exec(String(payload || "").trim());
     if (!match) return null;
     const to = norm(match[1]);
-    if (!isCallsign(to)) return null;
+    if (!isCallsign(to) && !isGroup(to)) return null;
     return {to, text: match[2].trim()};
   }
 
@@ -86,8 +96,19 @@
     }
     // Third-party mail still waiting for this callsign. Never our own inbox:
     // handing somebody their own message back is what the type separates.
+    // Group mail counts too: it is addressed to a group this station belongs to, so any
+    // member may come for it -- but only once each, which is what deliveredTo records.
     forCall(call) {
-      return this.items.filter(i => i.type === TYPE.STORE && i.to === norm(call));
+      const who = norm(call);
+      return this.items.filter(i => i.type === TYPE.STORE &&
+        (i.to === who || (isGroup(i.to) && !(i.deliveredTo || []).includes(who) &&
+                          i.from !== who)));
+    }
+    // Only the group half of the above, for the answers that name a group explicitly.
+    forGroup(group, call) {
+      const who = norm(call), name = norm(group);
+      return this.items.filter(i => i.type === TYPE.STORE && i.to === name &&
+        !(i.deliveredTo || []).includes(who) && i.from !== who);
     }
     byId(id) { return this.items.find(i => i.id === Number(id)) || null; }
     countFrom(from) {
@@ -99,10 +120,23 @@
         (sender === null || i.from === sender)).length;
     }
     // A STORE that went out becomes DELIVERED; `delivered` stays for anything
-    // still reading the old field.
-    markDelivered(id) {
+    // still reading the old field. Group mail is the exception: handing it to one member
+    // must not take it away from the rest, so it keeps its type and only records who has
+    // had it. `maxRecipients` is what eventually closes it.
+    markDelivered(id, call = "", maxRecipients = 8) {
       const i = this.byId(id);
-      if (i) { i.delivered = true; if (i.type === TYPE.STORE) i.type = TYPE.DELIVERED; }
+      if (!i) return null;
+      if (isGroup(i.to)) {
+        const who = norm(call);
+        i.deliveredTo = [...new Set([...(i.deliveredTo || []), ...(who ? [who] : [])])];
+        if (i.deliveredTo.length >= maxRecipients) {
+          i.delivered = true;
+          if (i.type === TYPE.STORE) i.type = TYPE.DELIVERED;
+        }
+        return i;
+      }
+      i.delivered = true;
+      if (i.type === TYPE.STORE) i.type = TYPE.DELIVERED;
       return i;
     }
     remove(id) {
@@ -162,7 +196,11 @@
       const payload = String(frame && frame.text || "").trim();
 
       if (!from || !myCall) return this._refuse("invalid", "missing callsign");
-      if (to !== myCall) return this._refuse("not-addressed", `for ${to || "nobody"}`);
+      // A command addressed to a group we belong to is addressed to us: that is what
+      // membership means. A group we are NOT in is somebody else's net.
+      const groups = (ctx && ctx.groups || []).map(norm);
+      const mine = to === myCall || groups.includes(to);
+      if (!mine) return this._refuse("not-addressed", `for ${to || "nobody"}`);
       // Checksummed commands: acting on half a message would store or transmit
       // corrupted text.
       if (frame.complete === false) return this._refuse("incomplete", `${command} still arriving`);
@@ -230,6 +268,15 @@
       // Addressed to us it is our own mail, not stock we hold for a stranger.
       if (parsed.to === norm(ctx.myCall))
         return this._store(from, parsed.to, parsed.text, ctx, TYPE.UNREAD);
+      // Mail for a group we have joined is worth holding: the members are people we are
+      // on the air with. A group we are not in has nobody here to collect it, so the box
+      // would be a public noticeboard paid for out of our own flash -- upstream accepts
+      // any @NAME and this is where we deliberately part company with it.
+      if (isGroup(parsed.to) && !(ctx.groups || []).map(norm).includes(parsed.to)) {
+        const skip = this._refuse("not-my-group",
+          `${parsed.to} is a group this station has not joined`);
+        return {...skip, nack: {to: from, text: "NACK"}};
+      }
       return this._store(from, parsed.to, parsed.text, ctx, TYPE.STORE);
     }
 
@@ -256,9 +303,18 @@
       // and messages already delivered are not for the asking, whoever asks.
       if (record.type === TYPE.DELIVERED)
         return this._refuse("already-delivered", `message ${id} was handed over`);
+      if (record.type === TYPE.EXPIRED)
+        return this._refuse("expired", `message ${id} was held too long and expired`);
       if (record.type !== TYPE.STORE)
         return this._refuse("not-yours", `message ${id} is not held for anybody`);
-      if (record.to !== from)
+      // Group mail belongs to every member, but only once each -- and never back to the
+      // station that left it, which is the bug the typed store was built to prevent.
+      const forGroup = isGroup(record.to);
+      if (forGroup && (record.deliveredTo || []).includes(from))
+        return this._refuse("already-delivered", `${from} already had message ${id}`);
+      if (forGroup && record.from === from)
+        return this._refuse("not-yours", `message ${id} came from ${from}`);
+      if (!forGroup && record.to !== from)
         return this._refuse("not-yours", `message ${id} is not addressed to ${from}`);
       // Handing over a message we are holding for somebody else is transmitting
       // third-party content, exactly like a relay hop.
@@ -271,7 +327,11 @@
         ? ` NEXT MSG ID ${waiting[0].id}${waiting.length > 1 ? ` +${waiting.length - 1}` : ""}`
         : "";
       return {action: "deliver", to: from,
-        text: `MSG ${record.text} FROM ${record.from}${next}`, record,
+        // Group mail says which net it came from, or the member has no way to tell it
+        // apart from a message addressed to them personally.
+        text: isGroup(record.to)
+          ? `MSG ${record.text} FROM ${record.from} TO ${record.to}${next}`
+          : `MSG ${record.text} FROM ${record.from}${next}`, record,
         deliveryId: record.id};
     }
 
@@ -292,22 +352,42 @@
 
     // Messages this station is holding, for the UI and the remote panel.
     pending(call) { return this.store.forCall(call); }
-    confirmDelivered(id) {
+    // `call` matters only for group mail: it is the member we handed it to.
+    confirmDelivered(id, call = "") {
       const record = this.store.byId(id);
       if (!record || record.delivered) return false;
-      this.store.markDelivered(id);
+      this.store.markDelivered(id, call, this.config.maxGroupRecipients);
       this.stats.delivered += 1;
-      this._emit({type: "delivered", id: record.id, to: record.to,
+      this._emit({type: "delivered", id: record.id, to: record.to, call,
         text: record.text});
       return true;
     }
+
+    // Group mail is the only record with a clock on it, and it has to stop out loud:
+    // the type changes to EXPIRED and the reason is logged, so a message that was
+    // promised to a net never simply vanishes from the box.
+    expireGroupMail(nowMs) {
+      const expired = [];
+      for (const item of this.store.all()) {
+        if (item.type !== TYPE.STORE || !isGroup(item.to)) continue;
+        if (Number(nowMs) - Number(item.atMs) < this.config.groupTtlMs) continue;
+        item.type = TYPE.EXPIRED;
+        expired.push(item);
+        this._emit({type: "expired", id: item.id, to: item.to, from: item.from,
+          detail: `held ${Math.round((Number(nowMs) - Number(item.atMs)) / 3600000)} h ` +
+                  `for ${item.to}, delivered to ${(item.deliveredTo || []).length}`});
+      }
+      return expired.length;
+    }
+
     snapshot() {
       return {...this.stats, size: this.store.size(),
         items: this.store.all().map(i => ({id: i.id, type: i.type || TYPE.STORE,
           from: i.from, to: i.to, text: i.text, atMs: i.atMs,
+          deliveredTo: (i.deliveredTo || []).slice(),
           delivered: Boolean(i.delivered)}))};
     }
   }
 
-  return {Js8Inbox, MemoryStore, DEFAULTS, TYPE, parseMsgTo, isCallsign};
+  return {Js8Inbox, MemoryStore, DEFAULTS, TYPE, parseMsgTo, isCallsign, isGroup};
 });

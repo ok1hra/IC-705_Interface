@@ -457,13 +457,35 @@ f.onload=()=>{
       txGainSection.dispatchEvent(new setupFrame.contentWindow.Event('toggle'));
       await new Promise(resolve=>setTimeout(resolve,300));
       const txGainRow=sd.querySelector('#txGainTable .txgain-row');
+      // The JS8 page now hosts the identical tool rather than pointing at the
+      // page that has it. What matters is that it is the SAME module (one panel,
+      // one search, one table) and that it is reachable without leaving the page,
+      // because leaving stops the modem and the decoding.
+      const calHint=d.querySelector('.cal-hint');
+      const flatHint=!calHint?'':calHint.textContent
+        .split(String.fromCharCode(10)).join(' ').replace(/ +/g,' ');
+      checks.js8HostsTheCalibrationTool=Boolean(d.querySelector('#calField .cal-target'))&&
+        Boolean(d.querySelector('#calField #calStart'))&&
+        d.querySelector('#calField #calStart').textContent==='START CALIBRATION';
+      checks.js8SaysWhatTheMeasurementIsFiledUnder=
+        flatHint.includes('set this band and power first');
+      // It keys the transmitter, so it must refuse until the page's own gates are
+      // clear -- and say which one is not.
+      checks.js8CalRefusesUntilItMay=(()=>{
+        const target=d.querySelector('#calField .cal-target').textContent;
+        const disabled=d.querySelector('#calField #calStart').disabled;
+        return disabled===true&&target.length>0;
+      })();
       checks.setupTxGainVisibleWithLan=!txGainSection.hidden;
       checks.setupTxGainShowsTheTable=!!txGainRow&&txGainRow.textContent.includes('IC-705')&&
         txGainRow.textContent.includes('20m')&&txGainRow.textContent.includes('0.031');
       checks.setupTxGainSaysWhenItWasTrimmed=!!txGainRow&&txGainRow.textContent.toLowerCase().includes('trimmed');
       // 0.031 against the 0.7 target is about 27 dB of surplus MOD level.
       checks.setupTxGainTranslatesTheKnee=!!txGainRow&&/MOD level 2[0-9]\.[0-9] dB too high/.test(txGainRow.textContent);
-      checks.setupTxGainLinksToTheCarrier=sd.querySelector('.txgain-link')?.getAttribute('href')==='/wspr.html#autogain';
+      // Same tab, always: both DATA pages share one session token, so a new tab
+      // asks for a lease the open one already holds and lands on "session busy".
+      checks.setupTxGainLinksToTheCarrier=sd.querySelector('.txgain-link')?.getAttribute('href')==='/wspr.html#autogain'&&
+        sd.querySelector('.txgain-link')?.hasAttribute('target')===false;
       // Dropping one entry is a read-modify-write, so this also proves the page
       // does not write back a copy it opened before the click.
       sd.querySelector('.txgain-drop').click();
@@ -996,18 +1018,19 @@ f.onload=()=>{
       f.contentWindow.__dataTest.chooseCall('@APRSIS');
       const gatewayRefused=d.querySelector('#recipient').value==='@NET';
       const groupLogRefused=d.querySelector('#logQsoButton').disabled;
-      // Adding happens in the field, leaving on the row: a group you can join and not
-      // get rid of is how this first landed. The button has to be looked up HERE and not
-      // earlier -- every render rewrites #stationRows, so a node grabbed further up is
-      // detached by now and clicking it would do nothing while the test went green.
-      const leaveButton=[...d.querySelectorAll('#stationRows tr')]
-        .find(tr=>tr.dataset.call==='@NET')?.querySelector('[data-leave-group]');
-      leaveButton?.click();
-      // Leaving the selected group must also drop it as the recipient, otherwise the
-      // composer would go on pointing at a group we are no longer in.
+      // Leaving is the palette's job alone; the rows only select. The pill has to be
+      // looked up HERE and not earlier -- every render rewrites the grid, so a node
+      // grabbed further up is detached by now and clicking it would do nothing while the
+      // test went green.
+      d.querySelector('#groupPanel .group-pill[data-group="@NET"]').click();
+      // Leaving the selected group must also drop it as the recipient, and take its row
+      // with it, or the composer would go on pointing at a group we are no longer in.
       const leftGroup=!f.contentWindow.__dataTest.myGroups().includes('@NET')&&
         ![...d.querySelectorAll('#stationRows tr')].some(tr=>tr.dataset.call==='@NET')&&
         d.querySelector('#recipient').value==='';
+      // The rows carry no leave button any more: two ways out next to a row whose other
+      // click selects the group is a way to leave one by accident.
+      const noRowLeaveButton=!d.querySelector('#stationRows [data-leave-group]');
       // renderControls() refuses to rewrite a focused input; in a real browser the next
       // click moves focus by itself, here it would leave the field stale for every later
       // check.
@@ -1017,7 +1040,7 @@ f.onload=()=>{
         chipNames==='@EMCOMM @NET'&&chipLeave&&
         groupRow&&groupAnswer.startsWith('OK5GRP SNR')&&
         strangerGroup===''&&customAccepted&&groupSelected&&gatewayRefused&&groupLogRefused&&
-        !!leaveButton&&leftGroup;
+        leftGroup&&noRowLeaveButton;
       groupsField.value='';
       groupsField.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));
       checks.autoReplySettings=!!d.querySelector('#infoText')&&!!d.querySelector('#statusText')&&
@@ -1582,8 +1605,53 @@ f.onload=()=>{
                   // The histogram answers the same question at the same moment, so it grows
                   // with the bands: a low ruler at rest, full height while the pointer asks.
                   checks.histogramGrowsOnHover=barHeight()>barAtRest*2;
+                  // Station labels are a DWELL gesture: three seconds of stillness, so that
+                  // sweeping the pointer across on the way somewhere else never summons them.
+                  // They are painted on canvas, so the DOM cannot be asked -- dueInMs proves
+                  // the timer is armed and how long it is, without the test waiting for it.
+                  const labelState=()=>f.contentWindow.__dataTest.stationLabelState();
+                  const shown=labelState();
+                  // Up the moment the pointer crosses the edge, with a three-second countdown
+                  // to HIDING already running -- the timer takes them away, it does not bring
+                  // them. Two earlier versions had that backwards.
+                  checks.stationLabelsShowOnEntry=shown.visible===true&&
+                    shown.dueInMs>2500&&shown.dueInMs<=3000;
+                  // Movement must push the hiding back. Proving a reset needs time to actually
+                  // pass, so a short spin drains the countdown first: after the next move it has
+                  // to be back up, which cannot happen unless the task was re-registered.
+                  const spin=ms=>{const until=Date.now()+ms;while(Date.now()<until);};
+                  spin(150);
+                  const draining=labelState();
+                  wf.dispatchEvent(new f.contentWindow.MouseEvent('mousemove',
+                    {bubbles:true,clientX:hoverX+40,clientY:wfBox.top+14}));
+                  const refreshed=labelState();
+                  checks.stationLabelsCountdownResetsOnMove=
+                    draining.dueInMs<shown.dueInMs-100&&
+                    refreshed.dueInMs>draining.dueInMs+100&&
+                    refreshed.visible===true&&refreshed.armedAtMs>shown.armedAtMs;
+                  // One entry per station at the frequency it was last heard on, newest
+                  // first, own transmissions excluded -- they are not stations to avoid.
+                  // Concatenation, not a template literal: this page is itself emitted from
+                  // one, so an interpolation here would be evaluated by Node before the
+                  // browser ever sees it -- and a dollar-brace pair is a syntax error even
+                  // inside a comment, since the comment is still part of that string. Same
+                  // family of trap as the backslash-d in a regex a few lines up.
+                  // Asserted as properties, not as an exact list: earlier parts of this
+                  // harness leave their own stations in the feed, and pinning the whole set
+                  // would make this check break every time one of them changes.
+                  const labelAt=new Map(shown.labels.map(item=>[item.call,Math.round(item.offsetHz)]));
+                  const labelTimes=shown.labels.map(item=>item.lastSlotUtcMs);
+                  checks.stationLabelsPerStation=
+                    labelAt.size===shown.labels.length&&
+                    labelTimes.every((value,index)=>index===0||value<=labelTimes[index-1])&&
+                    labelAt.get('DL8KM')===900&&labelAt.get('DL1ABC')===600&&
+                    labelAt.get('K0OG')===1500&&
+                    // own call never labels the band: we are not a station to steer around
+                    !labelAt.has('OK1HRA');
                   wf.dispatchEvent(new f.contentWindow.MouseEvent('mouseleave',{bubbles:true}));
                   checks.collisionClearsOnLeave=!feed.classList.contains('collision-preview');
+                  checks.stationLabelsCancelOnLeave=labelState().dueInMs===null&&
+                    labelState().visible===false;
                   // The histogram is the same bars again, so it must hold exactly one per
                   // visible row that has an offset, on the same axis.
                   const bars=[...d.querySelectorAll('#trafficHistogram .histogram-bar')];
@@ -1618,6 +1686,21 @@ f.onload=()=>{
                   d.querySelector('[data-traffic-clear]').click();
                   checks.clearWatermark=!d.querySelector('#traffic article[data-rx-state]')&&
                     Boolean(d.querySelector('#traffic .empty-row'));
+                  // Last, because it leaves the modem dead. A startup that stops advancing
+                  // must say so: this page held the operator on "Loading JS8Call-ICOM modem
+                  // 0%" for ever whenever the worker never reported, with RETRY hidden
+                  // because no failure had been declared. The gate has to come back even
+                  // though a session was restored above -- the inline modem line that would
+                  // otherwise carry the news lives in a section the page keeps hidden.
+                  const stalled=f.contentWindow.__dataTest.stallModem('fixture stall');
+                  checks.modemStallDeclared=stalled.failed===true&&
+                    stalled.label==='Modem loading failed'&&stalled.detail==='fixture stall'&&
+                    stalled.status==='fixture stall';
+                  checks.modemStallVisible=stalled.retryVisible===true&&stalled.gateVisible===true&&
+                    d.querySelector('#startupLabel').textContent==='Modem loading failed'&&
+                    d.querySelector('#startupDetail').textContent==='fixture stall'&&
+                    !d.querySelector('#startupRetry').hidden&&
+                    d.querySelector('#modemState').className.includes('error');
                   const pass=Object.values(checks).every(Boolean);
                   fetch('/result',{method:'POST',body:JSON.stringify({pass,text:'DATA BROWSER '+(pass?'PASS ':'FAIL ')+JSON.stringify(checks)+' station='+JSON.stringify(stationObserved)+' sort='+JSON.stringify({sortAscObserved,sortDescObserved})+' gate='+gate+' tx='+d.querySelector('#txSummary').textContent+' modem='+d.querySelector('#modemState').textContent+' diag='+diag})});
                 }

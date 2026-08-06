@@ -869,10 +869,11 @@ button { color: inherit; cursor: pointer; }
   color:var(--muted); background:#10231f; font-size:11px; cursor:pointer; }
 .group-add button:hover { border-color:var(--cyan); color:var(--text); }
 .group-cost { font-size:9px; font-weight:700; color:var(--amber); cursor:help; }
-.station-group .call { display:flex; align-items:center; gap:6px; }
-/* Leaving from the row the group is shown on stays: the palette is for the overview, this
-   is for the one net you have finished with while looking straight at it. */
-.group-leave { margin-left:auto; padding:0 5px; border:1px solid var(--line); border-radius:4px;
-  color:var(--muted); background:#10231f; font-size:14px; line-height:1.35; cursor:pointer; }
-.group-leave:hover { color:var(--text); border-color:var(--cyan); }
 .group-mail { color:var(--amber); }
+.cal-hint { display:block; font-size:11px; color:var(--muted); line-height:1.5; }
+.cal-hint a { color:#9fd39f; }
+
+/* Same reason as on the WSPR page: these two are full-width sentences. */
+.modem-settings label > .cal-resolved,
+.modem-settings label > .cal-hint,
+label > .cal-resolved, label > .cal-hint { grid-column: 1 / -1; width: 100%; }

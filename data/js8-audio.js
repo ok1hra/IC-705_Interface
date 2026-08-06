@@ -105,6 +105,11 @@ function (Transport, Timebase) {
     abort(txId, reason) {
       if (this._session) return this._session.abort(txId, reason);
     }
+    // Both needed by the WSPR pacing driver, which the calibration tool runs over
+    // this same socket: the keepalive that refreshes the firmware's dead-man, and
+    // the backlog figure it treats as proof the link cannot carry the pace.
+    sendControl(message) { return this._requireSession().sendControl(message); }
+    get bufferedAmount() { return this._session ? this._session.bufferedAmount : 0; }
     get ptt() { return Boolean(this._session && this._session.ptt); }
 
     _requireSession() {

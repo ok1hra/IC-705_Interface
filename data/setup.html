@@ -386,7 +386,13 @@
                read it: JS8Call-ICOM and the WSPR beacon.</p>
             <div id="txGainTable" class="txgain-body"><span class="txgain-empty">…</span></div>
             <p class="txgain-actions">
-              <a class="txgain-link" href="/wspr.html#autogain" target="_blank" rel="noopener">CALIBRATE ON THE WSPR PAGE &#8599;</a>
+              <!-- No target="_blank", deliberately. Both DATA pages share one
+                   session token in sessionStorage, so a NEW TAB asks the firmware
+                   for a lease another tab already holds and lands on "session
+                   busy" -- the calibration would be unreachable exactly when the
+                   operator has the radio open, which is always. Same rule as the
+                   sub-nav links on wspr.html. -->
+              <a class="txgain-link" href="/wspr.html#autogain">CALIBRATE ON THE WSPR PAGE &#8599;</a>
               <button type="button" id="txGainForget" class="txgain-forget">Forget all</button>
             </p>
             <p class="footnote">Set the band and the power you want to measure <em>first</em> —

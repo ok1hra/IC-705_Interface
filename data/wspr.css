@@ -296,27 +296,14 @@
   .tt-schedule-row { grid-template-columns: 78px 1fr 10px; }
 }
 
-/* Automatic TX gain. Deliberately laid out like the safety pledge above it
-   rather than like a setting: it is an action that keys the transmitter, and it
-   should not look like a number the operator can nudge. */
-.wspr-settings .cal-field {
-  grid-column: 1 / -1;
-  border: 1px solid #674a30;
-  padding: 8px;
-  display: grid;
-  gap: 6px;
-}
-.wspr-settings .cal-field p { margin: 0; }
-.wspr-settings .cal-field #calIntro,
-.wspr-settings .cal-target { color: var(--muted); font-size: 12px; line-height: 1.5; }
-.wspr-settings .cal-live {
-  font-family: ui-monospace, monospace;
-  font-size: 12px;
-  color: var(--amber);
-}
-.wspr-settings .cal-result { font-size: 12px; color: #9fd39f; line-height: 1.5; }
-/* The resolved level sits beside the manual field. Amber when nothing is on
-   file for this band and power: not an error, but not what the operator asked
-   for either. */
+/* The calibration panel's own look lives in data/tx-gain-cal-ui.js, which
+   carries its CSS the way lan-gate.js does. Only the two page-side sentences
+   need placing in this grid. */
 .cal-resolved { font-size: 11px; color: #9fd39f; }
 .cal-resolved.uncalibrated { color: var(--amber); }
+
+/* The resolved level and the calibration hint are sentences, not values: inside
+   the settings grid a <small> otherwise lands in the narrow label column and
+   reads as a squeezed fragment. Span the row. */
+.wspr-settings label > .cal-resolved,
+.wspr-settings label > .cal-hint { grid-column: 1 / -1; }

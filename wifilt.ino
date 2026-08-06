@@ -107,7 +107,7 @@ bool cwIpOnConnect  = true;       // announce WiFi IP via CW on first full-CAT r
 volatile bool cwIpSendPending = false;
 
 #define LOOP_WARN_MS 200
-#define REV 20260803
+#define REV 20260806
 #define WIFI
 #define UDP_TO_FSK
 #define WDT         // watchdog timer
@@ -719,6 +719,11 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   float stateSwr = 1.0f;
   uint32_t stateSmeterRaw = 0;
   uint32_t statePowerMeterRaw = 0;
+  // TRX1's ALC, with the same freshness counter as the snapshot's. Two copies
+  // because a LAN radio on TRX1 feeds the shared CAT globals and never the
+  // snapshot -- see lanCivFrameRoute(), which returns early for slot 0.
+  uint32_t stateAlcRaw = 0;
+  uint32_t stateAlcSeq = 0;
 
   String requestArg(const char *name);
   bool requestHasArg(const char *name);
@@ -5236,6 +5241,7 @@ void processCivBuffer(uint8_t len) {
       if (pl[0] == 0x02) stateSmeterRaw = raw;
       else if (pl[0] == 0x11) statePowerMeterRaw = raw;
       else if (pl[0] == 0x12) stateSwr = 1.0f + ((float)raw * 3.0f / 120.0f);
+      else if (pl[0] == 0x13) { stateAlcRaw = raw; stateAlcSeq++; }
       else if (pl[0] == 0x15) stateSupplyVolts = ((float)raw * 16.0f) / 241.0f;
     }
     if (cmd == 0x14 && plLen >= 2) {
@@ -7185,6 +7191,23 @@ static uint64_t aud1GetBE64(const uint8_t* p){
   uint64_t value=0; for(int i=0;i<8;i++) value=(value<<8)|p[i]; return value;
 }
 
+// Which ALC the browser should be told about. The same split /state makes with
+// `snapView`: a LAN radio on TRX1 feeds the shared CAT globals, because
+// lanCivFrameRoute() hands slot 0 to lanCivFrameHandler and returns -- the
+// per-slot snapshot is never touched. Reading only the snapshot therefore
+// reported "no ALC" forever on the ordinary single-radio setup, which is exactly
+// the shape of "the radio never answered".
+static uint32_t aud1AlcRaw() {
+  return lanRadioSlotIndex() == 0 ? stateAlcRaw : (uint32_t)lanRadioSnap.alcRaw;
+}
+static uint32_t aud1AlcSeq() {
+  return lanRadioSlotIndex() == 0 ? stateAlcSeq : lanRadioSnap.alcSeq;
+}
+static void aud1AlcReset() {
+  stateAlcRaw = 0; stateAlcSeq = 0;
+  lanRadioSnap.alcRaw = 0; lanRadioSnap.alcSeq = 0;
+}
+
 static uint8_t aud1Pcm16ToUlaw(int16_t input){
   int32_t sample = input;
   uint8_t sign = sample < 0 ? 0x80 : 0;
@@ -7656,8 +7679,8 @@ void aud1TxTick(bool deferPrebufferMiss){
                       ",\"replays\":" + String((unsigned long)txSnapshot.replayedPackets) +
                       ",\"sendFailures\":" + String((unsigned long)txSnapshot.sendFailures) +
                       ",\"rxDropped\":" + String((unsigned long)txClient->audioRxDropped()) +
-                      ",\"alc\":" + String((unsigned long)lanRadioSnap.alcRaw) +
-                      ",\"alcSeq\":" + String((unsigned long)lanRadioSnap.alcSeq) +
+                      ",\"alc\":" + String((unsigned long)aud1AlcRaw()) +
+                      ",\"alcSeq\":" + String((unsigned long)aud1AlcSeq()) +
                       ",\"ptt\":false}");
       }
       return;
@@ -7718,8 +7741,8 @@ void aud1TxTick(bool deferPrebufferMiss){
                   ",\"replays\":" + String((unsigned long)txSnapshot.replayedPackets) +
                   ",\"sendFailures\":" + String((unsigned long)txSnapshot.sendFailures) +
                   ",\"rxDropped\":" + String((unsigned long)txClient->audioRxDropped()) +
-                  ",\"alc\":" + String((unsigned long)lanRadioSnap.alcRaw) +
-                  ",\"alcSeq\":" + String((unsigned long)lanRadioSnap.alcSeq) +
+                  ",\"alc\":" + String((unsigned long)aud1AlcRaw()) +
+                  ",\"alcSeq\":" + String((unsigned long)aud1AlcSeq()) +
                   ",\"ptt\":true}");
   }
   audioTxLastMs = now;
@@ -7827,7 +7850,7 @@ static void aud1HandleControl(const String& json){
   // with PTT: an abort between prepare and keying would otherwise hand the next
   // run a sequence that has already moved, and its first reading -- taken at
   // the old drive level -- would be accepted as fresh.
-  lanRadioSnap.alcRaw = 0; lanRadioSnap.alcSeq = 0;
+  aud1AlcReset();
   aud1TxId = txId; aud1TxTotalSamples = totalSamples; aud1TxExpectedPackets = packets;
   aud1TxPrebufferSamples = prebuffer; aud1TxTargetMs = millis() + uint32_t(delayMs);
   aud1TxDeadlineMs = aud1TxTargetMs + uint32_t(totalSamples / 48) + 2500;

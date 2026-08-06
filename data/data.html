@@ -363,7 +363,17 @@
                  itself lives on the WSPR page, which can move the level while a
                  carrier plays. -->
             <small id="calResolved" class="cal-resolved"></small>
+            <!-- The tool is right below now, so this only has to say what the
+                 measurement is filed under. -->
+            <small class="cal-hint">Measured automatically from the radio&rsquo;s ALC by the
+              tool below &mdash; set this band and power first; the result is stored for
+              exactly that pair and shared with the WSPR beacon.</small>
           </label>
+          <!-- Mount point: data/tx-gain-cal-ui.js carries the panel, its CSS and
+               the whole run. The WSPR page mounts the identical module -- the
+               measurement belongs to the radio, not to a mode, so a second copy
+               of a transmitter-keying panel would only be a copy to drift. -->
+          <div id="calField"></div>
           <label class="safety-setting">Enable radio TX <input id="txSafety" type="checkbox"><small>I will use safe RF power and a suitable load/antenna.</small></label>
           <label>INFO answer <input id="infoText" maxlength="40" autocomplete="off" placeholder="50W VERT"></label>
           <label>STATUS answer <input id="statusText" maxlength="40" autocomplete="off" placeholder="MONITORING"></label>
@@ -395,30 +405,31 @@
   <script src="/wake-lock.js?v=20260727a"></script>
   <script src="/lan-gate.js?v=20260727a"></script>
   <script src="/fw-version.js?v=20260719d"></script>
-  <script src="/js8-settings.js?v=20260719d"></script>
+  <script src="/js8-settings.js?v=20260806a"></script>
   <script src="/js8-email.js?v=20260719d"></script>
   <script src="/js8-aprs.js?v=20260731a"></script>
   <script src="/js8-file-transfer.js?v=20260719d"></script>
   <script src="/js8-presets.js?v=20260719d"></script>
   <script src="/js8-scheduler.js?v=20260719d"></script>
-  <script src="/js8-inbox.js?v=20260804a"></script>
+  <script src="/js8-inbox.js?v=20260806a"></script>
   <script src="/js8-msgbox.js?v=20260804a"></script>
   <script src="/js8-relay.js?v=20260723a"></script>
   <script src="/js8-heartbeat.js?v=20260724b"></script>
   <script src="/js8-txqueue.js?v=20260719d"></script>
   <script src="/js8-restrictions.js?v=20260719d"></script>
   <script src="/js8-autoreply.js?v=20260723a"></script>
-  <script src="/js8-protocol.js?v=20260803a"></script>
+  <script src="/js8-protocol.js?v=20260806a"></script>
   <script src="/js8-timebase.js?v=20260719d"></script>
   <script src="/spectrum.js?v=20260728a"></script>
   <script src="/js8-aud1.js?v=20260724c"></script>
   <!-- The station's calibration table and the ALC limiter, shared with WSPR. -->
   <script src="/tx-gain-cal.js?v=20260803a"></script>
   <script src="/tx-alc-guard.js?v=20260803a"></script>
+
   <script src="/js8-audio.js?v=20260719d"></script>
   <script src="/js8-tx.js?v=20260724b"></script>
   <script src="/js8-core.js?v=20260719d"></script>
-  <script src="/js8-adapter.js?v=20260801a"></script>
+  <script src="/js8-adapter.js?v=20260806a"></script>
   <!-- Only for RADIO_FULL_POWER_W / fullPowerWatts: the header turns the CI-V
        level into watts and must never disagree with the WSPR page about how. -->
   <!-- One table of Icom models: watts for WSPR, menu paths for the setup guides. -->
@@ -426,8 +437,13 @@
   <script src="/trx-help.js?v=20260802a"></script>
   <script>TrxHelp.mount(document, {kind: "js8"});</script>
   <script src="/wspr-core.js?v=20260726a"></script>
+  <!-- WsprTx joins WsprCore because the calibration carrier is a STREAMED single
+       tone -- the only kind whose level can move while it plays, which is what
+       the search needs eight or nine times inside one keying. Must follow both. -->
+  <script src="/wspr-tx.js?v=20260807a"></script>
+  <script src="/tx-gain-cal-ui.js?v=20260807a"></script>
   <script src="/dxcc.js?v=20260719d"></script>
   <script src="/log-db.js?v=20260720a"></script>
-  <script src="/data.js?v=20260803a"></script>
+  <script src="/data.js?v=20260806a"></script>
 </body>
 </html>

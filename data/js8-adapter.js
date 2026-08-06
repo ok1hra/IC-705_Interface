@@ -20,12 +20,38 @@
         this._messageCount = 0;
         this._frameCount = 0;
         this._activityKey = "";
+        this._failure = null;
         this._worker = createWorker();
         this._worker.onmessage = event => this._receive(event.data);
+        // A worker whose script never arrives -- a 404, a dropped connection on a
+        // web server that serves one request at a time, a corrupt cache entry --
+        // reports through `error` and through nothing else: no message is ever
+        // posted, so a page waiting for the first progress report waits for ever.
+        // Without this the JS8 page sat on "Loading JS8Call-ICOM modem 0%" with
+        // the RETRY button hidden, because nothing had declared a failure.
+        this._worker.onerror = event => {
+          if (event && event.preventDefault) event.preventDefault();
+          const where = event && event.filename
+            ? ` (${event.filename}:${event.lineno || 0})` : "";
+          this._fail(`${(event && event.message) || "modem worker script could not be loaded"}${where}`);
+        };
+        this._worker.onmessageerror = () => this._fail("modem worker sent an undecodable message");
         this._worker.postMessage({type: "init", ...(environment.workerInit || {})});
       }
 
-      onEvent(callback) { this._onEvent = callback; return this; }
+      // onEvent() is chained on after the constructor, so a failure raised while
+      // the worker was starting has nobody to tell yet. Hold it and hand it over.
+      onEvent(callback) {
+        this._onEvent = callback;
+        if (this._failure) { const message = this._failure; this._failure = null; callback({type:"error", message}); }
+        return this;
+      }
+
+      _fail(message) {
+        this._status = "error";
+        if (this._onEvent) this._onEvent({type:"error", message});
+        else this._failure = message;
+      }
 
       beginEpoch(epoch) {
         if (!epoch || !Number.isInteger(Number(epoch.streamId)) ||

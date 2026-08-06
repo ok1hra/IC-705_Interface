@@ -11,6 +11,57 @@ published.
 
 ## Working tree — not committed
 
+* **A modem that cannot start now says so instead of hanging on "0%".** Reported from the
+  station: opening the JS8 page stopped on *Loading JS8Call-ICOM modem 0%* and stayed there.
+  0 % is the state before the worker's *first* report, so the page had heard nothing at all
+  from it — and everything the startup gate shows is driven by worker messages. A worker whose
+  script never arrives (a dropped connection on a web server that serves one request at a
+  time, a stale or corrupt cache entry, a 404) raises `error` and posts nothing, and nobody was
+  listening for `error`; a fetch the radio accepts and then never answers raises nothing
+  whatsoever. Either way the operator was left on a full-screen progress bar with the RETRY
+  button hidden, because the button appears only once a failure has been *declared* and no code
+  path could declare one. Now: `js8-adapter.js` listens for `error` and `messageerror` and
+  reports them as a modem error, buffering the message when it arrives before `onEvent()` has
+  been chained on — which is the normal order, since the constructor creates the worker and the
+  listener is attached afterwards. `data.js` adds a 20 s no-progress watchdog, re-armed by every
+  progress report so a slow link only ever costs patience, and spends one automatic retry
+  before the modem has ever been ready: the commonest cause is a single dropped asset fetch,
+  which costs nothing to repeat, while a modem that broke *after* running is a fault the
+  operator must see. The failure gate also comes back for a restored session, which used to
+  suppress it in favour of the inline modem-state line — a line that lives in a section the
+  page keeps hidden, so suppressing the gate meant a dead page with no explanation and no
+  reachable RETRY. New `tools/js8-modem-failure-smoke.js` pins the adapter contract in both
+  arrival orders (7 checks); `data-browser-smoke.js` +2, run last because they leave the modem
+  dead on purpose. Cache-busting versions bumped for every script changed in this working tree
+  (`data.js`, `js8-adapter.js`, `js8-protocol.js`, `js8-inbox.js`, `js8-settings.js`) — static
+  assets are served `public, max-age=3600`, so an edit without a bump lets a browser run an
+  hour on a mixture of old and new modules.
+
+* **Work the waterfall and the band names itself.** The callsigns from Recent traffic stand up
+  vertically on the waterfall at the frequency each station was last heard on. They appear the
+  instant the pointer crosses the edge, stay while it is moving, and go three seconds after it
+  stops — or immediately when it leaves. The timer **hides**; it took two wrong versions to get
+  there, one waiting for three seconds of stillness and one for three seconds after arrival, and
+  both failed for the same reason: choosing a frequency *is* continuous movement, so the labels
+  have to be up **during** the movement rather than after it. Each callsign is 13 px bold on a
+  solid black plate — not a tint, not a shadow. The waterfall's warm end is close to white and
+  the dark end of the age ramp was unreadable on top of it, so the plate must owe nothing to
+  whatever is behind it. A callsign too long for the canvas height drops to 10 px instead of
+  being clipped, because a clipped callsign reads as a different callsign. No age cut-off,
+  deliberately: a station that has not been heard for an hour
+  still owns that frequency until somebody else takes it, and that is the thing worth knowing
+  before choosing where to call. Age is carried by brightness instead — the most recent
+  callsign is pure white, the oldest fades to dark grey, interpolated across whatever span is
+  on screen, so a single station reads white because there is nothing for it to be older
+  than. Drawn oldest first, so where two labels collide the fresher station wins. They go on
+  the existing overlay canvas rather than into the DOM, and hang from the top edge so a name
+  sits above the trace it belongs to; a new strip *above* the waterfall would have shoved the
+  whole page down every time it appeared. Timed through the page scheduler, since `data.js`
+  allows exactly one interval — and re-arming `after()` with the same id is what resets the
+  dwell on every movement. `data-browser-smoke.js` +3 checks: the labels are painted on
+  canvas, so they are asserted through a test hook reporting the armed delay, one entry per
+  station at the right frequency, newest first, and never the operator's own callsign.
+
 * **Three corrections after seeing the traffic feed in use.** The aprs.fi lookup now appears
   only on messages carrying `@APRSIS GRID`. aprs.fi knows a station only once it has reached
   APRS-IS, and that message is the one thing that proves it did — the sender is asking the
