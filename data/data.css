@@ -546,6 +546,14 @@ button { color: inherit; cursor: pointer; }
 .message-tx strong { cursor: default; }
 .message-tx.tx-emitted strong { color: var(--red); }
 .message-tx.tx-unsent strong { color: var(--muted); }
+/* The .tx-copy backgrounds are the chat thread's live progress bar -- green filling up
+   behind the text while a message is actually leaving the radio. They arrived in this feed
+   by inheritance alone, and combined with the red above they put red text on a green
+   background: the loudest pairing on the page, and the one a red/green colour blind
+   operator cannot read at all. Here the transmission is already history, and the row states
+   the same fact in the vocabulary the block comment above describes -- red for what
+   radiated, struck-through grey for what did not. */
+.message-tx .message-text .tx-copy { background: none; }
 .message-tx .message-text .tx-copy-sent { color: var(--red); }
 .message-tx .message-text .tx-copy-failed, .message-tx .message-text .tx-copy-pending {
   color: var(--muted); text-decoration: line-through; text-decoration-color: rgba(139,165,157,0.5); }

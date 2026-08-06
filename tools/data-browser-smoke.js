@@ -1450,8 +1450,10 @@ f.onload=()=>{
                   // than invent a position. The received rows stay on screen so the own-TX
                   // bars can be compared against one.
                   f.contentWindow.__dataTest.setOutgoingLog([
+                    // sentChars is what splits the copy into radiated and not; without it
+                    // even a completed row renders entirely as pending.
                     {id:901,direction:'outgoing',to:'K0OG',text:'ON AIR',status:'completed',
-                     utcMs:sn-2000,offsetHz:1200,submode:0,frequencyHz:0,restored:true},
+                     sentChars:6,utcMs:sn-2000,offsetHz:1200,submode:0,frequencyHz:0,restored:true},
                     {id:902,direction:'outgoing',to:'K0OG',text:'NEVER SENT',status:'aborted',
                      utcMs:sn-1500,offsetHz:1300,submode:0,frequencyHz:0,restored:true},
                     {id:903,direction:'outgoing',to:'K0OG',text:'NO OFFSET',status:'completed',
@@ -1478,6 +1480,16 @@ f.onload=()=>{
                     onAir.classList.contains('stripe-tx-on-air')&&
                     offAir.classList.contains('stripe-tx-off-air')&&
                     lightness(offAir)<lightness(onAir)&&lightness(onAir)<lightness(rxStripe);
+                  // The chat thread's progress bar must not leak into the feed. Scoped, not
+                  // deleted: the same class still has to fill in green where a message is
+                  // being watched on its way out, so both halves are asserted here -- red
+                  // text on a green background is the one pairing that must never come back.
+                  const feedCopy=txRow('ON AIR')?.querySelector('.tx-copy-sent');
+                  const chatCopy=d.querySelector('.chat-row.outgoing .tx-copy-sent');
+                  const transparent=node=>{const c=getComputedStyle(node).backgroundColor;
+                    return c==='rgba(0, 0, 0, 0)'||c==='transparent';};
+                  checks.txCopyPlainInFeed=Boolean(feedCopy&&chatCopy)&&
+                    transparent(feedCopy)&&!transparent(chatCopy);
                   // CLEAR cannot reach the store inside the worker, so without the watermark
                   // the live row pops straight back and CLEAR reads as a broken button.
                   d.querySelector('[data-traffic-clear]').click();

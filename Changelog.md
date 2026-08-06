@@ -11,6 +11,20 @@ published.
 
 ## Working tree — not committed
 
+* **A completed TX row no longer prints red text on a green background.** Two rules met in
+  the recent-traffic feed and neither knew about the other: `.tx-copy-sent` carries the chat
+  thread's live progress bar (`background:#176b52`, green filling up behind the text while a
+  message is genuinely on its way out of the radio), and the feed then recolours that text to
+  red to say "this radiated". The green had arrived by inheritance only — the block comment
+  right above the feed's own rules describes a different design entirely, red for what
+  radiated and struck-through grey for what did not, with no mention of a background. The
+  pairing was the loudest on the page and the one a red/green colour blind operator cannot
+  read at all. The backgrounds are now switched off inside `.message-tx` only, so the chat
+  thread keeps its progress bar, which is where watching a transmission leave actually
+  happens; in the feed the transmission is already history. `txCopyPlainInFeed` asserts both
+  halves — transparent in the feed, still filled in the thread — because deleting the bar
+  outright would have been the easy wrong fix. 236 checks, the same six reds as the baseline.
+
 * **The signal stripe under an own transmission is no longer red.** Seen on the finished
   page, the red shouted from down there. The row already says "this went on air" three
   times over — red callsign, red copy, end marker — and a fourth statement in the loudest
