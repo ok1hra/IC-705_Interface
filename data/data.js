@@ -2141,18 +2141,42 @@ function setCollisionPreview(hz){
 // Holes are drawn from the slot gaps the store recorded alongside the text, never from
 // sentinels inside it: the text stays byte-identical for the inbox, relay, file transfer,
 // APRS and the dedup key.
+// The sender's callsign appears twice in a row: once in the <strong> column, which is the
+// button that picks whom to talk to, and again at the head of the decoded text, where it has
+// never done anything. That second, inert copy is where the aprs.fi lookup goes -- the
+// selector keeps its click, and the underline promises a link only where there is one.
+const APRS_FI_CALL = /^[A-Z0-9]{1,3}[0-9][A-Z0-9]*(?:[-/][A-Z0-9]{1,3})?$/;
+function senderLookupText(text,call,own){
+  // Only the leading "CALL:" is linked, never a callsign quoted later in the body: aprs.fi
+  // would answer for those too, but they are stations being talked ABOUT, and a row full of
+  // underlines stops signalling anything.
+  const head=`${call}:`;
+  if(!call||!APRS_FI_CALL.test(call)||!text.toUpperCase().startsWith(head.toUpperCase()))
+    return ownCallText(text,own);
+  return `<a class="call-lookup" href="https://aprs.fi/${encodeURIComponent(call)}"`
+    +` target="_blank" rel="noopener noreferrer"`
+    +` title="Look ${esc(call)} up on aprs.fi">${esc(text.slice(0,call.length))}</a>`
+    +ownCallText(text.slice(call.length),own);
+}
+
 function renderReceivedText(message,own){
   const text=String(message.text||"");
   const gaps=[...(message.gaps||[])].sort((a,b)=>Number(a.textIndex)-Number(b.textIndex));
   let html=message.headerMissing
     ? renderGapMarker({frames:1,slotUtcMs:message.firstSlotUtcMs},"header") : "";
+  // A missing header means we tuned into the middle: the text does not begin with the
+  // sender at all, and senderOf() has already refused to name one.
+  const sender=message.headerMissing ? null : senderOf(message);
+  const lead=sender&&sender.clickable ? sender.call : "";
   let at=0;
   for(const gap of gaps){
     const index=Math.max(at,Math.min(text.length,Number(gap.textIndex)||0));
-    html+=ownCallText(text.slice(at,index),own)+renderGapMarker(gap);
+    const slice=text.slice(at,index);
+    html+=(at===0?senderLookupText(slice,lead,own):ownCallText(slice,own))+renderGapMarker(gap);
     at=index;
   }
-  return html+ownCallText(text.slice(at),own);
+  const tail=text.slice(at);
+  return html+(at===0?senderLookupText(tail,lead,own):ownCallText(tail,own));
 }
 
 // One fixed block per lost frame: how many characters it carried is unknowable (JSC

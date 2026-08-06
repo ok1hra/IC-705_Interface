@@ -11,6 +11,21 @@ published.
 
 ## Working tree — not committed
 
+* **The sender's callsign inside a decoded message links to aprs.fi.** A row carries the
+  callsign twice — once in its own column, which is the button that picks whom to answer, and
+  again at the head of the decoded text (`DL8KM: @APRSIS GRID`), where it had never done
+  anything. The lookup went on that second, inert copy, so the selector keeps its click and
+  the underline promises a link only where there is one; opening aprs.fi never costs the
+  operator their chosen station. Only the leading `CALL:` is linked, never a callsign quoted
+  later in the body: aprs.fi would answer for those too, but they are stations being talked
+  *about*, and a row full of underlines stops signalling anything. Colour is inherited — the
+  row's palette already carries meaning and a link colour would add a fourth one — so the
+  dotted underline is the whole signal, and it is the only underline in the feed. No link
+  where the header frame was lost, because then the text does not begin with a sender at all,
+  and none in the Stations table, where the message context that would explain the lookup is
+  missing. The smoke asserts both halves: the link exists and the selector is still a plain
+  element with no `href`, since breaking that would remove the page's primary interaction.
+
 * **Point at the waterfall and the feed answers "is anybody already there?"** Moving the
   pointer over the waterfall now draws a thin white line where a click would put the
   transmission — and the same line runs down the whole Recent-traffic list, on the same axis,

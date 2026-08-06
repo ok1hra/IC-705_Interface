@@ -1516,6 +1516,21 @@ f.onload=()=>{
                   const bars=[...d.querySelectorAll('#trafficHistogram .histogram-bar')];
                   const rowStripes=[...d.querySelectorAll('#traffic .signal-stripe')];
                   const barBox=d.querySelector('#trafficHistogram').getBoundingClientRect();
+                  // aprs.fi lookup: on the callsign inside the text, never on the <strong>
+                  // that picks whom to answer -- so the selector must still be a plain
+                  // element with no href, or the primary interaction of the page is gone.
+                  const wideRow=[...d.querySelectorAll('#traffic .message:not(.message-tx)')]
+                    .find(row=>row.textContent.indexOf('WIDE')>=0);
+                  const lookup=wideRow&&wideRow.querySelector('.message-text .call-lookup');
+                  checks.senderLookupLink=Boolean(lookup)&&
+                    lookup.getAttribute('href')==='https://aprs.fi/DL1ABC'&&
+                    lookup.getAttribute('target')==='_blank'&&
+                    lookup.textContent==='DL1ABC'&&
+                    getComputedStyle(lookup).textDecorationLine==='underline';
+                  checks.senderSelectorStaysPlain=Boolean(wideRow)&&
+                    wideRow.querySelector('strong[data-call="DL1ABC"]')!==null&&
+                    !wideRow.querySelector('strong a')&&
+                    !d.querySelector('#stationRows a');
                   checks.histogramMirrorsRows=bars.length===rowStripes.length&&bars.length>0&&
                     Math.abs(barBox.left-feed.getBoundingClientRect().left)<=1&&
                     Math.abs(barBox.width-feed.getBoundingClientRect().width)<=1;

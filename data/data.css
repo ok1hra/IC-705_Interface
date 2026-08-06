@@ -553,6 +553,12 @@ button { color: inherit; cursor: pointer; }
 .message strong { color: var(--cyan); cursor: pointer; }
 .own-callsign { color: var(--green) !important; }
 .message-text { min-width:0; color:#fff; white-space:normal; overflow-wrap:anywhere; }
+/* aprs.fi lookup on the sender's callsign as it appears inside the decoded text. Colour is
+   inherited on purpose -- the row's palette already carries meaning and a link colour would
+   add a fourth one; the dotted underline is the whole signal, and it is the only underline
+   in the feed. The <strong> column keeps its click for choosing whom to answer. */
+.call-lookup { color:inherit; text-decoration:underline dotted; text-underline-offset:2px; }
+.call-lookup:hover, .call-lookup:focus-visible { color:var(--cyan); text-decoration:underline; }
 .message.directed { border-left: 3px solid var(--amber); }
 /* Own TX in the recent-traffic feed. Red = went on air, grey = a link/TX failure kept
    it off air. A partly transmitted message is neither, so the strike-through sits on
