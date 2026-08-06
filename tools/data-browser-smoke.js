@@ -1447,22 +1447,37 @@ f.onload=()=>{
                   void d.body.offsetWidth;
                   // A row whose offset was never recorded -- own TX restored from a session
                   // written before the encoder's tone was logged -- must draw nothing rather
-                  // than invent a position. And an own transmission that did go on air wears
-                  // the feed's TX colour, not the received-signal grey.
-                  f.contentWindow.__dataTest.setActivity({frames:[],timing:[],calls:[],channels:[],messages:[]});
+                  // than invent a position. The received rows stay on screen so the own-TX
+                  // bars can be compared against one.
                   f.contentWindow.__dataTest.setOutgoingLog([
                     {id:901,direction:'outgoing',to:'K0OG',text:'ON AIR',status:'completed',
                      utcMs:sn-2000,offsetHz:1200,submode:0,frequencyHz:0,restored:true},
-                    {id:902,direction:'outgoing',to:'K0OG',text:'NO OFFSET',status:'completed',
+                    {id:902,direction:'outgoing',to:'K0OG',text:'NEVER SENT',status:'aborted',
+                     utcMs:sn-1500,offsetHz:1300,submode:0,frequencyHz:0,restored:true},
+                    {id:903,direction:'outgoing',to:'K0OG',text:'NO OFFSET',status:'completed',
                      utcMs:sn-1000,frequencyHz:0,restored:true}]);
                   const txRows=[...d.querySelectorAll('#traffic .message-tx')];
-                  const withOffset=txRows.find(row=>row.textContent.indexOf('ON AIR')>=0);
-                  const withoutOffset=txRows.find(row=>row.textContent.indexOf('NO OFFSET')>=0);
+                  const txRow=text=>txRows.find(row=>row.textContent.indexOf(text)>=0);
+                  const withoutOffset=txRow('NO OFFSET');
                   checks.stripeAbsentWithoutOffset=Boolean(withoutOffset)&&
                     !withoutOffset.querySelector('.signal-stripe');
-                  checks.stripeCarriesTxColour=Boolean(withOffset)&&
-                    withOffset.querySelector('.signal-stripe')?.classList.contains('stripe-tx-on-air')===true&&
-                    getComputedStyle(withOffset.querySelector('.signal-stripe')).backgroundColor==='rgb(255, 107, 107)';
+                  // Asserted as an ordering rather than as literal colours, because the exact
+                  // shades are a judgement tuned by eye and were already toned down once. What
+                  // must not drift is the ranking: an own transmission is quieter than a
+                  // received signal -- it is not what you attribute to a trace in the waterfall
+                  // -- and one that went on air is still the stronger of the two TX marks.
+                  // [0-9] rather than \d: this whole page is emitted from a template literal,
+                  // where an unrecognised escape collapses to the bare letter -- \d would
+                  // silently become /d+/g and match nothing in "rgb(46, 61, 57)".
+                  const lightness=node=>{const m=getComputedStyle(node).backgroundColor.match(/[0-9]+/g);
+                    return m?Number(m[0])+Number(m[1])+Number(m[2]):-1;};
+                  const rxStripe=d.querySelector('#traffic .message:not(.message-tx) .signal-stripe');
+                  const onAir=txRow('ON AIR')?.querySelector('.signal-stripe');
+                  const offAir=txRow('NEVER SENT')?.querySelector('.signal-stripe');
+                  checks.stripeCarriesTxColour=Boolean(onAir&&offAir&&rxStripe)&&
+                    onAir.classList.contains('stripe-tx-on-air')&&
+                    offAir.classList.contains('stripe-tx-off-air')&&
+                    lightness(offAir)<lightness(onAir)&&lightness(onAir)<lightness(rxStripe);
                   // CLEAR cannot reach the store inside the worker, so without the watermark
                   // the live row pops straight back and CLEAR reads as a broken button.
                   d.querySelector('[data-traffic-clear]').click();

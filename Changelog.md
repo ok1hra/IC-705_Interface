@@ -11,6 +11,23 @@ published.
 
 ## Working tree — not committed
 
+* **The signal stripe under an own transmission is no longer red.** Seen on the finished
+  page, the red shouted from down there. The row already says "this went on air" three
+  times over — red callsign, red copy, end marker — and a fourth statement in the loudest
+  colour on the page pulled the eye away from the *received* signals, which are the ones
+  worth attributing to a trace in the waterfall; own transmissions are not even visible
+  there, since the analyser is paused while transmitting. On air is now `#2e3d39` and not
+  on air `#1c2724`, both barely above the panel, with emitted still the lighter of the two
+  so "it went out" keeps the stronger mark. Received signals stay `#6b7d78` and are now
+  clearly the most prominent thing in the column, which is the point. The smoke check was
+  rewritten to assert the *ordering* (not on air < on air < received) instead of a literal
+  colour, because these shades are a judgement tuned by eye and have now been tuned once
+  already. Writing it turned up the harness's own trap a second time: the page is emitted
+  from a template literal, so `\d` in a regex collapses to a bare `d` and `/\d+/g` silently
+  matched nothing in `rgb(46, 61, 57)` — `[0-9]` is the form that survives. Decision 9 in
+  `docs/js8-signal-stripe-plan.md` corrected to match. 235 checks, the same six reds as the
+  baseline (`presetStable` among them, red before this change).
+
 * **Design notes in `docs/`** (untracked), including `msgbox-implementace.md`,
   `js8-skupiny-implementace.md`, `tx-auto-gain-implementace.md`, `wifilt-rename-plan.md`,
   `aprsis-cmd.md`, `aprsis-implementace.md`, `wspr-*.md`, the `js8call-*` guides and `docs/agents/`.
