@@ -11,6 +11,21 @@ published.
 
 ## Working tree — not committed
 
+* **Design notes in `docs/`** (untracked), including `msgbox-implementace.md`,
+  `js8-skupiny-implementace.md`, `tx-auto-gain-implementace.md`, `wifilt-rename-plan.md`,
+  `aprsis-cmd.md`, `aprsis-implementace.md`, `wspr-*.md`, the `js8call-*` guides and `docs/agents/`.
+* **`mercury/`** — Rhizomatica Mercury v2 evaluated as a second file-transfer modem beside JS8 and
+  WSPR; the WASM build exists and passes a loopback test (~230 kB Brotli). Airtime, not flash, is the
+  limiting factor. Notes in `docs/mercury-implementace.md`.
+* Most of the `prototype/js8-core-prototype/` smoke harness and the newer `tools/*-smoke.*` scripts,
+  plus `backups/` and `AGENTS.md`.
+
+---
+
+## REV 20260803 — 2026-08-03 … 2026-08-05
+
+### `e63775c` MSG box
+
 * **Deferred messages: write it now, the station sends it when the recipient turns up (stages
   E3 and E4 of `docs/msgbox-implementace.md`).** A second button beside SEND — `SEND LATER`, not
   a checkbox, because a switch that survives one message is how the next one gets parked by
@@ -86,6 +101,46 @@ published.
   undo); `tools/data-browser-smoke.js` grows five checks (badge, click-marks-read, delete+undo,
   migration on the wire, durable load) and is otherwise unchanged against the baseline.
 
+### `e00d700` implement @groups
+
+* **`@GROUP` calls, to parity with JS8Call.** A group is a legitimate recipient but only one the
+  station has **joined** — answering to a group nobody joined would put the station on the air for
+  traffic that was never addressed to it. Joined groups appear in the recipient list, and a group
+  that is dropped is removed from the field rather than left there pretending to still be joined.
+  Gateway names (the set upstream's `Varicode::isGroupAllowed` refuses) are excluded: they are
+  gateways, not nets.
+* A joined group keeps a **thread of its own**, the mirror image of a station thread — but with no
+  SNR line, since a group has no signal of its own to report, and with **LOG QSO disabled**: a
+  group is a target, not a station on the other end, so there is nobody to have worked. File
+  transfer is refused for the same reason — it needs a station that can acknowledge frames.
+* **Replies to a group query are spread out.** A query addressed to a group is answered by every
+  member in the same slot, so each reply picks its own offset away from the other members, derived
+  from an FNV-1a hash of the station's own callsign — a pure function, so the same station always
+  lands in the same place instead of piling onto one frequency.
+* A refusal deliberately outlives the next render, because `renderControls()` runs on every state
+  change and would otherwise wipe the explanation before it was read. Notes in
+  `docs/js8-skupiny-implementace.md`; new checks in `tools/data-browser-smoke.js`.
+
+### `adecd96` Automatic TX gain
+
+* **The drive level is now found from the radio's own ALC, not guessed.** A calibration carrier
+  (`data/tx-gain-cal.js`) walks the gain up until the ALC meter first moves — the knee — and files
+  the result per band, matching `data.js` `bandOf()` so both pages file a transmission under the
+  same band. At 1 % RF power the knee lands near 0.008, below the manual slider's old 0.1 floor,
+  which is why the automatic path can reach settings the slider could not.
+* **In service the guard only ever reduces** (`data/tx-alc-guard.js`). The response is asymmetric on
+  purpose: upwards the ALC reacts at once, so 100 ms of evidence is enough to accuse; downwards the
+  meter has to actually fall and its ballistics belong to the radio, so a clean reading needs 500 ms
+  of corroboration — the meter falls back to zero by itself, and one zero does not prove a clean
+  transmission. A clean transmission does not merely fail to accuse, it clears the accusation.
+* Evidence is not carried across a page reload, and an unreadable table is never treated as licence
+  to transmit at a guessed level. Because the whole feature reads `tx-level` (with an `alcSeq`
+  counter) rather than `/state`, a radio that reports no ALC leaves the feature out of play
+  entirely. Stored in a `/txgain.json` blob; SETUP gained the calibration UI. Notes in
+  `docs/tx-auto-gain-implementace.md`.
+
+### `2782d72` show each Recent-traffic row's place in the waterfall
+
 * **Recent traffic now shows where in the waterfall each row's signal sat.** A dark grey bar
   under every row, on the *same axis* as the waterfall above it: 500 Hz at the left edge,
   2700 Hz at the right, as wide as that submode's modulation actually is (25–250 Hz). Read
@@ -113,6 +168,8 @@ published.
   against the wrong reference would look correct in the DOM and point tens of pixels away
   from the signal. 198 checks, and the only red ones are the five that were already red.
 
+### `2555e1e` carry per-message SNR and publish the occupied width per submode
+
 * **A received message now remembers its own SNR, and the protocol knows how wide a signal
   is.** Two additions to `js8-protocol.js` that the Recent-traffic signal stripe needs
   (`docs/js8-signal-stripe-plan.md`), landed on their own because they change the store rather
@@ -133,6 +190,8 @@ published.
   same table. Mirrored to `protocol/protocol_runtime.js`; `check-runtime-sync.sh` green.
   `tools/data-browser-smoke.js`: 193 checks, unchanged against the baseline.
 
+### `9792672` take the page's own script tag as the version truth for worker assets
+
 * **The page and its worker can no longer run two different versions of the same file.** Two of
   the files the DATA worker `importScripts()` are also loaded by the page with its own `<script>`
   tag, and each carried an independent version tag: the one written in `data.html` and the shared
@@ -149,6 +208,24 @@ published.
   again on the next edit. Found while planning the Recent-traffic signal stripe
   (`docs/js8-signal-stripe-plan.md`), which needs a new field to reach the store in the worker.
   `tools/data-browser-smoke.js`: 193 checks, unchanged against the baseline.
+
+### `5433628` complete RENAME project and UI · `87363e6` · `083ad80` · `be22d0b` · `fe10107` · `caf7526` · `977ace5` · `baed480`
+
+* **The sketch itself is now `wifilt.ino`**, the REV moved to 20260803 and the filesystem upload
+  offset was corrected along with it.
+* **TRX1 no longer defaults to the label `IC-705`** — it takes the model the radio reports for
+  itself, so a station running a 7610 or a 9700 is not labelled after a radio it does not own.
+* The SETUP network guide was generalised from one radio to **all five supported models**.
+* **Gzip assets are byte-reproducible**, so a rebuild that changed nothing produces identical files
+  and the release artifacts can be diffed; the pre-build consistency check now compares **content
+  rather than timestamps**, which is what makes that reproducibility usable as a gate.
+* Rename plan status recorded in `docs/wifilt-rename-plan.md`.
+
+---
+
+## REV 20260802 — 2026-08-02
+
+### `cd33bed` generate the setup help per radio model · `0b89331` · `bf5f803`
 
 * **The setup help now explains *your* radio, and it can be switched by hand.** This is the part
   of the rename that the operator actually sees: until now the help dialog was one hand-written
@@ -179,6 +256,8 @@ published.
   radio is connected. It now names the model the slot last identified itself as, or names nothing.
   The `?` button lost its `IC-705 setup help` label for the same reason.
 
+### `cfa0001` point every URL at ok1hra/wifilt
+
 * **The repository and the firmware installer moved to `ok1hra/wifilt`.** 33 links followed it:
   the installer page, the 13 asset links in the README, the `GitHub | Licenses` footer on all six
   pages that have one, and — the one that actually has to resolve — the *corresponding source*
@@ -196,6 +275,8 @@ published.
   Network Control and `SETUP / Radio`. POWER-OUT is described the way the firmware's own header
   has described it for a while: it follows a full-CAT primary radio, not a BT connection.
 
+### `da98930` rename LAN transport profile IC-705-LAN → ICOM-LAN
+
 * **The LAN transport profile is called `ICOM-LAN`, not `IC-705-LAN`.** The name never reached
   the screen — the SETUP dropdown has said `ICOM-LAN` for a long time — but internally the value
   named one model out of five, and a comment in `wspr-core.js` had to warn future readers not to
@@ -208,6 +289,8 @@ published.
   without touching the branding.
   Still wrong for the same reason, and left alone: `IC-7610-CI-V` names a generic CI-V transport
   after one radio. That one *is* matched positively, so renaming it needs real migration.
+
+### `79d2cf5` brand as WIFILT, add trademark notice, fix IC-7760 WSPR refusal
 
 * **The project has a name now: WIFILT — Web interface for Icom LAN Transceivers.** It had six
   before, none of them canonical: *IC-705 IP interface* on the SETUP page and the serial banner,
@@ -239,6 +322,8 @@ published.
   about the radio, and the TrxNet device prefix `705.XX` — that one is on the wire and shared with
   the k3ng OI3 keyer, so renaming it would break interop with keyers already in the field.
 
+### `34790c8` rename network identity to wifilt
+
 * **⚠️ The device answers to a new name: `wifilt`, not `ic705`.** First step of the rename to
   **WIFILT — Web interface for Icom LAN Transceivers**; the project stopped being IC-705-only when
   radio-type autodetection landed, and a hostname that names one model out of five was actively
@@ -259,6 +344,16 @@ published.
   (`ic705.*` → `wifilt.*`, `ic705-dxc-*` → `wifilt-dxc-*`), which is free now and would never be
   free again. Untouched on purpose: the `IC-705` power table and every other statement that is
   about *the radio* rather than about this software, and the dead Bluetooth-era identifiers.
+
+### `1588f01` autodetect Icom type
+
+* **The radio says which model it is, and the setting follows.** The model arrives in the LAN
+  capabilities packet, so it is picked up from an ordinary session and not only when SETUP is open,
+  and it is remembered per slot so a detected model is stored against the right radio. The field is
+  pre-filled from what that radio reported last time rather than left blank — which matters because
+  WSPR refuses to transmit on an unknown model, having no power scale to convert against.
+
+### `1fbb9da` show uncomplete js8 msg, logo, find trx and esp32 in net · `19901bb` · `0aa2750`
 
 * **Neither IP address has to be typed from memory any more — the radio's is scanned for, and the
   interface's is handed over.** Two addresses stood between a box on the bench and a working
@@ -368,18 +463,6 @@ published.
   `checkVisibility()` can, but it reads cached style and needs a rect read in front of it to flush
   layout; and asserting the outside click with `body.click()` reached the page's own document
   handlers and knocked the TX sequence off course, so the click goes to the nav instead.
-* **Design notes in `docs/`** (22 files untracked), including `wspr-page-redesign.md`,
-  `wspr-timetable-redesign.md`, `wspr-majak-implementace.md`, `wspr-band-rotation-plan.md`,
-  `aprsis-cmd.md`, `aprsis-implementace.md`, `js8-tx-resend-plan.md`,
-  `data-menu-wspr-subnav-plan.md`, `wake-lock.md`, `js8lan-hearing-links.md`,
-  `setup-interfaces-architecture.md`, `icom-lan-implementace.md`, the `js8call-*` guides and
-  `docs/agents/`.
-* **`mercury/`** — Rhizomatica Mercury v2 evaluated as a second file-transfer modem beside JS8 and
-  WSPR; the WASM build exists and passes a loopback test (~230 kB Brotli). Airtime, not flash, is the
-  limiting factor. Notes in `docs/mercury-implementace.md`.
-* Most of the `prototype/js8-core-prototype/` smoke harness and the newer `tools/*-smoke.*` scripts,
-  plus `backups/` and `AGENTS.md`.
-
 ---
 
 ## REV 20260731 — 2026-08-01
