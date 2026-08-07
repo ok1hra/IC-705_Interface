@@ -11,6 +11,70 @@ published.
 
 ## Working tree — not committed
 
+* **Design notes in `docs/`** (untracked), including `tx-audio-gain-plan-implementace.md`,
+  `tx-auto-gain-implementace.md`, `js8-skupiny-implementace.md`, `msgbox-implementace.md`,
+  `js8-signal-stripe-plan.md`, `js8-rx-partial-display-plan.md`, `wifilt-rename-plan.md`,
+  `aprsis-*.md`, `wspr-*.md`, the `js8call-*` guides and `docs/agents/`.
+* **Untracked test harnesses** in `tools/`: `js8-modem-failure-smoke.js`, `js8-groups-smoke.js`,
+  `js8-data-frames-smoke.js`, `js8-aprs-smoke.js`, `js8-txqueue-smoke.js`, `civread-smoke.js`,
+  `check-page-scripts.js`, `fixtures/`, plus most of `prototype/js8-core-prototype/`.
+* **`mercury/`** — Rhizomatica Mercury v2 evaluated as a second file-transfer modem beside JS8 and
+  WSPR; the WASM build exists and passes a loopback test (~230 kB Brotli). Airtime, not flash, is the
+  limiting factor. Notes in `docs/mercury-implementace.md`.
+* `backups/` and `AGENTS.md`.
+
+---
+
+## REV 20260807 — 2026-08-08
+
+### `fcc7e41` redesign AutoTX gain
+
+* **Calibration became a batch plan instead of one measurement at a time.** `tx-gain-plan.js` and
+  `tx-gain-plan-ui.js` (1 800 lines together) drive a **band × power matrix**: every selected cell
+  is visited band-major and ascending in power, each band twice — once by a coarse survey, once by
+  a clean pass — and the run ends with one return to whatever the operator left unmeasured. A
+  survey reading is deliberately not stored as a calibration: it was taken coarsely and says only
+  where to look.
+* **The radio's MOD level is set over CI-V** (`tx-gain-mod-level.js`), with the `1A 05`
+  sub-addresses per model taken from wfview cross-checked against each radio's own CI-V manual —
+  and where a radio does not offer the control at all (IC-705 reports `max = 0`) no command is
+  emitted rather than a guessed one. A re-measured knee has to land within a stated tolerance
+  before a MOD level is accepted.
+* **Absence is treated as an answer.** The firmware capture (`wifilt.ino`, +109) arms on the next
+  reply whose command *and* sub-address match, and no reply means the radio does not have that
+  address; a value outside the documented range means the address is not what it was believed to
+  be. A ceiling hit is not a measurement — a search that stopped at 0.8 because it ran out of room
+  reports that, and asking for less than the floor is a finding rather than a value to write.
+  Counting a stopped cell as done would have shown "13 of 10 measured".
+* **Every retune spends the antenna answer** — that is the whole rule, since the antenna in use is
+  what the measurement is about.
+* `tools/icom-lan-login-test.py --ask` now asks the operator's CI-V questions from the PC as soon
+  as data flows: everything this design rests on is an exchange that machine can make, and guessing
+  from the browser costs a round trip through a transmitter.
+* Plan in `docs/tx-audio-gain-plan-implementace.md`; `tools/data-browser-smoke.js` +82.
+
+---
+
+## REV 20260806 — 2026-08-07
+
+### `5073568` fix @groups, show waterfall row, AutoTX gain
+
+* **Compound and group-addressed frames are now decoded correctly.** A compound addressee arrives
+  as a *pair* — `MYCALL GRID` then `@GROUP CMD` — and in a compound-directed frame the packed
+  callsign is the **addressee, not the sender**, which is what had been misread. Bit 2 of the frame
+  type is what tells the receiver which unpacker to use, and fast-data frames carry JSC over all
+  72 bits with no prefix. A command addressed to a group this station belongs to is a command
+  addressed to *us* — that is what joining means.
+* **Group mail behaves like mail, not like a directed message.** It belongs to every member but
+  only once each, never bounces back to the net, says which group it came from (or the member
+  cannot tell it apart from private traffic), and it is the one record that survives its own
+  delivery — so it is also the one with a clock on it, and it has to stop out loud when that clock
+  runs out.
+* **One calibration tool, hosted by two pages** (`tx-gain-cal-ui.js`). Like `lan-gate.js` and
+  `wake-lock.js` it carries its own markup and CSS and reads nothing global — everything a page has
+  to supply comes through the adapter — because the measurement is a property of the *radio*, not
+  of the mode. Radio settings are snapshotted and restored the way `announceIpViaCw()` does in the
+  firmware, and a failed restore is never allowed to turn a successful measurement into a failure.
 * **A modem that cannot start now says so instead of hanging on "0%".** Reported from the
   station: opening the JS8 page stopped on *Loading JS8Call-ICOM modem 0%* and stayed there.
   0 % is the state before the worker's *first* report, so the page had heard nothing at all
@@ -62,6 +126,12 @@ published.
   canvas, so they are asserted through a test hook reporting the armed delay, one entry per
   station at the right frequency, newest first, and never the operator's own callsign.
 
+---
+
+## REV 20260803 — 2026-08-03 … 2026-08-06
+
+### `475c5d6` narrow the aprs.fi link, calm the histogram, add INFO to the presets
+
 * **Three corrections after seeing the traffic feed in use.** The aprs.fi lookup now appears
   only on messages carrying `@APRSIS GRID`. aprs.fi knows a station only once it has reached
   APRS-IS, and that message is the one thing that proves it did — the sender is asking the
@@ -78,6 +148,8 @@ published.
   until that text exists rather than sending a bare `INFO` that means nothing. 246 checks,
   same six reds as the baseline.
 
+### `193a535` link the sender's callsign in the message text to aprs.fi
+
 * **The sender's callsign inside a decoded message links to aprs.fi.** A row carries the
   callsign twice — once in its own column, which is the button that picks whom to answer, and
   again at the head of the decoded text (`DL8KM: @APRSIS GRID`), where it had never done
@@ -92,6 +164,8 @@ published.
   and none in the Stations table, where the message context that would explain the lookup is
   missing. The smoke asserts both halves: the link exists and the selector is still a plain
   element with no `href`, since breaking that would remove the page's primary interaction.
+
+### `2a90510` preview a TX frequency against who is already on it
 
 * **Point at the waterfall and the feed answers "is anybody already there?"** Moving the
   pointer over the waterfall now draws a thin white line where a click would put the
@@ -115,6 +189,8 @@ published.
   peak sits directly above the frequency that produced it and needs no legend. Built from the
   rows actually on screen, so changing the filter changes the histogram with it.
 
+### `73a79e0` stop the chat progress bar leaking into the traffic feed
+
 * **A completed TX row no longer prints red text on a green background.** Two rules met in
   the recent-traffic feed and neither knew about the other: `.tx-copy-sent` carries the chat
   thread's live progress bar (`background:#176b52`, green filling up behind the text while a
@@ -128,6 +204,8 @@ published.
   happens; in the feed the transmission is already history. `txCopyPlainInFeed` asserts both
   halves — transparent in the feed, still filled in the thread — because deleting the bar
   outright would have been the easy wrong fix. 236 checks, the same six reds as the baseline.
+
+### `f3983e6` quieten the signal stripe on own transmissions
 
 * **The signal stripe under an own transmission is no longer red.** Seen on the finished
   page, the red shouted from down there. The row already says "this went on air" three
@@ -146,18 +224,9 @@ published.
   `docs/js8-signal-stripe-plan.md` corrected to match. 235 checks, the same six reds as the
   baseline (`presetStable` among them, red before this change).
 
-* **Design notes in `docs/`** (untracked), including `msgbox-implementace.md`,
-  `js8-skupiny-implementace.md`, `tx-auto-gain-implementace.md`, `wifilt-rename-plan.md`,
-  `aprsis-cmd.md`, `aprsis-implementace.md`, `wspr-*.md`, the `js8call-*` guides and `docs/agents/`.
-* **`mercury/`** — Rhizomatica Mercury v2 evaluated as a second file-transfer modem beside JS8 and
-  WSPR; the WASM build exists and passes a loopback test (~230 kB Brotli). Airtime, not flash, is the
-  limiting factor. Notes in `docs/mercury-implementace.md`.
-* Most of the `prototype/js8-core-prototype/` smoke harness and the newer `tools/*-smoke.*` scripts,
-  plus `backups/` and `AGENTS.md`.
+### `ce29e63` changelog
 
----
-
-## REV 20260803 — 2026-08-03 … 2026-08-05
+* Documentation only.
 
 ### `e63775c` MSG box
 
