@@ -82,6 +82,17 @@
       <footer id="periodHint">Each band waits at least 6 minutes. Frequency and mode are confirmed between slots.</footer>
     </section>
   </div>
+  <!-- The calibration plan, in the same shape as the TIMETABLE beside it: a topbar
+       button carrying its state, and a bordered panel that pops out below. The panel
+       markup, its CSS and the whole run live in data/tx-gain-plan-ui.js, and the
+       JS8Call page mounts the identical module. -->
+  <div class="trx-control tt-control">
+    <button id="planButton" class="freq-timetable" type="button" aria-expanded="false"
+            aria-controls="planField" title="TX gain calibration plan">
+      <span><small>CAL PLAN</small><b id="planButtonValue">--</b></span><span class="chevron">▾</span>
+    </button>
+    <section id="planField" class="freq-timetable-panel" hidden aria-label="TX gain calibration plan"></section>
+  </div>
   <span id="trxMode" class="trx-mode">---</span>
   <span id="radioModel" class="radio-model" title="Model reported by the radio itself">--</span>
   <span id="linkState" class="live">● OFFLINE</span>
@@ -244,6 +255,11 @@
              and the whole run, and the JS8Call page mounts the same module. A
              hand-written copy here would be the thing that drifts. -->
         <div id="calField" hidden></div>
+        <!-- The batch plan is a pop-out window in the topbar, next to the TIMETABLE
+             it is shaped after: it is a schedule to build, not a setting to type.
+             This is only the pointer to it. -->
+        <small class="cal-hint">A whole band &times; power matrix can be measured in one
+          run &mdash; <b>CAL PLAN</b> in the bar at the top.</small>
         <label class="reference-field">TUNE power references
           <span class="reference-row"><b id="referenceCount">no bands measured</b><button id="referenceClear" type="button">Clear</button></span>
           <small>a transmission whose forward power drifts more than 20 % from the
@@ -284,7 +300,13 @@
 <script src="/wspr-core.js?v=20260730b"></script>
 <script src="/wspr-tx.js?v=20260728a"></script>
 <!-- The calibration tool: panel, carrier and verdict, shared with /data. -->
-<script src="/tx-gain-cal-ui.js?v=20260807a"></script>
+<script src="/tx-gain-cal-ui.js?v=20260807b"></script>
+<!-- The batch plan: the sequencer (clock-free, no DOM) and the panel that executes
+     its intents. Must follow tx-gain-cal-ui.js, which it borrows as its measuring
+     device, and tx-gain-mod-level.js, which owns the CI-V MOD level. -->
+<script src="/tx-gain-mod-level.js?v=20260807a"></script>
+<script src="/tx-gain-plan.js?v=20260807a"></script>
+<script src="/tx-gain-plan-ui.js?v=20260807a"></script>
 <script src="/wspr-log.js?v=20260726a"></script>
 <script src="/wspr.js?v=20260730b"></script>
 </body>

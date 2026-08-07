@@ -160,6 +160,7 @@ const dom = {
   stationSummary:$("stationSummary"), myCall:$("myCall"), myGrid:$("myGrid"),
   followSpeed:$("followSpeed"), clockCorrection:$("clockCorrection"), autoTiming:$("autoTiming"),
   txGain:$("txGain"), calResolved:$("calResolved"), calField:$("calField"),
+  planField:$("planField"), planButton:$("planButton"),
   txSafety:$("txSafety"), storageState:$("storageState"),
   txQueueState:$("txQueueState"),
   hbEnabled:$("hbEnabled"), hbMinutes:$("hbMinutes"), hbAck:$("hbAck"), hbState:$("hbState"),
@@ -560,9 +561,105 @@ function createGainCal() {
       headers:{"Content-Type":"application/json"},
       body:JSON.stringify({type:"setMode", mode})}),
     onRunChange:running => { state.calRunning = running; renderControls(); },
+    modLevel:() => (gainPlan ? gainPlan.modLevel() : 0),
   });
   gainCal.arm(true);
+  createGainPlan();
   return gainCal;
+}
+
+// The batch plan, the same module the WSPR page mounts. Not behind a hash here: on
+// WSPR the hash gate exists because SETUP links to a page people also visit for the
+// beacon, while on this page the panel sits in a settings section the operator
+// opened themselves -- hiding it would reproduce exactly the undiscoverability the
+// tool was moved here to fix.
+let gainPlan = null;
+function createGainPlan() {
+  if (gainPlan || !dom.planField || typeof TxGainPlanUi === "undefined") return gainPlan;
+  gainPlan = TxGainPlanUi.create({
+    mount:dom.planField,
+    button:dom.planButton,
+    store:gainStore,
+    cal:gainCal,
+    model:() => state.radio.radioName || "",
+    modelNumber:() => IcomModels.modelNumber(state.radio.radioName || ""),
+    radio:() => state.radio,
+    send:async payload => {
+      const response = await fetch(RADIO_CMD_URL,{method:"POST",
+        headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)});
+      if (!response.ok) throw new Error(`${payload.type} failed (${response.status})`);
+      return response.json().catch(() => ({ok:true}));
+    },
+    bands:() => WsprCore.PRESETS.map(preset => ({band:preset.band, hz:preset.hz})),
+    wsprPresets:WsprCore.PRESETS,
+    js8Presets:typeof Js8TrxPresets !== "undefined" ? Js8TrxPresets.PRESETS : [],
+    percentOf:radio => (radio.rfPowerSeen === true ? WsprCore.civPercent(radio.rfPower) : 0),
+    // What this station operates on: the percentage the operator chose for JS8, and
+    // whatever the radio is set to now. No invented ladder -- each column costs a
+    // carrier on every band.
+    defaultPowers:() => {
+      const out = [];
+      const chosen = Number(currentJs8().rfPercent);
+      if (Number.isFinite(chosen) && chosen >= 1) out.push(Math.round(chosen));
+      if (state.radio.rfPowerSeen === true) out.push(WsprCore.civPercent(state.radio.rfPower));
+      return out;
+    },
+    setFrequency:async hz => {
+      await fetch(RADIO_CMD_URL,{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({type:"setFrequency", frequency:String(hz)})});
+      for (let waited = 0; waited < 9000 && state.radio.frequency !== hz; waited += 100)
+        await new Promise(resolve => setTimeout(resolve, 100));
+      if (state.radio.frequency !== hz)
+        throw new Error(`the radio did not confirm the band: asked for ` +
+          `${(hz / 1000).toFixed(1)} kHz, it reports ` +
+          `${(state.radio.frequency / 1000).toFixed(1)} kHz`);
+      // The band-decoder outputs follow the dial and the relays they drive have to
+      // have settled before a carrier arrives.
+      await new Promise(resolve => setTimeout(resolve, 300));
+    },
+    // Written, then CONFIRMED by ASKING. The firmware polls 14 0A once per fifteen-slot
+    // rotation (1.5 s) and not at all during a transmission, so waiting passively right
+    // after a carrier depends on a rotation that may not have resumed -- and the
+    // timeout that produced ended the whole run, not the cell. A read request costs one
+    // CI-V frame. And when it still does not agree, say what the radio reports.
+    setPercent:async percent => {
+      const level = WsprCore.percentToLevel(percent);
+      const post = payload => fetch(RADIO_CMD_URL,{method:"POST",
+        headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)});
+      await post({type:"civ.raw", data:WsprCore.civLevelCommand(level).data});
+      const started = Date.now();
+      let seen = -1, seenPercent = -1;
+      while (Date.now() - started < 9000) {
+        try { await post({type:"civ.raw", data:"140A"}); } catch (_error) {}
+        await new Promise(resolve => setTimeout(resolve, 300));
+        if (state.radio.rfPowerSeen === true) {
+          seen = state.radio.rfPower;
+          seenPercent = WsprCore.civPercent(seen);
+          // Either unit agreeing is agreement: the radio quantises to whole percent.
+          if (seenPercent === percent || seen === level) return;
+        }
+      }
+      throw new Error(`the radio did not confirm the power: asked for ${percent} % ` +
+        `(level ${level})` + (seen < 0 ? ", and it never reported a power setting"
+          : `, it reports ${seenPercent} % (level ${seen})`));
+    },
+    // The plan keys carriers on bands this page's own scheduler knows nothing about,
+    // and between its cells it waits minutes for an antenna answer with PTT down. A
+    // heartbeat or an unattended reply landing in that gap would transmit on the
+    // plan's band, at the plan's power, into an antenna the operator is at that very
+    // moment being asked about. Blocking TX for the duration is done in
+    // txBlockReasons; refusing to START while unattended operation is armed is here,
+    // because switching it off for the operator is a promise this page cannot keep
+    // if the tab dies mid-run.
+    planBlockingReason:() => (currentJs8().auto
+      ? "turn unattended operation off first — the plan keys on other bands" : ""),
+    fetchImpl:(...args) => fetch(...args),
+    setModeFilter:(mode, filter) => fetch(RADIO_CMD_URL,{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({type:"setMode", mode, filter:filter?"FIL"+filter:undefined})}),
+    onPlanChange:running => { state.planRunning = running; renderControls(); },
+  });
+  return gainPlan;
 }
 
 // What the table says for the radio's CURRENT band and power, or the manual value
@@ -1434,8 +1531,9 @@ async function writeRfPercent(percent) {
 async function applyAutoRfPower() {
   if(rfAutoBusy || !rfAutoArmed || rfKnobTouched)return;
   // A calibration measures the radio as the operator set it up. Writing a target
-  // mid-run would file the result under a power the radio was never on.
-  if(state.calRunning)return;
+  // mid-run would file the result under a power the radio was never on -- and during
+  // a plan the power is the plan's own, changing from cell to cell.
+  if(state.calRunning || state.planRunning)return;
   if(Date.now()<rfAutoRetryMs)return;
   const target=rfTargetPercent();
   // Nothing chosen, nothing to apply. There is no safe value to invent for a
@@ -1569,6 +1667,14 @@ function txBlockReasons(needsRecipient,allowFileTransfer=false) {
   const busy=!['idle','completed','aborted','fault'].includes(state.txStatus);
   const mediaLocked=Boolean(audioSource && audioSource.state().timebase.media.status==="locked");
   const reasons=[];
+  // A calibration owns the transmitter, and a calibration PLAN owns it for minutes at
+  // a stretch -- including the pauses where it waits for an antenna answer with PTT
+  // down and txStatus idle. Without this a heartbeat or an unattended reply would key
+  // on the band the plan tuned, at the power the plan set, into the antenna the
+  // operator is at that moment being asked about. state.radio.tx cannot cover it: it
+  // comes off a 1 Hz poll and is false through every gap.
+  if(state.planRunning)reasons.push("a calibration plan is running");
+  else if(state.calRunning)reasons.push("a calibration is running");
   if(busy)reasons.push("TX is busy"); if(!connected)reasons.push("ICOM-LAN is offline");
   if(state.radio.tx&&!busy)reasons.push("TRX PTT is active");
   if(!["USB","USB-D"].includes(state.radio.mode))reasons.push("TRX mode must be USB or USB-D");
@@ -5777,7 +5883,10 @@ async function init() {
   // write; a stale copy costs at most an older level or a false "not
   // calibrated", never a level in the wrong direction.
   createGainCal();
-  gainStore.load().then(renderResolvedGain);
+  // The plan lives in the same file as the table, so it arrives with it. reload()
+  // adopts whatever the station stored -- or seeds a usable first plan, because an
+  // empty grid has nothing to tick and RUN can then only refuse.
+  gainStore.load().then(()=>{renderResolvedGain(); if(gainPlan)gainPlan.reload();});
   // The calibration carrier has its own pacing driver, so it needs its own pump
   // and its own meter feed. Both are no-ops unless it is keying.
   scheduler.every("gainCal",500,()=>{
@@ -5785,6 +5894,11 @@ async function init() {
     gainCal.tick();
     if(state.calRunning)
       gainCal.noteMeters({powerMeterRaw:state.radio.powerMeterRaw, swr:state.radio.swr});
+    // The plan's own pump is driven by intents and by what the radio answers, never by
+    // this timer -- a hidden tab throttles timers and a run must not care. tick() only
+    // redraws, and only while a question is up, so the waited time stays honest without
+    // rewriting the grid under the operator's fingers.
+    if(gainPlan)gainPlan.tick();
   });
   pollRadio(); scheduler.every("pollRadio",500,pollRadio);
   scheduler.every("txQueue",1000,()=>{drainTxQueue();renderTxQueue();renderRetryCountdowns();});

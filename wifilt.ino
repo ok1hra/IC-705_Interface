@@ -107,7 +107,7 @@ bool cwIpOnConnect  = true;       // announce WiFi IP via CW on first full-CAT r
 volatile bool cwIpSendPending = false;
 
 #define LOOP_WARN_MS 200
-#define REV 20260806
+#define REV 20260807
 #define WIFI
 #define UDP_TO_FSK
 #define WDT         // watchdog timer
@@ -725,6 +725,23 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   uint32_t stateAlcRaw = 0;
   uint32_t stateAlcSeq = 0;
 
+  // civ.read: the one CI-V reply a page asked for, kept as RAW HEX. Nothing here
+  // decodes it -- the same discipline as /txgain.json, which this firmware stores
+  // and never parses. A settings value like 1A 05 01 17 is BCD on one model and
+  // an enumeration on the next, so the only honest place for the meaning is the
+  // page that asked. Zero RAM for a parser, and no model knowledge in C++.
+  //
+  // Absence is the answer for an address the radio does not have: no reply means
+  // civReadSeq never moves, and the caller reports "the radio did not confirm
+  // that address" instead of writing to it. See docs/tx-audio-gain-plan-*.md.
+  static const size_t CIV_READ_MAX = 16;
+  uint8_t  civReadPrefix[CIV_READ_MAX] = {0};   // cmd + subaddress bytes to match
+  uint8_t  civReadPrefixLen = 0;
+  uint8_t  civReadReply[CIV_READ_MAX] = {0};   // cmd + payload of the matching frame
+  uint8_t  civReadReplyLen = 0;
+  uint32_t civReadSeq = 0;
+  uint32_t civReadAtMs = 0;
+
   String requestArg(const char *name);
   bool requestHasArg(const char *name);
   String trimMemoryValue(const String &value, size_t maxLen);
@@ -794,6 +811,9 @@ extern "C" void SHA1Final(unsigned char digest[20], SHA1_CTX* context){
   void handlePostLogConfig(void);
   void handleGetTxGain(void);
   void handlePostTxGain(void);
+  void handleGetCivRead(void);
+  void civReadArm(const uint8_t *prefix, size_t prefixLen);
+  void civReadCapture(const uint8_t *frame, size_t len);
   void handleOi3State(void);
   void handleOi3Send(void);
   void handleOi3SetHz(void);
@@ -2318,6 +2338,28 @@ void handlePostCmd(){
     return;
   }
 
+  // The read half of civ.raw. Same wire operation -- a CI-V frame with no payload
+  // beyond the subaddress -- but it arms the capture first, so the reply has
+  // somewhere to land. `seq` in the response is the value BEFORE the read: the
+  // caller polls /civread until it moves, which is what tells a real answer apart
+  // from the previous one and from no answer at all.
+  if (type == "civ.read") {
+    String hexData = extractJsonString(body, "data");
+    uint8_t payload[CIV_READ_MAX];
+    size_t payloadLen = 0;
+    if (!parseHexPayload(hexData, payload, payloadLen, sizeof(payload)) || payloadLen == 0) {
+      webServer.send(400, "application/json", "{\"error\":\"invalid_hex\"}"); return;
+    }
+    uint8_t frame[40];
+    size_t frameLen = buildSimpleCatFrame(payload[0], payload + 1, payloadLen - 1, frame, sizeof(frame));
+    if (frameLen == 0) { webServer.send(500, "application/json", "{\"error\":\"tx_failed\"}"); return; }
+    civReadArm(payload, payloadLen);
+    if (!catWriteFrameSlot(targetSlot, frame, frameLen)) { webServer.send(500, "application/json", "{\"error\":\"tx_failed\"}"); return; }
+    webServer.send(200, "application/json",
+                   "{\"ok\":true,\"seq\":" + String((unsigned long)civReadSeq) + "}");
+    return;
+  }
+
   webServer.send(400, "application/json", "{\"error\":\"unsupported_type\"}");
 }
 
@@ -3152,7 +3194,11 @@ void handleGetTxGain() {
   // is the normal first state, not an error, and every caller would otherwise
   // have to treat "missing" and "empty" as the same thing anyway -- one of them
   // eventually forgetting to.
-  if (json.length() < 2 || json[0] != '{') json = "{\"v\":1,\"entries\":{}}";
+  //
+  // Bare {} and not a versioned skeleton: the schema is the browser's, and this
+  // used to answer with a hardcoded "v":1 that became a lie the moment the table
+  // went to v2. The reader normalises a missing shape anyway.
+  if (json.length() < 2 || json[0] != '{') json = "{}";
   webServer.send(200, "application/json", json);
 }
 
@@ -3177,6 +3223,34 @@ void handlePostTxGain() {
   f.print(body);
   f.close();
   webServer.send(200, "application/json", "{\"ok\":true}");
+}
+
+// ---- the last CI-V reply a page asked for ------------------------------------
+//
+// Raw hex out, no interpretation. Unlike /txgain.json this must NOT invent an
+// empty-but-valid answer: a firmware without this endpoint 404s, and that is how
+// a page tells "flash the firmware" from "the radio never answered". Substituting
+// a friendly default here would erase the difference.
+void handleGetCivRead() {
+  webServer.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  webServer.sendHeader("Connection", "close");
+  webServer.client().setNoDelay(true);
+  String json = "{\"seq\":" + String((unsigned long)civReadSeq) + ",\"cmd\":\"";
+  for (uint8_t i = 0; i < civReadPrefixLen; i++) {
+    char hex[3];
+    snprintf(hex, sizeof(hex), "%02X", civReadPrefix[i]);
+    json += hex;
+  }
+  json += "\",\"reply\":\"";
+  for (uint8_t i = 0; i < civReadReplyLen; i++) {
+    char hex[3];
+    snprintf(hex, sizeof(hex), "%02X", civReadReply[i]);
+    json += hex;
+  }
+  json += "\",\"ageMs\":";
+  json += String(civReadReplyLen && civReadAtMs ? (unsigned long)(millis() - civReadAtMs) : 0UL);
+  json += "}";
+  webServer.send(200, "application/json", json);
 }
 
 
@@ -3365,6 +3439,7 @@ void setupWebServer(void){
   webServer.on("/log-config", HTTP_POST, handlePostLogConfig);
   webServer.on("/txgain.json", HTTP_GET,  handleGetTxGain);
   webServer.on("/txgain.json", HTTP_POST, handlePostTxGain);
+  webServer.on("/civread",     HTTP_GET,  handleGetCivRead);
   webServer.on("/oi3/state",    HTTP_GET,  handleOi3State);
   webServer.on("/oi3/send",     HTTP_POST, handleOi3Send);
   webServer.on("/oi3/abort-cw", HTTP_POST, handleOi3AbortCw);
@@ -5197,10 +5272,38 @@ void processCatMessages(){
 }
 
 //-------------------------------------------------------------------------------------------------------
+// Arm the capture for the next reply whose command and subaddress match. Clearing
+// the previous reply is the point: the caller polls until the sequence moves, and
+// a stale value left in place would answer the new question with the old address's
+// number -- exactly the confusion alcSeq exists to prevent one layer up.
+void civReadArm(const uint8_t *prefix, size_t prefixLen) {
+  civReadPrefixLen = (uint8_t)(prefixLen > CIV_READ_MAX ? CIV_READ_MAX : prefixLen);
+  memcpy(civReadPrefix, prefix, civReadPrefixLen);
+  civReadReplyLen = 0;
+  civReadAtMs = 0;
+}
+
+// One capture for every transport. Called from BOTH processCivBuffer() (which is
+// where a LAN radio on TRX1 lands, because lanCivFrameRoute() delegates for slot
+// 0 and returns) and lanRadioCivSnapshot() (every other slot). That split already
+// cost two on-radio attempts when ALC was added to only one of them, so this is
+// one function called twice rather than two copies of the same rule.
+void civReadCapture(const uint8_t *frame, size_t len) {
+  if (!civReadPrefixLen || !frame || len < 6) return;
+  const size_t bodyLen = len - 5;               // cmd + payload, without FE FE <to> <from> and FD
+  if (bodyLen < civReadPrefixLen) return;
+  if (memcmp(frame + 4, civReadPrefix, civReadPrefixLen) != 0) return;
+  civReadReplyLen = (uint8_t)(bodyLen > CIV_READ_MAX ? CIV_READ_MAX : bodyLen);
+  memcpy(civReadReply, frame + 4, civReadReplyLen);
+  civReadAtMs = millis();
+  civReadSeq++;
+}
+
 // Parse one CI-V frame already in read_buffer (FE FE <to> <from> <cmd> payload FD)
 // into the state globals. Transport-agnostic — used by BT (processCatMessages)
 // and LAN (lanCivFrameHandler). Caller ensures the frame is from the radio.
 void processCivBuffer(uint8_t len) {
+  civReadCapture(read_buffer, len);
   // to-addr: broadcast (00), BT controller (0xE0) or LAN controller (0xE1).
   // LAN poll replies are addressed to 0xE1 — without it, freq/mode from a poll
   // (as opposed to a transceive broadcast) would be dropped.
@@ -5312,6 +5415,8 @@ void lanSecondaryCivFrameHandler(uint8_t slot, const uint8_t *frame, size_t len)
 // view of /state.
 void lanRadioCivSnapshot(const uint8_t *frame, size_t len) {
   if (!frame || len < 7) return;
+  // The second of the two capture sites. See civReadCapture().
+  civReadCapture(frame, len);
   const uint8_t cmd = frame[4];
   const uint8_t *pl = frame + 5;
   const size_t plLen = len - 6;

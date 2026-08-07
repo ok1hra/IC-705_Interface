@@ -27,7 +27,21 @@
   else root.TxGainCalUi = value;
 })(typeof globalThis !== "undefined" ? globalThis : self, function (TxGainCal, WsprCore, WsprTx) {
 
-  const CAL_MAX_MS = 20000;             // carrier cap; a cold search needs ~12 s
+  // The carrier cap, and why there are two of them.
+  //
+  // 20 s was measured against a search that starts near the answer. It is not enough
+  // when the knee is LOW: every step downwards costs the ring depth plus a 500 ms
+  // settle (the meter has to fall on the radio's own time) plus one or two valid ALC
+  // readings, so a cell at 10 % power takes half again as long as the same band at
+  // 100 % -- which is exactly the pattern that failed on the air, the high-power cells
+  // passing and the low-power ones reporting "the carrier ran out".
+  //
+  // A cap that stops a search which is still converging is arbitrary. So the soft cap
+  // is EXTENDED whenever the search actually advances, and the hard cap is what bounds
+  // the airtime: a search that has stopped moving gets no more carrier.
+  const CAL_MAX_MS = 20000;             // soft: no progress for this long and it ends
+  const CAL_EXTEND_MS = 9000;           // granted again on every step forward
+  const CAL_HARD_MS = 50000;            // never longer than this, whatever happens
   const CAL_TARGET_FILL_BYTES = 4000;   // 0.5 s ahead of the radio, half the usual
   const CAL_RAMP_SAMPLES = 5760;        // 120 ms
   const CAL_LEAD_MS = 2500;             // shortest lead the firmware's window allows
@@ -43,7 +57,11 @@
     + ".cal-live{font-family:ui-monospace,monospace;font-size:12px;color:#e0a020}"
     + ".cal-result{font-size:12px;color:#9fd39f;line-height:1.5}"
     + ".cal-error{font-size:12px;color:#e06c5a;line-height:1.5}"
-    + ".cal-field button{cursor:pointer}";
+    + ".cal-field button{cursor:pointer}"
+    // The same rule as the plan panel and as the rest of the interface: a button that
+    // cannot be pressed must not look like one that can.
+    + ".cal-field button:disabled{opacity:.4;cursor:not-allowed;color:#61746f;"
+    + "border-color:#2a453e}";
 
   const MARKUP = ""
     + '<b>Automatic TX gain</b>'
@@ -76,6 +94,11 @@
     " input is the LAN one, that its MOD level is not too low, and that RF power" +
     " is not set higher than the audio path can drive";
 
+  // How much longer a search that just advanced may run. Its own function so the test
+  // drives THIS code rather than a second copy of the arithmetic.
+  const extendedDeadline = (nowMs, endsAtMs) =>
+    Math.min(nowMs + CAL_EXTEND_MS, endsAtMs + (CAL_HARD_MS - CAL_MAX_MS));
+
   class TxGainCalRun {
     // `adapter` is the page. See the bottom of this file for the contract.
     constructor(adapter) {
@@ -83,7 +106,7 @@
       this.store = adapter.store;
       this.cal = null;
       this.armed = false;
-      this.running = false;
+      this._running = false;
       this.timer = null;
       this.restoreMode = "";
       this.run = {key: "", band: "", percent: 0, model: "", dbm: null,
@@ -106,6 +129,19 @@
         this.dom.start.addEventListener("click",
           () => (this.running ? this.stop("operator stop") : this.start()));
       }
+    }
+
+    // Both pages route every control frame by this flag and RETURN when it is set, so
+    // a stale `true` silently swallows the beacon's, TUNE's and JS8's own transmissions
+    // -- which is what happened: a watchdog reported a cell as failed without stopping
+    // the tool, and TUNE stayed dead until the page was reloaded.
+    //
+    // So it is derived, not just assigned: a run is only running while it still has a
+    // search or a carrier. Nothing can leave it latched on.
+    get running() {
+      if (!this._running) return false;
+      return Boolean(this.cal) ||
+        ["preparing", "waiting-slot", "prebuffering", "streaming"].includes(this.tx.state);
     }
 
     // ---- identity ----------------------------------------------------------
@@ -135,6 +171,14 @@
       return "";
     }
 
+    // The MOD level the radio is on, as far as anyone has been told. 0 means never
+    // read, which entryStatus() treats as "nothing to compare against" rather than
+    // as a mismatch -- a page that cannot read the level must not declare every
+    // stored calibration stale.
+    modLevel() {
+      return this.page.modLevel ? Number(this.page.modLevel()) || 0 : 0;
+    }
+
     // What the table says for the radio as it stands right now.
     resolved() {
       const manual = this.page.manualGain();
@@ -142,21 +186,45 @@
       if (!identity) return {gain: manual, calibrated: false, key: "",
                              why: "the radio has not reported its model, band or power yet"};
       const entry = this.store.entry(identity.key);
-      if (!entry) return {gain: manual, calibrated: false, key: identity.key,
-                          band: identity.band, percent: identity.percent,
-                          why: `not calibrated for ${identity.band} @ ${identity.percent} %`};
+      const status = TxGainCal.entryStatus(entry, this.modLevel());
+      if (status === "missing")
+        return {gain: manual, calibrated: false, key: identity.key,
+                band: identity.band, percent: identity.percent,
+                why: `not calibrated for ${identity.band} @ ${identity.percent} %`};
+      // A knee measured at a different MOD level is not a weaker measurement, it is
+      // the wrong number -- and with no margin under the knee, wrong upwards means
+      // distortion. Shown, never transmitted from.
+      if (status === "stale")
+        return {gain: manual, calibrated: false, stale: true, key: identity.key, entry,
+                band: identity.band, percent: identity.percent,
+                why: `measured at MOD level ${entry.modLevel}, the radio is on ` +
+                     `${this.modLevel()} — recalibrate ${identity.band} @ ${identity.percent} %`};
       return {gain: Number(entry.gain), calibrated: true, key: identity.key, entry,
-              band: identity.band, percent: identity.percent, why: ""};
+              band: identity.band, percent: identity.percent,
+              modUnknown: status === "unknown-mod", why: ""};
     }
 
     // ---- the run -----------------------------------------------------------
 
     arm(armed) { this.armed = Boolean(armed); this.render(); }
 
-    async start() {
+    // `options` is how the batch plan borrows this as a measuring device:
+    //   seed         a knee to start from -- a stale entry rescaled by the MOD
+    //                ratio, which only ever shortens the search
+    //   resolutionDb stop the bisection early. The plan's survey pass only has to
+    //                rank the bands, and 1.5 dB instead of 0.375 is half the carrier
+    //   onOutcome    called once with the result or the failure, so the sequencer
+    //                learns what happened without polling this object
+    async start(options = {}) {
       const problem = this.blockingReason();
-      if (problem) { this.run.message = problem; this.render(); return; }
+      if (problem) {
+        this.run.message = problem;
+        this.render();
+        if (options.onOutcome) options.onOutcome({ok: false, reason: problem});
+        return;
+      }
       const identity = this.identity();
+      this.onOutcome = options.onOutcome || null;
       Object.assign(this.run, identity, {message: "", result: null, dbm: this.page.dbm(),
                                          poPeak: 0, swrPeak: 0, sawAlcField: false});
       try {
@@ -171,25 +239,40 @@
           await this.page.ensureDataMode();
         }
         const stored = this.store.entry(this.run.key);
-        this.cal = new TxGainCal.TxGainCal();
-        this.cal.begin({knownKnee: stored ? Number(stored.knee) || 0 : 0});
-        this.running = true;
+        this.cal = new TxGainCal.TxGainCal(
+          options.resolutionDb ? {resolutionDb: Number(options.resolutionDb)} : {});
+        // A seed handed in wins over the stored knee: the plan has already rescaled
+        // it for today's MOD level, while the stored one was measured at whatever
+        // the MOD level used to be.
+        this.cal.begin({knownKnee: Number(options.seed) > 0 ? Number(options.seed)
+          : (stored ? TxGainCal.seedFrom(stored, this.modLevel()) : 0)});
+        this._running = true;
         this.endsAtMs = this.page.wallNow() + CAL_LEAD_MS + CAL_MAX_MS;
         this.tx.targetFillBytes = CAL_TARGET_FILL_BYTES;
         this.tx.queue({symbols: new Uint8Array(162).fill(1),
                        slotUtcMs: this.page.wallNow() + CAL_LEAD_MS,
                        baseHz: 1500, amplitude: this.cal.gain,
                        leadMs: CAL_LEAD_MS, alcFast: true});
+        // The backstop is the HARD cap. The soft one is enforced from the level
+        // messages, where progress is actually visible.
+        this.softDeadlineMs = this.page.wallNow() + CAL_LEAD_MS + CAL_MAX_MS;
+        this.lastSteps = 0;
         this.timer = setTimeout(
-          () => this.stop("the carrier ran out before the search finished"),
-          CAL_LEAD_MS + CAL_MAX_MS);
+          () => this.stop("the carrier ran out before the search finished (hard limit)"),
+          CAL_LEAD_MS + CAL_HARD_MS);
         this.page.onRunChange(true);
       } catch (error) {
         this.cal = null;
-        this.running = false;
+        this._running = false;
         this.run.message = String(error.message || error);
         await this.restoreModeNow();
         this.page.onRunChange(false);
+        // Reported, not swallowed. A caller waiting on the outcome -- the batch plan
+        // waits on exactly this -- had no way to learn that the run never started, so
+        // a failed ensureDataMode() or a refused tx.queue() left it waiting for ever:
+        // its CONTINUE button then did nothing and the countdown ran on with the plan
+        // already dead.
+        this.report({ok: false, reason: this.run.message});
       }
       this.render();
     }
@@ -216,9 +299,20 @@
       this.cal.noteLevel({consumed: message.consumed, alc: message.alc, alcSeq: message.alcSeq});
       if (this.tx.stream && Math.abs(this.tx.stream.amplitude - this.cal.gain) > 1e-6)
         this.tx.stream.setAmplitude(this.cal.gain, CAL_RAMP_SAMPLES);
-      if (this.cal.state === "done") this.finish();
-      else if (this.cal.state === "failed") this.stop(this.failureText(this.cal.error));
-      else this.render();
+      if (this.cal.state === "done") return this.finish();
+      if (this.cal.state === "failed") return this.stop(this.failureText(this.cal.error));
+      // Still searching: does it get more carrier?
+      const now = this.page.wallNow();
+      if (this.cal.steps > this.lastSteps) {
+        this.lastSteps = this.cal.steps;
+        this.softDeadlineMs = extendedDeadline(now, this.endsAtMs);
+      }
+      if (now > this.softDeadlineMs) {
+        this.stop("the carrier ran out before the search finished — it stopped making " +
+                  `progress at level ${this.cal.gain.toFixed(4)} after ${this.cal.steps} steps`);
+        return;
+      }
+      this.render();
     }
 
     // Peaks and the SWR watch, from whatever the page polls. This is the one
@@ -249,11 +343,29 @@
       this.run.result = result;
       this.run.message = "";
       this.stopCarrier();
+      // A ceiling result is NOT a calibration. "The level reached 0.8 and the radio
+      // never limited" says the search found no knee at all -- storing 0.8 as the
+      // measured level turns a failed measurement into a green number, and a whole
+      // table of them is what a radio with a silent MOD level produces. It is reported
+      // as a failed cell with the three causes the operator can act on.
+      if (result.reachedCeiling) {
+        this.run.message = "no knee found" + CEILING_ADVICE;
+        await this.restoreModeNow();
+        this.page.onRunChange(false);
+        this.render();
+        this.report({ok: false, reason: "the level reached the ceiling and the radio " +
+                                        "never limited — nothing was measured"});
+        return;
+      }
       try {
         await this.store.put(this.run.key, {
           knee: Number(result.knee.toFixed(4)), gain: Number(result.gain.toFixed(4)),
           po: this.run.poPeak, swrMax: Number(this.run.swrPeak.toFixed(1)),
           model: this.run.model, band: this.run.band, percent: this.run.percent,
+          // The two fields schema v2 added. `modLevel` is what makes the entry
+          // falsifiable later: without it the table cannot tell that the radio's
+          // sensitivity has moved out from under every knee in it.
+          modLevel: this.modLevel(), hz: Number(this.page.radio().frequency) || 0,
           reachedCeiling: result.reachedCeiling, autoTrimmed: false,
           at: this.page.now ? this.page.now() : Date.now(),
         });
@@ -265,20 +377,36 @@
       await this.restoreModeNow();
       this.page.onRunChange(false);
       this.render();
+      this.report({ok: true, knee: result.knee, gain: result.gain, po: this.run.poPeak,
+                   reachedCeiling: result.reachedCeiling,
+                   modLevelCorrectionDb: result.modLevelCorrectionDb});
     }
 
     stop(reason = "operator stop") {
-      if (!this.running && !this.cal) return;
+      // Even when there is nothing to stop: an owed outcome must be answered, or the
+      // caller waits on a run that already ended.
+      if (!this.running && !this.cal) { this.report({ok: false, reason}); return; }
       this.cal = null;
       this.run.message = reason;
       this.stopCarrier();
       this.restoreModeNow().then(() => { this.page.onRunChange(false); this.render(); });
       this.render();
+      this.report({ok: false, reason});
+    }
+
+    // Exactly once per run, whatever the outcome. The sequencer waits on this: a
+    // measurement that ended without saying so would leave the plan holding a
+    // carrier's worth of nothing, and the failure would look like a hung page.
+    report(outcome) {
+      const listener = this.onOutcome;
+      if (!listener) return;
+      this.onOutcome = null;
+      listener(outcome);
     }
 
     stopCarrier() {
       if (this.timer) { clearTimeout(this.timer); this.timer = null; }
-      this.running = false;
+      this._running = false;
       this.endsAtMs = 0;
       if (["preparing", "waiting-slot", "prebuffering", "streaming"].includes(this.tx.state))
         this.tx.fail("calibration finished");
@@ -331,6 +459,7 @@
       this.dom.result.hidden = !result;
       if (result) this.dom.result.textContent =
         `knee ${result.knee.toFixed(4)}, stored ${result.gain.toFixed(4)}` +
+        (this.modLevel() ? ` at MOD level ${this.modLevel()}` : "") +
         (result.reachedCeiling ? CEILING_ADVICE : ` — ${modLevelAdvice(result.knee)}`);
       this.dom.error.hidden = !this.run.message;
       this.dom.error.textContent = this.run.message;
@@ -355,10 +484,11 @@
   //   blockingReason() -> string,      // the page's own gates, "" when clear
   //   ensureDataMode() -> Promise, setMode(mode) -> Promise,
   //   onRunChange(running), onReference?(band, dbm, poPeak),
+  //   modLevel?() -> number,           // 0 when the radio's MOD level is unknown
   // }
   const create = adapter => new TxGainCalRun(adapter);
 
-  return {create, TxGainCalRun, modLevelAdvice,
-          CAL_MAX_MS, CAL_TARGET_FILL_BYTES, CAL_RAMP_SAMPLES, CAL_LEAD_MS,
-          CAL_SWR_LIMIT, MOD_LEVEL_TARGET};
+  return {create, TxGainCalRun, modLevelAdvice, extendedDeadline,
+          CAL_MAX_MS, CAL_EXTEND_MS, CAL_HARD_MS, CAL_TARGET_FILL_BYTES,
+          CAL_RAMP_SAMPLES, CAL_LEAD_MS, CAL_SWR_LIMIT, MOD_LEVEL_TARGET};
 });

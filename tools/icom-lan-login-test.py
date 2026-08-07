@@ -387,6 +387,8 @@ class CivPort(UdpChannel):
         self.frames = 0
         self.scope_frames = 0
         self.freq_hz = None
+        self.asked = []            # payloads handed to --ask
+        self.answers = {}
         self.log(f"local port {self.local_port} -> radio civ port {remote_port}")
 
     def send_openclose(self, close):
@@ -417,6 +419,31 @@ class CivPort(UdpChannel):
 
     def request_freq(self):
         self.send_civ(bytes([0xFE, 0xFE, self.civ_addr, self.CTRL, 0x03, 0xFD]))
+
+    # Replies to whatever --ask requested, decoded both ways so the operator can see
+    # the raw bytes AND what they mean on the documented 0000..0255 scale.
+    def note_answer(self, frame):
+        if len(frame) < 6:
+            return
+        body = frame[4:-1]
+        for wanted in self.asked:
+            if body.startswith(wanted) and len(body) > len(wanted):
+                value = body[len(wanted):]
+                self.answers.setdefault(bytes(wanted), []).append(bytes(value))
+                self.log(f"   ANSWER {hexdump(wanted)} -> raw {hexdump(value)}"
+                         f"  = {bcd_value(value)} (BCD)"
+                         f"  = {value[0] if len(value) == 1 else ''}"
+                         .rstrip())
+
+    # --- arbitrary questions -------------------------------------------------
+    #
+    # Everything the calibration design rests on is a CI-V exchange this machine can
+    # have directly: does the radio answer 1A 05 01 17 (its network MOD level), what
+    # scale does it use, does it echo a power level back the way the page expects.
+    # Guessing at those from the browser costs a round trip through a transmitter;
+    # asking here costs a UDP packet.
+    def ask(self, payload):
+        self.send_civ(bytes([0xFE, 0xFE, self.civ_addr, self.CTRL]) + payload + b"\xFD")
 
     def scope_output_off(self):
         # 27 11 00 = disable waveform data output over CI-V (radio display unaffected)
@@ -492,6 +519,15 @@ class CivPort(UdpChannel):
                     else:
                         self.log(f"<- CI-V frame: {hexdump(frame[:24])}"
                                  f"{'...' if len(frame) > 24 else ''}")
+                        self.note_answer(frame)
+
+
+def bcd_value(data):
+    """Icom's 0000..0255 fields: two decimal digits per byte, most significant first."""
+    out = 0
+    for byte in data:
+        out = out * 100 + (byte >> 4) * 10 + (byte & 0x0F)
+    return out
 
 
 def main():
@@ -511,12 +547,20 @@ def main():
                          "opens CI-V without an audio channel — matters for ESP32)")
     ap.add_argument("-t", "--timeout", type=float, default=None,
                     help="overall deadline in s (default 15, with --civ 30)")
+    ap.add_argument("--ask", default="",
+                    help="comma-separated CI-V payloads to send once the link is up, "
+                         "e.g. 140A,1A050117,1A050119 (read requests: command plus "
+                         "subaddress, no value)")
+    ap.add_argument("--ask-seconds", type=float, default=6.0,
+                    help="how long to keep asking and collecting answers")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
     deadline_s = args.timeout or (30.0 if args.civ else 15.0)
 
     global LOCAL_BASE
     LOCAL_BASE = args.local_base
+    asks = [bytes.fromhex(part.strip()) for part in args.ask.split(",") if part.strip()]
+    next_ask, ask_rounds, ask_deadline = 0.0, 0, None
     ctl = ControlPort(args.radio_ip, args.port, args.username, args.password,
                       args.verbose)
     civ = None
@@ -551,7 +595,21 @@ def main():
                             civ.scope_output_off()
                         civ.request_freq()
                         next_freq_poll = now + 2.0
-                    if civ.freq_hz and civ_deadline is None:
+                    # Ask the operator's questions as soon as CI-V data flows, and
+                    # keep asking: one unanswered read must not end the run, because
+                    # "no reply" is itself the answer for an address the radio lacks.
+                    if civ.got_data and asks and now >= next_ask:
+                        for payload in asks:
+                            civ.ask(payload)
+                        next_ask = now + 1.5
+                        ask_rounds += 1
+                        if ask_rounds == 1:
+                            civ.asked = list(asks)
+                    if asks and ask_rounds and ask_deadline is None:
+                        ask_deadline = now + args.ask_seconds
+                    if ask_deadline and now >= ask_deadline:
+                        break
+                    if civ.freq_hz and civ_deadline is None and not asks:
                         civ_deadline = now + 2.0   # collect a bit more, then finish
                     if civ_deadline and now >= civ_deadline:
                         break

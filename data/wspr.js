@@ -57,7 +57,7 @@
     "powerPercent", "powerSet", "stationError", "radioModelOverride", "fullPowerWatts",
     "fullPowerSource", "clockCorrection", "powerField", "powerMismatch",
     "txGain", "txSafety", "tuneButton", "powerMeter", "swr", "tuneReference",
-    "calField", "calResolved",
+    "calField", "calResolved", "planField", "planButton",
     "referenceCount", "referenceClear",
     "periodHint", "scheduleAdd", "scheduleClear", "scheduleUndo",
     "scheduleList", "schedulePopover",
@@ -408,6 +408,10 @@
         lanDrops: Number(json.lanDrops) || 0,
         lanStalls: Number(json.lanStalls) || 0,
         lanFilled: Number(json.lanFilled) || 0,
+        // Whether this hardware drives band-decoder outputs. The calibration plan
+        // says so in the antenna question: on a station where the outputs switch
+        // antennas, "the decoder follows the dial" is half the answer already.
+        bdSupported: json.bdSupported === true,
       };
     } catch (_error) {
       // Deliberately does NOT go through noteLinkState(): a fetch that never
@@ -516,6 +520,16 @@
       headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)});
     if (!response.ok) throw new Error(`${payload.type} failed (${response.status})`);
     return true;
+  }
+
+  // The same POST, but answering with what the firmware said. civ.read replies with
+  // the sequence number the caller has to watch for, and a read that threw away the
+  // body could not tell a fresh answer from a repeat of the last one.
+  async function commandJson(payload) {
+    const response = await fetch(RADIO_CMD_URL, {method: "POST",
+      headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)});
+    if (!response.ok) throw new Error(`${payload.type} failed (${response.status})`);
+    return response.json().catch(() => ({ok: true}));
   }
 
   // setMode cannot express USB-D, so the data-mode bit goes through the generic
@@ -730,7 +744,7 @@
     // JS8 power level, which is the whole reason this page can calibrate for the
     // other mode at all. Writing WSPR's own target here would file the result
     // under a percentage the radio was never on.
-    if (calArmed || state.calRunning) return;
+    if (calArmed || state.calRunning || state.planRunning) return;
     if (Date.now() < autoPowerRetryMs) return;
     // The same gate as SET. The TX pledge is deliberately not part of it:
     // writing power is not transmitting, and this write moves towards the safe
@@ -763,6 +777,31 @@
     }
     autoPowerBusy = false;
     render();
+  }
+
+  // Did the radio take the level? Asked actively, judged on both units, and when it
+  // does not agree it says WHAT the radio reports -- "the radio did not confirm the
+  // power" alone sends the next investigation nowhere.
+  async function confirmPercent(percent, level, timeoutMs = 9000) {
+    const started = Date.now();
+    let seen = -1, seenPercent = -1;
+    while (Date.now() - started < timeoutMs) {
+      // 14 0A with no payload is a READ request; the reply lands in the same state
+      // field the poll rotation fills.
+      try { await command({type: "civ.raw", data: "140A"}); } catch (_error) {}
+      await new Promise(resolve => setTimeout(resolve, 300));
+      await pollState();
+      if (state.radio.rfPowerSeen !== true) continue;
+      seen = state.radio.rfPower;
+      seenPercent = WsprCore.civPercent(seen);
+      // Either unit agreeing is agreement: the radio quantises to whole percent, so
+      // the raw value it stores can differ from the one written while meaning the
+      // same setting.
+      if (seenPercent === percent || seen === level) return true;
+    }
+    throw new Error(`the radio did not confirm the power: asked for ${percent} % ` +
+      `(level ${level})` + (seen < 0 ? ", and it never reported a power setting"
+        : `, it reports ${seenPercent} % (level ${seen})`));
   }
 
   // The operator's own write. Still the only thing that turns the proposal into
@@ -1576,6 +1615,11 @@
 
   const calModel = () => settings.modelOverride || state.radio.radioName || "";
 
+  // Declared before the single-shot tool because that tool's adapter asks the plan
+  // panel for the radio's MOD level. `const` here would be a temporal dead zone: a
+  // render() during page setup would throw a ReferenceError rather than read zero.
+  let gainPlan = null;
+
   const gainCal = TxGainCalUi.create({
     mount: dom.calField,
     store: gainStore,
@@ -1617,6 +1661,76 @@
     setMode: mode => command({type: "setMode", mode}),
     onRunChange: running => { state.calRunning = running; render(); },
     onReference: (band, dbm, poPeak) => storeReference(band, dbm, poPeak),
+    // What the radio's network MOD level is, as far as the plan panel has been able
+    // to read it. Every stored knee is a knee AT a MOD level, so the resolver needs
+    // this to tell a usable entry from one measured before the sensitivity moved.
+    modLevel: () => (gainPlan ? gainPlan.modLevel() : 0),
+  });
+
+  // The batch plan. Same module the JS8Call page mounts; it borrows the single-shot
+  // run above as its measuring device and adds the grid, the radio driving and the
+  // antenna question.
+  gainPlan = TxGainPlanUi.create({
+    mount: dom.planField,
+    button: dom.planButton,
+    store: gainStore,
+    cal: gainCal,
+    model: calModel,
+    modelNumber: () => IcomModels.modelNumber(calModel()),
+    radio: () => state.radio,
+    send: payload => commandJson(payload),
+    bands: () => WsprCore.PRESETS.map(preset => ({band: preset.band, hz: preset.hz})),
+    wsprPresets: WsprCore.PRESETS,
+    js8Presets: typeof Js8TrxPresets !== "undefined" ? Js8TrxPresets.PRESETS : [],
+    percentOf: radio => (radio.rfPowerSeen === true ? WsprCore.civPercent(radio.rfPower) : 0),
+    // The powers this station actually operates on: the level WSPR is targeting, and
+    // whatever the radio is set to right now (which on a shared MOD input is usually
+    // the JS8 one). Not a ladder of round numbers -- every extra column is a carrier
+    // on every band.
+    defaultPowers: () => {
+      const out = [];
+      const full = fullPower().watts, target = targetDbm();
+      if (full && target !== null) {
+        try { out.push(WsprCore.civPercent(WsprCore.powerCommand(target, full).level)); }
+        catch (_error) { /* an unknown model has no target to offer */ }
+      }
+      if (state.radio.rfPowerSeen === true) out.push(radioPercent());
+      return out;
+    },
+    // Confirmed writes, both of them: a plan that measured a cell on a band the
+    // radio never reached would file the wrong knee under the right key.
+    setFrequency: async hz => {
+      await command({type: "setFrequency", frequency: String(hz)});
+      await Promise.all([
+        // Frequency is slot 0 of the rotation, so it comes back fast -- but say what
+        // it came back as when it does not match, for the same reason as the power.
+        waitForState(radio => radio.frequency === hz, 9000).catch(() => {
+          throw new Error(`the radio did not confirm the band: asked for ` +
+            `${(hz / 1000).toFixed(1)} kHz, it reports ` +
+            `${(state.radio.frequency / 1000).toFixed(1)} kHz`);
+        }),
+        new Promise(resolve => setTimeout(resolve, BAND_SETTLE_MS)),
+      ]);
+    },
+    // Written, then CONFIRMED -- and the confirmation asks the radio rather than
+    // waiting for it to be asked. The firmware polls 14 0A once per fifteen-slot
+    // rotation (1.5 s) and not at all while a transmission is running, so a passive
+    // wait right after a carrier depends on a rotation that may not have resumed. A
+    // read request costs one CI-V frame and removes that dependency.
+    setPercent: async percent => {
+      const level = WsprCore.percentToLevel(percent);
+      await command({type: "civ.raw", data: WsprCore.civLevelCommand(level).data});
+      await confirmPercent(percent, level);
+    },
+    // The beacon owns the transmitter whenever it is not stopped, and the plan keys
+    // on bands the schedule knows nothing about.
+    planBlockingReason: () => (state.beacon !== "stopped" ? `the beacon is ${state.beacon}` : ""),
+    // The module names the outputs itself from /api/bd-config; the page only lends it
+    // a fetch so it opens no socket of its own.
+    fetchImpl: (...args) => fetch(...args),
+    setModeFilter: (mode, filter) => command({type: "setMode", mode,
+      filter: filter ? "FIL" + filter : undefined}),
+    onPlanChange: running => { state.planRunning = running; render(); },
   });
 
   // The level for the transmission about to be queued. Resolved per transmission,
@@ -2301,13 +2415,27 @@
     // #autogain only ARMS the panel. Arriving at a URL -- from SETUP, from a
     // bookmark, from browser history -- must never put RF on the air by itself,
     // so the carrier still waits for a click.
+    // Both calibration panels live in SETTINGS, always. They used to be hidden until
+    // #autogain, which is why an operator opening /wspr saw no calibration at all --
+    // and the hash cannot be a safety gate anyway: showing a panel transmits nothing,
+    // the carrier still waits for a click. #autogain now only OPENS the section, which
+    // is what the link from SETUP needs it for.
+    gainCal.arm(true);
     const readCalHash = () => {
       calArmed = location.hash === "#autogain";
-      gainCal.arm(calArmed);
+      if (!calArmed) return;
+      const section = dom.calField.closest("details");
+      if (section) section.open = true;
+      dom.calField.scrollIntoView({block: "nearest"});
+      // The plan is its own window in the topbar; a deep link to the calibration
+      // opens it too, so the link from SETUP lands on both halves of the tool.
+      if (gainPlan) gainPlan.open();
     };
     readCalHash();
     window.addEventListener("hashchange", () => { readCalHash(); render(); });
-    gainStore.load().then(render);
+    // The plan is the station's, so it arrives with the table rather than with the
+    // page. reload() adopts it -- or seeds a usable first one when there is none.
+    gainStore.load().then(() => { if (gainPlan) gainPlan.reload(); render(); });
 
     pollState();
     setInterval(pollState, STATE_POLL_MS);
@@ -2334,6 +2462,10 @@
       gainCal.tick();
       if (state.calRunning)
         gainCal.noteMeters({powerMeterRaw: state.radio.powerMeterRaw, swr: state.radio.swr});
+      // Only so the "waiting 4:12" line tells the truth. The plan itself is driven
+      // by intents and by what the radio answers, never by this timer -- a hidden
+      // tab throttles timers to once a second and the run must not care.
+      if (gainPlan) gainPlan.tick();
       render();
     }, 500);
 
@@ -2351,7 +2483,7 @@
                          // For tools/wspr-browser-smoke.js: the calibration is
                          // driven entirely by tx-level frames, so the harness
                          // needs to see where the search got to.
-                         gainCal, gainStore, resolvedGain, beaconGuard,
+                         gainCal, gainPlan, gainStore, resolvedGain, beaconGuard,
                          get calArmed() { return calArmed; },
                          scheduleView, addChange, saveSettings,
                          get editingSlot() { return editingSlot; },

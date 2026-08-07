@@ -59,6 +59,17 @@
         <footer>Empty slots leave the radio unchanged. Frequency never changes during transmit.</footer>
       </section>
     </div>
+    <!-- The calibration plan, in the same shape as the timetable beside it: a topbar
+         button with its state, and a bordered panel that pops out below. The panel
+         markup, its CSS and the whole run live in data/tx-gain-plan-ui.js, and the
+         WSPR page mounts the identical module. -->
+    <div class="trx-control tt-control">
+      <button id="planButton" class="freq-timetable" type="button" aria-expanded="false"
+              aria-controls="planField" title="TX gain calibration plan">
+        <span><small>CAL PLAN</small><b id="planButtonValue">--</b></span><span class="chevron">▾</span>
+      </button>
+      <section id="planField" class="freq-timetable-panel" hidden aria-label="TX gain calibration plan"></section>
+    </div>
     <span id="trxMode" class="trx-mode">---</span>
     <!-- RF power as the radio itself scales it: ten segments, one per 10 %, so
          the count reads back as the percentage. The watts beside it are that
@@ -374,6 +385,11 @@
                measurement belongs to the radio, not to a mode, so a second copy
                of a transmitter-keying panel would only be a copy to drift. -->
           <div id="calField"></div>
+          <!-- The batch plan is a pop-out window in the topbar next to the timetable,
+               because it is a schedule to build and not a setting to type. This is
+               only the pointer to it. -->
+          <small class="cal-hint">A whole band &times; power matrix can be measured in one
+            run &mdash; <b>CAL PLAN</b> in the bar at the top.</small>
           <label class="safety-setting">Enable radio TX <input id="txSafety" type="checkbox"><small>I will use safe RF power and a suitable load/antenna.</small></label>
           <label>INFO answer <input id="infoText" maxlength="40" autocomplete="off" placeholder="50W VERT"></label>
           <label>STATUS answer <input id="statusText" maxlength="40" autocomplete="off" placeholder="MONITORING"></label>
@@ -441,7 +457,12 @@
        tone -- the only kind whose level can move while it plays, which is what
        the search needs eight or nine times inside one keying. Must follow both. -->
   <script src="/wspr-tx.js?v=20260807a"></script>
-  <script src="/tx-gain-cal-ui.js?v=20260807a"></script>
+  <script src="/tx-gain-cal-ui.js?v=20260807b"></script>
+  <!-- The batch plan, identical to the WSPR page's: the sequencer decides the order
+       and the panel executes its intents. Both must follow tx-gain-cal-ui.js. -->
+  <script src="/tx-gain-mod-level.js?v=20260807a"></script>
+  <script src="/tx-gain-plan.js?v=20260807a"></script>
+  <script src="/tx-gain-plan-ui.js?v=20260807a"></script>
   <script src="/dxcc.js?v=20260719d"></script>
   <script src="/log-db.js?v=20260720a"></script>
   <script src="/data.js?v=20260806a"></script>

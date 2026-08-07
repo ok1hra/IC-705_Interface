@@ -36,34 +36,83 @@
   //           factor-of-ten error, so an unknown radio deliberately has no row.
   // civAddr:  the radio's default CI-V address. Note the IC-7300MK2 is B6h, NOT
   //           the original IC-7300's 94h -- same number, different address.
+  //
+  // modLevelCmd / modInputCmd: the 1A 05 subaddresses for this radio's network
+  //           MOD level and for the setting that says which input feeds the
+  //           modulator in a data mode. PRESENT ONLY WHERE THE NUMBER WAS READ IN
+  //           THIS MODEL'S OWN CI-V REFERENCE, and absent everywhere else, because
+  //           there is nothing to check a guess against: across models the
+  //           subaddresses are 00 62, 00 83, 00 90, 01 14, 01 17, 01 25 and 01 28,
+  //           with no pattern at all. The cost of guessing is not a failed write --
+  //           1A 05 01 14 is the LAN MOD level on one model and "WLAN AF/IF Output
+  //           select" on another, and 01 31 is CI-V Transceive, which would take
+  //           the radio away mid-run with the restore still unsent.
+  //
+  //           A model with no number here is not left stranded: the tool reads the
+  //           address first and only writes what the radio confirmed, and where it
+  //           cannot, `modMenu` is what the operator is told to set by hand.
   const MODELS = [
     {
       number: 705, label: "IC-705", watts: 10, civAddr: "A4",
       net: "WLAN", netMenu: "MENU → SET → WLAN Set → Remote Settings",
       hasPreset: true, tested: true,
       firmwareNote: "Use firmware 1.20 or newer, which is where PRESET appears.",
+      // Read in docs/IC-705_ENG_CI-V_1_20200721.pdf, "SET > Connectors":
+      // 0117 = WLAN MOD Level 0000~0255, 0119 = DATA MOD (03 = WLAN). The value
+      // is BCD, the same encoding 14 0A uses for power.
+      modLevelCmd: "1A050117", modInputCmd: "1A050119", modInputNet: 3,
+      modMenu: "MENU → SET → Connectors → MOD Input → WLAN MOD Level",
     },
     {
       number: 7300, label: "IC-7300MK2", watts: 100, civAddr: "B6",
       net: "LAN", netMenu: "MENU → SET → Network → Remote Settings",
       hasPreset: true,
+      modMenu: "MENU → SET → Connectors → MOD Input → LAN MOD Level",
     },
     {
       number: 7610, label: "IC-7610", watts: 100, civAddr: "98",
       net: "LAN", netMenu: "MENU → SET → Network",
       hasPreset: false,
+      modMenu: "MENU → SET → Connectors → MOD Input → LAN MOD Level",
     },
     {
       number: 9700, label: "IC-9700", watts: 100, civAddr: "A2",
       net: "LAN", netMenu: "MENU → SET → Network",
       hasPreset: false, vhfUhfOnly: true,
+      // Deliberately no modLevelCmd. wfview lists 1A 05 01 14 for this radio with
+      // Max=0 -- it does not offer the control itself -- and on the IC-705 that
+      // same subaddress is "WLAN AF/IF Output > Output Select". Menu path from
+      // docs/IC-9700_ENG_Basic_0a.pdf (default 50 %).
+      modMenu: "MENU → SET → Connectors → MOD Input → LAN MOD Level",
     },
     {
       number: 7760, label: "IC-7760", watts: 200, civAddr: "B2",
       net: "LAN", netMenu: "MENU → SET → Network → Remote Settings",
       hasPreset: true,
+      modMenu: "MENU → SET → Connectors → MOD Input → LAN MOD Level",
     },
   ];
+
+  // Subaddresses this interface will never write, whatever a table claims. The
+  // backstop for the one mistake that is not reversible: every other wrong write
+  // can be undone with the value read from the same address a moment earlier, but
+  // a CI-V or network setting takes the radio away and the restore never arrives.
+  // From docs/IC-705_ENG_CI-V_1_20200721.pdf: 0131 CI-V Transceive, 0132 CI-V USB
+  // Echo Back, 0165-0168 date/time and the NTP server string, 0295/0317/0320/0336
+  // SSID.
+  const FORBIDDEN_WRITE_SUBADDRESSES = Object.freeze([
+    "0131", "0132", "0165", "0166", "0167", "0168",
+    "0295", "0317", "0320", "0336",
+  ]);
+
+  // Is this 1A 05 command safe to write? Asked about the command string, not about
+  // the model, because the danger is exactly the case where a model's table is
+  // wrong and its number means something else on the radio in front of us.
+  function writableSubaddress(command) {
+    const hex = String(command || "").toUpperCase().replace(/[^0-9A-F]/g, "");
+    if (!hex.startsWith("1A05") || hex.length !== 8) return false;
+    return !FORBIDDEN_WRITE_SUBADDRESSES.includes(hex.slice(4));
+  }
 
   // Radios that speak CI-V but have no network control of their own. They can
   // still turn up over LAN behind a wfview or RS-BA1 server, which reports the
@@ -102,5 +151,6 @@
   // lists are in one order and neither can gain a model the other lacks.
   function models() { return MODELS.slice(); }
 
-  return {MODELS, BRIDGED_ONLY_WATTS, modelNumber, findModel, fullPowerWatts, models};
+  return {MODELS, BRIDGED_ONLY_WATTS, modelNumber, findModel, fullPowerWatts, models,
+          FORBIDDEN_WRITE_SUBADDRESSES, writableSubaddress};
 });

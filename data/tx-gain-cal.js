@@ -327,12 +327,48 @@
   // browser that measured it. The firmware stores the file and never reads
   // inside it, so this class is the only definition of the schema anywhere.
   const STORE_URL = "/txgain.json";
+  const SCHEMA_VERSION = 2;
+
+  // ---- staleness -------------------------------------------------------------
+  //
+  // Every knee is a knee AT A MOD LEVEL: the audio level the radio starts limiting
+  // at moves inversely with the sensitivity of its network input. So an entry
+  // measured before the MOD level changed is not a smaller truth, it is a wrong
+  // number -- up to eight times wrong at the operating point this station uses --
+  // and with zero margin below the knee that difference is distortion, not a
+  // quieter signal. It therefore may not reach the air.
+  //
+  // It is still the best starting point available, though, so it is offered as a
+  // SEED: rescaled by the MOD ratio it lands within a decibel or two, and
+  // begin({knownKnee}) enters 6 dB below whatever it is handed, so a wrong guess
+  // costs a step and can never overdrive.
+  //
+  // An entry with no `modLevel` at all predates this schema. It is not called
+  // stale -- nothing is known to have changed -- but it is not evidence about
+  // today's MOD level either, which is why the plan re-measures it.
+  function entryStatus(entry, modLevel) {
+    if (!entry || !(Number(entry.gain) > 0)) return "missing";
+    const measuredAt = Number(entry.modLevel) || 0;
+    const now = Number(modLevel) || 0;
+    if (!measuredAt) return "unknown-mod";
+    if (!now) return "calibrated";        // nothing to compare against; trust it
+    return measuredAt === now ? "calibrated" : "stale";
+  }
+
+  const seedFrom = (entry, modLevel) => {
+    const knee = entry ? Number(entry.knee) || 0 : 0;
+    if (!(knee > 0)) return 0;
+    const measuredAt = Number(entry.modLevel) || 0;
+    const now = Number(modLevel) || 0;
+    if (!measuredAt || !now || measuredAt === now) return knee;
+    return knee * measuredAt / now;
+  };
 
   class TxGainStore {
     constructor(options = {}) {
       this.url = options.url || STORE_URL;
       this.fetchImpl = options.fetchImpl || ((...args) => fetch(...args));
-      this.doc = {v: 1, entries: {}};
+      this.doc = {v: SCHEMA_VERSION, entries: {}};
       this.loaded = false;
       this.error = "";
     }
@@ -342,7 +378,7 @@
         const response = await this.fetchImpl(this.url, {cache: "no-store"});
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const doc = await response.json();
-        this.doc = doc && typeof doc === "object" && doc.entries ? doc : {v: 1, entries: {}};
+        this.doc = migrate(doc);
         this.loaded = true;
         this.error = "";
       } catch (error) {
@@ -357,6 +393,33 @@
     entry(key) {
       const found = this.doc && this.doc.entries ? this.doc.entries[key] : null;
       return found && Number(found.gain) > 0 ? found : null;
+    }
+
+    // The entry only if it is usable for the MOD level the radio has right now.
+    // Everything on the transmit path asks through here rather than through
+    // entry(), so a stale row cannot reach the air by being read innocently.
+    usableEntry(key, modLevel) {
+      const found = this.entry(key);
+      return entryStatus(found, modLevel) === "stale" ? null : found;
+    }
+
+    status(key, modLevel) { return entryStatus(this.entry(key), modLevel); }
+
+    // ---- the plan --------------------------------------------------------
+    //
+    // Stored beside the entries and not in localStorage, for the same reason the
+    // entries are: the operator builds the plan at the desk and runs it from
+    // whatever is next to the antenna switch, because every retune asks a
+    // question. It also lands in the config backup for free.
+    plan() {
+      const found = this.doc && this.doc.plan;
+      return found && typeof found === "object" ? found : {powers: [], rows: []};
+    }
+
+    async putPlan(plan) {
+      await this.load();
+      this.doc.plan = plan;
+      return this.save();
     }
 
     // Re-read before every write. The file is replaced whole, so a second
@@ -376,7 +439,10 @@
     }
 
     async clear() {
-      this.doc = {v: 1, entries: {}};
+      // The plan survives: it is what the operator built, not what was measured,
+      // and "forget the calibrations" is not "forget which cells I want".
+      const plan = this.plan();
+      this.doc = {v: SCHEMA_VERSION, entries: {}, plan};
       return this.save();
     }
 
@@ -390,6 +456,18 @@
     }
   }
 
+  // v1 -> v2 is additive: entries keep every field they had and simply have no
+  // `modLevel`, which entryStatus() reports as "unknown-mod" -- usable, but not
+  // evidence about a MOD level nobody had recorded. Rewriting them with a guessed
+  // MOD level would turn "we do not know" into a claim.
+  function migrate(input) {
+    const doc = input && typeof input === "object" ? input : {};
+    const entries = doc.entries && typeof doc.entries === "object" ? doc.entries : {};
+    const plan = doc.plan && typeof doc.plan === "object" ? doc.plan : {powers: [], rows: []};
+    return {...doc, v: SCHEMA_VERSION, entries, plan};
+  }
+
   return {TxGainCal, TxGainStore, DEFAULTS, ULAW_BYTES_PER_SECOND,
-          bandOf, entryKey, STORE_URL, toDb, fromDb};
+          bandOf, entryKey, STORE_URL, SCHEMA_VERSION, migrate,
+          entryStatus, seedFrom, toDb, fromDb};
 });

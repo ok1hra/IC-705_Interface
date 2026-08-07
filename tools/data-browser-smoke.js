@@ -476,6 +476,67 @@ f.onload=()=>{
         const disabled=d.querySelector('#calField #calStart').disabled;
         return disabled===true&&target.length>0;
       })();
+      // The batch plan, on the page that is not WSPR. The sequencer itself is
+      // exhausted in tools/tx-gain-plan-smoke.js and the whole run in
+      // tools/wspr-browser-smoke.js; what is unique HERE is the rule that keeps a
+      // heartbeat out of the plan's pauses.
+      checks.js8HostsTheCalibrationPlan=Boolean(d.querySelector('#planField [data-plan="run"]'))&&
+        Boolean(d.querySelector('#planField [data-plan="grid"]'))&&
+        d.querySelector('#planField').textContent.includes('antenna');
+      // It draws itself, and the two axes are separately editable. An empty frame with
+      // no estimate and no way to add a power is how this was first reported.
+      checks.js8PlanDrawsItself=
+        d.querySelector('#planField [data-plan="estimate"]').textContent.length>0;
+      checks.js8PlanHasBothAxes=
+        d.querySelectorAll('#planField .plan-axis').length===2&&
+        Boolean(d.querySelector('#planField [data-plan="addpower"]'));
+      // A pop-out window in the topbar, in the same shape as the TIMETABLE beside it:
+      // discoverable from the bar (not hidden behind a URL fragment as it briefly was)
+      // and closed until its button is pressed.
+      checks.js8PlanIsATopbarWindow=Boolean(d.querySelector('#planButton'))&&
+        d.querySelector('#planField').classList.contains('freq-timetable-panel')&&
+        d.querySelector('#planField').hidden===true;
+      d.querySelector('#planButton').click();
+      await new Promise(resolve=>setTimeout(resolve,150));
+      checks.js8PlanButtonOpensIt=d.querySelector('#planField').hidden===false;
+      // A column first: on a fixture radio that has never reported a power setting the
+      // seeded plan has a row and no columns, so there is no cell to click yet.
+      d.querySelector('#planField [data-plan="newpower"]').value='7';
+      d.querySelector('#planField [data-plan="addpower"]').click();
+      await new Promise(resolve=>setTimeout(resolve,250));
+      // The grid is the point of it, and a cell click had no coverage at all -- which
+      // is how two methods with the same name (window vs cell) survived in one class.
+      const planCell=d.querySelector('#planField [data-cell]');
+      const cellBefore=planCell?planCell.className:'';
+      if(planCell)planCell.click();
+      // The tick is stored before it is drawn -- savePlan() writes the station's file
+      // and the grid is rebuilt when that resolves -- so reading the class in the same
+      // turn measures the state before the click.
+      await new Promise(resolve=>setTimeout(resolve,400));
+      const cellAfter=d.querySelector('#planField [data-cell]');
+      checks.js8PlanCellTicks=Boolean(planCell)&&Boolean(cellAfter)&&
+        cellAfter.className!==cellBefore;
+      // A calibration owns the transmitter. Between cells the plan waits minutes for
+      // an antenna answer with PTT down and txStatus idle, and without this a
+      // heartbeat would key on the plan's band, at the plan's power, into the antenna
+      // the operator is being asked about at that very moment.
+      // Read through the DOM like everything else on this page: there is no test
+      // global here, and adding one for a single assertion would be a second surface
+      // to keep true. Turning the automatic answers on and pressing RUN is exactly
+      // the operator's path, and the refusal has to name what to switch off -- the
+      // plan must never switch it off itself, because a tab that dies mid-run would
+      // leave the station silent with nobody told.
+      const autoReply=d.querySelector('#autoReply');
+      const autoWas=autoReply?autoReply.checked:false;
+      if(autoReply&&!autoWas){autoReply.checked=true;
+        autoReply.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));}
+      d.querySelector('#planField [data-plan="run"]').click();
+      await new Promise(resolve=>setTimeout(resolve,400));
+      const planError=d.querySelector('#planField [data-plan="error"]').textContent;
+      checks.js8PlanRefusesWhileUnattendedIsArmed=/unattended/i.test(planError);
+      checks.js8PlanDoesNotDisarmItForYou=Boolean(autoReply)&&autoReply.checked===true;
+      if(autoReply&&!autoWas){autoReply.checked=false;
+        autoReply.dispatchEvent(new f.contentWindow.Event('change',{bubbles:true}));}
       checks.setupTxGainVisibleWithLan=!txGainSection.hidden;
       checks.setupTxGainShowsTheTable=!!txGainRow&&txGainRow.textContent.includes('IC-705')&&
         txGainRow.textContent.includes('20m')&&txGainRow.textContent.includes('0.031');
@@ -1730,6 +1791,27 @@ f.onload=()=>{
   if(path.basename(target).startsWith("js8-")){if(encoded===br)js8Brotli++;if(encoded===gz)js8Gzip++;}
   fs.readFile(encoded,(error,bytes)=>{if(error)return res.writeHead(404).end();res.setHeader("Content-Type",mime[path.extname(target)]||"application/octet-stream");if(encoded===br)res.setHeader("Content-Encoding","br");if(encoded===gz)res.setHeader("Content-Encoding","gzip");if(url.pathname==="/js8-jsc.bin.br"){jscRequests++;jscStartedAt=Date.now();res.setHeader("Cache-Control","no-store");res.setHeader("Content-Length",bytes.length);const chunk=Math.ceil(bytes.length/8);let at=0;const tick=()=>{res.write(bytes.subarray(at,Math.min(bytes.length,at+chunk)));at+=chunk;if(at>=bytes.length){jscComplete=true;jscCompleteAt=Date.now();return res.end();}setTimeout(tick,150);};tick();return;}res.end(bytes);});
 });
+// This harness serves data/*.gz exactly as the firmware does, so a .gz older than its
+// source means the run is grading the PREVIOUS version of that file. It has cost two
+// long debugging sessions already: the WSPR harness reads the sources and went green
+// while this one, on stale assets, failed with a symptom that pointed at the wrong
+// place entirely. So refuse to start instead.
+{
+  const stale=[];
+  for(const name of fs.readdirSync(data)){
+    if(!name.endsWith(".js")&&!name.endsWith(".css")&&!name.endsWith(".html"))continue;
+    const source=path.join(data,name), gz=source+".gz";
+    if(!fs.existsSync(gz))continue;
+    if(fs.statSync(source).mtimeMs>fs.statSync(gz).mtimeMs)stale.push(name);
+  }
+  if(stale.length){
+    console.error("DATA BROWSER STALE ASSETS: "+stale.join(", "));
+    console.error("  this harness serves .gz like the firmware, so it would grade the");
+    console.error("  previous version. Run: tools/minify-spiffs-js.sh && tools/gzip-assets.sh");
+    process.exit(2);
+  }
+}
+
 server.on("upgrade",(req,socket)=>{const wsUrl=new URL(req.url,"http://fixture");if(wsUrl.pathname!=="/audiows")return socket.destroy();
 // Same gate as the firmware: the audio socket is where the lock actually bites,
 // so a handshake without the owning token never reaches the stream.
